@@ -1,0 +1,23 @@
+.env
+.env.*
+.env.save
+.DS_Store
+__pycache__/
+*.pyc
+*.pdf
+.claude/
+=*
+
+# Kite local state (token, instruments dump, tick buffer, history store)
+kite_token.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.stockify_cache/
+
+# Next.js / frontend artefacts
+web/node_modules/
+web/.next/
+web/out/
+web/.turbo/
+web/next-env.d.ts

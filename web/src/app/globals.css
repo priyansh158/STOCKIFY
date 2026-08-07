@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+/* STOCKIFY brand tokens — Matrix-aesthetic dark theme. Mirrors the legacy
+   app.py palette so visual continuity carries over. */
+@theme inline {
+  --color-bg:         #050a0f;
+  --color-bg-soft:    #0a1218;
+  --color-fg:         #e0ffe0;
+  --color-fg-muted:   #7a9a7a;
+  --color-fg-dim:     #559955;
+  --color-green:      #00ff41;
+  --color-green-soft: #b4ffb4;
+  --color-red:        #ff4444;
+  --color-red-soft:   #ff6464;
+  --color-amber:      #ffaa40;
+  --color-blue:       #4fb0ff;
+  --color-wick:       #d4ffd4;
+  --font-sans:        var(--font-inter), "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono:        var(--font-jetbrains-mono), "JetBrains Mono", "Courier New", monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Matrix grid background — fixed, behind everything, hint of green. */
+.stk-grid {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0,255,65,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,255,65,0.025) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.stk-mono       { font-family: var(--font-mono); letter-spacing: 0.06em; }
+.stk-mono-tight { font-family: var(--font-mono); letter-spacing: 0.18em;
+                  text-transform: uppercase; font-size: 0.74rem; }

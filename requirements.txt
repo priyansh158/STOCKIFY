@@ -1,0 +1,32 @@
+# STOCKIFY — AI Stock Analysis Agent
+# Core AI
+anthropic>=0.40.0
+
+# Web App — FastAPI backend (Streamlit removed in Phase 6 of the overhaul)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sse-starlette>=2.1.0
+python-multipart>=0.0.12
+
+# Stock data (for live candlestick fetching)
+yfinance>=0.2.40
+
+# Browser automation for IR page financial scraping
+playwright>=1.40.0
+
+# PDF text extraction (for NSE quarterly result PDFs)
+pypdf>=4.0.0
+
+# HTTP requests (for WSJ RapidAPI / NewsAPI fetch)
+requests>=2.31.0
+
+# Environment variable loading from .env file
+python-dotenv>=1.0.0
+
+# Geo monitor uses Google Gemini via REST (requests) — set GOOGLE_AI_API_KEY
+# Always-on: python -m geo_monitor  (independent of FastAPI)
+
+# Kite Connect — Zerodha trading + market data API
+# Authoritative NSE/BSE symbol resolver (fixes Screener rename lag),
+# live LTP and intraday OHLCV, KiteTicker WebSocket streaming, holdings sync.
+kiteconnect>=5.0.1
