@@ -1,0 +1,7 @@
+{
+  "schema": "simlab.contract_rules/1",
+  "expiry_rules": [],
+  "holiday_shift": "previous_trading_day",
+  "settlement": [],
+  "underlyings": {}
+}

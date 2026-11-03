@@ -1,0 +1,9 @@
+{
+  "schema": "simlab.charges/1",
+  "broker": "zerodha",
+  "components": {
+    "brokerage": [], "stt": [], "exercise_stt": [], "exercise_brokerage": [],
+    "exchange_txn": [], "sebi": [], "stamp": [], "gst": [], "dp": [],
+    "auto_square_off_fee": [], "physical_delivery": []
+  }
+}

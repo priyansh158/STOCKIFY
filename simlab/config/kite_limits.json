@@ -1,0 +1,7 @@
+{
+  "schema": "simlab.kite_limits/1",
+  "historical_rps": 3, "quote_rps": 1, "quote_max_instruments": 500,
+  "ws_max_instruments": 3000, "ws_max_connections": 3,
+  "historical_max_days": {},
+  "learned": {}
+}
