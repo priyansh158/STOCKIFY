@@ -4,6 +4,7 @@
 .DS_Store
 __pycache__/
 *.pyc
+.venv/
 *.pdf
 .claude/
 =*
@@ -21,3 +22,14 @@ web/.next/
 web/out/
 web/.turbo/
 web/next-env.d.ts
+
+# SimLab engine build output (rebuilt by run.ps1 -BuildEngine)
+engine/build*/
+simlab/_engine*.pyd
+
+# Plan archive drop (its contents live in docs/simlab/)
+simlab-plan-docs.zip
+
+# Claude Code memory files are never committed (owner rule)
+CLAUDE.md
+CLAUDE.local.md
