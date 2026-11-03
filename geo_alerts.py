@@ -1,7 +1,7 @@
 """SQLite store for geo news monitor: seen articles + disruption alerts.
 
 Lives beside other STOCKIFY local state:
-  %LOCALAPPDATA%/STOCKIFY/kite/geo_alerts.sqlite  (or ~/.cache/STOCKIFY/kite/)
+  %LOCALAPPDATA%/STOCKIFY/kite/geo_alerts.sqlite
 """
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
-import kite_client
+import stockify_paths
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -54,8 +53,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_geo_alerts_guid ON geo_alerts(guid);
 """
 
 
-def _db_path() -> Path:
-    return kite_client._cache_dir() / "geo_alerts.sqlite"
+def _db_path():
+    return stockify_paths.state_dir() / "geo_alerts.sqlite"
 
 
 def _connect() -> sqlite3.Connection:

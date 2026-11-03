@@ -30,6 +30,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+import stockify_paths
+
 try:
     from kiteconnect import KiteConnect
     KITECONNECT_AVAILABLE = True
@@ -41,11 +43,8 @@ except ImportError:
 # ── Cache paths ───────────────────────────────────────────────────────────────
 
 def _cache_dir() -> Path:
-    """Local user cache dir for Kite state. Auto-created."""
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.cache")
-    p = Path(base) / "STOCKIFY" / "kite"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    """Compatibility wrapper for the canonical local state directory."""
+    return stockify_paths.state_dir()
 
 
 def _token_file() -> Path:

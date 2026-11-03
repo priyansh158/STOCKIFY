@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from gnews.client import GoogleNewsClient, _dedupe
 from gnews.decode import extract_article_id
-from gnews.models import Article
+from gnews.models import Article, SearchResult
 from gnews.rss import build_search_url, locale_to_params, parse_rss_xml
 from gnews.slicing import compose_query, resolve_windows, should_day_slice
 from tests.gnews.fixtures import SAMPLE_RSS
@@ -90,6 +90,31 @@ class ClientDedupeTests(unittest.TestCase):
         self.assertEqual(result.unique_count, 2)
         self.assertEqual(len(result.to_pipeline_articles()), 2)
         mock_fetch.assert_called()
+
+    def test_search_many_accepts_a_generator_without_exhausting_it(self):
+        client = GoogleNewsClient(session=MagicMock())
+        article = Article(
+            title="RBI update",
+            link="https://example.com/a",
+            guid="g1",
+            source="Reuters",
+            published_at="2025-08-06",
+        )
+        with patch.object(
+            client,
+            "search",
+            return_value=SearchResult(
+                articles=[article],
+                query="RBI",
+                windows_fetched=1,
+                raw_count=1,
+                unique_count=1,
+            ),
+        ) as search:
+            result = client.search_many((q for q in ("RBI", "crude")))
+        self.assertEqual(search.call_count, 2)
+        self.assertEqual(result.query, "RBI | crude")
+        self.assertEqual(result.unique_count, 1)
 
 
 if __name__ == "__main__":

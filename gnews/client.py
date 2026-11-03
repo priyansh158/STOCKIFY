@@ -127,9 +127,10 @@ class GoogleNewsClient:
         total_max: Optional[int] = 200,
     ) -> SearchResult:
         """Run multiple queries and merge/dedupe — for macro + holdings monitors."""
-        merged = SearchResult(query=" | ".join(queries))
+        query_list = list(queries)
+        merged = SearchResult(query=" | ".join(query_list))
         all_arts: list[Article] = []
-        for q in queries:
+        for q in query_list:
             q = (q or "").strip()
             if not q:
                 continue

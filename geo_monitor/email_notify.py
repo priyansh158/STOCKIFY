@@ -77,11 +77,10 @@ Alert id: {alert.get('id', '—')}
     else:
         with smtplib.SMTP(host, port, timeout=30) as smtp:
             smtp.ehlo()
-            try:
-                smtp.starttls(context=context)
-                smtp.ehlo()
-            except smtplib.SMTPException:
-                pass
+            # Never authenticate or deliver over a downgraded plaintext
+            # connection. Any STARTTLS failure is a hard delivery failure.
+            smtp.starttls(context=context)
+            smtp.ehlo()
             if user:
                 smtp.login(user, password)
             smtp.send_message(msg)

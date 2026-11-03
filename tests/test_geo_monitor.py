@@ -180,12 +180,9 @@ class HeuristicSuspectTests(unittest.TestCase):
         self.assertTrue(heuristic_suspect("M&M posts results", holding_terms=["M&M"]))
         self.assertFalse(heuristic_suspect("MXM posts results", holding_terms=["M&M"]))
 
-    def test_holding_terms_match_as_substrings_without_word_boundaries(self):
-        # Documented behaviour: unlike the cue patterns, holding terms are
-        # matched with a bare re.escape() and no \b anchors, so a short ticker
-        # fires inside unrelated words. Tracked in test_known_defects.py.
-        self.assertTrue(heuristic_suspect("Growth in digital services",
-                                          holding_terms=["IT"]))
+    def test_holding_terms_do_not_match_inside_unrelated_words(self):
+        self.assertFalse(heuristic_suspect("Growth in digital services",
+                                           holding_terms=["IT"]))
 
 
 # ── JSON extraction ──────────────────────────────────────────────────────────
@@ -407,6 +404,11 @@ class ClassifyBatchTests(unittest.TestCase):
         self.assertIn("gemini-custom", url)
         self.assertIn("key=test-key", url)
 
+    def test_model_environment_is_resolved_at_call_time(self):
+        with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-from-env"}):
+            _, post = self.classify([{"id": 0}])
+        self.assertIn("gemini-from-env", post.call_args[0][0])
+
     def test_explicit_api_key_overrides_the_environment(self):
         with patch.object(gemini_classifier.requests, "post",
                           return_value=gemini_response([{"id": 0}])) as post:
@@ -513,6 +515,17 @@ class SendAlertEmailTests(unittest.TestCase):
         smtp.assert_called_once()
         smtp_ssl.assert_not_called()
         smtp.return_value.__enter__.return_value.starttls.assert_called_once()
+
+    def test_starttls_failure_aborts_before_login_or_delivery(self):
+        with patch.object(email_notify.smtplib, "SMTP") as smtp:
+            connection = smtp.return_value.__enter__.return_value
+            connection.starttls.side_effect = email_notify.smtplib.SMTPException(
+                "TLS unavailable"
+            )
+            with self.assertRaises(email_notify.smtplib.SMTPException):
+                email_notify.send_alert_email(dict(ALERT))
+        connection.login.assert_not_called()
+        connection.send_message.assert_not_called()
 
     def test_implicit_tls_path_on_port_465(self):
         smtp, smtp_ssl = self.send(env={"SMTP_PORT": "465"})
@@ -697,6 +710,7 @@ class WorkerCycleTests(SandboxedDBTest):
         self.assertEqual(stats["suspects"], 1)
         self.assertEqual(stats["classified"], 1)
         m_classify.assert_called_once()
+        self.assertTrue(geo_alerts.is_seen("g1"))
 
     def test_a_second_cycle_over_the_same_article_is_a_no_op(self):
         art = FakeArticle("g1", "RBI hikes repo rate")
@@ -737,6 +751,7 @@ class WorkerCycleTests(SandboxedDBTest):
             dry_run=True)
         self.assertEqual(stats["alerts"], 1)
         self.assertEqual(geo_alerts.list_alerts(), [])
+        self.assertFalse(geo_alerts.is_seen("g1"))
 
     def test_missing_gemini_key_stops_before_classification(self):
         with isolated_env():
@@ -746,6 +761,7 @@ class WorkerCycleTests(SandboxedDBTest):
         self.assertEqual(stats["classified"], 0)
         m_classify.assert_not_called()
         self.assertTrue(any("Gemini" in e for e in stats["errors"]))
+        self.assertFalse(geo_alerts.is_seen("g1"))
 
     def test_classification_failure_is_recorded_not_raised(self):
         client = FakeNewsClient(FakeSearchResult([FakeArticle("g1", "RBI hikes repo rate")]))
@@ -754,6 +770,7 @@ class WorkerCycleTests(SandboxedDBTest):
             stats = worker.run_once(client=client)
         self.assertEqual(stats["alerts"], 0)
         self.assertTrue(any("gemini 500" in e for e in stats["errors"]))
+        self.assertFalse(geo_alerts.is_seen("g1"))
 
     def test_news_fetch_errors_are_surfaced(self):
         client = FakeNewsClient(FakeSearchResult([], errors=["rss timeout"]))

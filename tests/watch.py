@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
-"""Re-run the test suite whenever the repo changes.
+r"""Re-run the test suite whenever the repo changes.
 
-    python3 tests/watch.py                # watch everything
-    python3 tests/watch.py tick_buffer    # watch, but only run matching tests
+    .\.venv\Scripts\python.exe tests\watch.py
+    .\.venv\Scripts\python.exe tests\watch.py tick_buffer
 
 Built for a repo taking constant pushes: it polls the mtimes of every tracked
 .py file plus the current git HEAD, so it fires on your own edits *and* on a

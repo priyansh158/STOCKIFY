@@ -24,7 +24,7 @@ _DISRUPT_PATTERNS = [
 
 _DISRUPT_RE = re.compile("|".join(_DISRUPT_PATTERNS), re.IGNORECASE)
 
-DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 
 def resolve_gemini_api_key() -> str:
@@ -46,7 +46,9 @@ def heuristic_suspect(
         return True
     for term in holding_terms or []:
         t = (term or "").strip()
-        if len(t) >= 2 and re.search(re.escape(t), text, re.IGNORECASE):
+        if len(t) >= 2 and re.search(
+            rf"(?<!\w){re.escape(t)}(?!\w)", text, re.IGNORECASE
+        ):
             return True
     return False
 
@@ -86,7 +88,7 @@ def classify_batch(
     if not articles:
         return []
 
-    model_id = model or DEFAULT_MODEL
+    model_id = model or (os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL).strip()
     holdings_blurb = ", ".join(holding_tickers or []) or "(none configured)"
 
     payload_articles = []

@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover
         return False
 
 import geo_alerts
+import stockify_paths
 from gnews import GoogleNewsClient
 from geo_monitor.email_notify import try_send_alert_email
 from geo_monitor.gemini_classifier import (
@@ -34,12 +35,8 @@ from geo_monitor.queries import build_monitor_queries
 log = logging.getLogger("geo_monitor.worker")
 
 
-def _repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
 def load_env() -> None:
-    load_dotenv(dotenv_path=os.path.join(_repo_root(), ".env"), override=True)
+    load_dotenv(dotenv_path=stockify_paths.env_file(), override=True)
 
 
 def _interval_sec() -> int:
@@ -118,15 +115,7 @@ def run_once(
     new_articles: list[dict[str, Any]] = []
     for art in result.articles:
         guid = art.guid or art.link
-        newly = geo_alerts.mark_seen(
-            guid=guid,
-            title=art.title,
-            url=art.loaded_url or art.link,
-            source=art.source,
-            published_at=art.published_at,
-            query=art.query,
-        )
-        if not newly:
+        if not guid or geo_alerts.is_seen(guid):
             continue
         stats["new"] += 1
         row = {
@@ -142,6 +131,15 @@ def run_once(
             art.title, art.description, holding_terms=holding_terms
         ):
             new_articles.append(row)
+        elif not dry_run:
+            geo_alerts.mark_seen(
+                guid=row["guid"],
+                title=row["title"],
+                url=row["url"],
+                source=row["source"],
+                published_at=row["published_at"],
+                query=row["query"],
+            )
 
     stats["suspects"] = len(new_articles)
     if not new_articles:
@@ -201,6 +199,20 @@ def run_once(
             stats["errors"].append(f"email: {err}")
         else:
             stats["errors"].append(err)
+
+    # Suspect articles are acknowledged only after a successful classification
+    # and persistence pass. Missing credentials, transient Gemini failures, and
+    # dry runs therefore leave them eligible for the next cycle.
+    if not dry_run:
+        for article in new_articles:
+            geo_alerts.mark_seen(
+                guid=article["guid"],
+                title=article["title"],
+                url=article["url"],
+                source=article["source"],
+                published_at=article["published_at"],
+                query=article["query"],
+            )
 
     return stats
 

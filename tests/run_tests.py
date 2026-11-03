@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
-"""Run the STOCKIFY test suite.
+r"""Run the STOCKIFY test suite.
 
-    python3 tests/run_tests.py              # everything
-    python3 tests/run_tests.py -v           # per-test names
-    python3 tests/run_tests.py tick_buffer  # only modules matching a substring
+    .\.venv\Scripts\python.exe tests\run_tests.py              # everything
+    .\.venv\Scripts\python.exe tests\run_tests.py -v           # per-test names
+    .\.venv\Scripts\python.exe tests\run_tests.py tick_buffer  # filtered
 
 Exit codes:
     0  all green (tracked defects in test_known_defects.py count as green)
@@ -53,6 +52,14 @@ def build_suite(pattern: str = "") -> unittest.TestSuite:
 
 
 def main() -> int:
+    # Windows PowerShell 5.1 often gives redirected Python processes a cp1252
+    # stream. The report intentionally contains Unicode, so make output
+    # deterministic regardless of the invoking terminal.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Run the STOCKIFY test suite.")
     parser.add_argument("pattern", nargs="?", default="",
                         help="only run tests whose id contains this substring")

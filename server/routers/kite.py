@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 import kite_client
+import stockify_paths
 
 log = logging.getLogger("stockify.kite")
 
@@ -28,7 +29,12 @@ router = APIRouter(prefix="/api/kite", tags=["kite"])
 
 # Where to send the user after the OAuth callback. Kept here so we can roll
 # it forward when we deploy under a custom domain.
-_NEXTJS_CALLBACK = "http://127.0.0.1:3000/kite/callback"
+_NEXTJS_CALLBACK = (
+    stockify_paths.loopback_origin(
+        "STOCKIFY_WEB_ORIGIN", "http://127.0.0.1:3000"
+    )
+    + "/kite/callback"
+)
 
 
 @router.get("/login_url")

@@ -15,12 +15,6 @@ function fmtInr(n: number): string {
   }).format(n);
 }
 
-function fmtPct(p: number): string {
-  if (!Number.isFinite(p)) return "—";
-  const sign = p > 0 ? "+" : "";
-  return `${sign}${p.toFixed(2)}%`;
-}
-
 async function loadData(): Promise<{ status: KiteStatus; snap: PortfolioSnapshot | null }> {
   const status = await api<KiteStatus>("/api/kite/status").catch(() => ({
     configured: false,

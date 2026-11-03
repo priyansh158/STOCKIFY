@@ -1,70 +1,63 @@
-# Geo monitor (always-on)
+# Geo monitor (Windows localhost)
 
-Standalone process — **does not require FastAPI**. Polls Google News (via `gnews`),
-classifies disruptiveness with **Gemini**, stores alerts in SQLite, emails you on
-HIGH/CRITICAL.
+The geo monitor is an independent process. It polls Google News, classifies
+disruptive headlines with Gemini, stores alerts in SQLite, and emails
+HIGH/CRITICAL alerts even when FastAPI is not running.
 
-```bash
-# From STOCKIFY root (with .env configured). On macOS use python3.
-python3 -m geo_monitor --once -v   # single cycle
-python3 -m geo_monitor             # loop forever (interval GEO_MONITOR_INTERVAL_SEC)
-python3 -m geo_monitor --once --dry-run
+## Run
+
+After `.\run.ps1` has created `.venv`:
+
+```powershell
+.\scripts\run_geo_monitor.ps1 -Once -VerboseOutput
+.\scripts\run_geo_monitor.ps1 -Once -DryRun
+.\scripts\run_geo_monitor.ps1
 ```
 
-## Required .env
+The main launcher can also supervise it:
 
+```powershell
+.\run.ps1 -GeoMonitor
+.\run.ps1 -MonitorOnly
 ```
-GOOGLE_AI_API_KEY=...          # or GEMINI_API_KEY
-GEMINI_MODEL=gemini-3.5-flash-lite  # high-volume classifier (preferred on this key)
 
+## Environment
+
+Configure the repository-root `.env`:
+
+```text
+GOOGLE_AI_API_KEY=...
+GEMINI_MODEL=gemini-3.5-flash-lite
 ALERT_EMAIL_TO=you@example.com
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=...
-SMTP_PASSWORD=...              # Gmail App Password
+SMTP_PASSWORD=...
 SMTP_FROM=STOCKIFY Alerts <you@example.com>
-
-GEO_MONITOR_INTERVAL_SEC=600   # default 10 min
-GEO_MONITOR_WHEN=1h            # Google News freshness window
+GEO_MONITOR_INTERVAL_SEC=600
+GEO_MONITOR_WHEN=1h
 ```
 
-Optional: Kite login (via STOCKIFY UI `/portfolio`) so holdings are queried
-alongside the macro catalogue. Without Kite auth the worker is macro-only.
+Kite authentication is optional. When available, current holdings extend the
+monitor queries; otherwise it runs macro-only.
 
-## Keep-alive (macOS launchd)
+## Always-on Task Scheduler lifecycle
 
-Runs outside FastAPI so monitoring survives API restarts. Prefer the wrapper so
-cwd / `PYTHONPATH` / unbuffered stdout are correct under launchd (Desktop paths
-hit macOS TCC; keep the repo under `~/Developer/STOCKIFY`).
+PowerShell 7 registers a per-user task that starts at logon, ignores duplicate
+starts, and retries after crashes:
 
-```bash
-chmod +x ~/Developer/STOCKIFY/scripts/run_geo_monitor.sh
-cp ~/Developer/STOCKIFY/scripts/com.stockify.geo-monitor.plist.example \
-   ~/Library/LaunchAgents/com.stockify.geo-monitor.plist
-launchctl unload ~/Library/LaunchAgents/com.stockify.geo-monitor.plist 2>/dev/null
-launchctl load ~/Library/LaunchAgents/com.stockify.geo-monitor.plist
+```powershell
+.\scripts\manage_geo_monitor.ps1 Install
+.\scripts\manage_geo_monitor.ps1 Start
+.\scripts\manage_geo_monitor.ps1 Status
+.\scripts\manage_geo_monitor.ps1 Stop
+.\scripts\manage_geo_monitor.ps1 Uninstall
 ```
 
-Logs (Python `logging` → stderr):
+Logs: `%LOCALAPPDATA%\STOCKIFY\logs\geo-monitor.log`
 
-```bash
-tail -f /tmp/stockify-geo-monitor.err.log
-# /tmp/stockify-geo-monitor.out.log stays empty unless something prints to stdout
-```
+Alerts database:
+`%LOCALAPPDATA%\STOCKIFY\kite\geo_alerts.sqlite`
 
-Check status:
-
-```bash
-launchctl print gui/$(id -u)/com.stockify.geo-monitor | head -40
-```
-
-Unload:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.stockify.geo-monitor.plist
-```
-
-## Alerts in the app
-
-When FastAPI is up: `GET /api/alerts`, ack via `POST /api/alerts/{id}/ack`, UI at
-`/alerts`. SQLite path: `~/.cache/STOCKIFY/kite/geo_alerts.sqlite`.
+When FastAPI is running, use `GET /api/alerts`,
+`POST /api/alerts/{id}/ack`, or the `/alerts` page.
