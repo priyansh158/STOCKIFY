@@ -16,7 +16,7 @@ _log = log.get("daemon")
 
 
 def run_forever(*, once: bool = False) -> None:
-    _log.info("SimLab daemon started (stub: no recorder or sessions yet)")
+    _log.info("STOCKIFY daemon started (stub: no recorder or sessions yet)")
     try:
         while True:
             _log.info("idle")
@@ -24,4 +24,4 @@ def run_forever(*, once: bool = False) -> None:
                 return
             time.sleep(IDLE_INTERVAL_SEC)
     except KeyboardInterrupt:
-        _log.info("SimLab daemon stopped")
+        _log.info("STOCKIFY daemon stopped")

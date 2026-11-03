@@ -6,7 +6,7 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(_engine, m) {
-    m.doc() = "SimLab C++ engine (stocksim_core)";
+    m.doc() = "STOCKIFY C++ engine (stocksim_core)";
     m.def("build_info", [] {
         const stocksim::BuildInfo& b = stocksim::build_info();
         py::dict d;

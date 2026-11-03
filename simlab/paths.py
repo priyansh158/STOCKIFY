@@ -1,7 +1,7 @@
-"""Every on-disk SimLab location (00_overview.md §3).
+"""Every on-disk STOCKIFY location (00_overview.md §3).
 
 All paths hang off `stockify_paths.state_dir()`, which the test harness
-sandboxes. No other SimLab module builds a path by hand. Directories are
+sandboxes. No other STOCKIFY module builds a path by hand. Directories are
 created lazily, on first use.
 """
 from __future__ import annotations

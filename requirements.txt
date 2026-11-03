@@ -1,4 +1,4 @@
-# STOCKIFY SimLab — NSE simulation lab (Windows only)
+# STOCKIFY — NSE simulation lab (Windows only)
 
 # Web API — FastAPI backend
 fastapi>=0.115.0
@@ -18,15 +18,15 @@ python-dotenv>=1.0.0
 # Always-on: python -m geo_monitor  (independent of FastAPI)
 
 # Kite Connect — Zerodha market data, instruments, KiteTicker WebSocket,
-# holdings sync. SimLab never places real orders.
+# holdings sync. STOCKIFY never places real orders.
 kiteconnect>=5.0.1
 
-# SimLab data layer and research (M1+)
+# STOCKIFY data layer and research (M1+)
 numpy>=2.0
 pandas>=2.2
 pyarrow>=17.0
 matplotlib>=3.9
 PyYAML>=6.0
 
-# SimLab engine build (dev): pybind11 provides the CMake package
+# STOCKIFY engine build (dev): pybind11 provides the CMake package
 pybind11>=2.13

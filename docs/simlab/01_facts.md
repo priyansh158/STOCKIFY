@@ -95,7 +95,7 @@ A holiday in expiry week moves the schedule one trading day earlier. Fresh long 
 
 | ID | Fact | Status | Source |
 |---|---|---|---|
-| R-1 | SEBI's retail algo framework (circular 2025-02-04) became fully mandatory **2026-04-01**: static-IP whitelisting for order APIs, an order-rate threshold (10/s) above which strategies must be exchange-registered, mandatory market protection on market orders, daily logout. Irrelevant while SimLab places no orders (D-21). | ✔ | [Taxscan](https://www.taxscan.in/top-stories/sebi-extends-timeline-for-retail-algo-trading-framework-full-implementation-from-apr-1-2026-1433982), [Kite forum](https://kite.trade/forum/discussion/comment/52152/) |
+| R-1 | SEBI's retail algo framework (circular 2025-02-04) became fully mandatory **2026-04-01**: static-IP whitelisting for order APIs, an order-rate threshold (10/s) above which strategies must be exchange-registered, mandatory market protection on market orders, daily logout. Irrelevant while STOCKIFY places no orders (D-21). | ✔ | [Taxscan](https://www.taxscan.in/top-stories/sebi-extends-timeline-for-retail-algo-trading-framework-full-implementation-from-apr-1-2026-1433982), [Kite forum](https://kite.trade/forum/discussion/comment/52152/) |
 
 ## 5. Time zones (T-)
 

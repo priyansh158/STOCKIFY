@@ -64,7 +64,7 @@ offline by construction.
 | `test_portfolio_sync.py` | holding math, snapshot aggregates, fetching and caching |
 | `test_geo_monitor.py` | query building, Gemini classifier, SMTP alerts, one worker cycle |
 | `test_known_defects.py` | **confirmed bugs** — see below |
-| `simlab/` | SimLab paths, exact numerics + canonical output, config loader rules, `simlab.sqlite` schema, CLI, engine gateway |
+| `simlab/` | STOCKIFY paths, exact numerics + canonical output, config loader rules, `simlab.sqlite` schema, CLI, engine gateway |
 | `gnews/` | pre-existing Google News client tests (not written here) |
 
 One thing gets disproportionate coverage because it is load-bearing and
@@ -95,7 +95,7 @@ It's a to-do list that tells you when it's done.
 | 1 | `india_utils.format_inr_full` loses the carry when the fraction rounds up: `format_inr_full(0.999, decimals=2)` → `'0.100'`, expected `'1.00'` | low |
 
 The analysis-pipeline defects tracked here earlier (and `tick_buffer.candles_since`)
-were removed together with their code in SimLab M0.
+were removed together with their code in milestone M0.
 
 ---
 

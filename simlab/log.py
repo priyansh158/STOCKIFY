@@ -1,4 +1,4 @@
-"""Logging setup shared by the SimLab CLI and daemon."""
+"""Logging setup shared by the STOCKIFY CLI and daemon."""
 from __future__ import annotations
 
 import logging

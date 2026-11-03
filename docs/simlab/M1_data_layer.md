@@ -1,6 +1,6 @@
 # M1 — Data layer and recorder
 
-> **Goal**: every piece of market data SimLab will ever use, stored correctly, with history: reference data with dated specs, NSE end-of-day files, Kite historical bars, and a live tick recorder that runs every trading day. Plus the tools that turn stored data into engine input (event packs) and a replay ticker for daytime development.
+> **Goal**: every piece of market data STOCKIFY will ever use, stored correctly, with history: reference data with dated specs, NSE end-of-day files, Kite historical bars, and a live tick recorder that runs every trading day. Plus the tools that turn stored data into engine input (event packs) and a replay ticker for daytime development.
 > **Depends on**: M0. **Unblocks**: M2, M3, M5. **Size**: L.
 > **Priority inside M1**: M1.0 → M1.1 → M1.2 → **M1.5 (go live)** → the rest. Every trading day without the recorder is option-chain history lost for good (K-5).
 > **Demo**: replay a recorded day through the recorder, compact it, build a pack, print the quality report.

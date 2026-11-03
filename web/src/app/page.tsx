@@ -15,7 +15,7 @@ export default function Home() {
         className="stk-mono-tight mt-3"
         style={{ color: "var(--color-fg-muted)" }}
       >
-        SimLab &middot; NSE simulation lab
+        NSE simulation lab
       </p>
 
       <p className="mt-6 leading-relaxed" style={{ color: "var(--color-fg)" }}>
@@ -50,7 +50,7 @@ export default function Home() {
         className="mt-16 text-xs"
         style={{ color: "var(--color-fg-muted)" }}
       >
-        Simulation only: SimLab never places real orders. Not investment advice.
+        Simulation only: STOCKIFY never places real orders. Not investment advice.
       </footer>
     </div>
   );

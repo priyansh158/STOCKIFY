@@ -1,4 +1,4 @@
-"""STOCKIFY SimLab FastAPI backend.
+"""STOCKIFY FastAPI backend.
 
 Serves Kite auth, instrument search, portfolio, the live-ticks WebSocket and
 geo alerts. The repo-root modules (kite_client, kite_ticker_worker,

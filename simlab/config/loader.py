@@ -1,4 +1,4 @@
-"""Load and validate SimLab config files (A1_schemas.md §7, invariant I-1).
+"""Load and validate STOCKIFY config files (A1_schemas.md §7, invariant I-1).
 
 Rules enforced for every file:
 

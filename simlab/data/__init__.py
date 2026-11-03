@@ -1,1 +1,1 @@
-"""SimLab data layer: refdata, NSE files, Kite bars, recorder (M1)."""
+"""STOCKIFY data layer: refdata, NSE files, Kite bars, recorder (M1)."""

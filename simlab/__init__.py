@@ -1,4 +1,4 @@
-"""SimLab: NSE simulation lab on Kite Connect data.
+"""STOCKIFY: NSE simulation lab on Kite Connect data.
 
 The plan lives in docs/simlab/ (start with README.md). Python owns data,
 storage, the daemon and the runners; the C++ engine (`engine/`, imported as

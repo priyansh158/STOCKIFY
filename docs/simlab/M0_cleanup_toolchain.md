@@ -83,9 +83,9 @@
 - [x] Replace the analysis-pipeline sections with the following, keeping any still-true rules from the old file (notably "ticker listeners must be cheap"):
 
 ```markdown
-# STOCKIFY / SimLab — notes for Claude
+# STOCKIFY — notes for Claude
 
-SimLab is an NSE simulation lab: Kite data in, deterministic C++ engine, Python strategies,
+STOCKIFY is an NSE simulation lab: Kite data in, deterministic C++ engine, Python strategies,
 paper trading. The full plan is docs/simlab/ (start with README.md). Follow its execution
 protocol, invariants (00_overview.md §2) and STOP gates.
 

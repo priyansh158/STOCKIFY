@@ -23,7 +23,7 @@ web/out/
 web/.turbo/
 web/next-env.d.ts
 
-# SimLab engine build output (rebuilt by run.ps1 -BuildEngine)
+# STOCKIFY engine build output (rebuilt by run.ps1 -BuildEngine)
 engine/build*/
 simlab/_engine*.pyd
 

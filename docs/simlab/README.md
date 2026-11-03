@@ -1,6 +1,6 @@
-# SimLab master plan — start here
+# STOCKIFY simulation-lab plan — start here
 
-This folder is the execution plan for turning **STOCKIFY** into **SimLab**: an NSE simulation lab for testing equity, futures and options strategies with Kite Connect data, a C++ engine core, and paper trading.
+This folder is the execution plan for turning **STOCKIFY** into an NSE simulation lab for testing equity, futures and options strategies with Kite Connect data, a C++ engine core, and paper trading.
 
 It is written for two readers:
 
@@ -71,7 +71,7 @@ boxes as you go. Stop at every 🛑 gate.
 Resume after a break:
 
 ```
-Continue SimLab milestone M3 from docs/simlab/M3_engine_core.md. Find the first unticked
+Continue STOCKIFY milestone M3 from docs/simlab/M3_engine_core.md. Find the first unticked
 task, re-run the verification commands of the last ticked task to confirm the tree is green,
 then continue.
 ```

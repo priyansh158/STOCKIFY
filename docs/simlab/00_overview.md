@@ -131,6 +131,7 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | D-27 | **`run.ps1 -Daemon` restarts the daemon after a crash** with backoff (5 s doubling to 5 min, reset after 10 min of uptime), through `scripts/run_simlab_daemon.ps1`. The geo monitor keeps its existing behaviour. | Yes (the plan assumed `-GeoMonitor` already restarted with backoff; it does not — `run.ps1` stops everything when a child exits) | The daemon must stay up unattended (M5). |
 | D-28 | **M0 landed as one commit** (`simlab/m0-cleanup` branch) together with the pre-existing uncommitted Windows-paths / geo-monitor / test-suite work, instead of one commit per task. | Yes (README protocol step 3) | Owner decision: resolve the uncommitted work and the overhaul once, in one clean commit. Later milestones go back to one commit per task. |
 | D-29 | **`CLAUDE.md` is never committed** (repo `.gitignore` and the owner's global git ignore). The M0.6 rewrite is a local, untracked file. | Yes (M0.6 assumed a tracked file) | Owner rule for every repository. |
+| D-30 | **The platform is named STOCKIFY, everywhere users or readers see it** (UI, README, logs, docs). `simlab` stays only as an internal name: the Python package, `docs/simlab/`, `python -m simlab`, `$SIMLAB` data folder, `scripts/run_simlab_daemon.ps1`. | Yes (the plan called the product SimLab) | Owner decision, 2026-11-02. Renaming the internal paths would churn every plan reference for no user-visible gain. |
 
 ## 6. Corrections to earlier chat advice
 

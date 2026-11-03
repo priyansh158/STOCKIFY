@@ -1,9 +1,9 @@
 ﻿#requires -Version 7.0
-# STOCKIFY SimLab Windows localhost launcher.
+# STOCKIFY Windows localhost launcher.
 #
 #   .\run.ps1 -BuildEngine   build + test the C++ engine (simlab._engine), then exit
-#   .\run.ps1 -Daemon        API + web + SimLab market daemon
-#   .\run.ps1 -DaemonOnly    SimLab market daemon only
+#   .\run.ps1 -Daemon        API + web + STOCKIFY market daemon
+#   .\run.ps1 -DaemonOnly    STOCKIFY market daemon only
 
 [CmdletBinding()]
 param(
@@ -164,14 +164,14 @@ function Test-EngineFresh {
     $module = Get-ChildItem -Path (Join-Path $Root "simlab") -Filter "_engine*.pyd" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if (-not $module) {
-        Write-Warning "SimLab engine is not built. Run .\run.ps1 -BuildEngine."
+        Write-Warning "STOCKIFY engine is not built. Run .\run.ps1 -BuildEngine."
         return
     }
     $newest = Get-ChildItem -Path $EngineDir -Recurse -File -Include *.cpp, *.hpp, *.h, *.in, CMakeLists.txt, CMakePresets.json |
         Where-Object { $_.FullName -notlike "*\build\*" } |
         Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if ($newest -and $newest.LastWriteTimeUtc -gt $module.LastWriteTimeUtc) {
-        Write-Warning "SimLab engine is older than engine/ sources. Run .\run.ps1 -BuildEngine."
+        Write-Warning "STOCKIFY engine is older than engine/ sources. Run .\run.ps1 -BuildEngine."
     }
 }
 
@@ -266,9 +266,9 @@ try {
     }
     if ($StartDaemon) {
         if (-not (Test-Path $DaemonScript)) {
-            throw "SimLab daemon launcher not found at $DaemonScript."
+            throw "STOCKIFY daemon launcher not found at $DaemonScript."
         }
-        Write-Host "Starting SimLab daemon" -ForegroundColor Green
+        Write-Host "Starting STOCKIFY daemon" -ForegroundColor Green
         $process = Start-Process -FilePath (Get-Command "pwsh.exe").Source -ArgumentList @(
             "-NoProfile", "-File", $DaemonScript
         ) -WorkingDirectory $Root -NoNewWindow -PassThru

@@ -1,5 +1,5 @@
 #requires -Version 7.0
-# SimLab market daemon launcher with restart-on-crash backoff (decision D-27).
+# STOCKIFY market daemon launcher with restart-on-crash backoff (decision D-27).
 [CmdletBinding()]
 param(
     [switch]$Once,
@@ -46,18 +46,18 @@ $delay = $MinDelay
 
 Set-Location $Root
 while ($true) {
-    Write-Log "Starting SimLab daemon"
+    Write-Log "Starting STOCKIFY daemon"
     $started = Get-Date
     & $PyExe @DaemonArgs 2>&1 | Tee-Object -FilePath $LogFile -Append
     $code = $LASTEXITCODE
     if ($code -eq 0 -or $Once) {
-        Write-Log "SimLab daemon exited with code $code"
+        Write-Log "STOCKIFY daemon exited with code $code"
         exit $code
     }
     if (((Get-Date) - $started) -ge $StableAfter) {
         $delay = $MinDelay
     }
-    Write-Log "SimLab daemon crashed with code $code; restarting in $delay s"
+    Write-Log "STOCKIFY daemon crashed with code $code; restarting in $delay s"
     Start-Sleep -Seconds $delay
     $delay = [Math]::Min($delay * 2, $MaxDelay)
 }

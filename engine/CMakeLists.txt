@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 project(stocksim LANGUAGES CXX)
 
-# SimLab is Windows-only (decision D-26): the engine is built with MSVC.
+# STOCKIFY is Windows-only (decision D-26): the engine is built with MSVC.
 if(NOT MSVC)
   message(FATAL_ERROR "stocksim builds with MSVC only (D-26). Use .\\run.ps1 -BuildEngine.")
 endif()

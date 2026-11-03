@@ -59,7 +59,7 @@ def _cmd_engine(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="simlab", description="SimLab: NSE simulation lab")
+    p = argparse.ArgumentParser(prog="simlab", description="STOCKIFY: NSE simulation lab")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
 

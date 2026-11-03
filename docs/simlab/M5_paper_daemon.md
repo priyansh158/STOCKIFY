@@ -56,7 +56,7 @@ Files: `simlab/daemon/sessions.py`, `simlab/daemon/journal.py`.
 
 ## M5.7 Token expiry and the daily login (M)
 
-The access token dies at 06:00 IST every day and the official login is a browser flow (K-7). SimLab treats the daily login as a fixed part of operating it, makes missing it visible, and never automates around Zerodha's login.
+The access token dies at 06:00 IST every day and the official login is a browser flow (K-7). STOCKIFY treats the daily login as a fixed part of operating it, makes missing it visible, and never automates around Zerodha's login.
 
 - [ ] Detection: a 403 / `TokenException` from REST or a ticker auth failure ⇒ `GAP(token_expired)` for all instruments, every session `PAUSED(token_expired)`, a banner in the UI ("Log in to Kite").
 - [ ] Resume: the daemon watches the token store (poll every 15 s); after a successful login it reconnects, re-subscribes, writes the gap end, and resumes sessions.
@@ -105,7 +105,7 @@ Endpoints: `A2_interfaces.md` §6. Server: `server/routers/trade.py`.
 NSE trades 20:30–03:10 in Seattle (PDT; 19:30–02:10 PST), so the host must be awake during that window on every trading day; the morning jobs can catch up later (M5.9).
 
 - **A. The current Windows machine**: Task Scheduler starts `run.ps1 -Daemon` at logon; the power plan never sleeps between 19:00 and 04:30 local; Windows Update active hours avoid that window. Cheapest; most fragile.
-- Options B (Linux box) and C (cloud VM) are out of scope: SimLab is Windows only (D-26). The Kite redirect stays on the loopback callback.
+- Options B (Linux box) and C (cloud VM) are out of scope: STOCKIFY is Windows only (D-26). The Kite redirect stays on the loopback callback.
 - [ ] Whichever is chosen: nightly backup of `refdata.sqlite`, `simlab.sqlite`, `journals/`, `ticks/archive/` and `nse/raw/` (packs and landing files are rebuildable or transient). Once backups have run for a week, the owner may set `storage.json` → `retention_days` (M1.7).
 
 ## M5.14 Connection budget and development mode (S)

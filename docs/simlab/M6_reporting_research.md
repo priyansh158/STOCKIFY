@@ -65,7 +65,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.12 Project write-up (S, optional)
 
-- [ ] A public-facing `README` section for the repository: what SimLab does, the architecture diagram, and **measured** numbers (determinism across platforms, journal-parity record, recorder-vs-live divergence, margin calibration error, engine throughput). Concrete measured results explain the project better than a feature list.
+- [ ] A public-facing `README` section for the repository: what STOCKIFY does, the architecture diagram, and **measured** numbers (determinism across platforms, journal-parity record, recorder-vs-live divergence, margin calibration error, engine throughput). Concrete measured results explain the project better than a feature list.
 
 ---
 

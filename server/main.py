@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="STOCKIFY API",
     version="1.0.0",
-    description="SimLab backend: NSE simulation lab on Kite Connect data.",
+    description="STOCKIFY backend: NSE simulation lab on Kite Connect data.",
     lifespan=lifespan,
 )
 

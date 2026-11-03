@@ -9,7 +9,7 @@ Two jobs:
    ``$LOCALAPPDATA/STOCKIFY/kite``. Merely
    importing this module repoints ``LOCALAPPDATA`` at a throwaway temp dir, so
    a test run can never read, overwrite or delete the developer's real Kite
-   token, instruments dump, tick ringbuffer or SimLab data.
+   token, instruments dump, tick ringbuffer or STOCKIFY data.
 
 2. **Leave optional dependencies absent.** `yfinance` and `kiteconnect` are
    deliberately NOT stubbed: the production code already guards them with

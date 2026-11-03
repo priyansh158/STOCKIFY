@@ -32,7 +32,7 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 
 - D-03 stands: Python strategies by default, C++ optional.
 - **Windows only, permanently (D-26)**: no Linux presets, CI, systemd or cloud host.
-- Interim UI: SimLab landing page; the search box shows instrument details without navigating; the HoldingsList analyze link is removed.
+- Interim UI: STOCKIFY landing page; the search box shows instrument details without navigating; the HoldingsList analyze link is removed.
 - Daemon restart with backoff (D-27). One commit for the whole overhaul (D-28). `CLAUDE.md` is never committed (D-29).
 - Also removed as unused: `assets/favicon.png` (Streamlit era), `web/public/*.svg` (Next starter), `tests/geo_monitor/` (5 tests duplicated in `tests/test_geo_monitor.py`), dead helpers `portfolio_sync.{holding_for, anonymous_position_blurb, ui_caption_for}`, `india_utils.fetch_history_with_fallback`, `tick_buffer.{candles_since, macro_snapshot}`, `kite_ticker_worker.{resolve_macro_tokens, ensure_macro_subscriptions}`.
 

@@ -1,6 +1,6 @@
-# STOCKIFY SimLab
+# STOCKIFY
 
-**An NSE simulation lab for testing equity, futures and options strategies.** SimLab records Kite Connect market data every trading day, backtests strategies over historical or recorded data with realistic costs, fills and margin, and paper-trades them live and unattended. It **never places real orders**.
+**An NSE simulation lab for testing equity, futures and options strategies.** STOCKIFY records Kite Connect market data every trading day, backtests strategies over historical or recorded data with realistic costs, fills and margin, and paper-trades them live and unattended. It **never places real orders**.
 
 It answers one question honestly: *would this rule have made money after realistic costs, fills and margin, and does it keep doing so live?*
 
@@ -22,8 +22,8 @@ Install **PowerShell 7**, **Python 3.11 or 3.12 (x64)**, and **Node.js 20.9+**. 
 ```powershell
 .\run.ps1                          # FastAPI :8001 + Next.js :3000
 .\run.ps1 -BuildEngine             # build + test the C++ engine, then exit
-.\run.ps1 -Daemon                  # API + web + SimLab market daemon (restarts on crash)
-.\run.ps1 -DaemonOnly              # SimLab market daemon only
+.\run.ps1 -Daemon                  # API + web + STOCKIFY market daemon (restarts on crash)
+.\run.ps1 -DaemonOnly              # STOCKIFY market daemon only
 .\run.ps1 -GeoMonitor              # API + web + geo monitor
 .\run.ps1 -MonitorOnly             # geo monitor only
 .\run.ps1 -Fresh                   # rebuild .venv + reinstall Python deps
@@ -124,12 +124,12 @@ engine/          C++20 core (stocksim_core), pybind module simlab._engine, stock
   third_party/   vendored single headers (see VERSIONS.md)
 geo_monitor/     standalone news monitor (Gemini) → geo_alerts.sqlite
 gnews/           Google News RSS client
-docs/simlab/     the SimLab plan, decisions and RECON notes
-tests/           offline unittest suite (tests/simlab/ for SimLab)
+docs/simlab/     the STOCKIFY plan, decisions and RECON notes
+tests/           offline unittest suite (tests/simlab/ for the simlab package)
 kite_client.py · kite_ticker_worker.py · tick_buffer.py · portfolio_sync.py
 geo_alerts.py · india_utils.py · stockify_paths.py
 ```
 
-All mutable state lives under `%LOCALAPPDATA%\STOCKIFY\` (resolved by `stockify_paths.py`). SimLab's stores live under `…\STOCKIFY\kite\simlab\`.
+All mutable state lives under `%LOCALAPPDATA%\STOCKIFY\` (resolved by `stockify_paths.py`). The simulation stores live under `…\STOCKIFY\kite\simlab\`.
 
 Not investment advice. Simulation only.

@@ -13,7 +13,7 @@ const MIN_CHARS = 2;
  * - Min 2 chars before hitting /api/search
  * - 250ms debounce
  * - Enter or click on a suggestion → show that instrument's details below
- *   (no navigation until the /tests page exists in SimLab M3)
+ *   (no navigation until the /tests page exists in milestone M3)
  */
 export function SearchBox() {
   const [query, setQuery] = useState("");
