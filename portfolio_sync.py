@@ -4,16 +4,7 @@ Read-only portfolio sync for STOCKIFY.
 Phase 4 of the Kite Roadmap.
 
 Wraps kite.holdings() and kite.positions() with a 60-second cache so the
-"My Portfolio" page and the OVERVIEW caption don't slam the API on every
-Streamlit rerun.
-
-Critical framing rule (load-bearing):
-    The LLM prompts MUST NOT learn that the user owns these positions.
-    All position info passed to the model is anonymized — framed as
-    "Observed position for context" with no owner attribution. This
-    prevents the well-known LLM confirmation-bias failure mode where
-    knowing the user holds X biases the analysis toward "this is great,
-    you made a good call."
+portfolio page does not hit the API on every request.
 """
 
 from __future__ import annotations
@@ -133,55 +124,6 @@ def cached_snapshot(max_age_seconds: int = 60) -> PortfolioSnapshot:
     if _cache is not None and (int(time.time()) - _cache.fetched_at) < max_age_seconds:
         return _cache
     return fetch_snapshot()
-
-
-def holding_for(tradingsymbol: str, exchange: str = "NSE") -> Optional[Holding]:
-    """Look up a single holding by tradingsymbol in the cached snapshot."""
-    sym = (tradingsymbol or "").upper()
-    if not sym:
-        return None
-    snap = cached_snapshot()
-    for h in snap.holdings:
-        if h.tradingsymbol == sym:
-            return h
-    return None
-
-
-# ── Anonymous-position blurb for LLM prompt injection ────────────────────────
-#
-# The framing rule (see module docstring): the LLM never learns that the user
-# owns the position. We pass it as anonymized market context.
-
-def anonymous_position_blurb(h: Holding) -> str:
-    """Render an anonymized position-context block for inclusion in a prompt.
-
-    Format is intentional — no "you", "your", "user", "I" pronouns; just
-    "Observed position" framing so the model treats it as market data.
-    """
-    if not h or h.quantity <= 0:
-        return ""
-    pnl_sign = "+" if h.pnl_pct >= 0 else ""
-    return (
-        f"## OBSERVED POSITION FOR CONTEXT\n"
-        f"(Anonymized context for analysis — do NOT assume the analysis recipient owns this.)\n"
-        f"- Quantity: {h.quantity:,} shares\n"
-        f"- Average entry price: ₹{h.average_price:,.2f}\n"
-        f"- Current price: ₹{h.last_price:,.2f}\n"
-        f"- Notional P&L: {pnl_sign}{h.pnl_pct:.2f}%  (₹{h.pnl:,.2f} on ₹{h.invested:,.2f} cost basis)\n"
-    )
-
-
-def ui_caption_for(h: Holding) -> str:
-    """Short caption for the OVERVIEW header. UI-only; never sent to the LLM.
-
-    Returns "" when the holding is missing or zero-quantity.
-    """
-    if not h or h.quantity <= 0:
-        return ""
-    sign = "+" if h.pnl_pct >= 0 else ""
-    return (f"You hold {h.quantity:,} sh @ ₹{h.average_price:,.2f} avg · "
-            f"{sign}{h.pnl_pct:.2f}% · "
-            f"₹{h.invested:,.0f} cost → ₹{h.current_value:,.0f} now")
 
 
 def invalidate_cache() -> None:

@@ -33,35 +33,6 @@ import kite_client
 import tick_buffer
 
 
-# Default macro instruments — subscribed at boot when authed.
-# These are the NSE INDICES segment instrument_tokens, stable for years.
-# We resolve via the local instruments cache so we don't hard-code the numbers.
-_DEFAULT_MACRO_LABELS = [
-    ("NIFTY_50",    "NIFTY 50"),
-    ("BANK_NIFTY",  "NIFTY BANK"),
-    ("NIFTY_IT",    "NIFTY IT"),
-    ("NIFTY_PHARMA", "NIFTY PHARMA"),
-    ("NIFTY_AUTO",  "NIFTY AUTO"),
-    ("NIFTY_METAL", "NIFTY METAL"),
-    ("NIFTY_FMCG",  "NIFTY FMCG"),
-    ("NIFTY_ENERGY", "NIFTY ENERGY"),
-]
-
-
-def resolve_macro_tokens() -> dict[str, int]:
-    """{label: instrument_token} for the macro indices found in the cache.
-
-    Skips labels that aren't found — caller should treat missing macros as
-    "feature unavailable for that index this session" rather than fatal.
-    """
-    out: dict[str, int] = {}
-    for label, query in _DEFAULT_MACRO_LABELS:
-        tok = kite_client.get_instrument_token_for_index(query)
-        if tok:
-            out[label] = tok
-    return out
-
-
 # ── Supervisor singleton ──────────────────────────────────────────────────────
 
 class _Supervisor:
@@ -309,18 +280,3 @@ def status() -> dict:
 
 def shutdown() -> None:
     _supervisor.shutdown()
-
-
-def ensure_macro_subscriptions() -> dict[str, int]:
-    """Subscribe to the default macro index set in LTP mode. Returns the
-    resolved token map ({label: token}).
-
-    Safe to call repeatedly — subscriptions are idempotent.
-    """
-    if not kite_client.is_authenticated():
-        return {}
-    tokens = resolve_macro_tokens()
-    if not tokens:
-        return {}
-    subscribe(set(tokens.values()), kind="macro", mode="ltp")
-    return tokens

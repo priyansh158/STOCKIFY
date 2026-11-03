@@ -18,10 +18,9 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from pathlib import Path
 from typing import Iterable, Optional
 
-import kite_client
+import stockify_paths
 
 
 _lock = threading.Lock()
@@ -48,8 +47,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 _RETENTION_SECONDS = 8 * 3600  # 8 hours per token
 
 
-def _db_path() -> Path:
-    return kite_client._cache_dir() / "ticks.sqlite"
+def _db_path():
+    return stockify_paths.state_dir() / "ticks.sqlite"
 
 
 def _connect() -> sqlite3.Connection:
@@ -198,37 +197,6 @@ def latest_ticks_bulk(tokens: list[int]) -> dict[int, dict]:
         return {}
 
 
-def candles_since(instrument_token: int, since_ts: int,
-                  interval_seconds: int = 60) -> list[dict]:
-    """Aggregate ticks into OHLCV candles of `interval_seconds` width.
-
-    Used by the Phase-2 live intraday chart fragment.
-    """
-    if not instrument_token:
-        return []
-    conn = _connect()
-    bucket_sql = f"(ts / {int(interval_seconds)}) * {int(interval_seconds)}"
-    try:
-        rows = conn.execute(
-            f"SELECT {bucket_sql} AS bucket, "
-            f"  MIN(ltp) AS lo, MAX(ltp) AS hi, "
-            f"  (SELECT ltp FROM ticks WHERE instrument_token = ? AND ts = MIN(t.ts)) AS op, "
-            f"  (SELECT ltp FROM ticks WHERE instrument_token = ? AND ts = MAX(t.ts)) AS cl, "
-            f"  MAX(volume) AS vol "
-            f"FROM ticks t "
-            f"WHERE instrument_token = ? AND ts >= ? "
-            f"GROUP BY bucket ORDER BY bucket",
-            (int(instrument_token), int(instrument_token),
-             int(instrument_token), int(since_ts))
-        ).fetchall()
-    except Exception:
-        return []
-    return [{"ts": int(r[0]), "low": float(r[1]), "high": float(r[2]),
-             "open": float(r[3]) if r[3] is not None else float(r[1]),
-             "close": float(r[4]) if r[4] is not None else float(r[2]),
-             "volume": int(r[5] or 0)} for r in rows]
-
-
 # ── Subscriptions (persistent intent — survives worker restarts) ──────────────
 
 def add_subscription(instrument_token: int, kind: str = "analysis") -> None:
@@ -283,41 +251,6 @@ def subscribed_tokens(kind: str | None = None) -> set[int]:
         return {int(r[0]) for r in cur.fetchall()}
     except Exception:
         return set()
-
-
-# ── Macro snapshot (Phase 3 helper) ───────────────────────────────────────────
-
-def macro_snapshot(token_map: dict[str, int]) -> dict:
-    """Return a normalized snapshot of macro instruments by label.
-
-    token_map: {"NIFTY_50": 256265, "BANK_NIFTY": 260105, ...}
-
-    Output:
-    {
-        "fetched_at": <ts>,
-        "indices": {"NIFTY_50": {"ltp":..., "ts":...}, ...},
-        "currency": {"USDINR": {...}}    # filled by callers if mapped
-    }
-    """
-    if not token_map:
-        return {}
-    tokens = [t for t in token_map.values() if t]
-    latest = latest_ticks_bulk(tokens) if tokens else {}
-    indices: dict[str, dict] = {}
-    currency: dict[str, dict] = {}
-    for label, token in token_map.items():
-        if not token:
-            continue
-        tick = latest.get(int(token))
-        if not tick:
-            continue
-        bucket = currency if label in ("USDINR",) else indices
-        bucket[label] = {"ltp": tick["ltp"], "ts": tick["ts"]}
-    return {
-        "fetched_at": int(time.time()),
-        "indices":    indices,
-        "currency":   currency,
-    }
 
 
 def total_rows() -> int:

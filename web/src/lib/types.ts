@@ -18,50 +18,6 @@ export interface SearchHit {
   instrument_token?: number | null;
 }
 
-// ── Analysis SSE events ──────────────────────────────────────────────────────
-
-export type StageKey =
-  | "overview"
-  | "financials"
-  | "geo"
-  | "technical"
-  | "summary";
-
-export interface StageStarted {
-  analysis_id: string;
-  ticker: string;
-  company_name: string;
-  stages: StageKey[];
-}
-
-export type SSEEvent =
-  | { type: "delta"; text: string }
-  | { type: "done"; result: Record<string, unknown> }
-  | { type: "error"; message: string; raw?: string };
-
-// ── History ──────────────────────────────────────────────────────────────────
-
-export interface HistoryListEntry {
-  id: number;
-  ticker: string;
-  company_name: string;
-  sector?: string | null;
-  verdict: string;
-  verdict_reason?: string | null;
-  bottom_line?: string | null;
-  created_at: number;
-}
-
-export interface HistoryRecord extends HistoryListEntry {
-  profile: Record<string, unknown>;
-  financials: Record<string, unknown>;
-  geo: Record<string, unknown>;
-  technical: Record<string, unknown>;
-  summary: Record<string, unknown>;
-  macro_snapshot?: Record<string, unknown> | null;
-  position_context?: Record<string, unknown> | null;
-}
-
 // ── Portfolio ────────────────────────────────────────────────────────────────
 
 export interface Holding {

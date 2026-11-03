@@ -15,10 +15,10 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "STOCKIFY",
+  title: "STOCKIFY SimLab",
   description:
-    "Indian-equity AI analysis — Ind-AS financial scoring, macro / geo risk, " +
-    "candlestick technicals, Kite Connect live data.",
+    "NSE simulation lab — record Kite market data, backtest and paper-trade " +
+    "equity and F&O strategies.",
 };
 
 export default function RootLayout({

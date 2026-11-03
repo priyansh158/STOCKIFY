@@ -2,20 +2,13 @@
 India market helpers for STOCKIFY.
 
 - Currency formatting (Indian: ₹, lakhs, crores, Indian-comma grouping).
-- yfinance ticker suffix handling (.NS for NSE, .BO for BSE) with auto-fallback.
+- Ticker suffix handling (.NS for NSE, .BO for BSE; Kite `NSE:X` symbols).
 """
 
 from __future__ import annotations
 
 import re
 from typing import Optional
-
-try:
-    import yfinance as yf
-    YFINANCE_AVAILABLE = True
-except ImportError:
-    YFINANCE_AVAILABLE = False
-
 
 RUPEE = "₹"
 
@@ -51,25 +44,6 @@ def to_kite_symbol(symbol: str, exchange: str = "NSE") -> str:
     if ex not in ("NSE", "BSE"):
         ex = "NSE"
     return f"{ex}:{bare}"
-
-
-def fetch_history_with_fallback(symbol: str, period: str = "3mo", interval: str = "1d"):
-    """yfinance history() with automatic .NS → .BO fallback for BSE-only listings.
-
-    Returns (DataFrame, resolved_ticker). DataFrame may be empty if neither works.
-    """
-    if not YFINANCE_AVAILABLE:
-        raise ImportError("yfinance not installed")
-    base = strip_exchange_suffix(symbol)
-    for suffix in (".NS", ".BO"):
-        candidate = base + suffix
-        try:
-            df = yf.Ticker(candidate).history(period=period, interval=interval)
-        except Exception:
-            df = None
-        if df is not None and not df.empty:
-            return df, candidate
-    return None, base
 
 
 def format_inr_compact(value, decimals: int = 2) -> str:

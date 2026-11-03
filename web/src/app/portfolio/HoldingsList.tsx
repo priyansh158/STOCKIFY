@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo } from "react";
 import { useTicks } from "@/lib/useTicks";
 import type { Holding } from "@/lib/types";
@@ -76,8 +75,7 @@ export function HoldingsList({ initial }: Props) {
               }}
             >
               <div className="flex items-baseline justify-between gap-3">
-                <Link
-                  href={`/analyze/${encodeURIComponent(h.symbol)}`}
+                <span
                   className="stk-mono"
                   style={{
                     color: "var(--color-green)",
@@ -85,7 +83,7 @@ export function HoldingsList({ initial }: Props) {
                   }}
                 >
                   {h.symbol}
-                </Link>
+                </span>
                 <span
                   className="stk-mono-tight"
                   style={{ color: "var(--color-fg-muted)" }}

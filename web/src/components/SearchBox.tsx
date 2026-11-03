@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { SearchHit } from "@/lib/types";
 
@@ -9,17 +8,16 @@ const DEBOUNCE_MS = 250;
 const MIN_CHARS = 2;
 
 /**
- * Debounced company / ticker search.
+ * Debounced instrument search.
  *
  * - Min 2 chars before hitting /api/search
  * - 250ms debounce
- * - Enter or click on a suggestion → navigate to /analyze/<ticker>
- * - Plain Enter with no selection → navigate to /analyze/<UPPERCASE_QUERY>
- *   (lets the analysis page resolve fuzzy input server-side)
+ * - Enter or click on a suggestion → show that instrument's details below
+ *   (no navigation until the /tests page exists in SimLab M3)
  */
 export function SearchBox() {
-  const router = useRouter();
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<SearchHit | null>(null);
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -31,10 +29,7 @@ export function SearchBox() {
   // Debounced fetch on every keystroke.
   useEffect(() => {
     const q = query.trim();
-    setErr(null);
     if (q.length < MIN_CHARS) {
-      setHits([]);
-      setLoading(false);
       return;
     }
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -65,7 +60,8 @@ export function SearchBox() {
   }, [query]);
 
   function go(hit: SearchHit) {
-    router.push(`/analyze/${encodeURIComponent(hit.ticker)}`);
+    setSelected(hit);
+    setOpen(false);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -80,8 +76,6 @@ export function SearchBox() {
       e.preventDefault();
       if (hits[activeIdx]) {
         go(hits[activeIdx]);
-      } else if (query.trim().length >= MIN_CHARS) {
-        router.push(`/analyze/${encodeURIComponent(query.trim().toUpperCase())}`);
       }
     } else if (e.key === "Escape") {
       setOpen(false);
@@ -91,7 +85,7 @@ export function SearchBox() {
   return (
     <div className="relative w-full">
       <label className="stk-mono-tight block mb-2" style={{ color: "var(--color-fg-muted)" }}>
-        Which company are you researching?
+        Look up an NSE / BSE instrument
       </label>
       <input
         type="search"
@@ -111,18 +105,29 @@ export function SearchBox() {
         }}
         value={query}
         onChange={(e) => {
-          setQuery(e.target.value);
+          const next = e.target.value;
+          setQuery(next);
           setOpen(true);
+          setErr(null);
+          if (next.trim().length < MIN_CHARS) {
+            abortRef.current?.abort();
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            setHits([]);
+            setLoading(false);
+          }
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 120)}
         onKeyDown={onKeyDown}
+        role="combobox"
         aria-autocomplete="list"
         aria-expanded={open}
+        aria-controls="stock-search-results"
       />
 
       {open && (loading || hits.length > 0 || err) && (
         <ul
+          id="stock-search-results"
           role="listbox"
           className="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-auto rounded-lg border shadow-lg"
           style={{
@@ -193,6 +198,31 @@ export function SearchBox() {
               </li>
             ))}
         </ul>
+      )}
+
+      {selected && (
+        <div
+          className="mt-4 rounded-lg border p-4"
+          style={{
+            borderColor: "rgba(0,255,65,0.20)",
+            background: "rgba(255,255,255,0.025)",
+          }}
+        >
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="stk-mono" style={{ color: "var(--color-green)", fontSize: "1.05rem" }}>
+              {selected.ticker}
+            </span>
+            <span className="stk-mono-tight" style={{ color: "var(--color-fg-muted)" }}>
+              {selected.exchange} · {selected.instrument_type}
+            </span>
+          </div>
+          <p className="mt-1" style={{ color: "var(--color-fg)" }}>{selected.name}</p>
+          <p className="stk-mono-tight mt-2" style={{ color: "var(--color-fg-muted)" }}>
+            {selected.instrument_token ? `token ${selected.instrument_token} · ` : ""}
+            source {selected.source}
+            {selected.sector ? ` · ${selected.sector}` : ""}
+          </p>
+        </div>
       )}
     </div>
   );

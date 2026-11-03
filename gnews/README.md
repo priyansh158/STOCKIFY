@@ -36,7 +36,7 @@ result = client.search(
     fetch_article_details=False,
 )
 
-# Stable contract for analysis_pipeline / geo stage
+# Stable article contract (title, source, content, url, published_at)
 articles = result.to_pipeline_articles()
 # [{title, source, content, url, published_at}, ...]
 

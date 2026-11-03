@@ -1,25 +1,20 @@
 """Test harness support for STOCKIFY.
 
 Import this module FIRST in any test module that touches `kite_client`,
-`tick_buffer`, `analysis_history` or `portfolio_sync`.
+`tick_buffer`, `geo_alerts`, `portfolio_sync` or `simlab.store`.
 
 Two jobs:
 
-1. **Sandbox the on-disk state.** `kite_client._cache_dir()` resolves to
-   ``$LOCALAPPDATA/STOCKIFY/kite`` (falling back to ``~/.cache/...``). Merely
+1. **Sandbox the on-disk state.** `stockify_paths.state_dir()` resolves to
+   ``$LOCALAPPDATA/STOCKIFY/kite``. Merely
    importing this module repoints ``LOCALAPPDATA`` at a throwaway temp dir, so
    a test run can never read, overwrite or delete the developer's real Kite
-   token, instruments dump, tick ringbuffer or analysis history.
+   token, instruments dump, tick ringbuffer or SimLab data.
 
-2. **Stub unimportable optional dependencies.** `anthropic` is a hard top-level
-   import in `technical_analyst` / `stream_claude`, so those modules cannot be
-   imported at all without it. We install a minimal stub *only when the real
-   package is absent* — if the developer has the venv installed, the real one
-   wins and nothing is faked.
-
-   `yfinance` and `kiteconnect` are deliberately NOT stubbed: the production
-   code already guards them with try/except and flips an AVAILABLE flag, and
-   leaving them absent is what keeps the suite offline by construction.
+2. **Leave optional dependencies absent.** `yfinance` and `kiteconnect` are
+   deliberately NOT stubbed: the production code already guards them with
+   try/except and flips an AVAILABLE flag, and leaving them absent is what
+   keeps the suite offline by construction.
 
 Nothing in this package writes to, patches, or otherwise mutates any file
 under the repo — the whole harness is process-local.
@@ -44,18 +39,15 @@ if str(_REPO_ROOT) not in sys.path:
 
 # ── 1. Sandbox the cache dir ─────────────────────────────────────────────────
 #
-# Every on-disk store (Kite token, instruments dump, tick ringbuffer, analysis
-# history, geo alerts) resolves its path through `kite_client._cache_dir()`,
-# which reads $LOCALAPPDATA.
+# Every on-disk store resolves its path through `stockify_paths`.
 #
 # Setting that env var is NOT sufficient on its own: a test using
 # `patch.dict(os.environ, {...}, clear=True)` wipes it, and the very next DB
-# call silently lands in the developer's real ~/.cache/STOCKIFY/kite. That
-# happened once and it is exactly the failure this harness exists to prevent.
+# call must fail rather than land in the developer's real application state.
 #
 # So the sandbox is enforced two ways, and the second one is authoritative:
 #   1. LOCALAPPDATA is set   — for any code reading the env var directly.
-#   2. `kite_client._cache_dir` is REPLACED with a function returning the
+#   2. `stockify_paths.state_dir` is REPLACED with a function returning the
 #      sandbox path — immune to anything a test does to os.environ.
 
 SANDBOX_ROOT = Path(tempfile.mkdtemp(prefix="stockify-tests-"))
@@ -70,20 +62,29 @@ _ACTIVE_CACHE_DIR = SANDBOX_ROOT / "STOCKIFY" / "kite"
 
 
 def _sandboxed_cache_dir() -> Path:
-    """Drop-in replacement for kite_client._cache_dir(). Env-proof."""
+    """Drop-in replacement for stockify_paths.state_dir(). Env-proof."""
     _ACTIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return _ACTIVE_CACHE_DIR
 
 
-def _install_cache_dir_guard() -> None:
-    """Replace kite_client._cache_dir so no env manipulation can escape."""
-    import kite_client
+def _sandboxed_logs_dir() -> Path:
+    path = _ACTIVE_CACHE_DIR.parent / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-    if getattr(kite_client._cache_dir, "__stockify_sandboxed__", False):
+
+def _install_cache_dir_guard() -> None:
+    """Replace shared path functions so env manipulation cannot escape."""
+    import stockify_paths
+
+    if getattr(stockify_paths.state_dir, "__stockify_sandboxed__", False):
         return
     _sandboxed_cache_dir.__stockify_sandboxed__ = True  # type: ignore[attr-defined]
-    kite_client._real_cache_dir = kite_client._cache_dir  # keep the original
-    kite_client._cache_dir = _sandboxed_cache_dir
+    _sandboxed_logs_dir.__stockify_sandboxed__ = True  # type: ignore[attr-defined]
+    stockify_paths._real_state_dir = stockify_paths.state_dir
+    stockify_paths._real_logs_dir = stockify_paths.logs_dir
+    stockify_paths.state_dir = _sandboxed_cache_dir
+    stockify_paths.logs_dir = _sandboxed_logs_dir
 
 
 def assert_sandboxed(path) -> None:
@@ -100,7 +101,7 @@ def assert_sandboxed(path) -> None:
             f"  path    = {resolved}\n"
             f"  sandbox = {root}\n"
             "Import `tests.support` before importing kite_client / tick_buffer / "
-            "analysis_history, and use tests.support.isolated_env() instead of "
+            "simlab.store, and use tests.support.isolated_env() instead of "
             "patch.dict(os.environ, clear=True)."
         )
 
@@ -144,67 +145,6 @@ def _have(name: str) -> bool:
         return False
 
 
-def _build_anthropic_stub() -> types.ModuleType:
-    """Minimal `anthropic` surface: enough to import, never enough to call out.
-
-    Any attempt to actually open a stream raises, so a test that accidentally
-    reaches the network fails fast and loudly instead of hanging.
-    """
-    m = types.ModuleType("anthropic")
-
-    class _NoNetwork(RuntimeError):
-        pass
-
-    class _Messages:
-        def stream(self, *a, **kw):
-            raise _NoNetwork(
-                "stub anthropic: tests must not call the Claude API. "
-                "Patch the client or the stream function instead."
-            )
-
-        def create(self, *a, **kw):
-            raise _NoNetwork("stub anthropic: tests must not call the Claude API.")
-
-    class Anthropic:
-        def __init__(self, *a, **kw):
-            self.api_key = kw.get("api_key", "")
-            self.messages = _Messages()
-
-    class AsyncAnthropic(Anthropic):
-        pass
-
-    class AnthropicError(Exception):
-        pass
-
-    class APIError(AnthropicError):
-        pass
-
-    class APIStatusError(APIError):
-        pass
-
-    class RateLimitError(APIStatusError):
-        pass
-
-    class APIConnectionError(APIError):
-        pass
-
-    m.Anthropic = Anthropic
-    m.AsyncAnthropic = AsyncAnthropic
-    m.AnthropicError = AnthropicError
-    m.APIError = APIError
-    m.APIStatusError = APIStatusError
-    m.RateLimitError = RateLimitError
-    m.APIConnectionError = APIConnectionError
-    m.NoNetwork = _NoNetwork
-    m.__stockify_test_stub__ = True
-    return m
-
-
-if not _have("anthropic"):
-    sys.modules["anthropic"] = _build_anthropic_stub()
-    STUBBED.append("anthropic")
-
-
 # Install the env-proof cache-dir guard as soon as the harness loads, so even a
 # test module that never calls fresh_cache_dir() is protected.
 _install_cache_dir_guard()
@@ -224,7 +164,7 @@ requires_fastapi = unittest.skipUnless(HAVE_FASTAPI, "fastapi not installed")
 def reset_sqlite_singleton(module) -> None:
     """Close and clear a module's cached `_conn`.
 
-    `tick_buffer`, `analysis_history` and friends memoise one process-wide
+    `tick_buffer`, `geo_alerts`, `simlab.store` and friends memoise one process-wide
     connection in a module global. Tests need a clean DB per case, so we close
     the old handle and nil the global; the next `_connect()` reopens against
     whatever `LOCALAPPDATA` currently points at.

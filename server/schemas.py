@@ -27,54 +27,6 @@ class SearchHit(BaseModel):
     )
 
 
-# ── Analysis pipeline ────────────────────────────────────────────────────────
-
-class StageStartedResponse(BaseModel):
-    analysis_id: str
-    ticker: str
-    company_name: str
-    stages: list[str]
-
-
-class SSEDelta(BaseModel):
-    type: Literal["delta"]
-    text: str
-
-
-class SSEDone(BaseModel):
-    type: Literal["done"]
-    result: dict[str, Any]
-
-
-class SSEError(BaseModel):
-    type: Literal["error"]
-    message: str
-    raw: str | None = None
-
-
-# ── History ──────────────────────────────────────────────────────────────────
-
-class HistoryListEntry(BaseModel):
-    id: int
-    ticker: str
-    company_name: str
-    sector: str | None = None
-    verdict: str
-    verdict_reason: str | None = None
-    bottom_line: str | None = None
-    created_at: int  # unix seconds
-
-
-class HistoryRecord(HistoryListEntry):
-    profile: dict[str, Any]
-    financials: dict[str, Any]
-    geo: dict[str, Any]
-    technical: dict[str, Any]
-    summary: dict[str, Any]
-    macro_snapshot: dict[str, Any] | None = None
-    position_context: dict[str, Any] | None = None
-
-
 # ── Portfolio ────────────────────────────────────────────────────────────────
 
 class HoldingDTO(BaseModel):

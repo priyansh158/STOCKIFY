@@ -318,50 +318,6 @@ class SubscriptionTests(TickBufferTest):
         self.assertEqual(tick_buffer.total_rows(), 1)
 
 
-class MacroSnapshotTests(TickBufferTest):
-    def test_empty_token_map_returns_empty_dict(self):
-        self.assertEqual(tick_buffer.macro_snapshot({}), {})
-        self.assertEqual(tick_buffer.macro_snapshot(None), {})
-
-    def test_indices_and_currency_are_bucketed_separately(self):
-        tick_buffer.write_ticks([
-            tick(token=256265, ts=100, ltp=24500.0),
-            tick(token=777, ts=100, ltp=83.5),
-        ])
-        snap = tick_buffer.macro_snapshot({"NIFTY_50": 256265, "USDINR": 777})
-        self.assertIn("NIFTY_50", snap["indices"])
-        self.assertIn("USDINR", snap["currency"])
-        self.assertNotIn("USDINR", snap["indices"])
-        self.assertEqual(snap["indices"]["NIFTY_50"]["ltp"], 24500.0)
-        self.assertEqual(snap["currency"]["USDINR"]["ltp"], 83.5)
-
-    def test_labels_without_ticks_are_omitted(self):
-        tick_buffer.write_ticks([tick(token=256265, ts=100, ltp=24500.0)])
-        snap = tick_buffer.macro_snapshot({"NIFTY_50": 256265, "BANK_NIFTY": 260105})
-        self.assertEqual(set(snap["indices"]), {"NIFTY_50"})
-
-    def test_zero_tokens_are_skipped_not_looked_up(self):
-        snap = tick_buffer.macro_snapshot({"NIFTY_50": 0, "BANK_NIFTY": None})
-        self.assertEqual(snap["indices"], {})
-        self.assertEqual(snap["currency"], {})
-
-    def test_snapshot_carries_fetched_at(self):
-        tick_buffer.write_ticks([tick(token=1, ts=1, ltp=1.0)])
-        before = int(time.time())
-        snap = tick_buffer.macro_snapshot({"NIFTY_50": 1})
-        self.assertGreaterEqual(snap["fetched_at"], before)
-
-    def test_snapshot_keys_are_stable(self):
-        tick_buffer.write_ticks([tick(token=1, ts=1, ltp=1.0)])
-        snap = tick_buffer.macro_snapshot({"NIFTY_50": 1})
-        self.assertEqual(set(snap), {"fetched_at", "indices", "currency"})
-
-    def test_ts_is_the_tick_ts_not_now(self):
-        tick_buffer.write_ticks([tick(token=1, ts=12345, ltp=1.0)])
-        snap = tick_buffer.macro_snapshot({"NIFTY_50": 1})
-        self.assertEqual(snap["indices"]["NIFTY_50"]["ts"], 12345)
-
-
 class TotalRowsTests(TickBufferTest):
     def test_zero_on_fresh_db(self):
         self.assertEqual(tick_buffer.total_rows(), 0)

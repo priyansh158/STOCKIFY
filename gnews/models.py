@@ -42,7 +42,7 @@ class Article:
         }
 
     def to_pipeline_dict(self) -> dict[str, str]:
-        """Stable shape for analysis_pipeline / geo stage consumers."""
+        """Stable article shape: title, source, content, url, published_at."""
         return {
             "title": self.title,
             "source": self.source,
