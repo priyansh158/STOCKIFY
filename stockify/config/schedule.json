@@ -1,0 +1,5 @@
+{ "schema": "stockify.schedule/1",
+  "jobs": { "refdata": "08:30", "subscribe": "08:58", "unsubscribe": "15:45", "compaction": "16:30",
+            "nse_fetch": { "start": "19:30", "retry_every_min": 15, "until": "23:00" },
+            "token_dependent_retry": { "every_min": 5, "until": "09:10" },
+            "day_end": "23:59:59" } }

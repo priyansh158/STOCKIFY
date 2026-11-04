@@ -154,12 +154,12 @@ class PublicApiTests(unittest.TestCase):
                         "save_alert", "mark_emailed", "acknowledge",
                         "list_alerts", "get_alert", "GeoAlert")
 
-    def test_simlab_surface(self):
-        self.assert_has("simlab.paths", "simlab_dir", "runs_dir", "packs_dir")
-        self.assert_has("simlab.store", "init_db", "_db_path")
-        self.assert_has("simlab.numerics", "to_ppb", "round_half_up_div",
+    def test_stockify_surface(self):
+        self.assert_has("stockify.paths", "lab_dir", "runs_dir", "packs_dir")
+        self.assert_has("stockify.store", "init_db", "_db_path")
+        self.assert_has("stockify.numerics", "to_ppb", "round_half_up_div",
                         "floor_div", "ceil_div", "format_float", "dumps_canonical")
-        self.assert_has("simlab.engine", "build_info", "EngineUnavailable")
+        self.assert_has("stockify.engine", "build_info", "EngineUnavailable")
 
 
 class SandboxIntegrityTests(unittest.TestCase):
@@ -170,10 +170,10 @@ class SandboxIntegrityTests(unittest.TestCase):
         support.assert_sandboxed(kite_client._cache_dir())
 
     def test_every_sqlite_store_resolves_inside_the_sandbox(self):
-        import simlab.store
+        import stockify.store
         import geo_alerts
         import tick_buffer
-        for module in (tick_buffer, simlab.store, geo_alerts):
+        for module in (tick_buffer, stockify.store, geo_alerts):
             with self.subTest(module=module.__name__):
                 support.assert_sandboxed(module._db_path())
 
@@ -190,14 +190,14 @@ class SandboxIntegrityTests(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        import simlab.store
+        import stockify.store
         import geo_alerts
         import kite_client
         import tick_buffer
 
         with patch.dict(os.environ, {}, clear=True):
             support.assert_sandboxed(kite_client._cache_dir())
-            for module in (tick_buffer, simlab.store, geo_alerts):
+            for module in (tick_buffer, stockify.store, geo_alerts):
                 with self.subTest(module=module.__name__):
                     support.assert_sandboxed(module._db_path())
 

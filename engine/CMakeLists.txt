@@ -79,8 +79,8 @@ pybind11_add_module(_engine python/engine_module.cpp)
 target_link_libraries(_engine PRIVATE stocksim_core)
 target_compile_options(_engine PRIVATE ${STOCKSIM_CXX_FLAGS})
 add_custom_command(TARGET _engine POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:_engine>" "${REPO_ROOT}/simlab/"
-  COMMENT "Copying _engine into simlab/")
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:_engine>" "${REPO_ROOT}/stockify/"
+  COMMENT "Copying _engine into stockify/")
 
 add_executable(stocksim_tests tests/test_main.cpp tests/test_build_info.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_core)

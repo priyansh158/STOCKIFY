@@ -1,4 +1,4 @@
-// simlab._engine: pybind11 binding of stocksim_core.
+// stockify._engine: pybind11 binding of stocksim_core.
 #include <pybind11/pybind11.h>
 
 #include "stocksim/build_info.hpp"

@@ -1,7 +1,7 @@
 ﻿#requires -Version 7.0
 # STOCKIFY Windows localhost launcher.
 #
-#   .\run.ps1 -BuildEngine   build + test the C++ engine (simlab._engine), then exit
+#   .\run.ps1 -BuildEngine   build + test the C++ engine (stockify._engine), then exit
 #   .\run.ps1 -Daemon        API + web + STOCKIFY market daemon
 #   .\run.ps1 -DaemonOnly    STOCKIFY market daemon only
 
@@ -31,7 +31,7 @@ $Stamp = Join-Path $Venv ".deps_installed"
 $Req = Join-Path $Root "requirements.txt"
 $WebDir = Join-Path $Root "web"
 $MonitorScript = Join-Path $Root "scripts\run_geo_monitor.ps1"
-$DaemonScript = Join-Path $Root "scripts\run_simlab_daemon.ps1"
+$DaemonScript = Join-Path $Root "scripts\run_stockify_daemon.ps1"
 $EngineDir = Join-Path $Root "engine"
 $EnginePreset = "win-msvc-release"
 
@@ -155,13 +155,13 @@ function Invoke-EngineBuild {
     } finally {
         Pop-Location
     }
-    & $PyExe -m simlab engine
-    if ($LASTEXITCODE -ne 0) { throw "simlab._engine does not import." }
+    & $PyExe -m stockify engine
+    if ($LASTEXITCODE -ne 0) { throw "stockify._engine does not import." }
 }
 
 function Test-EngineFresh {
     # Warns (never fails) when the engine module is missing or older than its sources.
-    $module = Get-ChildItem -Path (Join-Path $Root "simlab") -Filter "_engine*.pyd" -ErrorAction SilentlyContinue |
+    $module = Get-ChildItem -Path (Join-Path $Root "stockify") -Filter "_engine*.pyd" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if (-not $module) {
         Write-Warning "STOCKIFY engine is not built. Run .\run.ps1 -BuildEngine."

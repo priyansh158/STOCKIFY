@@ -64,7 +64,7 @@ offline by construction.
 | `test_portfolio_sync.py` | holding math, snapshot aggregates, fetching and caching |
 | `test_geo_monitor.py` | query building, Gemini classifier, SMTP alerts, one worker cycle |
 | `test_known_defects.py` | **confirmed bugs** — see below |
-| `simlab/` | STOCKIFY paths, exact numerics + canonical output, config loader rules, `simlab.sqlite` schema, CLI, engine gateway |
+| `stockify/` | STOCKIFY paths, exact numerics + canonical output, config loader rules, `lab.sqlite` schema, CLI, engine gateway |
 | `gnews/` | pre-existing Google News client tests (not written here) |
 
 One thing gets disproportionate coverage because it is load-bearing and

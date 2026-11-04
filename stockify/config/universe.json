@@ -1,0 +1,10 @@
+{
+  "schema": "stockify.universe/1",
+  "indices_full": [],
+  "futures_full": [],
+  "chains": [],
+  "equities_full": [],
+  "stock_futures_full": [],
+  "equities_quote": [],
+  "limits": { "max_per_connection": 3000, "warn_fraction": "0.8" }
+}

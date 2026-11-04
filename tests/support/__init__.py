@@ -1,7 +1,7 @@
 """Test harness support for STOCKIFY.
 
 Import this module FIRST in any test module that touches `kite_client`,
-`tick_buffer`, `geo_alerts`, `portfolio_sync` or `simlab.store`.
+`tick_buffer`, `geo_alerts`, `portfolio_sync` or `stockify.store`.
 
 Two jobs:
 
@@ -101,7 +101,7 @@ def assert_sandboxed(path) -> None:
             f"  path    = {resolved}\n"
             f"  sandbox = {root}\n"
             "Import `tests.support` before importing kite_client / tick_buffer / "
-            "simlab.store, and use tests.support.isolated_env() instead of "
+            "stockify.store, and use tests.support.isolated_env() instead of "
             "patch.dict(os.environ, clear=True)."
         )
 
@@ -164,7 +164,7 @@ requires_fastapi = unittest.skipUnless(HAVE_FASTAPI, "fastapi not installed")
 def reset_sqlite_singleton(module) -> None:
     """Close and clear a module's cached `_conn`.
 
-    `tick_buffer`, `geo_alerts`, `simlab.store` and friends memoise one process-wide
+    `tick_buffer`, `geo_alerts`, `stockify.store` and friends memoise one process-wide
     connection in a module global. Tests need a clean DB per case, so we close
     the old handle and nil the global; the next `_connect()` reopens against
     whatever `LOCALAPPDATA` currently points at.

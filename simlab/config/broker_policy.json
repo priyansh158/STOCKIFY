@@ -1,7 +1,0 @@
-{
-  "schema": "simlab.broker_policy/1",
-  "mis_cutoff": [], "mis_margin_pct": [], "market_protection_auto_pct": [],
-  "freeze_policy_default": [], "max_slices": [], "cnc_sell_credit_same_day": [],
-  "delivery_margin_schedule": [], "block_new_long_otm_stock_options_expiry_week": [],
-  "rms_square_off_time": []
-}

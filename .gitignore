@@ -25,9 +25,9 @@ web/next-env.d.ts
 
 # STOCKIFY engine build output (rebuilt by run.ps1 -BuildEngine)
 engine/build*/
-simlab/_engine*.pyd
+stockify/_engine*.pyd
 
-# Plan archive drop (its contents live in docs/simlab/)
+# Plan archive drop (its contents live in docs/plan/)
 simlab-plan-docs.zip
 
 # Claude Code memory files are never committed (owner rule)

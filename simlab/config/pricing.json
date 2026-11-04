@@ -1,8 +1,0 @@
-{
-  "schema": "simlab.pricing/1",
-  "risk_free": [],
-  "day_count": "ACT/365",
-  "stale_after_ms": 5000,
-  "eod_publication_ist": "19:00",
-  "fsp_publication_ist": "16:00"
-}

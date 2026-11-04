@@ -5,11 +5,11 @@
 It answers one question honestly: *would this rule have made money after realistic costs, fills and margin, and does it keep doing so live?*
 
 - **Data:** Kite Connect (instruments, historical candles, KiteTicker WebSocket) plus NSE's public end-of-day files.
-- **Engine:** a deterministic C++20 core (`engine/`) for orders, fills, costs, ledger, settlement and margin. It is exposed to Python as `simlab._engine` and runs strategies written in Python (default) or C++.
+- **Engine:** a deterministic C++20 core (`engine/`) for orders, fills, costs, ledger, settlement and margin. It is exposed to Python as `stockify._engine` and runs strategies written in Python (default) or C++.
 - **App:** a FastAPI backend (`server/`) and a mobile-first Next.js UI (`web/`).
 - **Side process:** the geo news monitor (`geo_monitor/`) is unchanged.
 
-The full execution plan is in [`docs/simlab/`](docs/simlab/README.md), milestones M0–M6. **Status:** M0 (cleanup + toolchain) is done, except that the engine has not yet been compiled on the dev machine (see [`docs/simlab/RECON.md`](docs/simlab/RECON.md)).
+The full execution plan is in [`docs/plan/`](docs/plan/README.md), milestones M0–M6. **Status:** M0 (cleanup + toolchain) is done, except that the engine has not yet been compiled on the dev machine (see [`docs/plan/RECON.md`](docs/plan/RECON.md)).
 
 Windows only (decision D-26). Money is ₹, stored as integer paise; time is stored as UTC nanoseconds and shown in IST.
 
@@ -81,7 +81,7 @@ If the C++ workload is missing, add it to the installed Build Tools. This needs 
 
 1. Enters the VS developer shell.
 2. Configures the `win-msvc-release` preset (Ninja) against the venv's Python and pybind11.
-3. Builds, and copies `_engine*.pyd` into `simlab/`.
+3. Builds, and copies `_engine*.pyd` into `stockify/`.
 4. Runs `ctest`.
 5. Prints the engine build info.
 
@@ -102,10 +102,10 @@ See [`geo_monitor/README.md`](geo_monitor/README.md).
 
 ```powershell
 .\.venv\Scripts\python.exe tests\run_tests.py            # offline, credential-free (stdlib unittest)
-.\.venv\Scripts\python.exe tests\run_tests.py simlab     # only test ids containing "simlab"
+.\.venv\Scripts\python.exe tests\run_tests.py stockify     # only test ids containing "stockify"
 ctest --preset win-msvc-release                          # from engine/, inside the VS dev shell
-.\.venv\Scripts\python.exe -m simlab config              # validate simlab/config/
-.\.venv\Scripts\python.exe -m simlab engine              # engine build info
+.\.venv\Scripts\python.exe -m stockify config              # validate stockify/config/
+.\.venv\Scripts\python.exe -m stockify engine              # engine build info
 cd web; npm run lint; npm run build
 ```
 
@@ -118,18 +118,18 @@ cd web; npm run lint; npm run build
 ```
 server/          FastAPI: auth, search, portfolio, ticks WS, alerts (tests/trade/data APIs from M3)
 web/             Next.js 16 UI (mobile-first; types mirrored in web/src/lib/types.ts)
-simlab/          Python: paths, numerics, store, config + loader, CLI, daemon, data layer
+stockify/          Python: paths, numerics, store, config + loader, CLI, daemon, data layer
   config/        dated market rules (charges, sessions, contract rules, …) — no hard-coded rules
-engine/          C++20 core (stocksim_core), pybind module simlab._engine, stocksim_run CLI
+engine/          C++20 core (stocksim_core), pybind module stockify._engine, stocksim_run CLI
   third_party/   vendored single headers (see VERSIONS.md)
 geo_monitor/     standalone news monitor (Gemini) → geo_alerts.sqlite
 gnews/           Google News RSS client
-docs/simlab/     the STOCKIFY plan, decisions and RECON notes
-tests/           offline unittest suite (tests/simlab/ for the simlab package)
+docs/plan/     the STOCKIFY plan, decisions and RECON notes
+tests/           offline unittest suite (tests/stockify/ for the stockify package)
 kite_client.py · kite_ticker_worker.py · tick_buffer.py · portfolio_sync.py
 geo_alerts.py · india_utils.py · stockify_paths.py
 ```
 
-All mutable state lives under `%LOCALAPPDATA%\STOCKIFY\` (resolved by `stockify_paths.py`). The simulation stores live under `…\STOCKIFY\kite\simlab\`.
+All mutable state lives under `%LOCALAPPDATA%\STOCKIFY\` (resolved by `stockify_paths.py`). The simulation stores live under `…\STOCKIFY\kite\lab\`.
 
 Not investment advice. Simulation only.
