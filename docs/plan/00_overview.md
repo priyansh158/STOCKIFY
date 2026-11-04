@@ -88,7 +88,7 @@ It does that with four capabilities that share one engine:
 
 | ID | Name | Delivers | Demo | Size | Status |
 |---|---|---|---|---|---|
-| M0 | Cleanup + toolchain | LLM pipeline removed; C++20/pybind11 builds on Windows (MSVC) | `python -c "import stockify._engine as e; print(e.build_info())"` | M | done 2026-11-02, except the engine build (MSVC C++ tools not yet installed; see RECON.md) |
+| M0 | Cleanup + toolchain | LLM pipeline removed; C++20/pybind11 builds on Windows (MSVC) | `python -c "import stockify._engine as e; print(e.build_info())"` | M | done 2026-11-04 |
 | M1 | Data layer + recorder | refdata with history, NSE EOD ingestion, Kite bar cache, recorder, replay ticker, compaction, event packs, data-quality report | Record a live day (or replay a fixture), compact it, build a pack, print the quality report | L | not started |
 | M2 | Python oracle | Readable Python backtester, golden scenarios, EOD option research from bhavcopy | SMA crossover on daily bars; short straddle on EOD bhavcopy | M | not started |
 | M3 | C++ engine core (equity) | Clock, orders, three fill models, costs, ledger, metrics, C++ and Python strategies, runners, `/tests` UI | Same SMA run via C++ matches the oracle to the paisa | L | not started |

@@ -36,7 +36,7 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - Daemon restart with backoff (D-27). One commit for the whole overhaul (D-28). `CLAUDE.md` is never committed (D-29).
 - Also removed as unused: `assets/favicon.png` (Streamlit era), `web/public/*.svg` (Next starter), `tests/geo_monitor/` (5 tests duplicated in `tests/test_geo_monitor.py`), dead helpers `portfolio_sync.{holding_for, anonymous_position_blurb, ui_caption_for}`, `india_utils.fetch_history_with_fallback`, `tick_buffer.{candles_since, macro_snapshot}`, `kite_ticker_worker.{resolve_macro_tokens, ensure_macro_subscriptions}`.
 
-### Toolchain on the dev machine (blocks the M0.3 build)
+### Toolchain on the dev machine (resolved 2026-11-04)
 
 - Python 3.12.10 venv; `pybind11 3.1.0` installed.
 - **Visual Studio Build Tools 2026 (v18.4) is installed without the C++ workload**; no `cl`, no CMake, no Ninja. `run.ps1 -BuildEngine` stops with the fix. To install (admin, large download):
@@ -65,3 +65,11 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - **T-1:** US daylight saving ended 2026-11-01. The Kite login window is now 16:30–19:00 PST; NSE trades 19:30–02:10 PST (pre-open included). Update T-1 and the PDT wording in M5 before M5.
 - **Muhurat trading on 2026-11-08** (M1.2 ⚠) is unverified, and the recorder (M1.5) can't be ready by then.
 - **Python 3.11 vs 3.12:** float `sum()` changed in 3.12 (A4 §0.3), and `run.ps1` accepts both. The engine records the Python it was built for, and `stockify.engine` refuses a mismatch. M2 must enforce the no-`sum()` rule.
+
+## 2026-11-04 — M0 closed
+
+- Installed the VS Build Tools 2026 C++ workload (`Microsoft.VisualStudio.Workload.VCTools` + `Microsoft.VisualStudio.Component.VC.CMake.Project`, recommended components) with the command above: MSVC 14.50 (`cl` 19.50.35727), CMake and Ninja from the VS install.
+- `.\run.ps1 -BuildEngine` on the first try: configure + build of `win-msvc-release` with `/W4 /WX` clean, ctest 2/2, `_engine.cp312-win_amd64.pyd` copied into `stockify/`, `python -c "import stockify._engine as e; print(e.build_info())"` works.
+- M0 verification: Python suite green (481 passed + 4 tracked defects), `import server.main`, web lint and build, no references to the removed modules.
+- Note for M3: `engine_build_id` embeds the git SHA at configure time; `-BuildEngine` always reconfigures, but a plain `cmake --build` after new commits keeps the old SHA.
+

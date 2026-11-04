@@ -51,7 +51,7 @@
 
 ## M0.3 C++ toolchain (M)
 
-> ⚠ **Status 2026-11-02**: every file below is written, but the engine has **not been compiled yet**. The dev machine's Visual Studio Build Tools 2026 has no C++ workload and there is no CMake (see `RECON.md`). Install them, then run `.\run.ps1 -BuildEngine`. M0 is done only when that passes.
+> ✔ **Status 2026-11-04**: built and tested on the dev machine (Visual Studio Build Tools 2026, MSVC 19.50, CMake + Ninja from the VS C++ CMake component, Python 3.12, pybind11 3.1). `.\run.ps1 -BuildEngine` passes: 2/2 ctest, `stockify._engine` imports, engine_build_id `b70ea1b901a1`.
 
 - [x] `engine/CMakeLists.txt` (CMake ≥ 3.25, C++20) and `engine/CMakePresets.json` with configure, **build and test** presets named `win-msvc-debug`, `win-msvc-release` (so `cmake --build --preset <name>` and `ctest --preset <name>` work).
 - [x] Flags (D-26, C-9): MSVC `/W4 /permissive- /utf-8 /fp:precise /EHsc`, plus `/WX` (option `STOCKSIM_WARNINGS_AS_ERRORS`, on by default). Never `/fp:fast`.
