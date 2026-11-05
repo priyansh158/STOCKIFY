@@ -116,6 +116,37 @@ class ArchiveTests(CompactTest):
         self.assertEqual(compact.compact(date(2026, 11, 11)).status, "no_landing")
 
 
+class LayoutTests(CompactTest):
+    """D-37: row groups cover seq ranges; rows inside a group are by (instrument, seq)."""
+
+    def setUp(self):
+        super().setUp()
+        self.patch = patch.object(compact, "ROW_GROUP", 50)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def test_multiple_row_groups_grouped_by_instrument_and_verified(self):
+        res = compact.compact(DAY)
+        self.assertEqual(res.status, "verified", res.error)
+        pf = pq.ParquetFile(self.folder() / "quote.parquet")
+        self.assertGreater(pf.num_row_groups, 1)
+        last_max = 0
+        for i in range(pf.num_row_groups):
+            g = pf.read_row_group(i, columns=["seq", "instrument_id"]).to_pydict()
+            keys = list(zip(g["instrument_id"], g["seq"]))
+            self.assertEqual(keys, sorted(keys))                         # by instrument, then seq
+            self.assertGreater(min(g["seq"]), last_max)                  # groups are seq ranges
+            last_max = max(g["seq"])
+        meta = json.loads((self.folder() / "meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["layout"], compact.LAYOUT)
+
+    def test_iter_rows_returns_seq_order(self):
+        compact.compact(DAY)
+        seqs = [r[0] for r in compact.iter_rows(self.folder() / "quote.parquet", ["seq", "ltp"])]
+        self.assertEqual(seqs, sorted(seqs))
+        self.assertEqual(len(seqs), 301)
+
+
 class VerificationTests(CompactTest):
     def test_tampered_archive_is_detected(self):
         compact.compact(DAY)

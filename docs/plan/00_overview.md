@@ -138,6 +138,7 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | D-34 | **Market protection is configured in basis points**: `broker_policy.json` → `market_protection_auto_bp` (200 = 2%, assumption, labelled), matching A4 §3.3. | Yes (A1 §7.5 had `market_protection_auto_pct` = "2") | One unit everywhere; A4 uses bp. |
 | D-35 | **The F&O pre-open applies only to current-month futures**, plus next-month futures in the last 5 trading days before the current expiry (X-6). `sessions.json` marks the FO_FUT pre-open phase `scope: near_month_futures`; `calendar.futures_preopen_eligible` decides per contract. | Yes (A1 §7.3 / A4 §4.7 applied it to every future) | Follow the exchange circular. |
 | D-36 | **`DAY_END` is 23:59:59.999999999 IST** as in A4 §1.2; `schedule.json` → `day_end` ("23:59:59") is only the scheduler's job time. | Clarified | The two values serve different purposes. |
+| D-37 | **Archive row order: each Parquet row group covers a contiguous `seq` range; inside a group rows are ordered by `(instrument_id, seq)`, and integer columns use delta encoding.** Readers re-sort a row group by `seq` (`compact.iter_rows`); every A1 §3.2 column, including parsed depth, is kept. `meta.json` → `layout` records it. | Yes (A1 §3.2 said "sorted by `seq`") | Owner decision, 2026-11-05. Measured on the first real day: 4.8 MB → 3.6 MB per 5 minutes (landing 15.9 MB, 3.3× → 4.4×), about 0.29 GB per full day, roughly 4 years in 300 GB. |
 
 ### 5a. Roster (D-31)
 

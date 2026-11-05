@@ -36,6 +36,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from stockify import numerics, paths, timeutil
@@ -45,7 +46,10 @@ from stockify.data import refdata
 
 log = logging.getLogger("stockify.data.compact")
 
-COMPACT_VERSION = "1"
+COMPACT_VERSION = "2"
+# D-37: each row group covers a contiguous seq range; inside it rows are ordered by
+# (instrument_id, seq) and integers are delta-encoded. Readers sort by seq.
+LAYOUT = "rowgroup_by_instrument_delta"
 ROW_GROUP = 1_000_000
 FETCH = 100_000
 
@@ -120,9 +124,14 @@ class _Sink:
             return
         table = pa.table({n: pa.array(v, type=self.schema.field(n).type) for n, v in self.cols.items()},
                          schema=self.schema)
+        order = pc.sort_indices(table, sort_keys=[("instrument_id", "ascending"), ("seq", "ascending")],
+                                null_placement="at_start")
+        table = table.take(order)
         if self.writer is None:
+            ints = [f.name for f in self.schema if f.name != "raw"]
             self.writer = pq.ParquetWriter(self.path, self.schema, compression="zstd",
-                                           compression_level=self.level)
+                                           compression_level=self.level, use_dictionary=False,
+                                           column_encoding={c: "DELTA_BINARY_PACKED" for c in ints})
         self.writer.write_table(table, row_group_size=ROW_GROUP)
         self.cols = {name: [] for name in self.schema.names}
 
@@ -172,14 +181,28 @@ def _copy_table(conn: sqlite3.Connection, sql: str, path: Path, level: int) -> i
 
 # ── verification ─────────────────────────────────────────────────────────────
 
+def iter_rows(path: Path, columns: list[str]):
+    """Rows of one packet file in seq order (D-37: re-sort each row group by seq)."""
+    pf = pq.ParquetFile(path)
+    if "seq" not in columns:
+        columns = ["seq", *columns]
+    last = 0
+    for i in range(pf.num_row_groups):
+        group = pf.read_row_group(i, columns=columns)
+        group = group.take(pc.sort_indices(group, sort_keys=[("seq", "ascending")]))
+        cols = group.to_pydict()
+        if cols["seq"] and cols["seq"][0] <= last:
+            raise CompactionError(f"{path.name}: row group {i} overlaps the previous seq range")
+        if cols["seq"]:
+            last = cols["seq"][-1]
+        yield from zip(*(cols[c] for c in columns))
+
+
 def _iter_archive(folder: Path):
     """(seq, frame_no, instrument_id, raw) merged across the three packet files by seq."""
-    def stream(name):
-        pf = pq.ParquetFile(folder / f"{name}.parquet")
-        for batch in pf.iter_batches(columns=["seq", "frame_no", "instrument_id", "raw"], batch_size=FETCH):
-            cols = batch.to_pydict()
-            yield from zip(cols["seq"], cols["frame_no"], cols["instrument_id"], cols["raw"])
-    return heapq.merge(stream("full"), stream("quote"), stream("index"), key=lambda r: r[0])
+    cols = ["seq", "frame_no", "instrument_id", "raw"]
+    return heapq.merge(*(iter_rows(folder / f"{name}.parquet", cols) for name in ("full", "quote", "index")),
+                       key=lambda r: r[0])
 
 
 def verify(folder: Path, expected_digest: str, expected_rows: int) -> None:
@@ -271,7 +294,7 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
 
     files = {p.name: _sha256_file(p) for p in sorted(tmp.glob("*.parquet"))}
     (tmp / "meta.json").write_text(numerics.dumps_canonical({
-        "trade_date": day.isoformat(), "compact_version": COMPACT_VERSION,
+        "trade_date": day.isoformat(), "compact_version": COMPACT_VERSION, "layout": LAYOUT,
         "parser_version": kp.PARSER_VERSION, "row_counts": res.counts, "packets": res.packets,
         "landing_digest": res.digest, "files": files, "recorder_meta": meta_rows,
         "created_ns": timeutil.now_ns(),
