@@ -101,8 +101,13 @@ def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
         state.mark(job, day)
 
 
+def _kite_token_fresh() -> bool:
+    import kite_client
+    return kite_client.is_authenticated()
+
+
 def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  # noqa: ANN001
-               recorder=None) -> int:  # noqa: ANN001
+               recorder=None, token_fresh=None, send_reminder=None) -> int:  # noqa: ANN001
     """The live daemon: wait for the session, record it, then hibernate (D-32).
 
     Each pass handles one of three situations:
@@ -124,7 +129,10 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     clock = clock or WallClock()
     stop = stop or threading.Event()
     record = recorder or (lambda: run_recorder(ticker_spec="live", stop=stop, power=power))
+    token_fresh = token_fresh or _kite_token_fresh
     state = scheduler.State()
+    from stockify.daemon import reminder
+    reminder_kw = {"send": send_reminder} if send_reminder else {}
 
     while not stop.is_set():
         now = clock.now_ns()
@@ -147,7 +155,9 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
                 if now < p.keep_awake_ns:
                     log.info("session %s starts soon; waiting until %s IST", day,
                              timeutil.ns_to_ist(p.keep_awake_ns).strftime("%H:%M"))
-                    if not clock.sleep_until(p.keep_awake_ns, stop):
+                    if not reminder.wait_with_reminders(clock, stop, p.keep_awake_ns, day, state,
+                                                        scheduler.schedule(), token_fresh=token_fresh,
+                                                        **reminder_kw):
                         return exitcodes.OK
                 power.hold()
                 try:
