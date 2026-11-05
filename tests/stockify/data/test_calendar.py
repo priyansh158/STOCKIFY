@@ -139,5 +139,36 @@ class ExpiryRuleTests(unittest.TestCase):
         self.assertEqual(report["unexpected"], [])
 
 
+class OwnerViewTests(unittest.TestCase):
+    """The owner trades from Seattle: IST trade dates shown in local time."""
+
+    def setUp(self):
+        cal.reload()
+
+    def local(self, t_ns):
+        return timeutil.ns_to_ist(t_ns).astimezone(cal.owner_tz())
+
+    def test_monday_9_nov_session_starts_sunday_evening_in_seattle(self):
+        rows = {r["date"]: r for r in cal.upcoming(date(2026, 11, 7), 5)}
+        self.assertFalse(rows[date(2026, 11, 8)]["open"])
+        self.assertIn("Diwali", rows[date(2026, 11, 8)]["reason"])
+        mon = rows[date(2026, 11, 9)]
+        self.assertEqual(self.local(mon["session_start_ns"]).strftime("%a %d %H:%M"), "Sun 08 19:30")
+        self.assertEqual(self.local(mon["login_from_ns"]).strftime("%a %d %H:%M"), "Sun 08 16:30")
+        self.assertEqual(self.local(mon["session_end_ns"]).strftime("%a %d %H:%M"), "Mon 09 02:10")
+        self.assertFalse(rows[date(2026, 11, 10)]["open"])
+
+    def test_us_daylight_saving_shifts_local_times_only(self):
+        before = cal.upcoming(date(2027, 3, 12), 1)[0]     # Fri, PST: IST - 13:30
+        after = cal.upcoming(date(2027, 3, 15), 1)[0]      # Mon, PDT: IST - 12:30
+        self.assertEqual(self.local(before["session_start_ns"]).strftime("%H:%M"), "19:30")
+        self.assertEqual(self.local(after["session_start_ns"]).strftime("%H:%M"), "20:30")
+        for row in (before, after):
+            self.assertEqual(timeutil.ns_to_ist(row["session_start_ns"]).strftime("%H:%M"), "09:00")
+
+    def test_holiday_coverage_end_is_known(self):
+        self.assertEqual(cal.holidays_cover_until(), date(2026, 12, 31))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -253,3 +253,49 @@ def validate_expiries(underlying: str, actual: list[date]) -> dict:
     actual_set = set(actual)
     expected = {e["date"] for e in generated_expiries(underlying, min(actual), max(actual))}
     return {"missing": sorted(expected - actual_set), "unexpected": sorted(actual_set - expected)}
+
+
+# ── Owner's view: upcoming sessions in the owner's time zone ─────────────────
+
+def owner_tz():
+    """The owner's display time zone (schedule.json → owner_tz). Display and
+    self-wake only; trading logic never uses it (I-4)."""
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(loader.load_json("schedule.json")["owner_tz"])
+
+
+def upcoming(start: date, days: int) -> list[dict]:
+    """IST calendar days from `start`: per day either closed (with the reason)
+    or the F&O session span and the Kite login window, as UTC ns."""
+    schedule = loader.load_json("schedule.json")
+    window = schedule["kite_login_window_ist"]
+    reasons = {}
+    for row in loader.load_csv("calendar/nse_holidays.csv"):
+        reasons.setdefault(row["date"], row["description"])
+    out = []
+    for i in range(days):
+        d = start + timedelta(days=i)
+        fut = phases("FO_FUT", d)
+        if not fut:
+            reason = reasons.get(d.isoformat()) or ("weekend" if d.weekday() >= 5 else "closed")
+            out.append({"date": d, "open": False, "reason": reason})
+            continue
+        opt = phases("FO_OPT", d)
+        out.append({
+            "date": d, "open": True,
+            "session_start_ns": fut[0].start_ns,
+            "continuous_start_ns": next(p.start_ns for p in fut if p.phase == "CONTINUOUS"),
+            "session_end_ns": max(fut[-1].end_ns, opt[-1].end_ns if opt else 0),
+            "login_from_ns": timeutil.ist_ns(d, window["from"]),
+            "login_until_ns": timeutil.ist_ns(d, window["until"]),
+        })
+    return out
+
+
+def holidays_cover_until() -> date:
+    """Last day the holiday list is known to cover (end of its last year).
+
+    Beyond it every weekday looks like a trading day, so callers warn.
+    """
+    last_year = max(int(r["date"][:4]) for r in loader.load_csv("calendar/nse_holidays.csv"))
+    return date(last_year, 12, 31)

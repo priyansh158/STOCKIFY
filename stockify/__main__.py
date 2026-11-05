@@ -92,6 +92,39 @@ def _cmd_kite_check(args) -> int:
     return 0 if ok else 1
 
 
+def _cmd_calendar(args) -> int:
+    from datetime import date
+
+    from stockify import timeutil
+    from stockify.data import calendar as cal
+
+    start = date.fromisoformat(args.start) if args.start else timeutil.ist_today()
+    local = cal.owner_tz()
+
+    def loc(t_ns: int, fmt: str) -> str:
+        return timeutil.ns_to_ist(t_ns).astimezone(local).strftime(fmt)
+
+    def ist(t_ns: int) -> str:
+        return timeutil.ns_to_ist(t_ns).strftime("%H:%M")
+
+    zone = loc(timeutil.ist_ns(start, "09:00"), "%Z")
+    covered = cal.holidays_cover_until()
+    if (start - covered).days + args.days > 1:
+        print(f"WARNING: the NSE holiday list ends {covered}; later weekdays are shown as open "
+              "until NSE publishes the next year's list (add it to calendar/nse_holidays.csv).")
+    print(f"NSE F&O sessions from {start} (IST trade dates; your time zone {local.key}, {zone})")
+    print(f"{'IST date':<15} {'session IST':<13} {'session, your time':<30} {'Kite login window, your time'}")
+    for row in cal.upcoming(start, args.days):
+        head = f"{row['date']:%Y-%m-%d %a}"
+        if not row["open"]:
+            print(f"{head:<15} closed: {row['reason']}")
+            continue
+        session = f"{loc(row['session_start_ns'], '%a %d %b %H:%M')} -> {loc(row['session_end_ns'], '%a %H:%M')}"
+        login = f"{loc(row['login_from_ns'], '%a %d %b %H:%M')} - {loc(row['login_until_ns'], '%H:%M')}"
+        print(f"{head:<15} {ist(row['session_start_ns'])}-{ist(row['session_end_ns']):<7} {session:<30} {login}")
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -121,6 +154,11 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--date", help="trade date YYYY-MM-DD (default: today in IST)")
     rs.add_argument("--dir", help="read NSE.csv / NFO.csv from this folder instead of downloading")
     rs.set_defaults(func=_cmd_refdata_sync)
+
+    c = sub.add_parser("calendar", help="upcoming NSE sessions and Kite login windows in your time zone")
+    c.add_argument("--start", help="first IST trade date YYYY-MM-DD (default: today in IST)")
+    c.add_argument("--days", type=int, default=14, help="number of calendar days (default 14)")
+    c.set_defaults(func=_cmd_calendar)
 
     k = sub.add_parser("kite", help="Kite Connect checks")
     ksub = k.add_subparsers(dest="kite_command", required=True)
