@@ -138,3 +138,10 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
 - **Size, measured:** 260 bytes per packet in the landing file → **~1.28 GB per full day** (pre-open to the F&O close). The same rows as zstd-9 Parquet: **5.1× smaller → ~0.25 GB/day**; raw bytes plus keys only would be ~0.16 GB/day. With 300 GB, compressed archives hold roughly 1,190 trading days (~4.8 years).
 - Today's real `refdata.sqlite` sync: 53,937 instruments (NSE + NFO). NIFTY's weekly expiry in the dump is 2026-11-09 and the November monthly 2026-11-23, matching the calendar's holiday shifts.
 
+## 2026-11-05 — M1.7 compaction notes
+
+- `index.parquet` carries `mono_ns` and `instrument_token` in addition to the A1 §3.2 columns, so a replay from the archive can rebuild frames exactly.
+- The archive is written to `date=YYYY-MM-DD.tmp` and renamed only after verification (row counts, a SHA-256 over `(seq, frame_no, instrument_id, raw)` in `seq` order matching the landing file, and every file's SHA-256 in `meta.json`).
+- A failed compaction never blocks the post-close sleep: the job is marked done, `tick_days.status` stays `landing`, the landing file is kept, and `compact --date` retries.
+- **First real day (2026-11-05, 5-minute test):** 61,286 packets, 15.9 MB landing → 4.8 MB archive (3.3×), verified in 2.2 s. The 30 parsed depth columns cost about a third of `full.parquet`; grouping rows by instrument inside each row group and delta-encoding integers would cut it about 23%, and dropping the depth columns (raw keeps them) about 51% (owner decision pending).
+

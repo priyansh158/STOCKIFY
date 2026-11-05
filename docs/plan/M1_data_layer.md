@@ -122,11 +122,11 @@ Files: `stockify/daemon/replay_ticker.py`, `stockify/daemon/clock.py`.
 
 Files: `stockify/data/compact.py`. Layout: `A1_schemas.md` §3.2.
 
-- [ ] For a finished date: `PRAGMA quick_check` on the landing file; parse depth from raw FULL packets; write `full.parquet`, `quote.parquet`, `index.parquet`, `gaps.parquet`, `subscriptions.parquet`, `heartbeats.parquet` and `meta.json` under `ticks/archive/date=YYYY-MM-DD/` (zstd, row groups ≈ 1M rows, sorted by `seq`).
-- [ ] Verify: re-read the Parquet files; row counts and a SHA-256 over `(seq, frame_no, instrument_id, raw)` in `seq` order must equal the same digest computed from the landing file. Record the result in `tick_days`.
+- [x] For a finished date: `PRAGMA quick_check` on the landing file; parse depth from raw FULL packets; write `full.parquet`, `quote.parquet`, `index.parquet`, `gaps.parquet`, `subscriptions.parquet`, `heartbeats.parquet` and `meta.json` under `ticks/archive/date=YYYY-MM-DD/` (zstd, row groups ≈ 1M rows, sorted by `seq`).
+- [x] Verify: re-read the Parquet files; row counts and a SHA-256 over `(seq, frame_no, instrument_id, raw)` in `seq` order must equal the same digest computed from the landing file. Record the result in `tick_days`.
 - [ ] Retention: `storage.json` → `retention_days` is **null (never delete)** until the owner has backups (M5.13). 🛑 The owner sets a number explicitly; after that, a landing file is deleted only when its day is `verified` **and** older than `retention_days`. Nothing else ever deletes tick data (I-13).
-- [ ] Disk check: warn when free space falls below the `storage.json` thresholds.
-- [ ] CLI `python -m stockify compact --date 2026-10-28`; scheduled by the M1.5 scheduler.
+- [x] Disk check: warn when free space falls below the `storage.json` thresholds.
+- [x] CLI `python -m stockify compact --date 2026-10-28`; scheduled by the M1.5 scheduler.
 
 ## M1.8 Event packs (M)
 

@@ -89,7 +89,20 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
     """Jobs whose milestone is not built yet are logged, not faked."""
     if job == "compaction":
-        log.info("compaction for %s: not built yet (M1.7); landing file kept as is", day)
+        from stockify.data import compact
+        try:
+            res = compact.compact(day)
+            if res.status == "failed":
+                log.error("compaction of %s failed: %s; the landing file is kept", day, res.error)
+            for warning in compact.disk_warnings():
+                log.warning("disk: %s", warning)
+            deleted = compact.apply_retention(day)
+            if deleted:
+                log.info("retention: deleted verified landing files for %s", ", ".join(deleted))
+        except Exception as e:                       # never keep the laptop up over a compaction error
+            log.exception("compaction of %s raised: %s", day, e)
+        # Marked done either way so a failure cannot block sleep; the landing
+        # file stays (tick_days status 'landing') and `compact --date` retries it.
         state.mark(job, day)
     elif job == "nse_fetch":
         log.info("NSE fetch for %s: not built yet (M1.3); use `nse backfill` once it exists", day)

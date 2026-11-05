@@ -15,7 +15,6 @@ from stockify import log
 _STUBS = {
     "nse": ("M1", "fetch NSE public end-of-day files"),
     "bars": ("M1", "fetch and cache Kite historical candles"),
-    "compact": ("M1", "verify and archive landing tick files"),
     "pack": ("M1", "build event packs"),
     "data": ("M1", "data quality report"),
     "oracle": ("M2", "run the Python oracle backtester"),
@@ -132,6 +131,19 @@ def _cmd_calendar(args) -> int:
     return 0
 
 
+def _cmd_compact(args) -> int:
+    from datetime import date
+
+    from stockify.data import compact
+
+    res = compact.compact(date.fromisoformat(args.date), force=args.force)
+    json.dump(res.__dict__, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    for warning in compact.disk_warnings():
+        print(f"WARNING: {warning}", file=sys.stderr)
+    return 0 if res.status in ("verified", "no_landing") else 1
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -166,6 +178,11 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--date", help="trade date YYYY-MM-DD (default: today in IST)")
     rs.add_argument("--dir", help="read NSE.csv / NFO.csv from this folder instead of downloading")
     rs.set_defaults(func=_cmd_refdata_sync)
+
+    cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
+    cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
+    cp.add_argument("--force", action="store_true", help="rebuild even if the day is already verified")
+    cp.set_defaults(func=_cmd_compact)
 
     c = sub.add_parser("calendar", help="upcoming NSE sessions and Kite login windows in your time zone")
     c.add_argument("--start", help="first IST trade date YYYY-MM-DD (default: today in IST)")
