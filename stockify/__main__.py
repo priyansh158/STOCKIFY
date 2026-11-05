@@ -73,6 +73,25 @@ def _cmd_refdata_sync(args) -> int:
     return 0
 
 
+def _load_env() -> None:
+    from dotenv import load_dotenv
+
+    import stockify_paths
+    load_dotenv(dotenv_path=stockify_paths.env_file(), override=True)
+
+
+def _cmd_kite_check(args) -> int:
+    _load_env()
+    from stockify import kitecheck
+
+    checks = kitecheck.run()
+    for c in checks:
+        print(f"{'PASS' if c.ok else 'FAIL'}  {c.name:<10} {c.detail}")
+    ok = kitecheck.passed(checks)
+    print("Kite market data: " + ("available" if ok else "NOT available (see FAIL lines)"))
+    return 0 if ok else 1
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -102,6 +121,11 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--date", help="trade date YYYY-MM-DD (default: today in IST)")
     rs.add_argument("--dir", help="read NSE.csv / NFO.csv from this folder instead of downloading")
     rs.set_defaults(func=_cmd_refdata_sync)
+
+    k = sub.add_parser("kite", help="Kite Connect checks")
+    ksub = k.add_subparsers(dest="kite_command", required=True)
+    ksub.add_parser("check", help="confirm the plan gives REST, historical and WebSocket data"
+                    ).set_defaults(func=_cmd_kite_check)
 
     for name, (milestone, text) in _STUBS.items():
         s = sub.add_parser(name, help=f"{text} ({milestone}, not implemented yet)")

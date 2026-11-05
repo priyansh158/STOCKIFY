@@ -84,7 +84,7 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 | Reconnect | Library-internal `ReconnectingClientFactory`: `RECONNECT_MAX_DELAY` 60 s (min 5), `RECONNECT_MAX_TRIES` 50 (max 300). `kite_ticker_worker._Supervisor` only logs `on_reconnect` / `on_noreconnect`. | M1.5 supervisor: log every reconnect as a `disconnect` gap (start at close, end at the first packet after reconnect); on `on_noreconnect`, exit for a launcher restart. Raise `reconnect_max_tries` to 300. |
 | Instruments cache readers | `kite_client._instruments_db()` → `state_dir()/instruments.sqlite`. Read by `resolve_symbol` (`server/routers/search.py`) and `get_instrument_token` (`stockify/data/history.py`). `get_instrument_token_for_index` has no callers since M0. `refresh_instruments` / `_async` have no callers. | M1.1 keeps `instruments.sqlite` as a compatibility copy filled by `instruments.sync`; search keeps working unchanged. |
 | Existing `tick_buffer` / UI ticker | `kite_ticker_worker` (API process) writes to `ticks.sqlite` and fans out to `/api/ws/ticks`. | Stays as connection #1 for the UI; the recorder is connection #2 in the daemon process (D-20). |
-| Paid Kite plan (🛑 M1.0) | Pending owner confirmation. | Without it there is no WebSocket or historical data. |
+| Paid Kite plan (🛑 M1.0) | **Cleared 2026-11-05** by `python -m stockify kite check` (token obtained 08:38 IST): profile ok; quote NSE:NIFTY 50 = 23960.6, token 256265; historical 8 day + 1,125 minute candles (last bar 2026-11-04 15:29 IST); WebSocket full mode delivered a 36-byte raw frame (2-byte count + 2-byte length + 32-byte index packet, matching K-2/K-3). | The recorder and bar cache can run live. |
 
 ### 2026-11-04 — M1.1 notes
 
@@ -94,3 +94,9 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - Indices are kept without `contract_specs` rows (their dump lot and tick sizes are 0).
 - **Follow-up:** `kite_client.instruments.sqlite` (search) is still filled by the old `refresh_instruments`, called after each live `refdata sync`. Moving search onto `refdata.sqlite` is a later CM task. The `underlyings` map in `contract_rules.json` is filled in M1.2 (⚠ verify the Kite tradingsymbols).
 - Uses the SDK's private `KiteConnect._get("market.instruments", …)`, because it returns the raw CSV bytes, so strikes stay exact decimals. Re-check this on a `kiteconnect` upgrade.
+
+### 2026-11-05 — follow-ups found while running the app
+
+- **`run.ps1` stops everything when uvicorn reloads.** `--reload` makes WatchFiles send a console Ctrl+C on Windows. The web server (`npm.cmd`, sharing the console via `-NoNewWindow`) receives it and exits ("Terminate batch job"), and the supervisor loop then stops all children. Trigger: editing any file under the repo while `.\run.ps1` runs. Fix (GK): start the API without `--reload` by default (add `-Reload` for development), or give each child its own process group.
+- **The uvicorn access log prints the one-time `request_token`** of `/api/kite/callback`. The token is single-use and already exchanged, but I-10 says tokens never reach logs. Fix (GK): filter the query string of that route out of the access log.
+

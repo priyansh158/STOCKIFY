@@ -11,11 +11,11 @@ Concepts: C-1, C-5, C-6, C-7. Schemas: `A1_schemas.md` §1–§5, §7. Numbers: 
 
 ## M1.0 Recon (S)
 
-- [ ] 🛑 Confirm with the owner that the **paid Kite Connect plan** (₹500/month, K-11) is active on the API key. Without it there is no WebSocket data and no historical data.
-- [ ] Record the installed `kiteconnect` version. Confirm `KiteTicker` exposes a raw `on_message(ws, payload, is_binary)` callback. The recorder parses raw bytes itself (D-08): this avoids any dependence on how the library converts timestamps to `datetime` objects (I-4). 🛑 if raw frames are not available.
-- [ ] Inspect the existing instruments cache: table schema, who reads it (search, portfolio, ticker), and how `refresh_instruments` is scheduled.
-- [ ] Inspect `kite_ticker_worker._Supervisor`: subscription bookkeeping, reconnect backoff, threading model. The daemon's supervisor (M1.5) reuses this logic.
-- [ ] Append findings to `RECON.md`.
+- [x] 🛑 Confirm with the owner that the **paid Kite Connect plan** (₹500/month, K-11) is active on the API key. Without it there is no WebSocket data and no historical data.
+- [x] Record the installed `kiteconnect` version. Confirm `KiteTicker` exposes a raw `on_message(ws, payload, is_binary)` callback. The recorder parses raw bytes itself (D-08): this avoids any dependence on how the library converts timestamps to `datetime` objects (I-4). 🛑 if raw frames are not available.
+- [x] Inspect the existing instruments cache: table schema, who reads it (search, portfolio, ticker), and how `refresh_instruments` is scheduled.
+- [x] Inspect `kite_ticker_worker._Supervisor`: subscription bookkeeping, reconnect backoff, threading model. The daemon's supervisor (M1.5) reuses this logic.
+- [x] Append findings to `RECON.md`. Live check: `python -m stockify kite check`.
 
 ## M1.1 Reference data with history (M)
 
