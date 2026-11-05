@@ -2,8 +2,417 @@
   "schema": "stockify.charges/1",
   "broker": "zerodha",
   "components": {
-    "brokerage": [], "stt": [], "exercise_stt": [], "exercise_brokerage": [],
-    "exchange_txn": [], "sebi": [], "stamp": [], "gst": [], "dp": [],
-    "auto_square_off_fee": [], "physical_delivery": []
+    "brokerage": [
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "CNC"
+        },
+        "effective_from": "2015-01-01",
+        "kind": "zero",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "MIS"
+        },
+        "effective_from": "2015-01-01",
+        "kind": "min_flat_pct",
+        "flat_paise": 2000,
+        "pct": "0.0003",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2015-01-01",
+        "kind": "min_flat_pct",
+        "flat_paise": 2000,
+        "pct": "0.0003",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2015-01-01",
+        "kind": "flat",
+        "flat_paise": 2000,
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      }
+    ],
+    "stt": [
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2015-01-01",
+        "sell": "0.0001",
+        "source": "Z-2",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2023-04-01",
+        "sell": "0.000125",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2024-10-01",
+        "sell": "0.0002",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2026-04-01",
+        "sell": "0.0005",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2015-01-01",
+        "sell": "0.0005",
+        "source": "Z-2",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2023-04-01",
+        "sell": "0.000625",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2024-10-01",
+        "sell": "0.001",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2026-04-01",
+        "sell": "0.0015",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "CNC"
+        },
+        "effective_from": "2015-01-01",
+        "buy": "0.001",
+        "sell": "0.001",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "MIS"
+        },
+        "effective_from": "2015-01-01",
+        "sell": "0.00025",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      }
+    ],
+    "exercise_stt": [
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2016-06-01",
+        "pct_of_intrinsic": "0.00125",
+        "source": "Z-2",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2026-04-01",
+        "pct_of_intrinsic": "0.0015",
+        "source": "Z-2",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      }
+    ],
+    "exercise_brokerage": [
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2015-01-01",
+        "kind": "flat",
+        "flat_paise": 2000,
+        "source": "Z-1 (charged on exercised/assigned contracts; basis unconfirmed)",
+        "verified": false
+      }
+    ],
+    "exchange_txn": [
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2024-10-01",
+        "pct": "0.0000173",
+        "source": "Z-3",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "VERIFY",
+        "observed_on": "2026-10-29",
+        "pct": "0.0000183",
+        "source": "Z-1",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2024-10-01",
+        "pct": "0.0003503",
+        "source": "Z-3",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "VERIFY",
+        "observed_on": "2026-10-29",
+        "pct": "0.0003553",
+        "source": "Z-1",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "CM"
+        },
+        "effective_from": "VERIFY",
+        "observed_on": "2026-10-29",
+        "pct": "0.0000307",
+        "source": "Z-1",
+        "verified": false
+      }
+    ],
+    "sebi": [
+      {
+        "applies": {},
+        "effective_from": "2015-01-01",
+        "pct": "0.000001",
+        "source": "Z-1 (₹10/crore)",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      }
+    ],
+    "stamp": [
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "CNC"
+        },
+        "effective_from": "2020-07-01",
+        "buy": "0.00015",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "MIS"
+        },
+        "effective_from": "2020-07-01",
+        "buy": "0.00003",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "FUT"
+          ]
+        },
+        "effective_from": "2020-07-01",
+        "buy": "0.00002",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      },
+      {
+        "applies": {
+          "segment": "FO",
+          "kind": [
+            "CE",
+            "PE"
+          ]
+        },
+        "effective_from": "2020-07-01",
+        "buy": "0.00003",
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      }
+    ],
+    "gst": [
+      {
+        "applies": {},
+        "effective_from": "2017-07-01",
+        "rate": "0.18",
+        "on": [
+          "brokerage",
+          "exchange_txn",
+          "sebi"
+        ],
+        "source": "Z-1",
+        "verified": true,
+        "verified_on": "2026-10-29"
+      }
+    ],
+    "dp": [
+      {
+        "applies": {
+          "segment": "CM",
+          "product": "CNC",
+          "side": "SELL"
+        },
+        "effective_from": "VERIFY",
+        "observed_on": "2026-10-29",
+        "per_scrip_per_day_paise": 1534,
+        "includes_gst": true,
+        "source": "Z-1",
+        "verified": false
+      }
+    ],
+    "auto_square_off_fee": [
+      {
+        "applies": {},
+        "effective_from": "VERIFY",
+        "observed_on": "2026-10-29",
+        "per_order_paise": 5000,
+        "plus_gst": true,
+        "source": "Z-1",
+        "verified": false
+      }
+    ],
+    "physical_delivery": [
+      {
+        "applies": {
+          "segment": "FO"
+        },
+        "effective_from": "VERIFY",
+        "observed_on": "2026-10-29",
+        "brokerage_pct": "0.0025",
+        "netted_brokerage_pct": "0.001",
+        "stt_each_side_pct_of_value": "0.001",
+        "source": "Z-4",
+        "verified": false
+      }
+    ]
   }
 }

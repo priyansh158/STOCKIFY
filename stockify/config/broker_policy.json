@@ -1,7 +1,171 @@
 {
   "schema": "stockify.broker_policy/1",
-  "mis_cutoff": [], "mis_margin_pct": [], "market_protection_auto_pct": [],
-  "freeze_policy_default": [], "max_slices": [], "cnc_sell_credit_same_day": [],
-  "delivery_margin_schedule": [], "block_new_long_otm_stock_options_expiry_week": [],
-  "rms_square_off_time": []
+  "mis_cutoff": [
+    {
+      "group": "CM",
+      "effective_from": "2015-01-01",
+      "time": "15:20",
+      "source": "Z-5",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "CM",
+      "effective_from": "2025-12-26",
+      "time": "15:25",
+      "source": "Z-5",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "FO",
+      "effective_from": "2015-01-01",
+      "time": "15:25",
+      "source": "Z-5",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "FO",
+      "effective_from": "2025-12-26",
+      "time": "15:26",
+      "source": "Z-5",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    }
+  ],
+  "mis_margin_pct": [
+    {
+      "applies": {
+        "segment": "CM"
+      },
+      "effective_from": "2015-01-01",
+      "pct": "0.20",
+      "source": "Z-5 (2024 bulletin; current value unconfirmed)",
+      "verified": false
+    },
+    {
+      "applies": {
+        "segment": "FO"
+      },
+      "effective_from": "2015-01-01",
+      "pct": "1",
+      "source": "Z-5 (F&O MIS = full NRML; modelled as 100% of the NRML requirement)",
+      "verified": false
+    }
+  ],
+  "market_protection_auto_bp": [
+    {
+      "applies": {},
+      "effective_from": "2026-04-01",
+      "bp": 200,
+      "source": "K-12; automatic protection modelled as 2% (assumption, labelled)",
+      "verified": false
+    }
+  ],
+  "freeze_policy_default": [
+    {
+      "applies": {},
+      "effective_from": "2015-01-01",
+      "policy": "slice",
+      "source": "A4 §3.8 default",
+      "verified": false
+    }
+  ],
+  "max_slices": [
+    {
+      "applies": {},
+      "effective_from": "2015-01-01",
+      "max": 10,
+      "source": "assumption (slice limit not confirmed by Zerodha)",
+      "verified": false
+    }
+  ],
+  "cnc_sell_credit_same_day": [
+    {
+      "applies": {
+        "segment": "CM"
+      },
+      "effective_from": "2015-01-01",
+      "fraction": "0.8",
+      "source": "assumption (Zerodha credits 80% of delivery sale value same day; unconfirmed)",
+      "verified": false
+    }
+  ],
+  "delivery_margin_schedule": [
+    {
+      "applies": {},
+      "effective_from": "2025-09-01",
+      "source": "Z-4",
+      "verified": true,
+      "verified_on": "2026-10-29",
+      "rows": [
+        {
+          "day_offset": -4,
+          "applies_to": "long_itm_options",
+          "basis": "var_elm_adhoc",
+          "pct": "0.10"
+        },
+        {
+          "day_offset": -3,
+          "applies_to": "long_itm_options",
+          "basis": "var_elm_adhoc",
+          "pct": "0.25"
+        },
+        {
+          "day_offset": -2,
+          "applies_to": "long_itm_options",
+          "basis": "var_elm_adhoc",
+          "pct": "0.45"
+        },
+        {
+          "day_offset": -1,
+          "applies_to": "long_itm_options",
+          "basis": "contract_value",
+          "pct": "0.25"
+        },
+        {
+          "day_offset": 0,
+          "applies_to": "long_itm_options",
+          "basis": "contract_value",
+          "pct": "0.50"
+        },
+        {
+          "day_offset": 0,
+          "applies_to": "long_otm_near_spot",
+          "basis": "contract_value",
+          "pct": "0.25"
+        },
+        {
+          "day_offset": 0,
+          "applies_to": "futures_and_short_options",
+          "basis": "min_contract_value_or_nrml",
+          "pct": "0.50",
+          "nrml_multiple": "1.5"
+        }
+      ]
+    }
+  ],
+  "block_new_long_otm_stock_options_expiry_week": [
+    {
+      "applies": {},
+      "effective_from": "2025-09-01",
+      "days": [
+        "MON",
+        "TUE"
+      ],
+      "source": "Z-4",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    }
+  ],
+  "rms_square_off_time": [
+    {
+      "applies": {},
+      "effective_from": "2015-01-01",
+      "time": null,
+      "source": "not modelled (rms_square_off policy defaults to false, A1 §6.1)",
+      "verified": false
+    }
+  ]
 }

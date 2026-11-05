@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from stockify import timeutil
 
@@ -101,8 +101,8 @@ def run() -> list[Check]:
         checks.append(Check("token", False, "no saved token: log in via /portfolio, then Login to Kite"))
         return checks
     obtained = payload.get("obtained_at")
-    when = (datetime.fromtimestamp(int(obtained), tz=timezone.utc).astimezone(timeutil.IST)
-            .strftime("%Y-%m-%d %H:%M IST")) if obtained else "unknown time"
+    when = (timeutil.s_to_ist(int(obtained)).strftime("%Y-%m-%d %H:%M IST")
+            if obtained else "unknown time")
     if not kite_client.token_is_fresh(payload):
         checks.append(Check("token", False,
                             f"token from {when} expired at 06:00 IST: log in again via /portfolio"))
@@ -126,7 +126,7 @@ def run() -> list[Check]:
         checks.append(Check("quote", False, _err(e)))
 
     if token is not None:
-        now = datetime.now(tz=timeutil.IST).replace(tzinfo=None)
+        now = timeutil.now_ist().replace(tzinfo=None)
         try:
             days = kite.historical_data(token, now - timedelta(days=10), now, "day")
             minutes = kite.historical_data(token, now - timedelta(days=4), now, "minute")

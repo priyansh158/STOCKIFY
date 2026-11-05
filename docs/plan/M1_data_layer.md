@@ -37,14 +37,14 @@ Files: `stockify/data/refdata.py`, `stockify/data/instruments.py`. Tables: `A1_s
 
 Files: `stockify/config/*`, `stockify/data/calendar.py`, `stockify/timeutil.py`. Schemas: `A1_schemas.md` §7.
 
-- [ ] `calendar/nse_holidays.csv`: trading holidays for 2024, 2025 and 2026 per segment, with the NSE circular as `source` (⚠ fetch NSE's published lists; the owner checks them). Add 2027 when NSE publishes it (usually December).
-- [ ] `calendar/special_sessions.csv`: e.g. Muhurat trading (2026: reported for 8 November ⚠ date and times).
-- [ ] `sessions.json` exactly as A1 §7.3 (X-6, X-7), with the ⚠ rows checked against the NSE circulars where possible.
-- [ ] `contract_rules.json` (A1 §7.4), `broker_policy.json` (A1 §7.5), `schedule.json` (A1 §7.8), `storage.json` (A1 §7.9, `retention_days: null`).
-- [ ] `charges.json` with every row of A1 §7.2 (sources Z-1, Z-2, Z-3, Z-4), `pricing.json` (A1 §7.7) and `margin_params.json` (A1 §7.6, the T0 assumption rows). The M0.2 loader must accept them; a test loads every config and checks that each component resolves to exactly one row for sample dates in 2024, 2025 and 2026 (A4 §5.2).
-- [ ] `calendar.py`: `is_trading_day(segment, d)`, `trading_days(segment, start, end)`, `phases(group, d) -> [(phase, start_utc_ns, end_utc_ns)]`, `phase_at(group, t_ns)`, `generated_expiries(underlying, start, end)`, `validate_expiries(underlying, actual_dates)` (rules as validators, I-6).
-- [ ] All IST↔UTC conversion goes through `stockify/timeutil.py` using `zoneinfo("Asia/Kolkata")`. A test greps the package: no `datetime.now()`, `datetime.fromtimestamp()` without `tz=`, `time.time()` or `time.localtime` outside `timeutil.py` and `daemon/clock.py` (I-4).
-- [ ] Tests: phase boundaries on 2025-12-05, 2025-12-08, 2026-07-31 and 2026-08-03 (U-02); the Thursday→Tuesday switch around 2025-08-28/2025-09-02 (G15); a holiday-shifted expiry.
+- [x] `calendar/nse_holidays.csv` (from NSE's holiday-master API, raw responses kept under `$LAB/nse/raw/nse_holidays/`; 🛑 owner check pending): trading holidays for 2024, 2025 and 2026 per segment, with the NSE circular as `source` (⚠ fetch NSE's published lists; the owner checks them). Add 2027 when NSE publishes it (usually December).
+- [ ] `calendar/special_sessions.csv` (left empty: no verified times yet for Muhurat 2026-11-08 or the 2024-03-02 special Saturday): e.g. Muhurat trading (2026: reported for 8 November ⚠ date and times).
+- [x] `sessions.json` exactly as A1 §7.3 (X-6, X-7), with the ⚠ rows checked against the NSE circulars where possible.
+- [x] `contract_rules.json` (A1 §7.4), `broker_policy.json` (A1 §7.5), `schedule.json` (A1 §7.8), `storage.json` (A1 §7.9, `retention_days: null`).
+- [x] `charges.json` with every row of A1 §7.2 (sources Z-1, Z-2, Z-3, Z-4), `pricing.json` (A1 §7.7) and `margin_params.json` (A1 §7.6, the T0 assumption rows). The M0.2 loader must accept them; a test loads every config and checks that each component resolves to exactly one row for sample dates in 2024, 2025 and 2026 (A4 §5.2).
+- [x] `calendar.py`: `is_trading_day(segment, d)`, `trading_days(segment, start, end)`, `phases(group, d) -> [(phase, start_utc_ns, end_utc_ns)]`, `phase_at(group, t_ns)`, `generated_expiries(underlying, start, end)`, `validate_expiries(underlying, actual_dates)` (rules as validators, I-6).
+- [x] All IST↔UTC conversion goes through `stockify/timeutil.py` using `zoneinfo("Asia/Kolkata")`. A test greps the package: no `datetime.now()`, `datetime.fromtimestamp()` without `tz=`, `time.time()` or `time.localtime` outside `timeutil.py` and `daemon/clock.py` (I-4).
+- [x] Tests: phase boundaries on 2025-12-05, 2025-12-08, 2026-07-31 and 2026-08-03 (U-02); the Thursday→Tuesday switch around 2025-08-28/2025-09-02 (G15); a holiday-shifted expiry.
 
 ## M1.3 NSE end-of-day files (L)
 

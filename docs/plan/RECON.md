@@ -101,3 +101,12 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - **The uvicorn access log prints the one-time `request_token`** of `/api/kite/callback`. The token is single-use and already exchanged, but I-10 says tokens never reach logs. Fix (GK): filter the query string of that route out of the access log.
 - **Both fixed 2026-11-05 (GK 1.1).** `run.ps1` starts the API without `--reload` by default; `-Reload` turns it on and gives the API its own console window, so the reloader's CTRL_C_EVENT no longer reaches the web server. `server/log_redaction.py` filters the `uvicorn.access` logger so `request_token`, `access_token`, `api_secret` and `checksum` values print as `***`. Verified live: editing a repo file left the API and web up, and a request carrying `request_token=FAKESECRET42` logged as `request_token=***`.
 
+## 2026-11-05 — M1.2 notes
+
+- **Holidays.** NSE's JSON API `https://www.nseindia.com/api/holiday-master?type=trading&year=YYYY` (needs a browser User-Agent, the NSE home-page cookie and a Referer) returns per-segment lists; CM and F&O were identical for 2024 (22), 2025 (18) and 2026 (20). Raw responses with SHA-256 are kept in `$LAB/nse/raw/nse_holidays/`. The 2024 list includes **2024-03-02 "Special Live Trading"**, a special Saturday session (disaster-recovery drill), not a holiday; it is left out of `nse_holidays.csv`. Weekend-dated entries (e.g. 2026-02-15, 2026-11-08) are kept; they change nothing.
+- **Muhurat 2026-11-08** is flagged `Diwali Laxmi Pujan*` (a Sunday). The API gives no session times, so `special_sessions.csv` stays empty until the NSE circular is checked.
+- **Index tradingsymbols** in `contract_rules.json` (NIFTY 50, NIFTY BANK, NIFTY FIN SERVICE, NIFTY MID SELECT, NIFTY NEXT 50) and INDIA VIX were all found in the live Kite NSE dump on 2026-11-05. Current futures lot sizes there (NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120, NIFTYNXT50 25) match X-3.
+- **Open issues 1, 2, 4 and 5 from M0 recon are resolved** by D-33 (charge hole before 2024-10-01), D-34 (protection in bp), D-36 (DAY_END) and D-35 (pre-open scope).
+- **No sourced expiry rule exists before 2024-11-20**, so `generated_expiries` returns nothing earlier (I-1). Validating older expiries needs sourced weekday rules per index.
+- `broker_policy.json` values not in Z-1…Z-5 (`max_slices` 10, same-day CNC sell credit 80%, F&O MIS = full NRML) are marked `verified: false` assumptions.
+

@@ -1,7 +1,56 @@
 {
   "schema": "stockify.contract_rules/1",
-  "expiry_rules": [],
+  "expiry_rules": [
+    {
+      "effective_from": "2024-11-20",
+      "weekly": {
+        "underlyings": [
+          "NIFTY"
+        ],
+        "weekday": "THU"
+      },
+      "monthly": {
+        "weekday": "THU",
+        "which": "last"
+      },
+      "source": "X-1",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "effective_from": "2025-09-01",
+      "weekly": {
+        "underlyings": [
+          "NIFTY"
+        ],
+        "weekday": "TUE"
+      },
+      "monthly": {
+        "weekday": "TUE",
+        "which": "last"
+      },
+      "source": "X-2",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    }
+  ],
   "holiday_shift": "previous_trading_day",
-  "settlement": [],
-  "underlyings": {}
+  "settlement": [
+    {
+      "effective_from": "2019-10-01",
+      "INDEX": "cash",
+      "STOCK": "physical",
+      "source": "X-8",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    }
+  ],
+  "underlyings": {
+    "NIFTY": "NSE:NIFTY 50",
+    "BANKNIFTY": "NSE:NIFTY BANK",
+    "FINNIFTY": "NSE:NIFTY FIN SERVICE",
+    "MIDCPNIFTY": "NSE:NIFTY MID SELECT",
+    "NIFTYNXT50": "NSE:NIFTY NEXT 50"
+  },
+  "underlyings_verified_on": "2026-11-05"
 }

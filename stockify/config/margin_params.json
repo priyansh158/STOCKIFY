@@ -1,1 +1,24 @@
-{ "schema": "stockify.margin_params/1", "flat": [], "spanlite": {}, "expiry_day_short_index_option_addon": [] }
+{
+  "schema": "stockify.margin_params/1",
+  "flat": [
+    {
+      "applies": {},
+      "effective_from": "2015-01-01",
+      "index_pct": "0.12",
+      "stock_pct": "0.20",
+      "source": "assumption: T0 flat margin (D-14), labelled approximate",
+      "verified": false
+    }
+  ],
+  "spanlite": {},
+  "expiry_day_short_index_option_addon": [
+    {
+      "applies": {},
+      "effective_from": "2015-01-01",
+      "pct": "0.02",
+      "basis": "notional",
+      "source": "X-9 (basis ⚠)",
+      "verified": false
+    }
+  ]
+}

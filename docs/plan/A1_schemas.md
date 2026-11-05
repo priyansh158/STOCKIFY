@@ -490,7 +490,7 @@ Times are IST; the resolver converts them to UTC ns per trading day and applies 
 
 ### 7.5 `broker_policy.json`
 
-Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era equity time), `mis_margin_pct` (decimal string, e.g. `"0.20"`), `market_protection_auto_pct` (decimal string, e.g. `"2"` = 2% = 200 bp; **an assumption**, labelled), `freeze_policy_default`, `max_slices` (10, R-1), `cnc_sell_credit_same_day` (fraction), `delivery_margin_schedule` (Z-4 rows: `day_offset`, `applies_to`, `basis`, `pct`), `block_new_long_otm_stock_options_expiry_week`, `rms_square_off_time`.
+Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era equity time), `mis_margin_pct` (decimal string, e.g. `"0.20"`), `market_protection_auto_bp` (integer bp, e.g. `200` = 2%; **an assumption**, labelled; D-34), `freeze_policy_default`, `max_slices` (10, R-1), `cnc_sell_credit_same_day` (fraction), `delivery_margin_schedule` (Z-4 rows: `day_offset`, `applies_to`, `basis`, `pct`), `block_new_long_otm_stock_options_expiry_week`, `rms_square_off_time`.
 
 ### 7.6 `margin_params.json`
 

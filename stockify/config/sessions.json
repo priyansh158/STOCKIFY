@@ -1,1 +1,169 @@
-{ "schema": "stockify.sessions/1", "versions": [] }
+{
+  "schema": "stockify.sessions/1",
+  "versions": [
+    {
+      "group": "FO_OPT",
+      "effective_from": "2015-01-01",
+      "phases": [
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:30"
+        }
+      ],
+      "close_vwap_window": [
+        "15:00",
+        "15:30"
+      ],
+      "source": "X-7",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "FO_OPT",
+      "effective_from": "2026-08-03",
+      "phases": [
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:40"
+        }
+      ],
+      "close_vwap_window": [
+        "15:10",
+        "15:40"
+      ],
+      "source": "X-7",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "FO_FUT",
+      "effective_from": "2015-01-01",
+      "phases": [
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:30"
+        }
+      ],
+      "source": "X-7",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "FO_FUT",
+      "effective_from": "2025-12-08",
+      "phases": [
+        {
+          "phase": "PREOPEN",
+          "start": "09:00",
+          "end": "09:15",
+          "scope": "near_month_futures"
+        },
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:30"
+        }
+      ],
+      "source": "X-6",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "FO_FUT",
+      "effective_from": "2026-08-03",
+      "phases": [
+        {
+          "phase": "PREOPEN",
+          "start": "09:00",
+          "end": "09:15",
+          "scope": "near_month_futures"
+        },
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:40"
+        }
+      ],
+      "source": "X-6, X-7",
+      "verified": true,
+      "verified_on": "2026-10-29"
+    },
+    {
+      "group": "CM",
+      "effective_from": "2015-01-01",
+      "phases": [
+        {
+          "phase": "PREOPEN",
+          "start": "09:00",
+          "end": "09:15"
+        },
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:30"
+        },
+        {
+          "phase": "POSTCLOSE",
+          "start": "15:40",
+          "end": "16:00"
+        }
+      ],
+      "source": "⚠ post-close times",
+      "verified": false
+    },
+    {
+      "group": "CM",
+      "effective_from": "2026-08-03",
+      "phases": [
+        {
+          "phase": "PREOPEN",
+          "start": "09:00",
+          "end": "09:15"
+        },
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:30"
+        },
+        {
+          "phase": "POSTCLOSE",
+          "start": "15:50",
+          "end": "16:00"
+        }
+      ],
+      "source": "X-7",
+      "verified": false
+    },
+    {
+      "group": "CM_CAS",
+      "effective_from": "2026-08-03",
+      "phases": [
+        {
+          "phase": "PREOPEN",
+          "start": "09:00",
+          "end": "09:15"
+        },
+        {
+          "phase": "CONTINUOUS",
+          "start": "09:15",
+          "end": "15:15"
+        },
+        {
+          "phase": "CAS",
+          "start": "15:15",
+          "end": "15:35"
+        },
+        {
+          "phase": "POSTCLOSE",
+          "start": "15:50",
+          "end": "16:00"
+        }
+      ],
+      "source": "X-7 (⚠ CAS sub-phases)",
+      "verified": false
+    }
+  ]
+}
