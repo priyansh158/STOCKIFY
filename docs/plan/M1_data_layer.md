@@ -150,7 +150,7 @@ Files: `stockify/data/packs.py` (builder, encoder, numpy reader). Format: `A1_sc
 
 ## M1.10 Tracked defect #1 (S)
 
-- [ ] Re-test `candles_since`. Fix it, or document why the recorder makes it irrelevant, and close it.
+- [x] Closed 2026-11-05: `tick_buffer.candles_since` had no callers and was removed in M0.1 together with its expected-failure tests (RB 0.1). Intraday candles now come from the recorded archive through `stockify.data.ticks` (and Kite bars in M1.4), so nothing needs the old aggregate query.
 
 ---
 
