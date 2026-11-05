@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "pack": ("M1", "build event packs"),
     "oracle": ("M2", "run the Python oracle backtester"),
     "golden": ("M2", "run golden scenarios"),
     "compare-artifacts": ("M3", "compare two runs' deterministic artifacts"),
@@ -259,6 +258,36 @@ def _cmd_bars_sweep(args) -> int:
     return 0
 
 
+def _cmd_pack_build(args) -> int:
+    from pathlib import Path
+
+    from stockify.data import packs
+
+    try:
+        sha = packs.build(json.loads(Path(args.spec).read_text(encoding="utf-8")))
+    except packs.PackError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(sha)
+    return 0
+
+
+def _cmd_pack_show(args) -> int:
+    from stockify import paths
+    from stockify.data import packs
+
+    hits = sorted(p.stem for p in paths.packs_dir().glob(f"{args.sha}*.evt"))
+    if len(hits) != 1:
+        print(f"{len(hits)} packs match {args.sha!r}", file=sys.stderr)
+        return 1
+    sha = hits[0]
+    print(json.dumps(packs.manifest(sha), indent=2, sort_keys=True))
+    _, records = packs.read(packs.pack_path(sha))
+    for rec in records[:args.records]:
+        print(json.dumps(rec, sort_keys=True))
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -329,6 +358,16 @@ def main(argv: list[str] | None = None) -> int:
     bf.set_defaults(func=_cmd_bars_fetch)
     bsub.add_parser("sweep", help="corporate-action check for every cached live instrument"
                     ).set_defaults(func=_cmd_bars_sweep)
+
+    pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
+    pksub = pk.add_subparsers(dest="pack_command", required=True)
+    pb = pksub.add_parser("build", help="build a pack from a JSON spec; prints its SHA-256")
+    pb.add_argument("--spec", required=True, help="path to the spec JSON")
+    pb.set_defaults(func=_cmd_pack_build)
+    ps = pksub.add_parser("show", help="print a pack's manifest and first records")
+    ps.add_argument("sha", help="the pack's SHA-256 (a unique prefix is enough)")
+    ps.add_argument("--records", type=int, default=10, help="how many records to print (default 10)")
+    ps.set_defaults(func=_cmd_pack_show)
 
     cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
     cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")

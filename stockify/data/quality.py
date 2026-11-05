@@ -92,6 +92,11 @@ def report(day: date, *, write: bool = True) -> dict:
     tick_day = ticks.open_day(day)
     if tick_day is None:
         raise QualityError(f"no recording for {day}")
+    with tick_day:                       # closes the landing file, so retention can delete it
+        return _report(day, tick_day, write)
+
+
+def _report(day: date, tick_day, write: bool) -> dict:  # noqa: ANN001
     spans = _sub_intervals(tick_day.subscriptions())
     insts: dict[int, _Inst] = {}
 

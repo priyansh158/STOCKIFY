@@ -137,12 +137,12 @@ Files: `stockify/data/compact.py`. Layout: `A1_schemas.md` §3.2.
 
 Files: `stockify/data/packs.py` (builder, encoder, numpy reader). Format: `A1_schemas.md` §5. The C++ reader comes in M3.2.
 
-- [ ] Pack spec (JSON): `dataset` (`ticks | bars | bhav_eod`), date range, instruments (ids or selectors such as "NIFTY options of the nearest weekly expiry within ±10 strikes"), tiers, bar interval, `clock_cadence_ms` (default 0 = none; CLOCK events never change results, A4 §1.6), `include_gaps` (default true).
-- [ ] Builder: load rows and map them to records: FULL → `TICK_FULL`; QUOTE → `TICK_QUOTE`; index → `INDEX`; Kite bars → `BAR` with `t_event = start + interval`; `bhav_eod` rows → `BAR` (interval 86400) with `t_event` = the trade date's EOD publication time from `pricing.json` (A4 §1.1, §4.9); gaps → `GAP` (tier gaps expanded per instrument); optional `CLOCK`; `REFDATA` for instruments added mid-day and for daily limits; `SETTLE` from `settlement_prices` (final) and `fo_eod.settle_paise` (daily), with `t_event` = publication times from `pricing.json`.
-- [ ] Ordering and `seq` exactly per A1 §5: sort by `(t_event, rank, source seq, instrument_id)` with the ranks of A4 §1.3, then number 1…N. Name the file by its SHA-256.
-- [ ] Deterministic: the same spec over the same sources produces identical bytes (P-05).
-- [ ] Manifest (`<sha>.json`): spec, source files and hashes, counts by kind, time range, `price_basis` (`raw` for ticks and bhavcopy, `adjusted` for Kite bars).
-- [ ] CLI `python -m stockify pack build --spec spec.json` prints the hash; `python -m stockify pack show <sha>` prints the manifest and the first records.
+- [x] Pack spec (JSON): `dataset` (`ticks | bars | bhav_eod`), date range, instruments (ids or selectors such as "NIFTY options of the nearest weekly expiry within ±10 strikes"), tiers, bar interval, `clock_cadence_ms` (default 0 = none; CLOCK events never change results, A4 §1.6), `include_gaps` (default true).
+- [x] Builder: load rows and map them to records: FULL → `TICK_FULL`; QUOTE → `TICK_QUOTE`; index → `INDEX`; Kite bars → `BAR` with `t_event = start + interval`; `bhav_eod` rows → `BAR` (interval 86400) with `t_event` = the trade date's EOD publication time from `pricing.json` (A4 §1.1, §4.9); gaps → `GAP` (tier gaps expanded per instrument); optional `CLOCK`; `REFDATA` for instruments added mid-day and for daily limits; `SETTLE` from `settlement_prices` (final) and `fo_eod.settle_paise` (daily), with `t_event` = publication times from `pricing.json`.
+- [x] Ordering and `seq` exactly per A1 §5: sort by `(t_event, rank, source seq, instrument_id)` with the ranks of A4 §1.3, then number 1…N. Name the file by its SHA-256.
+- [x] Deterministic: the same spec over the same sources produces identical bytes (P-05).
+- [x] Manifest (`<sha>.json`): spec, source files and hashes, counts by kind, time range, `price_basis` (`raw` for ticks and bhavcopy, `adjusted` for Kite bars).
+- [x] CLI `python -m stockify pack build --spec spec.json` prints the hash; `python -m stockify pack show <sha>` prints the manifest and the first records.
 
 ## M1.9 Data-quality report (S)
 

@@ -39,7 +39,21 @@ def kind_of(pkt_len: int) -> str:
     return "full" if pkt_len == 184 else "index" if pkt_len in (28, 32) else "quote"
 
 
-class ArchiveDay:
+class _Day:
+    """`with ticks.open_day(d) as day:` closes the landing file afterwards (Windows
+    cannot delete a file that is still open, D-38)."""
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):  # noqa: ANN204
+        return self
+
+    def __exit__(self, *exc) -> None:  # noqa: ANN002
+        self.close()
+
+
+class ArchiveDay(_Day):
     source = "archive"
 
     def __init__(self, day: date, folder: Path):
@@ -97,8 +111,11 @@ class ArchiveDay:
         return first["recv_ns"] if first else None
 
 
-class LandingDay:
+class LandingDay(_Day):
     source = "landing"
+
+    def close(self) -> None:
+        self.db.close()
 
     def __init__(self, day: date, path: Path | None = None, *, db=None):  # noqa: ANN001
         from stockify.daemon.landing import LandingDB
@@ -170,6 +187,11 @@ def open_day(day: date, *, prefer: str = "archive", landing_path: Path | None = 
     if has_archive:
         return ArchiveDay(day, folder)
     return None
+
+
+def has_day(day: date) -> bool:
+    """Whether the day was recorded (archive or landing), without opening anything."""
+    return (archive_folder(day) / "meta.json").exists() or paths.ticks_landing_file(day).exists()
 
 
 def available_days() -> list[date]:

@@ -177,3 +177,14 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
 - First real fetch (2026-11-05): RELIANCE/INFY day 2026-01-01 → 2026-11-04 (208 bars each, 1 request); Kite day closes equal the bhavcopy CM closes on 10-27, 10-28 and 11-04. NIFTY continuous futures 2024-01-01 → 2026-11-04: 706 day bars with OI.
 - **Observed:** RELIANCE minute bars end at 15:14 IST (360 per day) while NIFTY 50 runs to 15:29 (375). F&O stocks stop continuous trading at 15:15 for the closing auction (D-13, `CM_CAS`); Kite has no minute bars for the auction window.
 
+## 2026-11-05 — M1.8 event packs (CAM 1.1)
+
+- `stockify/data/packs.py`: encoder, builder, `read(path) -> (header, records)` (records as dicts; checks sizes, order and count) and `read_numpy(path, kind)` for one fixed-size kind. A2 listed `read(path) -> numpy records`; variable-size REFDATA makes one array impossible, hence the split.
+- Ticks are read through `stockify.data.ticks` from their raw bytes (`kite_packets.parse_packet` / `parse_depth` / `index_change`), so a pack is byte-identical whether the day comes from the landing file or the archive (test).
+- One day's records are held in memory at a time; ticks are merged with the other events because receive order is already time order (a day with a backwards clock step is sorted).
+- Selectors: ids, symbols, chain (`expiry: nearest` or a date, `strikes: N` around the ATM from the underlying's previous-day close in `index_eod` / `cm_eod`, optional nearest future). Ticks with no selector take every instrument in the day's subscription log.
+- LTP-mode (8-byte) packets have no record kind and raise; the recorder never subscribes in LTP mode.
+- `GAP` reason 5 `not_subscribed` is encodable but not generated yet; tier gaps are expanded per subscribed pack instrument.
+- `REFDATA price_band` comes from `daily_limits`, which the M1.5 scheduler does not fill yet (quote-endpoint snapshot still open).
+- Real packs built 2026-11-05: the recorded day (61,488 records, 18.3 MB, all 61,286 packets), a NIFTY nearest-expiry ±10 chain with 1 s CLOCK (17,588 records), RELIANCE/INFY day bars (adjusted) and a bhav_eod pack. Each rebuilt to the same SHA-256.
+
