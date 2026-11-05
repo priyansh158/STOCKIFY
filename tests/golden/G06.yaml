@@ -1,0 +1,30 @@
+id: G06
+title: IOC remainder cancelled after the first eligible event; a non-marketable IOC is cancelled unfilled
+semantics: ["A4 §3.7"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: TEST, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+run: { fill_model: { kind: bar, participation: "0.10" }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:16:00+05:30", o: 10000, h: 10020, l: 9990, c: 10010, v: 50 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:17:00+05:30", o: 10000, h: 10020, l: 8900, c: 10010, v: 5000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: LIMIT, price: 10050, validity: IOC } }
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: LIMIT, price: 9000, validity: IOC } }
+expect:
+  orders:
+    - { order_id: 1, status: CANCELLED, reason: IOC, filled_qty: 5 }
+    - { order_id: 2, status: CANCELLED, reason: IOC, filled_qty: 0 }
+  fills: [ { order_id: 1, qty: 5, price_paise: 10000, evidence: bar_open } ]
+  fills_count: 1
+  order_events:
+    - { order_id: 1, event: CANCEL, detail: IOC, t: "2026-03-02T09:17:00+05:30" }
+    - { order_id: 2, event: CANCEL, detail: IOC, t: "2026-03-02T09:17:00+05:30" }
+notes: |
+  Both IOCs are matched against their first eligible event, the 09:16 bar (known 09:17). Its volume 50
+  caps fills at 5 units: order 1 (limit 100.50 >= open 100.00) fills 5 at the open and the remaining 5
+  are cancelled right after that event. Order 2 (limit 90.00) is not reached on that bar (low 99.90), so
+  it is cancelled unfilled, even though the next bar trades down to 89.00.

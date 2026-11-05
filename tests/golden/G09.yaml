@@ -1,0 +1,46 @@
+id: G09
+title: One NIFTY futures lot bought and sold at 25,000 on 2026-03-31 and 2026-04-01 (STT change)
+semantics: ["C-11", "Z-2", "A4 §5.3"]
+bundle:
+  dates: ["2026-03-31", "2026-04-01"]
+  instruments:
+    - { id: 1, kind: FUT, tradingsymbol: NIFTY26APRFUT, underlying: NIFTY, expiry: "2026-04-28",
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 10 } ] }
+  charges:
+    brokerage: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", kind: min_flat_pct, flat_paise: 2000, pct: "0.0003" } ]
+    stt:
+      - { applies: { segment: FO, kind: [FUT] }, effective_from: "2024-10-01", sell: "0.0002" }
+      - { applies: { segment: FO, kind: [FUT] }, effective_from: "2026-04-01", sell: "0.0005" }
+    exchange_txn: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", pct: "0.0000183" } ]
+    sebi: [ { applies: {}, effective_from: "2015-01-01", pct: "0.000001" } ]
+    stamp: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", buy: "0.00002" } ]
+    gst: [ { applies: {}, effective_from: "2015-01-01", rate: "0.18", "on": [brokerage, exchange_txn, sebi] } ]
+run: { fill_model: { kind: bar }, capital_paise: 100000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:16:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:17:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-04-01T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-04-01T09:16:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-04-01T09:17:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 2, place: { instrument: 1, side: SELL, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 4, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 5, place: { instrument: 1, side: SELL, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+expect:
+  charges:
+    - { kind: order, order_id: 1, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3250, gst: 925, total: 9312 }
+    - { kind: order, order_id: 2, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 32500, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 38562 }
+    - { kind: order, order_id: 3, trade_date: "2026-04-01", brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3250, gst: 925, total: 9312 }
+    - { kind: order, order_id: 4, trade_date: "2026-04-01", brokerage: 2000, stt: 81250, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 87312 }
+  equity:
+    - { trade_date: "2026-03-31", cash_paise: 99952126, nav_paise: 99952126 }
+    - { trade_date: "2026-04-01", cash_paise: 99855502, nav_paise: 99855502 }
+notes: |
+  Turnover per order = 65 x 2,500,000 = 162,500,000 paise. Brokerage min(20.00, 0.03 %) = 2000.
+  Exchange 0.00183 % = 2973.75 -> 2974; SEBI 0.0001 % = 162.5 -> 163 (half up); stamp (buy) 0.002 % = 3250;
+  GST 18 % of (2000 + 2974 + 163) = 924.66 -> 925. STT (sell): 0.02 % = 32,500 on 2026-03-31, 0.05 % =
+  81,250 from 2026-04-01 (Z-2). Day totals: 9,312 + 38,562 = 47,874 and 9,312 + 87,312 = 96,624, as in A3.
+  Cash: 100,000,000 - 47,874 = 99,952,126; then - 96,624 = 99,855,502 (the position is flat each day).

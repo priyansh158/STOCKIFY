@@ -1,0 +1,35 @@
+id: G12
+title: Mid-life lot change; a reduce-only order in the old lot is accepted
+semantics: ["C-7", "X-3", "A4 §3.2"]
+bundle:
+  dates: ["2025-12-30", "2025-12-31"]
+  instruments:
+    - { id: 1, kind: FUT, tradingsymbol: NIFTY26MARFUT, underlying: NIFTY, expiry: "2026-03-26",
+        specs: [ { from: "2025-09-01", lot: 75, tick_paise: 10 }, { from: "2025-12-31", lot: 65, tick_paise: 10 } ] }
+run: { fill_model: { kind: bar }, capital_paise: 300000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-30T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-30T09:16:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-31T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-31T09:16:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 150, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 3, place: { instrument: 1, side: BUY, qty: 75, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 3, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 3, place: { instrument: 1, side: SELL, qty: 75, product: NRML, type: LIMIT, price: 2500000 } }
+expect:
+  orders:
+    - { order_id: 1, status: COMPLETE, filled_qty: 150 }
+    - { order_id: 2, status: REJECTED, reason: R_QTY_LOT }
+    - { order_id: 3, status: COMPLETE, filled_qty: 65 }
+    - { order_id: 4, status: COMPLETE, filled_qty: 75 }
+  positions:
+    - { trade_date: "2025-12-30", instrument_id: 1, product: NRML, qty: 150 }
+    - { trade_date: "2025-12-31", instrument_id: 1, product: NRML, qty: 140 }
+notes: |
+  The lot is 75 until 2025-12-30 and 65 from 2025-12-31 (C-7). The 150-unit position (two old lots) is
+  unchanged across the change: positions are in units. On 2025-12-31 a new buy of 75 is not a multiple of
+  65: R_QTY_LOT. A buy of 65 is accepted. A sell of 75 only reduces the existing long and is a multiple of
+  a lot in force while the position was opened (75): accepted under the X-3 exception (verify against the
+  NSE circular). End position 150 + 65 - 75 = 140.

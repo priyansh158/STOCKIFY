@@ -1,0 +1,40 @@
+id: G03
+title: Stops across a gap; a gapped-past SL does not fill; a 09:16:30 timer order cannot use the 09:16 bar
+semantics: ["A4 §3.4", "A4 §4.0", "A4 §4.1"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: TEST, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+run: { fill_model: { kind: bar }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10050, l: 9980, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:16:00+05:30", o: 10200, h: 10250, l: 10180, c: 10220, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:17:00+05:30", o: 10230, h: 10240, l: 10160, c: 10170, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: SL-M, trigger: 10100 } }
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: SL, trigger: 10100, price: 10150 } }
+    - { at_ns: "2026-03-02T09:16:30+05:30", place: { instrument: 1, side: BUY, qty: 5, product: CNC, type: MARKET } }
+expect:
+  orders:
+    - { order_id: 1, status: COMPLETE, filled_qty: 10, avg_price_paise: 10200 }
+    - { order_id: 2, status: CANCELLED, reason: EOD, filled_qty: 0 }
+    - { order_id: 3, status: COMPLETE, filled_qty: 5, avg_price_paise: 10200, protection_bp: 200 }
+  fills:
+    - { order_id: 1, qty: 10, price_paise: 10200, t: "2026-03-02T09:17:00+05:30", evidence: bar_open }
+    - { order_id: 3, qty: 5, price_paise: 10200, t: "2026-03-02T09:18:00+05:30", evidence: bar_path }
+  fills_count: 2
+notes: |
+  Orders 1 (SL-M buy, trigger 101.00) and 2 (SL buy, trigger 101.00, limit 101.50) are placed at 09:16
+  and are eligible on the 09:16 bar, which opens at 102.00, above both triggers (a gap).
+  Order 1 triggers at the open and becomes a protected market order whose ref is the open (the first
+  price beyond the trigger): protection floor(10200 x 1.02 / 5) x 5 = 10400. It fills at max(s, O) =
+  10200 (bar_open), known at 09:17.
+  Order 2 triggers at the open too, becoming a limit at 101.50; the open 102.00 is above it and the rest
+  of the 09:16 bar never trades below 101.80, nor does the 09:17 bar (low 101.60), so it never fills and
+  is cancelled at the close (EOD).
+  Order 3 is a market buy placed by a timer at 09:16:30. Its ref is the last close known then, the
+  09:15 bar's 100.00 (the 09:16 bar is only known at 09:17): limit floor(10000 x 1.02 / 5) x 5 = 10200.
+  It is not eligible on the 09:16 bar (start 09:16:00 < activation 09:16:30). On the 09:17 bar the open
+  102.30 is above its limit, so it behaves as a resting limit at 102.00, which the path reaches
+  (low 101.60 < 102.00): fill at 10200, bar_path, known at 09:18.

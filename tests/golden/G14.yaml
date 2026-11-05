@@ -1,0 +1,28 @@
+id: G14
+title: F&O DAY orders are cancelled at SEG_CLOSE, 15:30 on 2026-07-31 and 15:40 on 2026-08-03
+semantics: ["A4 §1.10", "X-7"]
+bundle:
+  dates: ["2026-07-31", "2026-08-03"]
+  instruments:
+    - { id: 1, kind: CE, tradingsymbol: NIFTY26AUG25000CE, underlying: NIFTY, expiry: "2026-08-25", strike_paise: 2500000,
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 5 } ] }
+  sessions_by_date:
+    "2026-08-03": { FO_OPT: [ [CONTINUOUS, "09:15", "15:40"] ], FO_FUT: [ [CONTINUOUS, "09:15", "15:40"] ] }
+run: { fill_model: { kind: bar }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-07-31T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-08-03T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 5000 } }
+    - { on_event: 2, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 5000 } }
+expect:
+  orders:
+    - { order_id: 1, status: CANCELLED, reason: EOD }
+    - { order_id: 2, status: CANCELLED, reason: EOD }
+  order_events:
+    - { order_id: 1, event: CANCEL, detail: EOD, t: "2026-07-31T15:30:00+05:30" }
+    - { order_id: 2, event: CANCEL, detail: EOD, t: "2026-08-03T15:40:00+05:30" }
+notes: |
+  From 2026-08-03 the F&O close moves to 15:40 (X-7), so a resting DAY order is cancelled at the end of
+  the group's last CONTINUOUS phase: 15:30 on 2026-07-31 and 15:40 on 2026-08-03.

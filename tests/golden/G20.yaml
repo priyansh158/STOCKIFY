@@ -1,0 +1,43 @@
+id: G20
+title: Orders submitted at 09:05 (future in PREOPEN, option CLOSED) queue to 09:15 or are rejected
+semantics: ["A4 §3.10", "X-6"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: FUT, tradingsymbol: NIFTY26MARFUT, underlying: NIFTY, expiry: "2026-03-30",
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 10 } ] }
+    - { id: 2, kind: CE, tradingsymbol: NIFTY2630325000CE, underlying: NIFTY, expiry: "2026-03-30", strike_paise: 2500000,
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 5 } ] }
+  sessions:
+    FO_FUT: [ [PREOPEN, "09:00", "09:15"], [CONTINUOUS, "09:15", "15:30"] ]
+    FO_OPT: [ [CONTINUOUS, "09:15", "15:30"] ]
+run: { fill_model: { kind: bar }, capital_paise: 100000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 10000 }
+strategy:
+  actions:
+    - { at_ns: "2026-03-02T09:05:00+05:30", place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { at_ns: "2026-03-02T09:05:00+05:30", place: { instrument: 2, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 10000 } }
+variants:
+  - name: queue
+    run: { policies: { preopen: queue } }
+    expect:
+      orders:
+        - { order_id: 1, status: COMPLETE, t_activate_ns: "2026-03-02T09:15:00+05:30" }
+        - { order_id: 2, status: COMPLETE, t_activate_ns: "2026-03-02T09:15:00+05:30" }
+      fills:
+        - { order_id: 1, price_paise: 2500000, t: "2026-03-02T09:16:00+05:30", evidence: bar_open }
+        - { order_id: 2, price_paise: 10000, t: "2026-03-02T09:16:00+05:30", evidence: bar_open }
+  - name: reject
+    run: { policies: { preopen: reject } }
+    expect:
+      orders:
+        - { order_id: 1, status: REJECTED, reason: R_SESSION }
+        - { order_id: 2, status: REJECTED, reason: R_SESSION }
+      fills_count: 0
+notes: |
+  At 09:05 the futures group is in PREOPEN and the options group is CLOSED; neither is CONTINUOUS.
+  queue (default): both are accepted as PENDING and activate at the next CONTINUOUS start, 09:15. The 09:15
+  bars start at 09:15 (= activation, eligible), so both fill at their opens, known at 09:16.
+  reject: both are rejected R_SESSION at submit. The F&O pre-open call auction itself is not simulated.

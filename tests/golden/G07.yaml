@@ -1,0 +1,29 @@
+id: G07
+title: A protected market buy becomes a limit; the price runs away; the remainder rests and fills at its limit
+semantics: ["A4 §3.3", "K-12"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: TEST, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+run: { fill_model: { kind: bar, participation: "0.10" }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:16:00+05:30", o: 10100, h: 10150, l: 10090, c: 10150, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:17:00+05:30", o: 10300, h: 10400, l: 10250, c: 10350, v: 5000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:18:00+05:30", o: 10250, h: 10260, l: 10150, c: 10180, v: 5000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 200, product: CNC, type: MARKET } }
+expect:
+  orders: [ { order_id: 1, status: COMPLETE, filled_qty: 200, avg_price_paise: 10150, protection_bp: 200 } ]
+  fills:
+    - { order_id: 1, qty: 100, price_paise: 10100, t: "2026-03-02T09:17:00+05:30", evidence: bar_open }
+    - { order_id: 1, qty: 100, price_paise: 10200, t: "2026-03-02T09:19:00+05:30", evidence: bar_path }
+  fills_count: 2
+  equity: [ { trade_date: "2026-03-02", cash_paise: 7970000, nav_paise: 10006000 } ]
+notes: |
+  The market buy becomes a limit at floor(10000 x 1.02 / 5) x 5 = 102.00 (ref = last close 100.00).
+  09:16 bar: fills 100 (the cap) at the open 101.00. 09:17 bar: the open 103.00 is above the limit and
+  the bar never trades below 102.50, so nothing fills (the protection holds). 09:18 bar: it trades down
+  through 102.00 (low 101.50), so the remaining 100 fill at the limit 102.00 (bar_path).
+  Average (1,010,000 + 1,020,000) / 200 = 10150. Cash 7,970,000; NAV + 200 x 10180 = 10,006,000.

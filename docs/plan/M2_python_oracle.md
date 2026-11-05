@@ -17,27 +17,27 @@ Files: `stockify/runconfig.py`, `stockify/bundle.py`. Both runners (oracle now, 
 - [x] Parse and validate `run.json` (`A1_schemas.md` §6.1): strategy, data (pack specs or hashes), fill model, costs, margin model, capital, seed, price basis, latency, session policies, trial family.
 - [x] `resolve_bundle(run_config) -> bundle.json` (`A1_schemas.md` §6.2, D-22): the trading days in range with their resolved phases in UTC ns; every instrument referenced by the packs with its dated contract specs and underlying link; the charge-schedule rows, broker-policy rows, margin and pricing parameters effective on any day in range; pack paths and hashes; strategy reference and source hash. The bundle is self-contained: the engine needs nothing else besides the packs.
 - [x] Validation errors (fail before running): mixed price bases (I-5); a pack hash mismatch; charge rows with `verified: false` without `allow_unverified` (and when allowed, the run is labelled, I-14); an instrument without specs on a day it trades (equities: D-43); a strategy whose source cannot be hashed.
-- [ ] The bundle is written to the run folder and hashed; the hash goes into the manifest (I-8).
+- [x] The bundle is written to the run folder and hashed; the hash goes into the manifest (I-8).
 
 ## M2.2 Oracle engine (M)
 
 Package `stockify/oracle/`: `events.py` (iterates a pack through the numpy reader from M1.8), `clock.py`, `orders.py`, `matcher.py` (fill models), `costs.py`, `ledger.py`, `margin.py` (T0 flat only), `settlement.py`, `metrics.py`, `artifacts.py`, `runner.py`.
 
-- [ ] Event processing exactly per `A4` §1–§2: one `(t, rank, src, seq)` ordering for input and internal events, the batch-boundary rule, session phases from the bundle, timers, `SEG_CLOSE`/`DAY_END`, market-state evidence (ΔV, the validity-checked interval VWAP), and bars built from snapshots.
-- [ ] Orders and the state machine per `A4` §3 (MARKET with protection, LIMIT, SL, SL-M; DAY and IOC; CNC, MIS, NRML; validations; rejects with reason codes).
-- [ ] Fill models per `A4` §4: `bar`, `snapshot_ltp`, `snapshot_quote`, `eod_close`, with the §4.0 eligibility rules, participation caps, and adverse slippage from the seeded generator of `A4` §4.5 (the oracle implements the same PCG32 bit for bit, so both draw identical numbers).
-- [ ] Costs per `A4` §5, reading the bundle's charge rows: per executed order, per component, integer ppb arithmetic through `stockify.numerics`, rounded with the documented rule.
-- [ ] Numeric discipline (A4 §0.3): no `sum()`, `math.fsum`, numpy or pandas reductions in anything that produces an artifact; floats only where A4 allows them; formulas in the exact expression order given.
-- [ ] Ledger per `A4` §6: cash, positions (units), average price, realised and unrealised P&L, MIS square-off at the dated cut-off with the optional fee, CNC holdings, end-of-day marks.
-- [ ] **F&O-lite** (enough for end-of-day index option research before M4): index futures and options with premium accounting, T0 flat margin, cash settlement at the final settlement price from `SETTLE` events, exercise STT. Stock F&O (physical settlement) is out of scope for the oracle until M4.6.
-- [ ] Artifacts in exactly the layout of `A1_schemas.md` §6.3 (same file names, columns, number formatting) so `compare-artifacts` can diff oracle and engine runs.
+- [x] Event processing exactly per `A4` §1–§2: one `(t, rank, src, seq)` ordering for input and internal events, the batch-boundary rule, session phases from the bundle, timers, `SEG_CLOSE`/`DAY_END`, market-state evidence (ΔV, the validity-checked interval VWAP), and bars built from snapshots.
+- [x] Orders and the state machine per `A4` §3 (MARKET with protection, LIMIT, SL, SL-M; DAY and IOC; CNC, MIS, NRML; validations; rejects with reason codes).
+- [x] Fill models per `A4` §4: `bar`, `snapshot_ltp`, `snapshot_quote`, `eod_close`, with the §4.0 eligibility rules, participation caps, and adverse slippage from the seeded generator of `A4` §4.5 (the oracle implements the same PCG32 bit for bit, so both draw identical numbers).
+- [x] Costs per `A4` §5, reading the bundle's charge rows: per executed order, per component, integer ppb arithmetic through `stockify.numerics`, rounded with the documented rule.
+- [x] Numeric discipline (A4 §0.3): no `sum()`, `math.fsum`, numpy or pandas reductions in anything that produces an artifact; floats only where A4 allows them; formulas in the exact expression order given.
+- [x] Ledger per `A4` §6: cash, positions (units), average price, realised and unrealised P&L, MIS square-off at the dated cut-off with the optional fee, CNC holdings, end-of-day marks.
+- [x] **F&O-lite** (enough for end-of-day index option research before M4): index futures and options with premium accounting, T0 flat margin, cash settlement at the final settlement price from `SETTLE` events, exercise STT. Stock F&O (physical settlement) is out of scope for the oracle until M4.6.
+- [x] Artifacts in exactly the layout of `A1_schemas.md` §6.3 (same file names, columns, number formatting) so `compare-artifacts` can diff oracle and engine runs.
 
 ## M2.3 Python strategy API (S)
 
 File: `stockify/strategy.py`. Interface: `A2_interfaces.md` §4.
 
-- [ ] Base class `Strategy` with hooks `on_start`, `on_bar`, `on_tick`, `on_timer`, `on_fill`, `on_order_update`, `on_session_phase`, `on_session_end`, `save_state`, `load_state`.
-- [ ] `Context` protocol: time, subscriptions, last snapshot / depth / bars, indicators (SMA, EMA, RSI and ATR with Wilder smoothing, session VWAP), orders, positions, funds, timers, parameters, logging, `rng()`.
+- [x] Base class `Strategy` with hooks `on_start`, `on_bar`, `on_tick`, `on_timer`, `on_fill`, `on_order_update`, `on_session_phase`, `on_session_end`, `save_state`, `load_state`.
+- [x] `Context` protocol: time, subscriptions, last snapshot / depth / bars, indicators (SMA, EMA, RSI and ATR with Wilder smoothing, session VWAP), orders, positions, funds, timers, parameters, logging, `rng()`.
 - [ ] The oracle provides one `Context` implementation; the C++ engine provides another in M3.8. **Strategies written now must run unchanged on the engine later**; this is checked in M3 by running every reference strategy on both.
 
 ## M2.4 Reference strategies (S)
@@ -53,8 +53,8 @@ Files: `stockify/strategies/`.
 
 Format and list: `A3_testing.md` §2–§3.
 
-- [ ] Golden runner `python -m stockify golden run --impl oracle` loads every `tests/golden/*.yaml`, builds a tiny pack and bundle from the YAML, runs, and compares artifacts to the expected values in the YAML.
-- [ ] Write G01–G10, G12, G14, G16, G19 and G20 with hand-computed expectations (G11 waits for M4.6, G17–G18 for M4.3; G13 and G15 are data-layer tests written in M1). Each YAML explains its expected numbers in a `notes` block, step by step, so a human can audit them.
+- [x] Golden runner `python -m stockify golden run --impl oracle` loads every `tests/golden/*.yaml`, builds a tiny pack and bundle from the YAML, runs, and compares artifacts to the expected values in the YAML.
+- [ ] Write G01–G10, G12, G14, G16, G19 and G20 *(2026-11-05: all written and passing except G08, which waits for the owner's charge capture below)* with hand-computed expectations (G11 waits for M4.6, G17–G18 for M4.3; G13 and G15 are data-layer tests written in M1). Each YAML explains its expected numbers in a `notes` block, step by step, so a human can audit them.
 - [ ] G08 (costs) uses ground truth from Kite's virtual contract note (K-10): `python -m stockify tools capture-charges --cases tests/golden/charges_cases.json` calls `POST /charges/orders` for a list of imaginary orders and saves the responses (no secrets) to `tests/fixtures/kite_charges/<date>.json`. 🛑 The owner runs the capture, since it needs a live access token. Re-capture whenever charges change, and keep old captures with their dates.
 
 ## M2.6 Metrics and run report (S)

@@ -1,0 +1,58 @@
+id: G04
+title: MIS square-off at the dated cut-off, with fee and AUTO_SQOFF; MIS after the cut-off is rejected
+semantics: ["A4 §3.2", "A4 §6.3", "Z-5"]
+bundle:
+  dates: ["2025-12-24", "2025-12-26"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: TEST, specs: [ { from: "2025-01-01", lot: 1, tick_paise: 5 } ] }
+  mis_cutoff: { "2025-12-24": { CM: "15:20" }, "2025-12-26": { CM: "15:25" } }
+  sqoff_fee_paise: 5000
+  gst_rate: "0.18"
+run: { fill_model: { kind: bar }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-24T09:15:00+05:30", o: 10000, h: 10010, l: 9990, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-24T09:16:00+05:30", o: 10000, h: 10010, l: 9990, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-24T15:19:00+05:30", o: 10100, h: 10110, l: 10090, c: 10100, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-24T15:20:00+05:30", o: 10120, h: 10130, l: 10110, c: 10120, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-24T15:21:00+05:30", o: 10120, h: 10130, l: 10110, c: 10120, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-26T09:15:00+05:30", o: 10000, h: 10010, l: 9990, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-26T09:16:00+05:30", o: 10000, h: 10010, l: 9990, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-26T15:24:00+05:30", o: 10200, h: 10210, l: 10190, c: 10200, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2025-12-26T15:25:00+05:30", o: 10220, h: 10230, l: 10210, c: 10220, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 10, product: MIS, type: MARKET } }
+    - { at_ns: "2025-12-24T15:21:30+05:30", place: { instrument: 1, side: BUY, qty: 10, product: MIS, type: MARKET } }
+    - { on_event: 6, place: { instrument: 1, side: BUY, qty: 10, product: MIS, type: MARKET } }
+expect:
+  orders:
+    - { order_id: 1, status: COMPLETE, avg_price_paise: 10000 }
+    - { order_id: 2, side: SELL, product: MIS, tag: AUTO_SQOFF, status: COMPLETE, avg_price_paise: 10120, t_submit_ns: "2025-12-24T15:20:00+05:30" }
+    - { order_id: 3, status: REJECTED, reason: R_SESSION }
+    - { order_id: 4, status: COMPLETE, avg_price_paise: 10000 }
+    - { order_id: 5, side: SELL, tag: AUTO_SQOFF, status: COMPLETE, avg_price_paise: 10220, t_submit_ns: "2025-12-26T15:25:00+05:30" }
+  fills:
+    - { order_id: 1, price_paise: 10000, t: "2025-12-24T09:17:00+05:30" }
+    - { order_id: 2, price_paise: 10120, t: "2025-12-24T15:21:00+05:30", evidence: bar_open }
+    - { order_id: 4, price_paise: 10000, t: "2025-12-26T09:17:00+05:30" }
+    - { order_id: 5, price_paise: 10220, t: "2025-12-26T15:26:00+05:30", evidence: bar_open }
+  charges:
+    - { kind: order, order_id: 1, total: 0 }
+    - { kind: order, order_id: 2, total: 0 }
+    - { kind: sqoff_fee, order_id: 2, other: 5000, gst: 900, total: 5900 }
+    - { kind: order, order_id: 4, total: 0 }
+    - { kind: order, order_id: 5, total: 0 }
+    - { kind: sqoff_fee, order_id: 5, other: 5000, gst: 900, total: 5900 }
+  equity:
+    - { trade_date: "2025-12-24", nav_paise: 9995300, cash_paise: 9995300 }
+    - { trade_date: "2025-12-26", nav_paise: 9991600, cash_paise: 9991600 }
+notes: |
+  The MIS cut-off is 15:20 on 2025-12-24 and 15:25 from 2025-12-26 (Z-5). At the cut-off the engine
+  sells the open MIS position with a protected market order tagged AUTO_SQOFF (ref = the 15:19 / 15:24
+  bar's close, known exactly at the cut-off; sell protection ceil(10100 x 0.98 / 5) x 5 = 9900 does not
+  bind). It is eligible on the bar starting at the cut-off and fills at that bar's open: 101.20 on day 1,
+  102.20 on day 2. Each square-off order pays the fee 50.00 plus 18 % GST = 59.00 (other 5000, gst 900);
+  all other charges are zero in this golden. The MIS buy at 15:21:30 is after the cut-off: R_SESSION.
+  The square-off order itself is a system order and skips that check.
+  Day 1: +10 x (10120 - 10000) - 5900 = -4700 -> 9,995,300. Day 2: +10 x (10220 - 10000) - 5900 = -3700
+  -> 9,991,600.
