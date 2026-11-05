@@ -18,7 +18,7 @@ Spec (JSON):
 | include_gaps     | GAP records from the recording (default true)                        |
 | skip_missing_days| ticks: trading days without a recording are skipped instead of an error |
 
-Selectors: `{"ids": [..]}`, `{"symbols": ["NSE:RELIANCE", "NFO:NIFTY26NOVFUT"]}`,
+Selectors: `"NSE:RELIANCE"` (shorthand), `{"ids": [..]}`, `{"symbols": ["NSE:RELIANCE", "NFO:NIFTY26NOVFUT"]}`,
 `{"chain": {"underlying": "NIFTY", "expiry": "nearest" | "YYYY-MM-DD", "strikes": N,
 "kinds": ["CE", "PE"], "futures": true}}`. A chain's ATM comes from the
 underlying's close on the previous trading day (`index_eod` / `cm_eod`), which
@@ -274,6 +274,8 @@ def resolve(selectors: list[dict] | None, day: date, recorded: set[int] | None =
         return set(recorded)
     out: set[int] = set()
     for sel in selectors:
+        if isinstance(sel, str):                     # "NSE:RELIANCE" (A1 §6.1 shorthand)
+            sel = {"symbols": [sel]}
         if "ids" in sel:
             out |= {int(i) for i in sel["ids"]}
         elif "symbols" in sel:

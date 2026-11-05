@@ -14,9 +14,9 @@ Concepts: C-3, C-9, C-10, C-11, C-16. Semantics: `A4_engine_semantics.md` (the c
 
 Files: `stockify/runconfig.py`, `stockify/bundle.py`. Both runners (oracle now, C++ in M3, paper sessions in M5) use these.
 
-- [ ] Parse and validate `run.json` (`A1_schemas.md` §6.1): strategy, data (pack specs or hashes), fill model, costs, margin model, capital, seed, price basis, latency, session policies, trial family.
-- [ ] `resolve_bundle(run_config) -> bundle.json` (`A1_schemas.md` §6.2, D-22): the trading days in range with their resolved phases in UTC ns; every instrument referenced by the packs with its dated contract specs and underlying link; the charge-schedule rows, broker-policy rows, margin and pricing parameters effective on any day in range; pack paths and hashes; strategy reference and source hash. The bundle is self-contained: the engine needs nothing else besides the packs.
-- [ ] Validation errors (fail before running): mixed price bases (I-5); a pack hash mismatch; charge rows with `verified: false` without `allow_unverified` (and when allowed, the run is labelled, I-14); an instrument without specs on a day it trades; a strategy whose source cannot be hashed.
+- [x] Parse and validate `run.json` (`A1_schemas.md` §6.1): strategy, data (pack specs or hashes), fill model, costs, margin model, capital, seed, price basis, latency, session policies, trial family.
+- [x] `resolve_bundle(run_config) -> bundle.json` (`A1_schemas.md` §6.2, D-22): the trading days in range with their resolved phases in UTC ns; every instrument referenced by the packs with its dated contract specs and underlying link; the charge-schedule rows, broker-policy rows, margin and pricing parameters effective on any day in range; pack paths and hashes; strategy reference and source hash. The bundle is self-contained: the engine needs nothing else besides the packs.
+- [x] Validation errors (fail before running): mixed price bases (I-5); a pack hash mismatch; charge rows with `verified: false` without `allow_unverified` (and when allowed, the run is labelled, I-14); an instrument without specs on a day it trades (equities: D-43); a strategy whose source cannot be hashed.
 - [ ] The bundle is written to the run folder and hashed; the hash goes into the manifest (I-8).
 
 ## M2.2 Oracle engine (M)

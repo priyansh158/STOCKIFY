@@ -57,6 +57,13 @@
   "market_protection_auto_bp": [
     {
       "applies": {},
+      "effective_from": "2015-01-01",
+      "bp": 200,
+      "source": "D-42: assumption, the same 2% band before Kite made protection mandatory (K-12), so older backtests cap market orders the same way",
+      "verified": false
+    },
+    {
+      "applies": {},
       "effective_from": "2026-04-01",
       "bp": 200,
       "source": "K-12; automatic protection modelled as 2% (assumption, labelled)",
