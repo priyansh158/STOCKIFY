@@ -136,7 +136,14 @@ def _cmd_compact(args) -> int:
 
     from stockify.data import compact
 
-    res = compact.compact(date.fromisoformat(args.date), force=args.force)
+    day = date.fromisoformat(args.date)
+    res = compact.compact(day, force=args.force)
+    if res.status == "verified" and not args.keep_landing:
+        # Same policy as the nightly job (D-38): delete only what retention allows.
+        from stockify import timeutil
+        deleted = compact.apply_retention(timeutil.ist_today())
+        if deleted:
+            print(f"landing files deleted (verified archives kept): {', '.join(deleted)}", file=sys.stderr)
     json.dump(res.__dict__, sys.stdout, indent=2)
     sys.stdout.write("\n")
     for warning in compact.disk_warnings():
@@ -182,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
     cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
     cp.add_argument("--force", action="store_true", help="rebuild even if the day is already verified")
+    cp.add_argument("--keep-landing", action="store_true",
+                    help="do not apply the retention policy (landing files stay)")
     cp.set_defaults(func=_cmd_compact)
 
     c = sub.add_parser("calendar", help="upcoming NSE sessions and Kite login windows in your time zone")
