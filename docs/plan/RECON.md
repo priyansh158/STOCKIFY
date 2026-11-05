@@ -195,3 +195,13 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
   - Early expiry on corporate actions (D-41): IDFC 2024-10-09, ITC 2025-01-03, SIEMENS 2025-04-04, ABFRL 2025-05-21 (scheduled expiries up to 3 months later). Stored in `instruments.actual_expiry`.
 - Refused days kept their raw files; re-running the backfill re-parses them (only `parsed_ok = 1` days are skipped).
 
+## 2026-11-05 — M2.0 recon (LIB 2.1)
+
+Branch `stockify/m2-oracle` from `stockify/m1-data` (pushed through GK 1.3).
+
+- Present and usable: `stockify.numerics` (all A4 §0.2 helpers, `format_float`, `dumps_canonical`), `stockify.data.calendar.phases(group, d)` for CM, CM_CAS, FO_FUT, FO_OPT, `packs.read(path) -> (header, records)`, `instruments` lookups (`spec_at`, `expiries`, `option_chain`, `derivative`, `actual_expiry`), `fo_universe` view, `freeze_limits` (keyed by underlying symbol).
+- Config: `charges.json` rows carry `<field>_ppb`; a row is in force from `effective_from` until the next row of the same `applies` key (the loader sorts per key). `broker_policy.json` has `mis_cutoff` (CM 15:20 → 15:25 from 2025-12-26; FO 15:25 → 15:26), `mis_margin_pct` (CM 20%, FO 100%), `market_protection_auto_bp` 200 (from 2026-04-01 only: earlier dates need a row; see M2.1), `max_slices` 10. `margin_params.json` flat: index 12%, stock 20%. `pricing.json`: `stale_after_ms` 5000, EOD 19:00, FSP 16:00, risk-free 6.5% placeholder.
+- Missing (to build): `stockify/runconfig.py`, `stockify/bundle.py`, `stockify/oracle/`, `stockify/strategy.py`, `stockify/strategies/`, `tests/golden/`, `examples/runs/`.
+- The plan's "numpy reader" for packs is `packs.read` (records as dicts, M1.8 note); the oracle iterates those records directly, which is also the readable choice.
+- Libraries: Python 3.12.10, pandas 3.0.6, matplotlib 3.11.2, PyYAML 6.0.3.
+

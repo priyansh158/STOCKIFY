@@ -165,10 +165,17 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | CAM | M1.8 event packs | the playmaker delivering the final ball to the striker |
 | LW | M1.9 data-quality report | takes the ball to the touchline and exposes bad data |
 | SS | M1.10 tracked defect close-out | taps in the rebound |
-| RW | free (M2) | |
+| LIB | M2.0 recon | the libero reads the play from behind the defence |
+| REG | M2.1 run config and bundle resolver | the regista: deep playmaker who sets up everything the attack needs |
+| F9 | M2.2 Python oracle engine | the false nine: plays the striker's part but drops deep where everyone can watch it; the readable reference ST must match |
+| B2B | M2.3 strategy API | box-to-box: connects strategies with either engine |
+| IF | M2.4 reference strategies | inside forwards: the ones who attack |
+| ANC | M2.5 golden scenarios | the anchor: the fixed reference point everything is checked against |
+| RW | M2.6 metrics and run report | the mirror of LW: takes results to the touchline |
+| TM | M2.7 CLI, notebook entry, compare-artifacts | the target man: everything is played into him |
 | XI | team-wide (renames, plan bookkeeping) | the whole team |
 
-Positions for M2 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
+M2 positions chosen by the owner on 2026-11-05. Positions for M3 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
 
 ## 6. Corrections to earlier chat advice
 
