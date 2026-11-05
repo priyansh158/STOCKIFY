@@ -49,7 +49,7 @@ M1.5 (the recorder) should go live as soon as M1.0–M1.2 pass, even if the rest
 
 1. **Read narrowly.** For a milestone, read `README.md`, `00_overview.md`, the milestone file, and only the appendix sections it links. Read `01_facts.md` rows when a task references them. Do not load every file at once.
 2. **Recon first.** Each milestone starts with a recon task. Confirm that the files, functions and line numbers the plan mentions still exist. Write what you found in `docs/plan/RECON.md` (append a dated section). Line numbers in this plan are hints from an earlier snapshot of the repo; trust the code.
-3. **One branch per milestone**: `stockify/m1-data`, `stockify/m3-engine`, and so on. One commit per task, message `M1.3: ingest UDiFF F&O bhavcopy`.
+3. **One branch per milestone**: `stockify/m1-data`, `stockify/m3-engine`, and so on. Commit titles follow the football-position roster (`00_overview.md` §5a, D-31): `<POS> <milestone>.<n>: summary`, where `n` counts that position's commits in the milestone, e.g. `LWB 1.1: ingest UDiFF F&O bhavcopy`, then `LWB 1.2: …` for the next change to the same stage. Team-wide work uses `XI`.
 4. **Task loop**: implement → write the tests the task lists → run the task's verification commands → tick the box in the milestone file (`- [ ]` → `- [x]`) in the same commit.
 5. **🛑 STOP gates**: stop, summarise what you found and what you propose, and wait for the owner. Never skip a gate because a workaround exists.
 6. **⚠ VERIFY facts**: anything marked ⚠ in `01_facts.md` must be checked against its source before code depends on it. Record the evidence (URL, date, what you saw) next to the fact.

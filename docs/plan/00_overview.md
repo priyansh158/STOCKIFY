@@ -132,6 +132,32 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | D-28 | **M0 landed as one commit** (`stockify/m0-cleanup` branch) together with the pre-existing uncommitted Windows-paths / geo-monitor / test-suite work, instead of one commit per task. | Yes (README protocol step 3) | Owner decision: resolve the uncommitted work and the overhaul once, in one clean commit. Later milestones go back to one commit per task. |
 | D-29 | **`CLAUDE.md` is never committed** (repo `.gitignore` and the owner's global git ignore). The M0.6 rewrite is a local, untracked file. | Yes (M0.6 assumed a tracked file) | Owner rule for every repository. |
 | D-30 | **The platform is named STOCKIFY, inside and out.** The plan's former product name is gone from the UI, docs, logs and code. Internal names follow: Python package `stockify/` (`python -m stockify`, `stockify._engine`), plan folder `docs/plan/`, tests `tests/stockify/`, data folder `stockify_paths.state_dir() / "lab"` (`$LAB`, store `lab.sqlite`), config schema tags `stockify.<file>/1`, launcher `scripts/run_stockify_daemon.ps1`, branches `stockify/mN-…`. The C++ target names (`stocksim_core`, `stocksim_run`, namespace `stocksim`) are unchanged. | Yes (the plan used a separate product name and `simlab` paths) | Owner decisions, 2026-11-02 (name) and 2026-11-04 (internal names). |
+| D-31 | **Commit names follow a football-position roster** (§5a): every stage gets the position whose main job matches its role, similar stages get different positions, and titles read `<POS> <milestone>.<n>: summary` (`n` counts that position's commits within the milestone; `XI` = team-wide). | Yes (README step 3 used `M1.3: …`) | Owner decision, 2026-11-04: history should show which component each commit belongs to. |
+
+### 5a. Roster (D-31)
+
+| Pos | Stage | Role on the pitch → role in STOCKIFY |
+|---|---|---|
+| GK | M0.4 process supervision | last line of defence; keeps the system up, restarts play after a crash |
+| SW | M0.0 recon | reads the whole pitch from behind |
+| RB | M0.1 analysis-pipeline removal | the clearance |
+| CM | M0.2 `stockify` Python core | the link between the engine (back) and the API/UI (front) |
+| ST | M0.3 C++ engine | the focal point everything is played into; does the finishing |
+| LB | M1.0 recon | the second scout, other flank: checks prerequisites before the push |
+| CB | M1.1 reference data and instruments | organises the back line; every identity passes through it |
+| CDM | M1.2 calendar, sessions, rule configs | sets tempo and timing; shields with dated rules |
+| LWB | M1.3 NSE end-of-day files | wide supply line from outside |
+| RWB | M1.4 Kite historical bar cache | the mirror wing: the other external history feed |
+| RM | M1.5 tick recorder | the tireless runner; covers every minute of the session |
+| LM | M1.6 replay ticker | mirrors the recorder's runs on the other flank |
+| CF | M1.7 compaction and archive | hold-up play: keeps the day's data safe for later |
+| CAM | M1.8 event packs | the playmaker delivering the final ball to the striker |
+| LW | M1.9 data-quality report | takes the ball to the touchline and exposes bad data |
+| SS | M1.10 tracked defect close-out | taps in the rebound |
+| RW | free (M2) | |
+| XI | team-wide (renames, plan bookkeeping) | the whole team |
+
+Positions for M2 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
 
 ## 6. Corrections to earlier chat advice
 
