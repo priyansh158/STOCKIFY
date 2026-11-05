@@ -244,18 +244,28 @@ def _apply_spec(conn, iid: int, row: DumpRow, day: str, stats: SyncStats) -> Non
 
 
 def _link_underlyings(conn) -> None:
-    """Set underlying_id for derivatives whose underlying instrument is known."""
-    conn.execute(
-        "UPDATE instruments SET underlying_id = ("
-        "  SELECT u.instrument_id FROM instruments u"
-        "  LEFT JOIN index_underlyings x ON x.key = instruments.underlying"
-        "  WHERE (x.key IS NOT NULL AND u.kind = 'INDEX'"
-        "         AND u.exchange || ':' || u.tradingsymbol = x.index_symbol)"
-        "     OR (x.key IS NULL AND u.kind = 'EQ' AND u.exchange = 'NSE'"
-        "         AND u.tradingsymbol = instruments.underlying)"
-        "  ORDER BY u.instrument_id LIMIT 1)"
-        " WHERE kind IN ('FUT','CE','PE','FUT_CONT') AND underlying_id IS NULL"
-    )
+    """Set underlying_id for derivatives whose underlying instrument is known.
+
+    One lookup per distinct underlying, then one UPDATE each (the first real
+    dump, ~54k rows, made a correlated subquery per row far too slow).
+    """
+    pending = [r["underlying"] for r in conn.execute(
+        "SELECT DISTINCT underlying FROM instruments "
+        "WHERE kind IN ('FUT','CE','PE','FUT_CONT') AND underlying_id IS NULL AND underlying IS NOT NULL")]
+    if not pending:
+        return
+    index_of = {r["key"]: r["index_symbol"] for r in conn.execute("SELECT key, index_symbol FROM index_underlyings")}
+    for und in pending:
+        if und in index_of:
+            exchange, symbol = index_of[und].split(":", 1)
+            hit = conn.execute("SELECT instrument_id FROM instruments WHERE kind='INDEX' AND exchange=? "
+                               "AND tradingsymbol=? ORDER BY instrument_id LIMIT 1", (exchange, symbol)).fetchone()
+        else:
+            hit = conn.execute("SELECT instrument_id FROM instruments WHERE kind='EQ' AND exchange='NSE' "
+                               "AND tradingsymbol=? ORDER BY instrument_id LIMIT 1", (und,)).fetchone()
+        if hit:
+            conn.execute("UPDATE instruments SET underlying_id=? WHERE underlying=? AND underlying_id IS NULL "
+                         "AND kind IN ('FUT','CE','PE','FUT_CONT')", (hit["instrument_id"], und))
 
 
 def sync(day: date, dumps: dict[str, str], underlyings: dict[str, str] | None = None) -> SyncStats:
