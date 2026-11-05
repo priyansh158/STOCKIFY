@@ -39,59 +39,19 @@ _SPEC = re.compile(r"^replay:(\d{4}-\d{2}-\d{2}):(\d+x|max)$")
 _FAULT = re.compile(r"^(disconnect|token_expiry|kill)@(\d{2}:\d{2}:\d{2})(?:\+(\d+)s)?$")
 
 
-class LandingSource:
-    """Packets and heartbeats from a landing file."""
-
-    def __init__(self, landing: LandingDB):
-        self.landing = landing
-
-    def heartbeats(self):
-        return [(r["minute_ns"], r["count"]) for r in
-                self.landing.conn.execute("SELECT minute_ns, count FROM heartbeats ORDER BY minute_ns")]
-
-    def packets(self):
-        """(frame_no, recv_ns, mono_ns, instrument_token, raw) in seq order."""
-        cur = self.landing.conn.execute(
-            "SELECT frame_no, recv_ns, mono_ns, instrument_token, raw FROM packets ORDER BY seq")
-        for r in cur:
-            yield r["frame_no"], r["recv_ns"], r["mono_ns"], r["instrument_token"], bytes(r["raw"])
-
-    def first_recv_ns(self) -> int | None:
-        return self.landing.conn.execute("SELECT MIN(recv_ns) FROM packets").fetchone()[0]
-
-
-class ArchiveSource:
-    """Packets and heartbeats from a verified Parquet archive (M1.7 layout, D-37)."""
-
-    def __init__(self, folder):
-        self.folder = folder
-
-    def heartbeats(self):
-        import pyarrow.parquet as pq
-        t = pq.read_table(self.folder / "heartbeats.parquet").to_pydict()
-        return sorted(zip(t.get("minute_ns", []), t.get("count", [])))
-
-    def packets(self):
-        import heapq
-        from stockify.data import compact
-        cols = ["seq", "frame_no", "recv_ns", "mono_ns", "instrument_token", "raw"]
-        streams = [compact.iter_rows(self.folder / f"{n}.parquet", cols) for n in ("full", "quote", "index")]
-        for _seq, frame_no, recv_ns, mono_ns, token, raw in heapq.merge(*streams, key=lambda r: r[0]):
-            yield frame_no, recv_ns, mono_ns, token, raw
-
-    def first_recv_ns(self) -> int | None:
-        first = next(self.packets(), None)
-        return first[1] if first else None
+# Sources come from stockify.data.ticks (archive first, D-38); kept under the
+# old names for callers and tests.
+from stockify.data.ticks import ArchiveDay as ArchiveSource  # noqa: E402
+from stockify.data.ticks import LandingDay as LandingSource  # noqa: E402
 
 
 def source_for(day: date, path=None):
     """The verified archive when there is one (preferred), otherwise the landing file."""
-    from stockify import paths
-    if path is None:
-        folder = paths.ticks_archive_dir() / f"date={day:%Y-%m-%d}"
-        if (folder / "meta.json").exists():
-            return ArchiveSource(folder)
-    return LandingSource(LandingDB(day, path, readonly=True))
+    from stockify.data import ticks
+    found = ticks.open_day(day, landing_path=path)
+    if found is None:
+        raise FileNotFoundError(f"no recording for {day}")
+    return found
 
 
 class ReplayClock(Clock):
@@ -154,7 +114,7 @@ class ReplayTicker:
     def __init__(self, source, clock: ReplayClock, *, speed: float | None = None,
                  faults: list[Fault] | None = None, heartbeats: bool = True):
         # A LandingDB is accepted directly for convenience.
-        self.source = LandingSource(source) if isinstance(source, LandingDB) else source
+        self.source = LandingSource.from_db(source) if isinstance(source, LandingDB) else source
         self.clock = clock
         self.speed = speed
         self.faults = sorted(faults or [], key=lambda f: f.at_ns)
@@ -216,7 +176,7 @@ class ReplayTicker:
                 beats.extend(minute_ns + i * 1_000_000 for i in range(count))
         b = 0
         current, packets, rec_ns, rec_mono = None, [], 0, 0
-        for frame_no, recv_ns, mono_ns, token, raw in self.source.packets():
+        for frame_no, recv_ns, mono_ns, token, raw in self.source.frames():
             if frame_no != current:
                 if current is not None:
                     while b < len(beats) and beats[b] < rec_ns:

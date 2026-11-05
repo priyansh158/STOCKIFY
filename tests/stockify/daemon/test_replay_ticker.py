@@ -134,8 +134,8 @@ class ArchiveSourceTests(ReplayTest):
         self.assertEqual(res.status, "verified", res.error)
         chosen = source_for(DAY)
         self.assertIsInstance(chosen, ArchiveSource)
-        landing = LandingSource(LandingDB(DAY, readonly=True))
-        self.assertEqual(list(chosen.packets()), list(landing.packets()))
+        landing = LandingSource(DAY)
+        self.assertEqual(list(chosen.frames()), list(landing.frames()))
         self.assertEqual(chosen.heartbeats(), landing.heartbeats())
         self.source = LandingDB(DAY)          # reopened for tearDown
 

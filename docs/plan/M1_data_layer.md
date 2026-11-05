@@ -128,6 +128,11 @@ Files: `stockify/data/compact.py`. Layout: `A1_schemas.md` §3.2.
 - [x] Disk check: warn when free space falls below the `storage.json` thresholds.
 - [x] CLI `python -m stockify compact --date 2026-10-28`; scheduled by the M1.5 scheduler.
 
+## M1.7a Tick reader (D-38, added 2026-11-05)
+
+- [x] `stockify/data/ticks.py`: `open_day(day)` returns the verified archive (the record after the close) or the landing file while a day is still being recorded; `packets(columns, instrument_ids, kinds)` in `seq` order, `frames()`, `gaps()`, `subscriptions()`, `heartbeats()`, `meta()`, `available_days()`. Archive and landing give identical answers (test; and on the real 2026-11-05 day, all 61,286 packets, every column).
+- [x] The replay ticker reads through it. The quality report (M1.9), event packs (M1.8) and backtests read ticks only through it.
+
 ## M1.8 Event packs (M)
 
 Files: `stockify/data/packs.py` (builder, encoder, numpy reader). Format: `A1_schemas.md` §5. The C++ reader comes in M3.2.
