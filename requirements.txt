@@ -27,6 +27,7 @@ pandas>=2.2
 pyarrow>=17.0
 matplotlib>=3.9
 PyYAML>=6.0
+tzdata>=2024.1          # Windows has no system time-zone database (Asia/Kolkata, America/Los_Angeles)
 
 # STOCKIFY engine build (dev): pybind11 provides the CMake package
 pybind11>=2.13

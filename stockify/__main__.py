@@ -364,7 +364,23 @@ def _cmd_engine(args) -> int:
     return 0
 
 
+def _check_environment() -> str | None:
+    """A clear message instead of a traceback when run outside the project's .venv."""
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("Asia/Kolkata")
+    except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, or a broken tzdata
+        return ("This Python has no time-zone data (the tzdata package). STOCKIFY must run from its virtual "
+                "environment:\n    .\\.venv\\Scripts\\python.exe -m stockify " + " ".join(sys.argv[1:]) +
+                f"\n(this one is {sys.executable}). Or install the requirements: pip install -r requirements.txt")
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    problem = _check_environment()
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
     p = argparse.ArgumentParser(prog="stockify", description="STOCKIFY: NSE simulation lab")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)

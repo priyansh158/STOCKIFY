@@ -316,7 +316,8 @@ def capture_status(g: dict) -> tuple[str, list[str]]:
     from stockify.tools import capture_charges
     caps = sorted(capture_charges.FIXTURES.glob("*.json"))
     if not caps:
-        return "PENDING", [f"no capture yet: run `python -m stockify tools capture-charges --cases {g['cases']}`"]
+        return "PENDING", [rf"no capture yet: run `.\.venv\Scripts\python.exe -m stockify tools capture-charges "
+                           rf"--cases {g['cases']}`"]
     problems = capture_charges.compare_capture(caps[-1])
     return ("PASS" if not problems else "FAIL"), problems
 
