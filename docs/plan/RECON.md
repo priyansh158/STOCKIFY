@@ -127,3 +127,14 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - **Owner decision 2026-11-05: backup target deferred.** `storage.json` → `retention_days` stays `null` (never delete) until a backup exists. Options discussed: a cloud bucket with an upload-only key and object lock (recommended, off-site), a USB drive (same location as the laptop), or both (3-2-1).
 - Dropped the extra landing index `ix_packets_frame` (not in A1; replay reads in `seq` order). Edited in `0001_init.sql` because no real landing file existed yet.
 
+## 2026-11-05 — first live recording (infrastructure test)
+
+A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) with the owner-approved default universe:
+
+- **61,286 packets in 299 s (205/s)** in 1,294 frames, 0 dropped, 99 heartbeats; all **202** instruments recorded (131 FULL, 71 QUOTE), 0 unresolved tokens, **no gaps**. Packet lengths: 42,506 × 184 (full), 16,105 × 44 (quote), 2,675 × 32 (index full).
+- Rates: NIFTY 50 ≈ 4 packets/s, NIFTY BANK ≈ 3, INDIA VIX ≈ 2, liquid equities ≈ 2, chain strikes ≈ 0.6. Receive time minus exchange timestamp ≈ +0.7 to +0.9 s (includes the laptop's clock offset; worth checking against NTP in M1.9).
+- Two text frames on connect (`instruments_meta`, `app_code`) were logged, not stored.
+- The on-battery alarm fired once a minute as designed.
+- **Size, measured:** 260 bytes per packet in the landing file → **~1.28 GB per full day** (pre-open to the F&O close). The same rows as zstd-9 Parquet: **5.1× smaller → ~0.25 GB/day**; raw bytes plus keys only would be ~0.16 GB/day. With 300 GB, compressed archives hold roughly 1,190 trading days (~4.8 years).
+- Today's real `refdata.sqlite` sync: 53,937 instruments (NSE + NFO). NIFTY's weekly expiry in the dump is 2026-11-09 and the November monthly 2026-11-23, matching the calendar's holiday shifts.
+
