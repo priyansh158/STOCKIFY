@@ -124,7 +124,7 @@ Files: `stockify/data/compact.py`. Layout: `A1_schemas.md` §3.2.
 
 - [x] For a finished date: `PRAGMA quick_check` on the landing file; parse depth from raw FULL packets; write `full.parquet`, `quote.parquet`, `index.parquet`, `gaps.parquet`, `subscriptions.parquet`, `heartbeats.parquet` and `meta.json` under `ticks/archive/date=YYYY-MM-DD/` (zstd, row groups ≈ 1M rows, sorted by `seq`).
 - [x] Verify: re-read the Parquet files; row counts and a SHA-256 over `(seq, frame_no, instrument_id, raw)` in `seq` order must equal the same digest computed from the landing file. Record the result in `tick_days`.
-- [ ] Retention: `storage.json` → `retention_days` is **null (never delete)** until the owner has backups (M5.13). 🛑 The owner sets a number explicitly; after that, a landing file is deleted only when its day is `verified` **and** older than `retention_days`. Nothing else ever deletes tick data (I-13).
+- [x] Retention (D-38, owner 2026-11-05): `retention_days: 0`. After the close, a verified archive is re-verified and the day's landing file deleted; a day still being recorded is never touched; `null` would disable deletion. The archive is the only record from then on.
 - [x] Disk check: warn when free space falls below the `storage.json` thresholds.
 - [x] CLI `python -m stockify compact --date 2026-10-28`; scheduled by the M1.5 scheduler.
 

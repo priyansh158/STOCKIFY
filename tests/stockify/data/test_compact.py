@@ -18,6 +18,8 @@ from stockify.daemon.recorder import Recorder
 from stockify.data import compact, refdata
 from tests.stockify.daemon import packets_fixture as pf
 
+_real_load = compact.loader.load_json
+
 DAY = date(2026, 11, 9)
 SEC = 1_000_000_000
 EQ = 738_561
@@ -52,6 +54,10 @@ class CompactTest(unittest.TestCase):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
         support.reset_sqlite_singleton(refdata)
         self.landing = record_day()
+        # The fixture day (9 Nov 2026) is in the future; treat its session as over.
+        over = patch.object(compact, "session_over", return_value=True)
+        over.start()
+        self.addCleanup(over.stop)
 
     def tearDown(self):
         support.reset_sqlite_singleton(refdata)
@@ -168,21 +174,61 @@ class VerificationTests(CompactTest):
 
 
 class RetentionTests(CompactTest):
-    def test_null_retention_never_deletes(self):
-        compact.compact(DAY)
-        self.assertEqual(compact.apply_retention(date(2030, 1, 1)), [])
-        self.assertTrue(paths.ticks_landing_file(DAY).exists())
+    def storage(self, days):
+        return patch.object(compact.loader, "load_json",
+                            side_effect=lambda name: dict(_real_load("storage.json"), retention_days=days)
+                            if name == "storage.json" else _real_load(name))
 
-    def test_set_retention_deletes_only_old_verified_landing_files(self):
+    def test_shipped_policy_deletes_right_after_verification_d38(self):
+        self.assertEqual(compact.loader.load_json("storage.json")["retention_days"], 0)
         compact.compact(DAY)
-        cfg = dict(compact.loader.load_json("storage.json"), retention_days=14)
-        with patch.object(compact.loader, "load_json", return_value=cfg):
-            self.assertEqual(compact.apply_retention(date(2026, 11, 20)), [])          # only 11 days old
-            self.assertEqual(compact.apply_retention(date(2026, 11, 30)), [DAY.isoformat()])
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
         self.assertFalse(paths.ticks_landing_file(DAY).exists())
         self.assertTrue((self.folder() / "meta.json").exists())                       # archive untouched
         row = refdata._connect().execute("SELECT status FROM tick_days").fetchone()
         self.assertEqual(row["status"], "landing_deleted")
+
+    def test_after_deletion_compact_reports_the_archive(self):
+        first = compact.compact(DAY)
+        compact.apply_retention(DAY)
+        again = compact.compact(DAY)
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", first.digest, 701))
+
+    def test_null_retention_never_deletes(self):
+        compact.compact(DAY)
+        with self.storage(None):
+            self.assertEqual(compact.apply_retention(date(2030, 1, 1)), [])
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())
+
+    def test_retention_window_in_days(self):
+        compact.compact(DAY)
+        with self.storage(14):
+            self.assertEqual(compact.apply_retention(date(2026, 11, 20)), [])          # only 11 days old
+            self.assertEqual(compact.apply_retention(date(2026, 11, 23)), [DAY.isoformat()])
+
+    def test_damaged_archive_keeps_the_landing_file(self):
+        compact.compact(DAY)
+        quote = self.folder() / "quote.parquet"
+        pq.write_table(pq.read_table(quote).slice(1), quote)
+        self.assertEqual(compact.apply_retention(DAY), [])
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())
+        row = refdata._connect().execute("SELECT status FROM tick_days").fetchone()
+        self.assertEqual(row["status"], "landing")
+
+    def test_a_day_still_being_recorded_is_never_touched(self):
+        with patch.object(compact, "session_over", return_value=False):
+            res = compact.compact(DAY)
+            self.assertEqual(res.status, "session_open")
+            self.assertEqual(compact.apply_retention(DAY), [])
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())
+
+    def test_session_over_uses_the_unsubscribe_time(self):
+        self.over_patch_off()
+        self.assertFalse(compact.session_over(DAY, timeutil.ist_ns(DAY, "15:44")))
+        self.assertTrue(compact.session_over(DAY, timeutil.ist_ns(DAY, "15:45")))
+
+    def over_patch_off(self):
+        patch.stopall()
 
     def test_disk_warnings(self):
         self.assertEqual(compact.disk_warnings(free_bytes=400 * 10**9, total_bytes=1000 * 10**9), [])

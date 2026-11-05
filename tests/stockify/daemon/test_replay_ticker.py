@@ -128,7 +128,8 @@ class ArchiveSourceTests(ReplayTest):
         support.reset_sqlite_singleton(refdata)
         self.addCleanup(support.reset_sqlite_singleton, refdata)
         self.source.close()
-        with unittest.mock.patch.object(compact, "ROW_GROUP", 40):     # several row groups
+        with unittest.mock.patch.object(compact, "ROW_GROUP", 40), \
+                unittest.mock.patch.object(compact, "session_over", return_value=True):   # 9 Nov is in the future
             res = compact.compact(DAY)
         self.assertEqual(res.status, "verified", res.error)
         chosen = source_for(DAY)

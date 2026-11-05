@@ -18,9 +18,11 @@ For one trade date:
 4. Record the result in `refdata.sqlite` → `tick_days`.
 
 The archive is written to a temporary folder and moved into place only after
-verification. Landing files are deleted only by `apply_retention`, only when
-the day is verified and older than `storage.json` → `retention_days`; with
-`retention_days: null` (the default) nothing is ever deleted.
+verification. Landing files are deleted only by `apply_retention`: once the day is verified
+(and re-verified just before deletion) and at least `storage.json` →
+`retention_days` old; 0 means right after the close (D-38), null never.
+After that the archive is the day's only record and every reader uses it
+(`stockify.data.ticks`).
 """
 from __future__ import annotations
 
@@ -83,7 +85,7 @@ class CompactionError(RuntimeError):
 @dataclass
 class Result:
     day: str
-    status: str                       # verified | no_landing | failed
+    status: str                       # verified | no_landing | session_open | failed
     packets: int = 0
     counts: dict = field(default_factory=dict)
     landing_bytes: int = 0
@@ -252,6 +254,13 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     target = archive_root / f"date={day:%Y-%m-%d}"
     res = Result(day=day.isoformat(), status="no_landing")
     if not landing.exists():
+        done = refdata._connect().execute(
+            "SELECT status, digest, packets FROM tick_days WHERE trade_date=?", (day.isoformat(),)).fetchone()
+        if done and done["status"] == "landing_deleted" and (target / "meta.json").exists():
+            res.status, res.digest, res.packets, res.archive_path = "verified", done["digest"], done["packets"], str(target)
+        return res
+    if landing == paths.ticks_landing_file(day) and not session_over(day):
+        res.status, res.error = "session_open", "the day is still being recorded; compact it after the close"
         return res
     level = int(loader.load_json("storage.json")["parquet_zstd_level"])
     existing = refdata._connect().execute(
@@ -323,11 +332,21 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
 
 # ── retention and disk space ─────────────────────────────────────────────────
 
-def apply_retention(today: date) -> list[str]:
-    """Delete landing files of verified days older than retention_days.
+def session_over(day: date, now_ns: int | None = None) -> bool:
+    """True once the day's recording has stopped (schedule.json unsubscribe time)."""
+    now_ns = timeutil.now_ns() if now_ns is None else now_ns
+    unsubscribe = loader.load_json("schedule.json")["jobs"]["unsubscribe"]
+    return now_ns >= timeutil.ist_ns(day, unsubscribe)
 
-    With `retention_days: null` nothing is deleted (I-13; the owner sets a
-    number only once backups exist, M5.13).
+
+def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
+    """Delete the landing files of verified days (D-38).
+
+    A landing file goes once its archive is verified and the day is at least
+    `retention_days` old (0 = right after verification, once the session is
+    over). The archive is re-verified against the digest in tick_days just
+    before deleting; if that fails the day drops back to status 'landing' and
+    the file is kept. `retention_days: null` deletes nothing.
     """
     days = loader.load_json("storage.json").get("retention_days")
     if days is None:
@@ -335,17 +354,25 @@ def apply_retention(today: date) -> list[str]:
     cutoff = (today - timedelta(days=int(days))).isoformat()
     deleted = []
     rows = refdata._connect().execute(
-        "SELECT trade_date, landing_path, archive_path FROM tick_days "
-        "WHERE status='verified' AND trade_date < ?", (cutoff,)).fetchall()
+        "SELECT trade_date, landing_path, archive_path, digest, packets FROM tick_days "
+        "WHERE status='verified' AND trade_date <= ?", (cutoff,)).fetchall()
     for row in rows:
+        day = date.fromisoformat(row["trade_date"])
+        if not session_over(day, now_ns):
+            continue                                   # still being recorded
         landing, archive = Path(row["landing_path"]), Path(row["archive_path"] or "")
-        if not (archive / "meta.json").exists():
-            log.warning("%s: archive missing, landing kept", row["trade_date"])
+        try:
+            verify(archive, row["digest"], row["packets"])
+        except (CompactionError, FileNotFoundError, OSError, ValueError) as e:
+            log.error("%s: archive failed re-verification (%s); landing kept", row["trade_date"], e)
+            with refdata.transaction() as conn:
+                conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (row["trade_date"],))
             continue
         for p in (landing, Path(str(landing) + "-wal"), Path(str(landing) + "-shm")):
             p.unlink(missing_ok=True)
         with refdata.transaction() as conn:
             conn.execute("UPDATE tick_days SET status='landing_deleted' WHERE trade_date=?", (row["trade_date"],))
+        log.info("%s: landing file deleted; the verified archive is the record", row["trade_date"])
         deleted.append(row["trade_date"])
     return deleted
 
