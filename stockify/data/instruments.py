@@ -343,6 +343,17 @@ def find(exchange: str, tradingsymbol: str) -> int | None:
     return row["instrument_id"] if row else None
 
 
+def derivative(underlying: str, kind: str, expiry: str, strike_paise: int | None = None,
+               exchange: str = "NFO") -> int | None:
+    """Instrument id of a derivative by its natural key (D-06)."""
+    row = refdata._connect().execute(
+        "SELECT instrument_id FROM instruments WHERE exchange=? AND underlying=? AND kind=? "
+        "AND expiry=? AND IFNULL(strike_paise, -1)=IFNULL(?, -1)",
+        (exchange.upper(), underlying.upper(), kind.upper(), expiry, strike_paise),
+    ).fetchone()
+    return row["instrument_id"] if row else None
+
+
 def spec_at(instrument_id: int, on_date: date | str) -> dict | None:
     row = refdata._connect().execute(
         "SELECT effective_from, lot_size, tick_paise, source FROM contract_specs "

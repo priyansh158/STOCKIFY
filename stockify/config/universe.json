@@ -1,10 +1,90 @@
 {
   "schema": "stockify.universe/1",
-  "indices_full": [],
-  "futures_full": [],
-  "chains": [],
-  "equities_full": [],
-  "stock_futures_full": [],
-  "equities_quote": [],
-  "limits": { "max_per_connection": 3000, "warn_fraction": "0.8" }
+  "indices_full": [
+    "NSE:NIFTY 50",
+    "NSE:NIFTY BANK",
+    "NSE:INDIA VIX"
+  ],
+  "futures_full": [
+    {
+      "underlying": "NIFTY",
+      "months": [
+        "near",
+        "next"
+      ]
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "months": [
+        "near",
+        "next"
+      ]
+    }
+  ],
+  "chains": [
+    {
+      "underlying": "NIFTY",
+      "expiry": "weekly:0",
+      "n_full": 10,
+      "n_quote": 20,
+      "recenter_threshold": 2,
+      "hysteresis": 2
+    },
+    {
+      "underlying": "NIFTY",
+      "expiry": "weekly:1",
+      "n_full": 6,
+      "n_quote": 6,
+      "recenter_threshold": 2,
+      "hysteresis": 2
+    },
+    {
+      "underlying": "NIFTY",
+      "expiry": "monthly:0",
+      "n_full": 6,
+      "n_quote": 6,
+      "recenter_threshold": 2,
+      "hysteresis": 2
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "expiry": "monthly:0",
+      "n_full": 6,
+      "n_quote": 6,
+      "recenter_threshold": 2,
+      "hysteresis": 2
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "expiry": "monthly:1",
+      "n_full": 0,
+      "n_quote": 6,
+      "recenter_threshold": 2,
+      "hysteresis": 2
+    }
+  ],
+  "equities_full": [
+    "NSE:RELIANCE",
+    "NSE:HDFCBANK",
+    "NSE:INFY"
+  ],
+  "stock_futures_full": [
+    {
+      "underlying": "RELIANCE",
+      "months": [
+        "near"
+      ]
+    }
+  ],
+  "equities_quote": [
+    "NSE:TCS",
+    "NSE:ICICIBANK",
+    "NSE:SBIN",
+    "NSE:LT",
+    "NSE:ITC"
+  ],
+  "limits": {
+    "max_per_connection": 3000,
+    "warn_fraction": "0.8"
+  }
 }
