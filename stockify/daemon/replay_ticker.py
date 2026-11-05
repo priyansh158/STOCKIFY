@@ -39,6 +39,61 @@ _SPEC = re.compile(r"^replay:(\d{4}-\d{2}-\d{2}):(\d+x|max)$")
 _FAULT = re.compile(r"^(disconnect|token_expiry|kill)@(\d{2}:\d{2}:\d{2})(?:\+(\d+)s)?$")
 
 
+class LandingSource:
+    """Packets and heartbeats from a landing file."""
+
+    def __init__(self, landing: LandingDB):
+        self.landing = landing
+
+    def heartbeats(self):
+        return [(r["minute_ns"], r["count"]) for r in
+                self.landing.conn.execute("SELECT minute_ns, count FROM heartbeats ORDER BY minute_ns")]
+
+    def packets(self):
+        """(frame_no, recv_ns, mono_ns, instrument_token, raw) in seq order."""
+        cur = self.landing.conn.execute(
+            "SELECT frame_no, recv_ns, mono_ns, instrument_token, raw FROM packets ORDER BY seq")
+        for r in cur:
+            yield r["frame_no"], r["recv_ns"], r["mono_ns"], r["instrument_token"], bytes(r["raw"])
+
+    def first_recv_ns(self) -> int | None:
+        return self.landing.conn.execute("SELECT MIN(recv_ns) FROM packets").fetchone()[0]
+
+
+class ArchiveSource:
+    """Packets and heartbeats from a verified Parquet archive (M1.7 layout, D-37)."""
+
+    def __init__(self, folder):
+        self.folder = folder
+
+    def heartbeats(self):
+        import pyarrow.parquet as pq
+        t = pq.read_table(self.folder / "heartbeats.parquet").to_pydict()
+        return sorted(zip(t.get("minute_ns", []), t.get("count", [])))
+
+    def packets(self):
+        import heapq
+        from stockify.data import compact
+        cols = ["seq", "frame_no", "recv_ns", "mono_ns", "instrument_token", "raw"]
+        streams = [compact.iter_rows(self.folder / f"{n}.parquet", cols) for n in ("full", "quote", "index")]
+        for _seq, frame_no, recv_ns, mono_ns, token, raw in heapq.merge(*streams, key=lambda r: r[0]):
+            yield frame_no, recv_ns, mono_ns, token, raw
+
+    def first_recv_ns(self) -> int | None:
+        first = next(self.packets(), None)
+        return first[1] if first else None
+
+
+def source_for(day: date, path=None):
+    """The verified archive when there is one (preferred), otherwise the landing file."""
+    from stockify import paths
+    if path is None:
+        folder = paths.ticks_archive_dir() / f"date={day:%Y-%m-%d}"
+        if (folder / "meta.json").exists():
+            return ArchiveSource(folder)
+    return LandingSource(LandingDB(day, path, readonly=True))
+
+
 class ReplayClock(Clock):
     """Wall and monotonic time taken from the frame being replayed."""
 
@@ -96,9 +151,10 @@ def parse_fault(text: str, day: date) -> Fault:
 class ReplayTicker:
     MODE_LTP, MODE_QUOTE, MODE_FULL = MODE_LTP, MODE_QUOTE, MODE_FULL
 
-    def __init__(self, source: LandingDB, clock: ReplayClock, *, speed: float | None = None,
+    def __init__(self, source, clock: ReplayClock, *, speed: float | None = None,
                  faults: list[Fault] | None = None, heartbeats: bool = True):
-        self.source = source
+        # A LandingDB is accepted directly for convenience.
+        self.source = LandingSource(source) if isinstance(source, LandingDB) else source
         self.clock = clock
         self.speed = speed
         self.faults = sorted(faults or [], key=lambda f: f.at_ns)
@@ -154,25 +210,22 @@ class ReplayTicker:
         Heartbeats are spread 1 ms apart from the start of their minute; data
         frames carry their recorded times.
         """
-        conn = self.source.conn
         beats = []
         if self.heartbeats:
-            for row in conn.execute("SELECT minute_ns, count FROM heartbeats ORDER BY minute_ns"):
-                beats.extend(row["minute_ns"] + i * 1_000_000 for i in range(row["count"]))
+            for minute_ns, count in self.source.heartbeats():
+                beats.extend(minute_ns + i * 1_000_000 for i in range(count))
         b = 0
         current, packets, rec_ns, rec_mono = None, [], 0, 0
-        cursor = conn.execute("SELECT frame_no, recv_ns, mono_ns, instrument_token, raw FROM packets "
-                              "ORDER BY seq")
-        for row in cursor:
-            if row["frame_no"] != current:
+        for frame_no, recv_ns, mono_ns, token, raw in self.source.packets():
+            if frame_no != current:
                 if current is not None:
                     while b < len(beats) and beats[b] < rec_ns:
                         yield beats[b], None, "beat", b"\x00"
                         b += 1
                     yield rec_ns, rec_mono, "data", packets
-                current, packets = row["frame_no"], []
-                rec_ns, rec_mono = row["recv_ns"], row["mono_ns"]
-            packets.append((row["instrument_token"], bytes(row["raw"])))
+                current, packets = frame_no, []
+                rec_ns, rec_mono = recv_ns, mono_ns
+            packets.append((token, raw))
         if current is not None:
             while b < len(beats) and beats[b] < rec_ns:
                 yield beats[b], None, "beat", b"\x00"
@@ -253,11 +306,10 @@ class ReplayTicker:
 
 
 def open_replay(spec: str, *, faults: list[str] | None = None, path=None):
-    """Build (ticker, clock) for a `replay:<date>:<speed>` spec."""
+    """Build (ticker, clock) for a `replay:<date>:<speed>` spec (archive preferred)."""
     day, speed = parse_spec(spec)
-    source = LandingDB(day, path, readonly=True)
-    first = source.conn.execute("SELECT MIN(recv_ns) FROM packets").fetchone()[0] or \
-        timeutil.ist_ns(day, "09:00")
+    source = source_for(day, path)
+    first = source.first_recv_ns() or timeutil.ist_ns(day, "09:00")
     clock = ReplayClock(int(first) - 1_000_000)
     ticker = ReplayTicker(source, clock, speed=speed, faults=[parse_fault(f, day) for f in faults or []])
     return ticker, clock
