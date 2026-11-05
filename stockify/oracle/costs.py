@@ -78,26 +78,42 @@ class Costs:
             base += parts.get(name, 0)
         return _pct_of(base, row["rate_ppb"])
 
+    def _gst_exact(self, trade_date: str, exact: dict) -> int:
+        """GST on the exact (unrounded) components, in E units (D-46)."""
+        row = row_for(self.rows.get("gst", []), {}, trade_date, "gst")
+        base_e9 = 0                                   # paise × 10⁹
+        for name in row.get("on", []):
+            base_e9 += exact.get(name, 0) // PPB
+        return base_e9 * row["rate_ppb"]
+
     def order(self, kind: str, product: str, side: str, turnover: int, trade_date: str) -> dict:
-        """Charge components of one executed order on one trade date."""
+        """Charge components of one executed order on one trade date (A4 §5.3 as amended by D-46).
+
+        Every component is exact: rate × turnover, with no rounding (units E = 10⁻¹⁸ paisa).
+        Stamp duty alone is rounded half-up to the whole rupee. GST is 18 % of the exact
+        brokerage + exchange + SEBI. The order's total is the exact sum rounded half-up to the
+        paisa; the per-component paise in charges.csv are each rounded for display, so they can
+        differ from the total by a paisa or two. This is what Kite's contract note does (K-10).
+        """
         attrs = {"segment": segment(kind), "kind": kind, "product": product, "side": side}
-        parts = {}
+        exact: dict[str, int] = {}
         b = row_for(self.rows["brokerage"], attrs, trade_date, "brokerage")
         if b["kind"] == "zero":
-            parts["brokerage"] = 0
+            exact["brokerage"] = 0
         elif b["kind"] == "flat":
-            parts["brokerage"] = b["flat_paise"]
+            exact["brokerage"] = b["flat_paise"] * E
         elif b["kind"] == "min_flat_pct":
-            parts["brokerage"] = min(b["flat_paise"], _pct_of(turnover, b["pct_ppb"]))
+            exact["brokerage"] = min(b["flat_paise"] * PPB, turnover * b["pct_ppb"]) * PPB
         else:
             raise CostError(f"brokerage kind {b['kind']!r}")
-        for comp in ("stt", "exchange_txn", "sebi", "stamp"):
+        for comp in ("stt", "exchange_txn", "sebi"):
             row = row_for(self.rows[comp], attrs, trade_date, comp)
-            parts[comp] = _pct_of(turnover, _rate(row, side))
-        parts["gst"] = self._gst(trade_date, parts)
-        return {"turnover": turnover, "brokerage": parts["brokerage"], "stt": parts["stt"],
-                "exchange": parts["exchange_txn"], "sebi": parts["sebi"], "stamp": parts["stamp"],
-                "gst": parts["gst"], "dp": 0, "other": 0}
+            exact[comp] = turnover * _rate(row, side) * PPB
+        stamp_row = row_for(self.rows["stamp"], attrs, trade_date, "stamp")
+        stamp_rupees = numerics.round_half_up_div(turnover * _rate(stamp_row, side), 100 * PPB)
+        exact["stamp"] = stamp_rupees * 100 * E
+        exact["gst"] = self._gst_exact(trade_date, exact)
+        return _parts(turnover, exact)
 
     def dp(self, trade_date: str) -> dict | None:
         if not self.cfg.get("dp_charges", True):
@@ -132,14 +148,31 @@ class Costs:
         stt_row = row_for(self.rows.get("exercise_stt", []), attrs, trade_date, "exercise_stt")
         brk_row = row_for(self.rows.get("exercise_brokerage", []), attrs, trade_date, "exercise_brokerage",
                           required=False)
-        stt = _pct_of(intrinsic_value, stt_row["pct_of_intrinsic_ppb"])
         brokerage = brk_row["flat_paise"] if brk_row and brk_row["kind"] == "flat" else 0
-        gst = self._gst(trade_date, {"brokerage": brokerage})
-        return {"turnover": intrinsic_value, "brokerage": brokerage, "stt": stt, "exchange": 0, "sebi": 0,
-                "stamp": 0, "gst": gst, "dp": 0, "other": 0}
+        exact = {"brokerage": brokerage * E, "stt": intrinsic_value * stt_row["pct_of_intrinsic_ppb"] * PPB,
+                 "exchange_txn": 0, "sebi": 0, "stamp": 0}
+        exact["gst"] = self._gst_exact(trade_date, exact)
+        return _parts(intrinsic_value, exact)
+
+
+E = PPB * PPB                                         # exact charge units: 10⁻¹⁸ paisa
+
+
+def _parts(turnover: int, exact: dict) -> dict:
+    """Display paise per component, the exact values, and the total rounded once (D-46)."""
+    s = 0
+    for k in ("brokerage", "stt", "exchange_txn", "sebi", "stamp", "gst"):
+        s += exact[k]
+    shown = {k: numerics.round_half_up_div(v, E) for k, v in exact.items()}
+    return {"turnover": turnover, "brokerage": shown["brokerage"], "stt": shown["stt"],
+            "exchange": shown["exchange_txn"], "sebi": shown["sebi"], "stamp": shown["stamp"], "gst": shown["gst"],
+            "dp": 0, "other": 0, "total": numerics.round_half_up_div(s, E), "exact": exact}
 
 
 def total(parts: dict) -> int:
+    """The row's total: the once-rounded exact sum when present, else the sum of its parts (flat fees)."""
+    if "total" in parts:
+        return parts["total"]
     t = 0
     for k in ("brokerage", "stt", "exchange", "sebi", "stamp", "gst", "dp", "other"):
         t += parts[k]

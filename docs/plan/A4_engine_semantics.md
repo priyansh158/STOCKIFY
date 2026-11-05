@@ -190,9 +190,12 @@ It keeps DAY validity, so an unfilled remainder rests as a limit. Every fill of 
 **5.2 Row matching.** For each component, a charge row matches when every key in its `applies` object matches the order (list values by membership) and its date range covers the trade date. Exactly one row per component may match; zero or several is a loader error.
 
 **5.3 Components** (ppb rates, §0):
-- Brokerage: `zero`; `flat` = `flat_paise`; `min_flat_pct` = `min(flat_paise, round_half_up_div(turnover·pct_ppb, 10⁹))`.
-- STT (side-specific), exchange transaction (includes IPFT), SEBI fee, stamp duty (buy side): each `round_half_up_div(turnover·rate_ppb, 10⁹)`.
-- GST: `round_half_up_div((brokerage + exchange + sebi)·gst_ppb, 10⁹)`.
+Amended by D-46 (Kite's contract note, captured 2026-11-06): components are **exact**, not rounded each. Work in units `E` = 10⁻¹⁸ paisa:
+- Brokerage: `zero`; `flat` = `flat_paise·E`; `min_flat_pct` = `min(flat_paise·10⁹, turnover·pct_ppb)·10⁹`.
+- STT (side-specific), exchange transaction (includes IPFT), SEBI fee: each `turnover·rate_ppb·10⁹` (exact).
+- Stamp duty (buy side): rounded half-up to the whole rupee: `round_half_up_div(turnover·rate_ppb, 100·10⁹)·100·E`.
+- GST: `(brokerage + exchange + sebi in paise·10⁹)·gst_ppb` (exact, on the unrounded parts).
+- The order's total = `round_half_up_div(Σ components, E)` paise: the only rounding. `charges.csv` shows each component rounded half-up to the paisa for reading, so its columns can differ from `total` by a paisa or two; the ledger debits `total`.
 - Non-order charges, each its own row in `charges.csv`: DP charge (per scrip per trade date with CNC sells; kind `dp`), the square-off fee plus GST on it (per `AUTO_SQOFF`/`RMS_SQOFF` order; kind `sqoff_fee`), exercise STT, exercise brokerage and physical-delivery charges (kind `settlement`, §7).
 
 **5.4 Debit time.** When the order completes, or at `SEG_CLOSE` for orders cancelled with a partial fill; non-order charges when they arise.
