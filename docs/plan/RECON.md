@@ -73,3 +73,15 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - M0 verification: Python suite green (481 passed + 4 tracked defects), `import server.main`, web lint and build, no references to the removed modules.
 - Note for M3: `engine_build_id` embeds the git SHA at configure time; `-BuildEngine` always reconfigures, but a plain `cmake --build` after new commits keeps the old SHA.
 
+
+## 2026-11-04 — M1.0 recon
+
+| Item | Finding | Consequence |
+|---|---|---|
+| `kiteconnect` version | 5.2.2 | Record it in `recorder_meta` (A1 §3.1). |
+| Raw frames (🛑 M1.0) | `KiteTicker._on_message(ws, payload, is_binary)` calls `self.on_message(self, payload, is_binary)` with the raw frame **before** parsing (`ticker.py`). | The recorder stores exact packet bytes (D-08). Gate cleared. |
+| Twisted reactor | `connect(threaded=True)` runs `reactor.run` in a thread; `stop()` calls `reactor.stop()`, which cannot be restarted in the same process. | Token expiry and sleep end the daemon process (exit codes 76 / 75); the launcher starts a fresh process (D-32). No in-process reconnect with a new token. |
+| Reconnect | Library-internal `ReconnectingClientFactory`: `RECONNECT_MAX_DELAY` 60 s (min 5), `RECONNECT_MAX_TRIES` 50 (max 300). `kite_ticker_worker._Supervisor` only logs `on_reconnect` / `on_noreconnect`. | M1.5 supervisor: log every reconnect as a `disconnect` gap (start at close, end at the first packet after reconnect); on `on_noreconnect`, exit for a launcher restart. Raise `reconnect_max_tries` to 300. |
+| Instruments cache readers | `kite_client._instruments_db()` → `state_dir()/instruments.sqlite`. Read by `resolve_symbol` (`server/routers/search.py`) and `get_instrument_token` (`stockify/data/history.py`). `get_instrument_token_for_index` has no callers since M0. `refresh_instruments` / `_async` have no callers. | M1.1 keeps `instruments.sqlite` as a compatibility copy filled by `instruments.sync`; search keeps working unchanged. |
+| Existing `tick_buffer` / UI ticker | `kite_ticker_worker` (API process) writes to `ticks.sqlite` and fans out to `/api/ws/ticks`. | Stays as connection #1 for the UI; the recorder is connection #2 in the daemon process (D-20). |
+| Paid Kite plan (🛑 M1.0) | Pending owner confirmation. | Without it there is no WebSocket or historical data. |
