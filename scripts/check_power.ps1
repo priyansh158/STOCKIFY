@@ -4,7 +4,8 @@
 #
 #   plugged in: lid close = do nothing, never sleep or hibernate on idle,
 #               CPU max <= 80% (heat), wake timers enabled
-#   on battery: lid close = sleep
+#   on battery: lid close = do nothing, CPU max <= 80% (keep recording until the battery runs out;
+#               Windows hibernates at the critical level)
 [CmdletBinding()]
 param()
 
@@ -33,7 +34,8 @@ $SubProcessor = "54533251-82be-4824-96c1-47b60b740d00"; $ProcMax = "bc5038f7-23e
 
 $checks = @(
     @{ Name = "Lid close when plugged in = do nothing"; Value = (Get-PowerValue $SubButtons $LidAction).AC; Ok = { param($v) $v -eq 0 } },
-    @{ Name = "Lid close on battery = sleep";          Value = (Get-PowerValue $SubButtons $LidAction).DC; Ok = { param($v) $v -eq 1 } },
+    @{ Name = "Lid close on battery = do nothing";     Value = (Get-PowerValue $SubButtons $LidAction).DC; Ok = { param($v) $v -eq 0 } },
+    @{ Name = "Max CPU on battery <= 80%";             Value = (Get-PowerValue $SubProcessor $ProcMax).DC; Ok = { param($v) $v -le 80 } },
     @{ Name = "Idle sleep when plugged in = never";    Value = (Get-PowerValue $SubSleep $StandbyIdle).AC; Ok = { param($v) $v -eq 0 } },
     @{ Name = "Idle hibernate when plugged in = never"; Value = (Get-PowerValue $SubSleep $HibernateIdle).AC; Ok = { param($v) $v -eq 0 } },
     @{ Name = "Wake timers when plugged in = enabled"; Value = (Get-PowerValue $SubSleep $RtcWake).AC; Ok = { param($v) $v -ge 1 } },

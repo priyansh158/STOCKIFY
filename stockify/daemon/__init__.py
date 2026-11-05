@@ -321,7 +321,8 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
                 if power.on_ac_power() is False:
                     if "on_battery" not in recorder.stats.alarms:
                         recorder.stats.alarms.append("on_battery")
-                    log.warning("running on battery during the session: closing the lid would sleep the laptop")
+                    log.warning("running on battery during the session: recording continues until the battery "
+                                "runs out (Windows then hibernates; the stop is recorded as a gap)")
             if replay and ticker.finished.is_set():
                 break
             if clock.now_ns() >= end_ns:
