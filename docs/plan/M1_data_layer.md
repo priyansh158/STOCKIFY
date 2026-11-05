@@ -146,7 +146,7 @@ Files: `stockify/data/packs.py` (builder, encoder, numpy reader). Format: `A1_sc
 
 ## M1.9 Data-quality report (S)
 
-- [ ] `python -m stockify data report --date D` computes per instrument: packets, coverage (% of continuous-phase seconds with ≥ 1 packet while subscribed), longest gap, crossed books (bid ≥ ask), day-volume decreases, out-of-order exchange timestamps, receive-minus-exchange latency percentiles, heartbeat gaps. Writes `data_quality` rows and a short Markdown summary; `GET /api/data/quality?date=` returns them.
+- [x] `python -m stockify data report --date D` (also run after compaction by the post-close job; reads through `stockify.data.ticks`) computes per instrument: packets, coverage (% of continuous-phase seconds with ≥ 1 packet while subscribed), longest gap, crossed books (bid ≥ ask), day-volume decreases, out-of-order exchange timestamps, receive-minus-exchange latency percentiles, heartbeat gaps. Writes `data_quality` rows and a short Markdown summary; `GET /api/data/quality?date=` returns them.
 
 ## M1.10 Tracked defect #1 (S)
 

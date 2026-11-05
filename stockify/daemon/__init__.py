@@ -104,6 +104,18 @@ def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
         # Marked done either way so a failure cannot block sleep; the landing
         # file stays (tick_days status 'landing') and `compact --date` retries it.
         state.mark(job, day)
+    elif job == "quality":
+        from stockify.data import quality
+        try:
+            result = quality.report(day)
+            d = result["day"]
+            log.info("quality %s: %d instruments, %d packets, %d silent minutes; summary %s",
+                     day, d["instruments"], d["packets"], d["silent_minutes"], result["summary_path"])
+        except quality.QualityError as e:
+            log.info("quality report for %s skipped: %s", day, e)
+        except Exception as e:                       # a report must never keep the laptop up
+            log.exception("quality report for %s failed: %s", day, e)
+        state.mark(job, day)
     elif job == "nse_fetch":
         log.info("NSE fetch for %s: not built yet (M1.3); use `nse backfill` once it exists", day)
     elif job == "prune":
@@ -155,7 +167,7 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
         today = timeutil.ns_to_ist(now).date()
         if calendar_is_trading(today) and now >= scheduler.plan(today).unsubscribe_ns:
             obligations = today                                   # situation 1
-            for job in ("compaction", "prune"):
+            for job in ("compaction", "quality", "prune"):
                 if not state.done(job, today):
                     _run_job(job, today, state)
         else:

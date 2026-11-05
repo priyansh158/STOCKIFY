@@ -16,7 +16,6 @@ _STUBS = {
     "nse": ("M1", "fetch NSE public end-of-day files"),
     "bars": ("M1", "fetch and cache Kite historical candles"),
     "pack": ("M1", "build event packs"),
-    "data": ("M1", "data quality report"),
     "oracle": ("M2", "run the Python oracle backtester"),
     "golden": ("M2", "run golden scenarios"),
     "compare-artifacts": ("M3", "compare two runs' deterministic artifacts"),
@@ -131,6 +130,21 @@ def _cmd_calendar(args) -> int:
     return 0
 
 
+def _cmd_data_report(args) -> int:
+    from datetime import date
+
+    from stockify.data import quality
+
+    try:
+        result = quality.report(date.fromisoformat(args.date))
+    except quality.QualityError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(quality.summary_markdown(result))
+    print(f"(rows written to data_quality; summary saved to {result['summary_path']})", file=sys.stderr)
+    return 0
+
+
 def _cmd_compact(args) -> int:
     from datetime import date
 
@@ -185,6 +199,12 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--date", help="trade date YYYY-MM-DD (default: today in IST)")
     rs.add_argument("--dir", help="read NSE.csv / NFO.csv from this folder instead of downloading")
     rs.set_defaults(func=_cmd_refdata_sync)
+
+    dq = sub.add_parser("data", help="data tools")
+    dqs = dq.add_subparsers(dest="data_command", required=True)
+    dr = dqs.add_parser("report", help="data-quality report for a recorded day (M1.9)")
+    dr.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
+    dr.set_defaults(func=_cmd_data_report)
 
     cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
     cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")

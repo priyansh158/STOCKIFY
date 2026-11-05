@@ -145,3 +145,11 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
 - A failed compaction never blocks the post-close sleep: the job is marked done, `tick_days.status` stays `landing`, the landing file is kept, and `compact --date` retries.
 - **First real day (2026-11-05, 5-minute test):** 61,286 packets, 15.9 MB landing → 4.8 MB archive (3.3×), verified in 2.2 s. The 30 parsed depth columns cost about a third of `full.parquet`; grouping rows by instrument inside each row group and delta-encoding integers would cut it about 23%, and dropping the depth columns (raw keeps them) about 51% (owner decision pending).
 - **Owner chose the instrument-grouped, delta-encoded layout (D-37).** Re-compacted 2026-11-05: 15.9 MB → 3.6 MB (4.4×), verified.
+
+## 2026-11-05 — M1.9 quality report notes
+
+- First real report (2026-11-05, 5-minute test, from the archive): 202 instruments, 61,084 packets in the continuous phase, 0 silent minutes, 0 crossed books, 0 volume decreases, 0 out-of-order exchange timestamps; median receive-minus-exchange latency about 796 ms.
+- **Coverage measures feed activity, not only recording health.** Kite sends a packet only when something changes, so illiquid strikes (e.g. far BANKNIFTY December options: about one packet every 30 s) show 3–5% coverage on a perfect recording. Recording problems show up as day-level silent minutes, gap rows and gaps on liquid instruments (indices, near futures, ATM strikes).
+- The latency includes the laptop clock's offset from the exchange; add an NTP offset check before trusting sub-second latency numbers.
+- Equities use the CM continuous phase (09:15–15:30); F&O-eligible stocks stop continuous trading at 15:15 from 2026-08-03 (closing auction), so their last 15 minutes count as uncovered until CAS eligibility is modelled.
+
