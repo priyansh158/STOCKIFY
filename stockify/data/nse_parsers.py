@@ -15,6 +15,8 @@ Units, as published (checked on 2024-07-05, where both formats exist):
   units (shares); turnover is rupees in UDiFF and lakhs in legacy, stored
   as paise either way. Legacy F&O has no lot size (`lot_size` = None).
 * CM `volume` is shares.
+* `actual_expiry` (UDiFF only) is set when NSE expired the contract before
+  its scheduled `expiry` (corporate actions, D-41).
 * Index values are points × 100. `ind_close_all` gives India VIX open, high
   and low with four decimals; those are rounded half-up to two decimals
   (the raw file keeps the exact value).
@@ -34,7 +36,7 @@ class ParseError(ValueError):
     pass
 
 
-FO_KEYS = ("trade_date", "underlying", "kind", "index_derivative", "expiry", "strike_paise",
+FO_KEYS = ("trade_date", "underlying", "kind", "index_derivative", "expiry", "actual_expiry", "strike_paise",
            "open_paise", "high_paise", "low_paise", "close_paise", "last_paise", "prev_close_paise",
            "settle_paise", "underlying_paise", "oi", "oi_change", "volume", "turnover_paise", "lot_size")
 CM_KEYS = ("trade_date", "symbol", "series", "isin", "open_paise", "high_paise", "low_paise",
@@ -57,11 +59,16 @@ def _text(raw: bytes) -> str:
         raise ParseError(f"not UTF-8: {e}") from e
 
 
+# Other spellings NSE has used for the same column (header name -> canonical name).
+# The back-published UDiFF files of 2024-01-01 … 2024-06-20 call the reserved columns Rsvd01…Rsvd04.
+SYNONYMS = {"Rsvd01": "Rsvd1", "Rsvd02": "Rsvd2", "Rsvd03": "Rsvd3", "Rsvd04": "Rsvd4"}
+
+
 def _table(raw: bytes, required: tuple[str, ...], optional: tuple[str, ...] = ()) -> list[dict]:
     rows = list(csv.reader(io.StringIO(_text(raw))))
     if not rows:
         raise ParseError("empty file")
-    header = [h.strip() for h in rows[0]]
+    header = [SYNONYMS.get(h.strip(), h.strip()) for h in rows[0]]
     # Legacy files end every line with a comma: one empty trailing column.
     while header and header[-1] == "":
         header.pop()
@@ -162,11 +169,14 @@ def fo_udiff(raw: bytes, day: date) -> list[dict]:
             if r["OptnTp"] not in ("CE", "PE"):
                 raise ParseError(f"{w}: option type {r['OptnTp']!r}")
             kind = r["OptnTp"]
-        if r["XpryDt"] != r["FininstrmActlXpryDt"]:
-            raise ParseError(f"{w}: expiry {r['XpryDt']} differs from actual expiry {r['FininstrmActlXpryDt']}")
+        expiry = _date(r["XpryDt"], "%Y-%m-%d", w)
+        actual = _date(r["FininstrmActlXpryDt"], "%Y-%m-%d", w)
+        if actual > expiry:
+            raise ParseError(f"{w}: actual expiry {actual} is after the scheduled expiry {expiry}")
         out.append({
             "trade_date": r["TradDt"], "underlying": r["TckrSymb"].upper(), "kind": kind,
-            "index_derivative": is_index, "expiry": _date(r["XpryDt"], "%Y-%m-%d", w),
+            "index_derivative": is_index, "expiry": expiry,
+            "actual_expiry": actual if actual != expiry else None,      # early expiry (D-41)
             "strike_paise": _paise(r["StrkPric"], w) if kind != "FUT" else None,
             "open_paise": _paise(r["OpnPric"], w), "high_paise": _paise(r["HghPric"], w),
             "low_paise": _paise(r["LwPric"], w), "close_paise": _paise(r["ClsPric"], w),
@@ -200,6 +210,7 @@ def fo_legacy(raw: bytes, day: date) -> list[dict]:
         out.append({
             "trade_date": day.isoformat(), "underlying": r["SYMBOL"].upper(), "kind": kind,
             "index_derivative": is_index, "expiry": _date(r["EXPIRY_DT"].title(), "%d-%b-%Y", w),
+            "actual_expiry": None,                                       # legacy files do not say
             "strike_paise": _paise(r["STRIKE_PR"], w) if kind != "FUT" else None,
             "open_paise": _paise(r["OPEN"], w), "high_paise": _paise(r["HIGH"], w),
             "low_paise": _paise(r["LOW"], w), "close_paise": _paise(r["CLOSE"], w),

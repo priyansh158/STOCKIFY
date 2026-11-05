@@ -188,3 +188,10 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
 - `REFDATA price_band` comes from `daily_limits`, which the M1.5 scheduler does not fill yet (quote-endpoint snapshot still open).
 - Real packs built 2026-11-05: the recorded day (61,488 records, 18.3 MB, all 61,286 packets), a NIFTY nearest-expiry ±10 chain with 1 s CLOCK (17,588 records), RELIANCE/INFY day bars (adjusted) and a bhav_eod pack. Each rebuilt to the same SHA-256.
 
+## 2026-11-05 — backfill findings (LWB 1.2)
+
+- The first backfill (2024-01-01 →) refused 124 F&O and 114 CM days, by design (unknown columns / unexpected values raise). Two real causes:
+  - UDiFF files back-published for 2024-01-01 … 2024-06-20 call the reserved columns `Rsvd01…Rsvd04`; later files `Rsvd1…Rsvd4`. Accepted as synonyms.
+  - Early expiry on corporate actions (D-41): IDFC 2024-10-09, ITC 2025-01-03, SIEMENS 2025-04-04, ABFRL 2025-05-21 (scheduled expiries up to 3 months later). Stored in `instruments.actual_expiry`.
+- Refused days kept their raw files; re-running the backfill re-parses them (only `parsed_ok = 1` days are skipped).
+

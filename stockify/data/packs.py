@@ -333,7 +333,8 @@ def _refdata_events(b: _Build, ids: set[int], day: date) -> None:
         b.add(t0, 2, iid, enc_refdata(iid, t0, "instrument_add", {
             "instrument_id": iid, "exchange": info["exchange"], "kind": info["kind"],
             "tradingsymbol": info["tradingsymbol"], "underlying": info["underlying"],
-            "underlying_id": info["underlying_id"], "expiry": info["expiry"], "strike_paise": info["strike_paise"],
+            "underlying_id": info["underlying_id"], "expiry": info["expiry"],
+            "actual_expiry": info.get("actual_expiry"), "strike_paise": info["strike_paise"],
             "lot_size": spec.get("lot_size"), "tick_paise": spec.get("tick_paise")}))
         b.added.add(iid)
         b.first_day[iid] = day.isoformat()
@@ -363,7 +364,8 @@ def _settle_events(b: _Build, ids: set[int], day: date) -> None:
                           (d, *sorted(ids))):
         b.add(t_eod, 3, r[0], enc_settle(r[0], t_eod, 1, d, r[1]))
     unds = sorted({r[0] for r in conn.execute(
-        f"SELECT DISTINCT underlying_id FROM instruments WHERE instrument_id IN ({marks}) AND expiry=? "
+        f"SELECT DISTINCT underlying_id FROM instruments WHERE instrument_id IN ({marks}) "
+        "AND IFNULL(actual_expiry, expiry)=? "
         "AND underlying_id IS NOT NULL", (*sorted(ids), d))})
     for uid in unds:
         row = conn.execute("SELECT fsp_paise FROM settlement_prices WHERE underlying_id=? AND expiry=?",

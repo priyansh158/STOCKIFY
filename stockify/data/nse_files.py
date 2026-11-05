@@ -232,8 +232,11 @@ def _derivative_id(conn, r: dict, d: str, stats: LoadStats) -> int:  # noqa: ANN
         stats.new_instruments += 1
         return conn.execute(
             "INSERT INTO instruments (exchange, kind, tradingsymbol, underlying, expiry, strike_paise, "
-            "first_seen, last_seen, source) VALUES ('NFO', ?, NULL, ?, ?, ?, ?, ?, 'bhavcopy')",
-            (r["kind"], r["underlying"], r["expiry"], r["strike_paise"], d, d)).lastrowid
+            "first_seen, last_seen, source, actual_expiry) VALUES ('NFO', ?, NULL, ?, ?, ?, ?, ?, 'bhavcopy', ?)",
+            (r["kind"], r["underlying"], r["expiry"], r["strike_paise"], d, d, r.get("actual_expiry"))).lastrowid
+    if r.get("actual_expiry"):
+        conn.execute("UPDATE instruments SET actual_expiry=? WHERE instrument_id=? "
+                     "AND IFNULL(actual_expiry, '') <> ?", (r["actual_expiry"], hit["instrument_id"], r["actual_expiry"]))
     # A bhavcopy row proves the contract was listed that day. last_seen of Kite
     # instruments stays theirs: `instruments.sync` uses it to order dumps.
     if hit["source"] == "bhavcopy":
@@ -361,7 +364,9 @@ def load(dataset: str, day: date, parser: str, raw: bytes, cfg: dict | None = No
 def settle(day: date) -> list[dict]:
     """FSP for every underlying with contracts expiring on `day` (D-39).
 
-    On expiry day NSE's F&O bhavcopy gives every expiring contract of an
+    A contract expires on its `actual_expiry` when NSE expired it early
+    (D-41), otherwise on its `expiry`. On that day NSE's F&O bhavcopy gives
+    every expiring contract of an
     underlying (future, calls, puts) one settlement price: the FSP. That is
     the source. It is cross-checked against an independent close: the index
     close (`index_eod`) for indices, the official close (`cm_eod`, EQ) for
@@ -379,8 +384,9 @@ def settle(day: date) -> list[dict]:
             "SELECT i.underlying, MAX(i.underlying_id) AS uid, COUNT(DISTINCT f.settle_paise) AS n, "
             "MIN(f.settle_paise) AS lo, MAX(f.settle_paise) AS hi FROM fo_eod f "
             "JOIN instruments i USING (instrument_id) "
-            "WHERE f.trade_date=? AND i.exchange='NFO' AND i.expiry=? AND i.kind IN ('FUT','CE','PE') "
-            "AND f.settle_paise IS NOT NULL GROUP BY i.underlying ORDER BY i.underlying", (d, d)).fetchall()
+            "WHERE f.trade_date=? AND i.exchange='NFO' AND IFNULL(i.actual_expiry, i.expiry)=? "
+            "AND i.kind IN ('FUT','CE','PE') AND f.settle_paise IS NOT NULL "
+            "GROUP BY i.underlying ORDER BY i.underlying", (d, d)).fetchall()
         for row in expiring:
             und, uid = row["underlying"], row["uid"]
             entry = {"underlying": und, "underlying_id": uid, "expiry": d}

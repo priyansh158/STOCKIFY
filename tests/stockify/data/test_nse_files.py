@@ -38,7 +38,7 @@ def udiff_fo(day: date, rows: list[dict]) -> bytes:
     for r in rows:
         cells = dict.fromkeys(P.UDIFF_COLUMNS, "")
         cells.update(TradDt=day.isoformat(), BizDt=day.isoformat(), Sgmt="FO", Src="NSE", SsnId="F1",
-                     XpryDt=r["exp"], FininstrmActlXpryDt=r["exp"], FinInstrmTp=r["tp"], TckrSymb=r["sym"],
+                     XpryDt=r["exp"], FininstrmActlXpryDt=r.get("actual", r["exp"]), FinInstrmTp=r["tp"], TckrSymb=r["sym"],
                      StrkPric=r.get("strike", ""), OptnTp=r.get("opt", ""), OpnPric="1.00", HghPric="1.00",
                      LwPric="1.00", ClsPric=r.get("close", "1.00"), LastPric="1.00", PrvsClsgPric="1.00",
                      UndrlygPric="1.00", SttlmPric=r.get("settle", "1.00"), OpnIntrst="100", ChngInOpnIntrst="0",
@@ -166,6 +166,20 @@ class ParserTests(unittest.TestCase):
         bad = fixture("fo_udiff_20240705.csv").replace(b"54.45", b"54.455")
         with self.assertRaisesRegex(P.ParseError, "whole number of paise"):
             P.fo_udiff(bad, OLD)
+
+    def test_reserved_column_spelling_of_early_2024(self):
+        text = fixture("fo_udiff_20240705.csv").decode()
+        old = text.replace("Rsvd1,Rsvd2,Rsvd3,Rsvd4", "Rsvd01,Rsvd02,Rsvd03,Rsvd04").encode()
+        self.assertEqual(P.fo_udiff(old, OLD), P.fo_udiff(fixture("fo_udiff_20240705.csv"), OLD))
+
+    def test_early_expiry_is_kept(self):
+        raw = udiff_fo(OLD, [{"tp": "STO", "sym": "IDFC", "exp": "2024-11-28", "actual": "2024-07-05",
+                              "strike": "113.00", "opt": "CE", "lot": 10000}])
+        row = P.fo_udiff(raw, OLD)[0]
+        self.assertEqual((row["expiry"], row["actual_expiry"]), ("2024-11-28", "2024-07-05"))
+        late = raw.replace(b"2024-11-28,2024-07-05", b"2024-07-05,2024-11-28")
+        with self.assertRaisesRegex(P.ParseError, "after the scheduled expiry"):
+            P.fo_udiff(late, OLD)
 
     def test_zip_is_read(self):
         raw = zipped("BhavCopy.csv", fixture("fo_udiff_20240705.csv"))
@@ -366,6 +380,25 @@ class LoadTests(NseTest):
         row = refdata._connect().execute("SELECT fsp_paise, cross_check FROM settlement_prices WHERE underlying_id=?",
                                          (nifty,)).fetchone()
         self.assertEqual(tuple(row), (2401050, "n/a"))
+
+    def test_early_expiry_settles_on_the_actual_day(self):
+        """IDFC-style: every contract of the underlying expired early, at one price (D-41)."""
+        rows = [dict(r) for r in FO_ROWS] + [
+            {"tp": "STF", "sym": "INFY", "exp": "2026-12-29", "actual": "2026-11-17", "settle": "1601.00", "lot": 400},
+            {"tp": "STO", "sym": "INFY", "exp": "2026-12-29", "actual": "2026-11-17", "strike": "1500.00",
+             "opt": "PE", "lot": 400, "settle": "1601.00"}]
+        rows[5]["settle"] = "1601.00"                                     # the regular INFY call, same FSP
+        self.routes["BhavCopy_NSE_FO_0_0_0_20261117_F_0000.csv.zip"] = [(200, zipped("fo.csv", udiff_fo(EXP, rows)))]
+        self.fetch()
+        fut = instruments.derivative("INFY", "FUT", "2026-12-29")
+        self.assertEqual(instruments.get(fut)["actual_expiry"], "2026-11-17")
+        infy = instruments.find("NSE", "INFY")
+        row = refdata._connect().execute("SELECT fsp_paise FROM settlement_prices WHERE underlying_id=? "
+                                         "AND expiry='2026-11-17'", (infy,)).fetchone()
+        self.assertEqual(row[0], 160100)
+        self.assertEqual(instruments.expiries("INFY", "FUT", "2026-11-18"), [])        # gone after the early expiry
+        self.assertEqual(instruments.option_chain("INFY", "2026-12-29", "2026-11-18"), [])
+        self.assertEqual(instruments.expiries("INFY", "FUT", "2026-11-17"), ["2026-12-29"])
 
     def test_quality_report_keeps_fsp_rows(self):
         self.fetch()
