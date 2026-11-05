@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "bars": ("M1", "fetch and cache Kite historical candles"),
     "pack": ("M1", "build event packs"),
     "oracle": ("M2", "run the Python oracle backtester"),
     "golden": ("M2", "run golden scenarios"),
@@ -218,6 +217,48 @@ def _cmd_nse_backfill(args) -> int:
     return 0 if not totals.get("error") else 1
 
 
+def _cmd_bars_fetch(args) -> int:
+    from datetime import date
+
+    from stockify.data import history, instruments
+
+    _load_env()
+    start, end = date.fromisoformat(args.from_), date.fromisoformat(args.to)
+    code = 0
+    for sym in (s.strip() for s in args.symbols.split(",") if s.strip()):
+        try:
+            if args.continuous:
+                stats = history.fetch_continuous(sym, start, end)
+            else:
+                exchange, _, name = sym.rpartition(":")
+                iid = instruments.find(exchange or "NSE", name)
+                if iid is None:
+                    print(f"{sym}: not in refdata (run `refdata sync`)", file=sys.stderr)
+                    code = 1
+                    continue
+                stats = history.fetch(iid, args.interval, start, end)
+        except history.HistoryError as e:
+            print(f"{sym}: {e}", file=sys.stderr)
+            code = 1
+            continue
+        extra = f", adjustment {stats.adjustment}" if stats.adjustment else ""
+        print(f"{sym:<20} {stats.interval:<9} {stats.outcome:<9} {stats.rows} bars in {stats.chunks} chunks, "
+              f"{stats.requests} requests{extra} {stats.detail}")
+    return code
+
+
+def _cmd_bars_sweep(args) -> int:
+    from stockify.data import history
+
+    _load_env()
+    out = history.sweep()
+    flagged = [s for s in out if s.adjustment]
+    print(f"checked {len(out)} cached live instruments; {len(flagged)} adjusted")
+    for s in flagged:
+        print(f"  instrument {s.instrument_id}: {s.adjustment}")
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -274,6 +315,20 @@ def main(argv: list[str] | None = None) -> int:
     nb.add_argument("--allow-unverified", action="store_true", help="use sources.json rows not yet verified")
     nb.add_argument("--rows", dest="verbose_rows", action="store_true", help="print one line per file")
     nb.set_defaults(func=_cmd_nse_backfill)
+
+    b = sub.add_parser("bars", help="Kite historical bar cache (M1.4)")
+    bsub = b.add_subparsers(dest="bars_command", required=True)
+    bf = bsub.add_parser("fetch", help="fetch and cache candles")
+    bf.add_argument("--symbols", required=True,
+                    help="comma list: RELIANCE (NSE), NFO:NIFTY26NOVFUT, or underlyings with --continuous")
+    bf.add_argument("--interval", default="day", help="minute, 3minute, 5minute, 10minute, 15minute, "
+                    "30minute, 60minute or day")
+    bf.add_argument("--from", dest="from_", required=True, help="first IST date YYYY-MM-DD")
+    bf.add_argument("--to", required=True, help="last IST date YYYY-MM-DD")
+    bf.add_argument("--continuous", action="store_true", help="continuous day futures for the underlyings (K-5)")
+    bf.set_defaults(func=_cmd_bars_fetch)
+    bsub.add_parser("sweep", help="corporate-action check for every cached live instrument"
+                    ).set_defaults(func=_cmd_bars_sweep)
 
     cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
     cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")

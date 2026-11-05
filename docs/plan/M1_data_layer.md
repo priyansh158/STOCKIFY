@@ -64,13 +64,13 @@ Files: `stockify/data/nse_files.py` (fetcher), `stockify/data/nse_parsers.py`, `
 
 Files: `stockify/data/history.py` (extends the helpers moved in M0.1), `stockify/config/kite_limits.json`. Tables: `A1_schemas.md` §2.
 
-- [ ] `bars.sqlite` keyed by `(instrument_id, interval, ts_ns)` — **not** by token (D-06). Every row stores `fetched_on`. Basis = `adjusted` (K-6).
-- [ ] Throttle: one process-wide token bucket at 3 requests/second (K-8), with an injectable clock for tests.
-- [ ] Chunking: per-interval maximum range from `kite_limits.json` (community-reported defaults ⚠: minute 60 days, 3/5/10-minute 100, 15/30-minute 200, 60-minute 400, day 2000). On a range-limit `InputException`, halve the chunk, retry, and persist the learned limit.
-- [ ] Continuous futures (K-5): `continuous=1` only with `interval=day` on a live futures contract. Store the result as the synthetic instrument `CONT:<underlying>:FUT` (kind `FUT_CONT`), never mixed into per-contract rows. Expired options have no Kite history at all; use bhavcopy (M1.3).
-- [ ] Corporate-action detector (C-5, D-18): every fetch for an instrument with cached data also re-fetches the last 5 cached daily bars. If closes differ by a consistent ratio (> 0.1%), write `adjustments_detected`. For **live** instruments, drop that instrument's cached bars and refetch (`action = refetched`). For **expired** instruments, whose minute data Kite can no longer provide, keep the rows and only flag them (`action = flagged_only`) — never delete what cannot be fetched again. A nightly sweep runs the same check for every cached live instrument.
-- [ ] CLI: `python -m stockify bars fetch --symbols RELIANCE,INFY --interval minute --from 2026-01-01 --to 2026-10-28`.
-- [ ] Tests with a fake Kite client (U-04): chunk boundaries, throttle timing, limit learning, adjustment detection, expired instruments only flagged, timestamps stored as bar **start** in UTC ns.
+- [x] `bars.sqlite` keyed by `(instrument_id, interval, ts_ns)` — **not** by token (D-06). Every row stores `fetched_on`. Basis = `adjusted` (K-6).
+- [x] Throttle: one process-wide token bucket at 3 requests/second (K-8), with an injectable clock for tests.
+- [x] Chunking: per-interval maximum range from `kite_limits.json` (community-reported defaults ⚠: minute 60 days, 3/5/10-minute 100, 15/30-minute 200, 60-minute 400, day 2000). On a range-limit `InputException`, halve the chunk, retry, and persist the learned limit.
+- [x] Continuous futures (K-5): `continuous=1` only with `interval=day` on a live futures contract. Store the result as the synthetic instrument `CONT:<underlying>:FUT` (kind `FUT_CONT`), never mixed into per-contract rows. Expired options have no Kite history at all; use bhavcopy (M1.3).
+- [x] Corporate-action detector (C-5, D-18): every fetch for an instrument with cached data also re-fetches the last 5 cached daily bars. If closes differ by a consistent ratio (> 0.1%), write `adjustments_detected`. For **live** instruments, drop that instrument's cached bars and refetch (`action = refetched`). For **expired** instruments, whose minute data Kite can no longer provide, keep the rows and only flag them (`action = flagged_only`) — never delete what cannot be fetched again. A nightly sweep runs the same check for every cached live instrument.
+- [x] CLI: `python -m stockify bars fetch --symbols RELIANCE,INFY --interval minute --from 2026-01-01 --to 2026-10-28`.
+- [x] Tests with a fake Kite client (U-04): chunk boundaries, throttle timing, limit learning, adjustment detection, expired instruments only flagged, timestamps stored as bar **start** in UTC ns.
 
 ## M1.5 The recorder (L) — go live as early as possible
 

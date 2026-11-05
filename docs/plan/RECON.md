@@ -165,3 +165,15 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
 - Speed: one trading day (fo + cm + idx) ≈ 7 s, so a 2024-01-01 → today backfill ≈ 1.5 h. A `kind='EQ'` lookup could not use the partial unique index and took 107 s per CM file until it used the index's own predicate.
 - Loaded into the real refdata so far: 2023-12-28, 2023-12-29, 2026-10-27, 2026-10-28, 2026-10-29, 2026-11-04, plus qtyfreeze 2026-11-05.
 - `data_quality` is shared: the quality report now deletes only its own metrics for a day (`quality.FOREIGN_METRICS`).
+
+## 2026-11-05 — M1.4 Kite bar cache (RWB 1.1)
+
+- The cache lives in `stockify/data/history.py` next to the M0.1 helpers; `bars.sqlite` from migration `bars/0001_init.sql`.
+- `kite_client.historical` swallows exceptions, so the cache calls the SDK's `historical_data` directly (it must see `InputException` to learn range limits).
+- Throttle: capacity-1 token bucket at `historical_rps` (3/s): calls are spaced 1/3 s apart. A burst-of-3 bucket allowed 4 calls inside one second.
+- Chunk defaults (`kite_limits.json` → `historical_max_days`) are the community-reported values; learned limits go to `$LAB/kite_limits_learned.json` (runtime state, not config).
+- Kite prices arrive as floats: shortest repr, rounded half-up to paise.
+- Corporate-action check: last 5 cached day bars (else the requested interval) re-fetched; a consistent ratio (spread ≤ 0.05%, |ratio − 1| > 0.1%) → `adjustments_detected`; live → whole cache of that instrument dropped and the requested range refetched.
+- First real fetch (2026-11-05): RELIANCE/INFY day 2026-01-01 → 2026-11-04 (208 bars each, 1 request); Kite day closes equal the bhavcopy CM closes on 10-27, 10-28 and 11-04. NIFTY continuous futures 2024-01-01 → 2026-11-04: 706 day bars with OI.
+- **Observed:** RELIANCE minute bars end at 15:14 IST (360 per day) while NIFTY 50 runs to 15:29 (375). F&O stocks stop continuous trading at 15:15 for the closing auction (D-13, `CM_CAS`); Kite has no minute bars for the auction window.
+
