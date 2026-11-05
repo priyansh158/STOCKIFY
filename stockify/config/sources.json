@@ -1,1 +1,151 @@
-{ "schema": "stockify.sources/1", "datasets": {} }
+{
+  "schema": "stockify.sources/1",
+  "http": {
+    "host": "https://nsearchives.nseindia.com",
+    "warmup_url": "https://www.nseindia.com/",
+    "referer": "https://www.nseindia.com/",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+    "min_interval_ms": 1000,
+    "retries": 3,
+    "backoff_ms": 2000,
+    "timeout_s": 60
+  },
+  "datasets": {
+    "fo": [
+      {
+        "applies": "fo",
+        "effective_from": "2015-01-01",
+        "valid_to": "2023-12-31",
+        "parser": "fo_legacy",
+        "url": "/content/historical/DERIVATIVES/{YYYY}/{MON}/fo{DD}{MON}{YYYY}bhav.csv.zip",
+        "ext": "csv.zip",
+        "source": "S-2",
+        "verified": true,
+        "verified_on": "2026-11-04",
+        "evidence": {
+          "url": "https://nsearchives.nseindia.com/content/historical/DERIVATIVES/2024/JUL/fo05JUL2024bhav.csv.zip",
+          "trade_date": "2024-07-05",
+          "rows": 33930,
+          "header": "INSTRUMENT,SYMBOL,EXPIRY_DT,STRIKE_PR,OPTION_TYP,OPEN,HIGH,LOW,CLOSE,SETTLE_PR,CONTRACTS,VAL_INLAKH,OPEN_INT,CHG_IN_OI,TIMESTAMP,"
+        },
+        "note": "No lot-size column. UDiFF was back-published to 2024-01-01, so legacy is used only before that."
+      },
+      {
+        "applies": "fo",
+        "effective_from": "2024-01-01",
+        "parser": "fo_udiff",
+        "url": "/content/fo/BhavCopy_NSE_FO_0_0_0_{YYYYMMDD}_F_0000.csv.zip",
+        "ext": "csv.zip",
+        "source": "S-1",
+        "verified": true,
+        "verified_on": "2026-11-04",
+        "evidence": {
+          "url": "https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_20261104_F_0000.csv.zip",
+          "trade_date": "2026-11-04",
+          "rows": 36667,
+          "header": "TradDt,BizDt,Sgmt,Src,FinInstrmTp,FinInstrmId,ISIN,TckrSymb,SctySrs,XpryDt,FininstrmActlXpryDt,StrkPric,OptnTp,FinInstrmNm,OpnPric,HghPric,LwPric,ClsPric,LastPric,PrvsClsgPric,UndrlygPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,TtlTrfVal,TtlNbOfTxsExctd,SsnId,NewBrdLotQty,Rmks,Rsvd1,Rsvd2,Rsvd3,Rsvd4"
+        },
+        "note": "Exists from 2024-01-01 (2023-12-29 and earlier: 404). 2024-07-05 UDiFF and legacy hold the same 33,930 contracts."
+      }
+    ],
+    "cm": [
+      {
+        "applies": "cm",
+        "effective_from": "2015-01-01",
+        "valid_to": "2023-12-31",
+        "parser": "cm_legacy",
+        "url": "/content/historical/EQUITIES/{YYYY}/{MON}/cm{DD}{MON}{YYYY}bhav.csv.zip",
+        "ext": "csv.zip",
+        "source": "S-4",
+        "verified": true,
+        "verified_on": "2026-11-04",
+        "evidence": {
+          "url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2024/JUL/cm05JUL2024bhav.csv.zip",
+          "trade_date": "2024-07-05",
+          "rows": 2775,
+          "header": "SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY,TOTTRDVAL,TIMESTAMP,TOTALTRADES,ISIN,"
+        }
+      },
+      {
+        "applies": "cm",
+        "effective_from": "2024-01-01",
+        "parser": "cm_udiff",
+        "url": "/content/cm/BhavCopy_NSE_CM_0_0_0_{YYYYMMDD}_F_0000.csv.zip",
+        "ext": "csv.zip",
+        "source": "S-3",
+        "verified": true,
+        "verified_on": "2026-11-04",
+        "evidence": {
+          "url": "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_20261104_F_0000.csv.zip",
+          "trade_date": "2026-11-04",
+          "rows": 3705,
+          "header": "TradDt,BizDt,Sgmt,Src,FinInstrmTp,FinInstrmId,ISIN,TckrSymb,SctySrs,XpryDt,FininstrmActlXpryDt,StrkPric,OptnTp,FinInstrmNm,OpnPric,HghPric,LwPric,ClsPric,LastPric,PrvsClsgPric,UndrlygPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,TtlTrfVal,TtlNbOfTxsExctd,SsnId,NewBrdLotQty,Rmks,Rsvd1,Rsvd2,Rsvd3,Rsvd4"
+        }
+      }
+    ],
+    "idx": [
+      {
+        "applies": "idx",
+        "effective_from": "2015-01-01",
+        "parser": "ind_close_all",
+        "url": "/content/indices/ind_close_all_{DDMMYYYY}.csv",
+        "ext": "csv",
+        "source": "S-5",
+        "verified": true,
+        "verified_on": "2026-11-04",
+        "evidence": {
+          "url": "https://nsearchives.nseindia.com/content/indices/ind_close_all_04112026.csv",
+          "trade_date": "2026-11-04",
+          "rows": 167,
+          "header": "Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,Closing Index Value,Points Change,Change(%),Volume,Turnover (Rs. Cr.),P/E,P/B,Div Yield"
+        }
+      }
+    ],
+    "qtyfreeze": [
+      {
+        "applies": "qtyfreeze",
+        "effective_from": "2015-01-01",
+        "parser": "qtyfreeze",
+        "url": "/content/fo/qtyfreeze.csv",
+        "ext": "csv",
+        "current_only": true,
+        "source": "S-6",
+        "verified": true,
+        "verified_on": "2026-11-04",
+        "evidence": {
+          "url": "https://nsearchives.nseindia.com/content/fo/qtyfreeze.csv",
+          "trade_date": "2026-11-04",
+          "rows": 224,
+          "header": "S.No.,SYMBOL,VOL_FRZ_QTY (space-padded)"
+        },
+        "note": "Lags circulars: on 2026-11-04 it still says NIFTY 1800, while FAOP set 3510 from 2026-10-05 (X-5)."
+      }
+    ]
+  },
+  "cm_series": ["EQ"],
+  "index_aliases": {
+    "NIFTY FINANCIAL SERVICES": "NIFTY FIN SERVICE",
+    "NIFTY MIDCAP SELECT": "NIFTY MID SELECT",
+    "NIFTY PRIVATE BANK": "NIFTY PVT BANK",
+    "NIFTY SMALLCAP 100": "NIFTY SMLCAP 100",
+    "NIFTY SMALLCAP 250": "NIFTY SMLCAP 250",
+    "NIFTY SMALLCAP 50": "NIFTY SMLCAP 50",
+    "NIFTY INFRASTRUCTURE": "NIFTY INFRA",
+    "NIFTY HEALTHCARE INDEX": "NIFTY HEALTHCARE",
+    "NIFTY OIL & GAS": "NIFTY OIL AND GAS",
+    "NIFTY INDIA CONSUMPTION": "NIFTY CONSUMPTION",
+    "NIFTY MIDSMALLCAP 400": "NIFTY MIDSML 400",
+    "NIFTY LARGEMIDCAP 250": "NIFTY LARGEMID250",
+    "NIFTY MICROCAP 250": "NIFTY MICROCAP250",
+    "NIFTY SERVICES SECTOR": "NIFTY SERV SECTOR",
+    "NIFTY CAPITAL MARKETS": "NIFTY CAPITAL MKT",
+    "NIFTY CONSUMER DURABLES": "NIFTY CONSR DURBL",
+    "NIFTY FINANCIAL SERVICES 25/50": "NIFTY FINSRV25 50",
+    "NIFTY FINANCIAL SERVICES EX-BANK": "NIFTY FINSEREXBNK",
+    "NIFTY INDIA DEFENCE": "NIFTY IND DEFENCE",
+    "NIFTY INDIA DIGITAL": "NIFTY IND DIGITAL",
+    "NIFTY INDIA TOURISM": "NIFTY IND TOURISM",
+    "NIFTY INDIA RAILWAYS PSU": "NIFTY RAILWAYS PSU"
+  },
+  "aliases_verified_on": "2026-11-04"
+}

@@ -117,7 +117,22 @@ def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
             log.exception("quality report for %s failed: %s", day, e)
         state.mark(job, day)
     elif job == "nse_fetch":
-        log.info("NSE fetch for %s: not built yet (M1.3); use `nse backfill` once it exists", day)
+        from stockify.daemon import scheduler
+        from stockify.data import nse_files
+        try:
+            results = nse_files.fetch(day)
+        except Exception as e:                       # network or config trouble: retried on the next pass
+            log.exception("NSE fetch for %s failed: %s", day, e)
+            return
+        for r in results:
+            log.info("NSE %s %s: %s %s", r.dataset, r.trade_date, r.outcome, r.detail)
+        if nse_files.complete(results):
+            state.mark(job, day)
+        elif all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False for r in results)                 and timeutil.now_ns() >= scheduler.plan(day).nse_fetch_until_ns:
+            # Past the retry window and NSE still has not published: stop asking for this day.
+            log.warning("NSE files for %s still missing after the retry window; giving up "
+                        "(run `python -m stockify nse fetch --date %s` later)", day, day)
+            state.mark(job, day)
     elif job == "prune":
         from stockify import store
         week_ago = timeutil.now_ns() - 7 * 86_400 * 1_000_000_000

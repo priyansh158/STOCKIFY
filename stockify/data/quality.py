@@ -33,6 +33,7 @@ from stockify.data import calendar, instruments, refdata, ticks
 log = logging.getLogger("stockify.data.quality")
 SEC = 1_000_000_000
 MIN = 60 * SEC
+FOREIGN_METRICS = ("fsp_vs_close_paise", "fsp_settle_spread_paise")    # written by stockify.data.nse_files.settle
 GROUP_OF_KIND = {"INDEX": "CM", "EQ": "CM", "FUT": "FO_FUT", "CE": "FO_OPT", "PE": "FO_OPT"}
 
 
@@ -189,7 +190,9 @@ def report(day: date, *, write: bool = True) -> dict:
               "instruments": {iid: m for iid, m in per_inst}}
     if write:
         with refdata.transaction() as conn:
-            conn.execute("DELETE FROM data_quality WHERE trade_date=?", (day.isoformat(),))
+            # Only this report's own rows: other checks (e.g. the FSP cross-check, M1.3) share the table.
+            conn.execute("DELETE FROM data_quality WHERE trade_date=? AND metric NOT IN (%s)"
+                         % ",".join("?" * len(FOREIGN_METRICS)), (day.isoformat(), *FOREIGN_METRICS))
             conn.executemany("INSERT INTO data_quality (trade_date, instrument_id, metric, value, detail) "
                              "VALUES (?, ?, ?, ?, ?)", rows)
         result["summary_path"] = str(write_summary(result))

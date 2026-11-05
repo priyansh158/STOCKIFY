@@ -153,3 +153,15 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
 - The latency includes the laptop clock's offset from the exchange; add an NTP offset check before trusting sub-second latency numbers.
 - Equities use the CM continuous phase (09:15–15:30); F&O-eligible stocks stop continuous trading at 15:15 from 2026-08-03 (closing auction), so their last 15 minutes count as uncovered until CAS eligibility is modelled.
 
+## 2026-11-04 — M1.3 NSE end-of-day files (LWB 1.1)
+
+- Every source downloaded and parsed for real before `verified: true` (evidence rows in `sources.json`, facts S-1…S-6).
+- UDiFF exists from 2024-01-01 (D-40); legacy only before. Legacy F&O has no lot size: those rows load with `lot_size` NULL.
+- Units as published: F&O volume = contracts (both formats), OI = units, turnover → paise. Legacy turnover is ₹ lakh to 2 dp (< ₹1,000 off UDiFF).
+- FSP (D-39): NSE's settlement price of the expiring contracts. On 2026-10-27, 18 of 213 stocks differ from the CM close by > 1 tick (closing auction); indices all match. 2023-12-28 (legacy) shows the same pattern for 16 stocks.
+- `ind_close_all` names ≠ Kite names: 66 of 167 map (aliases in `sources.json`); the rest are indices Kite does not list or names not aliased yet. India VIX O/H/L have 4 decimals and are rounded half-up to points × 100.
+- `qtyfreeze.csv` lags circulars (NIFTY 1,800 vs 3,510): stored as observed (`source = qtyfreeze.csv`); M4.1 cross-checks circulars.
+- Contracts first seen in a bhavcopy get `tradingsymbol` NULL, `source = 'bhavcopy'`. Their lot size becomes a `contract_specs` row only when a tick size is known from the same contract or a sibling (same underlying and kind); otherwise skipped (73 on 2026-10-27).
+- Speed: one trading day (fo + cm + idx) ≈ 7 s, so a 2024-01-01 → today backfill ≈ 1.5 h. A `kind='EQ'` lookup could not use the partial unique index and took 107 s per CM file until it used the index's own predicate.
+- Loaded into the real refdata so far: 2023-12-28, 2023-12-29, 2026-10-27, 2026-10-28, 2026-10-29, 2026-11-04, plus qtyfreeze 2026-11-05.
+- `data_quality` is shared: the quality report now deletes only its own metrics for a day (`quality.FOREIGN_METRICS`).

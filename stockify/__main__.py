@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "nse": ("M1", "fetch NSE public end-of-day files"),
     "bars": ("M1", "fetch and cache Kite historical candles"),
     "pack": ("M1", "build event packs"),
     "oracle": ("M2", "run the Python oracle backtester"),
@@ -165,6 +164,60 @@ def _cmd_compact(args) -> int:
     return 0 if res.status in ("verified", "no_landing") else 1
 
 
+def _nse_datasets(text: str) -> tuple[str, ...]:
+    from stockify.data import nse_files
+    names = tuple(x.strip() for x in text.split(",") if x.strip())
+    bad = [x for x in names if x not in nse_files.DATASETS]
+    if bad:
+        raise SystemExit(f"unknown dataset(s) {', '.join(bad)}; choose from {', '.join(nse_files.DATASETS)}")
+    return names
+
+
+def _print_nse(res) -> None:  # noqa: ANN001
+    print(f"{res.dataset:<10} {res.trade_date}  {res.outcome:<8} {res.detail}")
+
+
+def _cmd_nse_fetch(args) -> int:
+    from datetime import date
+
+    from stockify import timeutil
+    from stockify.data import nse_files
+
+    day = date.fromisoformat(args.date) if args.date else timeutil.ist_today()
+    try:
+        results = nse_files.fetch(day, _nse_datasets(args.datasets), allow_unverified=args.allow_unverified,
+                                  force=args.force)
+    except nse_files.NseError as e:
+        print(e, file=sys.stderr)
+        return 1
+    for res in results:
+        _print_nse(res)
+    for s in nse_files.settle(day):
+        print(f"settlement {s['underlying']:<12} {s['expiry']}  {s['status']}"
+              + (f" fsp={s['fsp_paise'] / 100:.2f} ({s['source']}, cross-check {s['cross_check']})"
+                 if s["status"] == "ok" else ""))
+    return 0 if all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False
+                    for r in results) else 1
+
+
+def _cmd_nse_backfill(args) -> int:
+    from datetime import date, timedelta
+
+    from stockify import timeutil
+    from stockify.data import nse_files
+
+    end = date.fromisoformat(args.to) if args.to else timeutil.ist_today() - timedelta(days=1)
+    try:
+        totals = nse_files.backfill(date.fromisoformat(args.from_), end, _nse_datasets(args.datasets),
+                                    allow_unverified=args.allow_unverified,
+                                    progress=_print_nse if args.verbose_rows else None)
+    except nse_files.NseError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(json.dumps(totals, sort_keys=True))
+    return 0 if not totals.get("error") else 1
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -205,6 +258,22 @@ def main(argv: list[str] | None = None) -> int:
     dr = dqs.add_parser("report", help="data-quality report for a recorded day (M1.9)")
     dr.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
     dr.set_defaults(func=_cmd_data_report)
+
+    n = sub.add_parser("nse", help="NSE public end-of-day files (M1.3)")
+    nsub = n.add_subparsers(dest="nse_command", required=True)
+    nf = nsub.add_parser("fetch", help="fetch and load one trade date (default: today in IST)")
+    nf.add_argument("--date", help="IST trade date YYYY-MM-DD")
+    nf.add_argument("--datasets", default="fo,cm,idx,qtyfreeze", help="comma list of fo,cm,idx,qtyfreeze")
+    nf.add_argument("--force", action="store_true", help="download again even if already fetched")
+    nf.add_argument("--allow-unverified", action="store_true", help="use sources.json rows not yet verified")
+    nf.set_defaults(func=_cmd_nse_fetch)
+    nb = nsub.add_parser("backfill", help="fetch every trading day in a range (resumable)")
+    nb.add_argument("--datasets", default="fo,cm,idx", help="comma list of fo,cm,idx")
+    nb.add_argument("--from", dest="from_", required=True, help="first date YYYY-MM-DD")
+    nb.add_argument("--to", help="last date YYYY-MM-DD (default: yesterday in IST)")
+    nb.add_argument("--allow-unverified", action="store_true", help="use sources.json rows not yet verified")
+    nb.add_argument("--rows", dest="verbose_rows", action="store_true", help="print one line per file")
+    nb.set_defaults(func=_cmd_nse_backfill)
 
     cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
     cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
