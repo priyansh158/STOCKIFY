@@ -54,8 +54,8 @@ Files: `stockify/strategies/`.
 Format and list: `A3_testing.md` §2–§3.
 
 - [x] Golden runner `python -m stockify golden run --impl oracle` loads every `tests/golden/*.yaml`, builds a tiny pack and bundle from the YAML, runs, and compares artifacts to the expected values in the YAML.
-- [ ] Write G01–G10, G12, G14, G16, G19 and G20 *(2026-11-05: all written and passing except G08, which waits for the owner's charge capture below)* with hand-computed expectations (G11 waits for M4.6, G17–G18 for M4.3; G13 and G15 are data-layer tests written in M1). Each YAML explains its expected numbers in a `notes` block, step by step, so a human can audit them.
-- [ ] G08 (costs) uses ground truth *(2026-11-05: capture tool, cases and comparison built; `golden run` shows G08 PENDING until the owner's capture exists)* from Kite's virtual contract note (K-10): `python -m stockify tools capture-charges --cases tests/golden/charges_cases.json` calls `POST /charges/orders` for a list of imaginary orders and saves the responses (no secrets) to `tests/fixtures/kite_charges/<date>.json`. 🛑 The owner runs the capture, since it needs a live access token. Re-capture whenever charges change, and keep old captures with their dates.
+- [x] Write G01–G10, G12, G14, G16, G19 and G20 *(2026-11-06: all written and passing, G08 included)* with hand-computed expectations (G11 waits for M4.6, G17–G18 for M4.3; G13 and G15 are data-layer tests written in M1). Each YAML explains its expected numbers in a `notes` block, step by step, so a human can audit them.
+- [x] G08 (costs) uses ground truth *(2026-11-06: captured by the owner and passing: 11 cases, every component within ₹0.000001 and every total to the paisa, after D-46)* from Kite's virtual contract note (K-10): `python -m stockify tools capture-charges --cases tests/golden/charges_cases.json` calls `POST /charges/orders` for a list of imaginary orders and saves the responses (no secrets) to `tests/fixtures/kite_charges/<date>.json`. 🛑 The owner runs the capture, since it needs a live access token. Re-capture whenever charges change, and keep old captures with their dates.
 
 ## M2.6 Metrics and run report (S)
 

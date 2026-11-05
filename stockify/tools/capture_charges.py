@@ -55,7 +55,17 @@ def capture(cases_path: Path, client=None) -> Path:  # noqa: ANN001
                        "transaction_type": c["side"], "variety": "regular", "product": c["product"],
                        "order_type": "MARKET", "quantity": c["qty"], "average_price": c["price_paise"] / 100})
         meta.append({"case": c["name"], "kind": kind, "price_paise": c["price_paise"], **params[-1]})
-    response = client.get_virtual_contract_note(params)
+    # One order per request, unless cases share a "request" group. Kite prices a lone order as
+    # delivery and nets a same-day buy and sell of one scrip in one request as intraday (both seen
+    # in the 2026-11-06 captures), so an MIS round trip must be sent as a pair.
+    groups: dict[str, list[int]] = {}
+    for n, c in enumerate(cases):
+        groups.setdefault(c.get("request", f"case{n}"), []).append(n)
+    response: list = [None] * len(params)
+    for idx in groups.values():
+        answer = client.get_virtual_contract_note([params[i] for i in idx])
+        for i, r in zip(idx, answer):
+            response[i] = r
     FIXTURES.mkdir(parents=True, exist_ok=True)
     out = FIXTURES / f"{day.isoformat()}.json"
     out.write_text(json.dumps({"captured_on": day.isoformat(), "endpoint": "POST /charges/orders",
@@ -66,31 +76,40 @@ def capture(cases_path: Path, client=None) -> Path:  # noqa: ANN001
 
 # ── Comparison (G08) ─────────────────────────────────────────────────────────
 
-KITE_FIELDS = {"brokerage": "brokerage", "stt": "transaction_tax", "exchange": "exchange_turnover_charge",
+KITE_FIELDS = {"brokerage": "brokerage", "stt": "transaction_tax", "exchange_txn": "exchange_turnover_charge",
                "sebi": "sebi_turnover_charge", "stamp": "stamp_duty"}
+TOLERANCE_RUPEES = "0.000001"          # Kite's JSON carries float noise (0.32213509999999995)
 
 
 def compare_capture(path: Path) -> list[str]:
-    """Our charges (live config rows) vs Kite's note, component by component, in paise."""
-    from stockify import bundle as bundle_mod, numerics
+    """Our charges (live charges.json rows on the capture date) vs Kite's note.
+
+    Each exact component must agree within a millionth of a rupee, and the order's total,
+    rounded once to the paisa, must equal Kite's total rounded the same way (D-46).
+    """
+    from datetime import date
+    from decimal import ROUND_HALF_UP, Decimal
+
+    from stockify import bundle as bundle_mod
     from stockify.config import loader
     from stockify.oracle import costs
     data = json.loads(path.read_text(encoding="utf-8"))
     d = data["captured_on"]
-    from datetime import date
     rows = bundle_mod._dated_section(loader.load_json("charges.json"), date.fromisoformat(d), date.fromisoformat(d))
     c = costs.Costs(rows, {})
+    tol = Decimal(TOLERANCE_RUPEES)
     problems = []
     for case in data["cases"]:
-        req, resp = case["request"], case["response"]
-        turnover = req["quantity"] * req["price_paise"]
-        ours = c.order(req["kind"], req["product"], req["transaction_type"], turnover, d)
-        charges = resp["charges"]
-        for k, field in KITE_FIELDS.items():
-            theirs = numerics.to_paise(str(charges.get(field, 0)))
-            if ours[k] != theirs:
-                problems.append(f"{case['request']['case']} {k}: ours {ours[k]} vs Kite {theirs}")
-        gst = numerics.to_paise(str(charges["gst"]["total"]))
-        if ours["gst"] != gst:
-            problems.append(f"{case['request']['case']} gst: ours {ours['gst']} vs Kite {gst}")
+        req, charges = case["request"], case["response"]["charges"]
+        ours = c.order(req["kind"], req["product"], req["transaction_type"], req["quantity"] * req["price_paise"], d)
+        name = req["case"]
+        exact = ours["exact"]
+        for k, field in [*KITE_FIELDS.items(), ("gst", None)]:
+            theirs = Decimal(str(charges["gst"]["total"] if field is None else charges.get(field, 0)))
+            mine = Decimal(exact[k]) / Decimal(costs.E) / 100              # rupees
+            if abs(mine - theirs) > tol:
+                problems.append(f"{name} {k}: ours {mine:.6f} vs Kite {theirs:.6f}")
+        kite_total = int((Decimal(str(charges["total"])) * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+        if ours["total"] != kite_total:
+            problems.append(f"{name} total: ours {ours['total']} paise vs Kite {kite_total}")
     return problems

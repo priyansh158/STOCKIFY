@@ -151,12 +151,29 @@ class CaptureCompareTests(unittest.TestCase):
         from stockify.tools import capture_charges
         req = {"case": "fut_sell", "kind": "FUT", "product": "NRML", "transaction_type": "SELL", "quantity": 65,
                "price_paise": 2500000}
-        # 2026-10-29 rows: brokerage 20, STT 0.05 %, exchange 0.00183 %, SEBI 0.0001 %, GST 18 %
-        note = {"charges": {"brokerage": 20.0, "transaction_tax": 812.5, "exchange_turnover_charge": 29.74,
-                            "sebi_turnover_charge": 1.63, "stamp_duty": 0, "gst": {"total": 9.25}}}
-        path = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT))) / "2026-10-30.json"
-        path.write_text(json.dumps({"captured_on": "2026-10-30", "cases": [{"request": req, "response": note}]}))
+        # Kite's real answer for this order on 2026-11-06 (exact components, D-46), with its float noise
+        note = {"charges": {"brokerage": 20, "transaction_tax": 812.5, "exchange_turnover_charge": 29.7375,
+                            "sebi_turnover_charge": 1.625, "stamp_duty": 0, "gst": {"total": 9.245249999999999},
+                            "total": 873.10775}}
+        path = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT))) / "2026-11-06.json"
+        path.write_text(json.dumps({"captured_on": "2026-11-06", "cases": [{"request": req, "response": note}]}))
         self.assertEqual(capture_charges.compare_capture(path), [])
-        note["charges"]["transaction_tax"] = 812.6
-        path.write_text(json.dumps({"captured_on": "2026-10-30", "cases": [{"request": req, "response": note}]}))
-        self.assertEqual(capture_charges.compare_capture(path), ["fut_sell stt: ours 81250 vs Kite 81260"])
+        note["charges"]["transaction_tax"], note["charges"]["total"] = 812.6, 873.20775
+        path.write_text(json.dumps({"captured_on": "2026-11-06", "cases": [{"request": req, "response": note}]}))
+        self.assertEqual(capture_charges.compare_capture(path),
+                         ["fut_sell stt: ours 812.500000 vs Kite 812.600000", "fut_sell total: ours 87311 paise vs Kite 87321"])
+
+    def test_stamp_rounds_to_the_rupee(self):
+        """D-46: stamp duty is a whole rupee; the order total is rounded once."""
+        rows = {"components": {
+            "brokerage": [{"applies": {}, "effective_from": "2015-01-01", "kind": "zero"}],
+            "stt": [{"applies": {}, "effective_from": "2015-01-01", "buy_ppb": 1_000_000, "sell_ppb": 1_000_000}],
+            "exchange_txn": [{"applies": {}, "effective_from": "2015-01-01", "pct_ppb": 30_700}],
+            "sebi": [{"applies": {}, "effective_from": "2015-01-01", "pct_ppb": 1_000}],
+            "stamp": [{"applies": {}, "effective_from": "2015-01-01", "buy_ppb": 150_000}],
+            "gst": [{"applies": {}, "effective_from": "2015-01-01", "rate_ppb": 180_000_000,
+                     "on": ["brokerage", "exchange_txn", "sebi"]}]}}
+        c = costs.Costs(rows, {})
+        odd = c.order("EQ", "CNC", "BUY", 7 * 149900, "2026-11-06")    # Kite: stamp 2, total 12.885501
+        self.assertEqual((odd["stamp"], odd["total"]), (200, 1289))
+        self.assertEqual(c.order("EQ", "CNC", "BUY", 1_000_000, "2026-11-06")["stamp"], 200)   # 1.50 -> 2

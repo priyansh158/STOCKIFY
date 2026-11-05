@@ -31,16 +31,24 @@ strategy:
     - { on_event: 5, place: { instrument: 1, side: SELL, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
 expect:
   charges:
-    - { kind: order, order_id: 1, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3250, gst: 925, total: 9312 }
-    - { kind: order, order_id: 2, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 32500, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 38562 }
-    - { kind: order, order_id: 3, trade_date: "2026-04-01", brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3250, gst: 925, total: 9312 }
-    - { kind: order, order_id: 4, trade_date: "2026-04-01", brokerage: 2000, stt: 81250, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 87312 }
+    - { kind: order, order_id: 1, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3300, gst: 925, total: 9361 }
+    - { kind: order, order_id: 2, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 32500, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 38561 }
+    - { kind: order, order_id: 3, trade_date: "2026-04-01", brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3300, gst: 925, total: 9361 }
+    - { kind: order, order_id: 4, trade_date: "2026-04-01", brokerage: 2000, stt: 81250, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 87311 }
   equity:
-    - { trade_date: "2026-03-31", cash_paise: 99952126, nav_paise: 99952126 }
-    - { trade_date: "2026-04-01", cash_paise: 99855502, nav_paise: 99855502 }
+    - { trade_date: "2026-03-31", cash_paise: 99952078, nav_paise: 99952078 }
+    - { trade_date: "2026-04-01", cash_paise: 99855406, nav_paise: 99855406 }
 notes: |
-  Turnover per order = 65 x 2,500,000 = 162,500,000 paise. Brokerage min(20.00, 0.03 %) = 2000.
-  Exchange 0.00183 % = 2973.75 -> 2974; SEBI 0.0001 % = 162.5 -> 163 (half up); stamp (buy) 0.002 % = 3250;
-  GST 18 % of (2000 + 2974 + 163) = 924.66 -> 925. STT (sell): 0.02 % = 32,500 on 2026-03-31, 0.05 % =
-  81,250 from 2026-04-01 (Z-2). Day totals: 9,312 + 38,562 = 47,874 and 9,312 + 87,312 = 96,624, as in A3.
-  Cash: 100,000,000 - 47,874 = 99,952,126; then - 96,624 = 99,855,502 (the position is flat each day).
+  Rounding per D-46 (Kite's contract note, captured 2026-11-06, K-10): every component is exact; stamp
+  duty alone is rounded half-up to the whole rupee; GST is 18 % of the exact brokerage + exchange + SEBI;
+  the order total is the exact sum rounded half-up to the paisa (charges.csv shows each component rounded
+  for reading). Turnover per order = 65 x 2,500,000 = 162,500,000 paise.
+  Brokerage min(20.00, 0.03 %) = 2000. Exchange 0.00183 % = 2973.75. SEBI 0.0001 % = 162.5.
+  Stamp (buy) 0.002 % = 32.50 rupees -> 33.00 = 3300. GST 18 % of (2000 + 2973.75 + 162.5) = 924.525.
+  STT (sell) 0.02 % = 32,500 on 2026-03-31, 0.05 % = 81,250 from 2026-04-01 (Z-2).
+  Buy: 2000 + 2973.75 + 162.5 + 3300 + 924.525 = 9360.775 -> 9361.
+  Sell 2026-03-31: 2000 + 32500 + 2973.75 + 162.5 + 924.525 = 38560.775 -> 38561 (day 47,922).
+  Sell 2026-04-01: 2000 + 81250 + 2973.75 + 162.5 + 924.525 = 87310.775 -> 87311 (day 96,672). Kite's own
+  note for this sell on 2026-11-06 is Rs 873.10775. (A3 first listed 47,874 / 96,624, rounding each
+  component to the paisa and stamp to the paisa; the capture showed that is not what Kite does.)
+  Cash: 100,000,000 - 47,922 = 99,952,078; then - 96,672 = 99,855,406 (the position is flat each day).
