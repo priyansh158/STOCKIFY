@@ -24,6 +24,7 @@ Install **PowerShell 7**, **Python 3.11 or 3.12 (x64)**, and **Node.js 20.9+**. 
 .\run.ps1 -BuildEngine             # build + test the C++ engine, then exit
 .\run.ps1 -Daemon                  # API + web + STOCKIFY market daemon (restarts on crash)
 .\run.ps1 -DaemonOnly              # STOCKIFY market daemon only
+.\run.ps1 -Reload                  # API auto-reloads on code changes (its log opens in its own window)
 .\run.ps1 -GeoMonitor              # API + web + geo monitor
 .\run.ps1 -MonitorOnly             # geo monitor only
 .\run.ps1 -Fresh                   # rebuild .venv + reinstall Python deps

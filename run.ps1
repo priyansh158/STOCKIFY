@@ -4,6 +4,7 @@
 #   .\run.ps1 -BuildEngine   build + test the C++ engine (stockify._engine), then exit
 #   .\run.ps1 -Daemon        API + web + STOCKIFY market daemon
 #   .\run.ps1 -DaemonOnly    STOCKIFY market daemon only
+#   .\run.ps1 -Reload        API auto-reloads on code changes (separate API window)
 
 [CmdletBinding()]
 param(
@@ -19,7 +20,8 @@ param(
     [switch]$MonitorOnly,
     [switch]$Daemon,
     [switch]$DaemonOnly,
-    [switch]$BuildEngine
+    [switch]$BuildEngine,
+    [switch]$Reload
 )
 
 $ErrorActionPreference = "Stop"
@@ -241,10 +243,19 @@ $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 try {
     if ($StartApi) {
         Write-Host "Starting API at $env:STOCKIFY_API_ORIGIN" -ForegroundColor Cyan
-        $process = Start-Process -FilePath $PyExe -ArgumentList @(
-            "-m", "uvicorn", "server.main:app", "--reload",
-            "--host", "127.0.0.1", "--port", "$ApiPort"
-        ) -WorkingDirectory $Root -NoNewWindow -PassThru
+        $apiArgs = @("-m", "uvicorn", "server.main:app", "--host", "127.0.0.1", "--port", "$ApiPort")
+        if ($Reload) {
+            # uvicorn's Windows reloader restarts the worker with CTRL_C_EVENT, which
+            # reaches every process sharing the console (it used to kill the web
+            # server and stop the launcher). In reload mode the API therefore gets
+            # its own console window; its log appears there.
+            Write-Host "API auto-reload on: the API log opens in a separate window" -ForegroundColor DarkYellow
+            $process = Start-Process -FilePath $PyExe -ArgumentList ($apiArgs + "--reload") `
+                -WorkingDirectory $Root -PassThru
+        } else {
+            $process = Start-Process -FilePath $PyExe -ArgumentList $apiArgs `
+                -WorkingDirectory $Root -NoNewWindow -PassThru
+        }
         $children.Add($process)
     }
     if ($StartWeb) {

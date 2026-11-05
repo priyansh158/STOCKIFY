@@ -30,10 +30,16 @@ from server.routers import (
     search,
     ticks,
 )
+from server import log_redaction
+
+log_redaction.install()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # uvicorn (re)configures its loggers before startup; make sure the
+    # access-log redaction is still attached.
+    log_redaction.install()
     # Lazy import so module-level state is initialized after env loads.
     import tick_buffer
     from server.services import ticker_bridge
