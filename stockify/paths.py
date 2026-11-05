@@ -42,6 +42,11 @@ def ticks_landing_file(day: date) -> Path:
     return ticks_landing_dir() / f"ticks_{day:%Y%m%d}.sqlite"
 
 
+def ticks_replay_file(day: date) -> Path:
+    """Where a recorder fed by the replay ticker writes: never the real landing file."""
+    return _dir(lab_dir() / "ticks" / "replay") / f"ticks_{day:%Y%m%d}.sqlite"
+
+
 def ticks_archive_dir(day: date | None = None) -> Path:
     base = lab_dir() / "ticks" / "archive"
     return _dir(base / f"date={day:%Y-%m-%d}" if day else base)

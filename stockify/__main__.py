@@ -35,6 +35,10 @@ _STUBS = {
 
 def _cmd_daemon(args) -> int:
     from stockify import daemon
+    if args.recorder_only:
+        if args.ticker == "live":
+            _load_env()
+        return daemon.run_recorder(ticker_spec=args.ticker, faults=args.inject)
     daemon.run_forever(once=args.once)
     return 0
 
@@ -143,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
 
     d = sub.add_parser("daemon", help="market daemon (recorder + paper sessions)")
     d.add_argument("--once", action="store_true", help="log one idle cycle and exit")
+    d.add_argument("--recorder-only", action="store_true", help="record today's ticks (M1.5)")
+    d.add_argument("--ticker", default="live",
+                   help="live, or replay:YYYY-MM-DD:<Nx|max> to replay a recorded day")
+    d.add_argument("--inject", action="append", default=[],
+                   help="replay fault, e.g. disconnect@10:30:00+90s, token_expiry@11:00:00, kill@13:00:00")
     d.set_defaults(func=_cmd_daemon)
 
     sub.add_parser("config", help="validate stockify/config/").set_defaults(func=_cmd_config)

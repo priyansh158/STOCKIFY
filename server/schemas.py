@@ -78,6 +78,26 @@ class GeoAlertDTO(BaseModel):
     acknowledged_at: int | None = None
 
 
+# ── Data layer (M1) ──────────────────────────────────────────────────────────
+
+class RecorderStatusDTO(BaseModel):
+    """Latest recorder health row (lab.sqlite recorder_status, written every 5 s)."""
+    wall_ns: int
+    connected: bool
+    subs_full: int
+    subs_quote: int
+    packets_per_s: float
+    queue_depth: int
+    writer_lag_ms: float | None = None
+    last_packet_age_ms: dict[str, int | None] = Field(default_factory=dict)
+    bytes_today: int
+    age_s: float = Field(..., description="seconds since this row was written")
+
+
+class RecorderStatusResponse(BaseModel):
+    status: RecorderStatusDTO | None
+
+
 # ── Ticks (WS payloads) ──────────────────────────────────────────────────────
 
 class TickEvent(BaseModel):

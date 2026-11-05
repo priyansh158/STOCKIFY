@@ -69,6 +69,25 @@ export interface KiteStatus {
   error?: string | null;
 }
 
+// ── Data layer (M1) ──────────────────────────────────────────────────────────
+
+export interface RecorderStatus {
+  wall_ns: number;
+  connected: boolean;
+  subs_full: number;
+  subs_quote: number;
+  packets_per_s: number;
+  queue_depth: number;
+  writer_lag_ms?: number | null;
+  last_packet_age_ms: Record<string, number | null>;
+  bytes_today: number;
+  age_s: number;
+}
+
+export interface RecorderStatusResponse {
+  status: RecorderStatus | null;
+}
+
 // ── Live ticks (WS) ──────────────────────────────────────────────────────────
 
 export interface TickEvent {

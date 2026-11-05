@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from server.routers import (
     alerts,
+    data as data_router,
     kite as kite_router,
     portfolio,
     search,
@@ -98,3 +99,4 @@ app.include_router(portfolio.router)
 app.include_router(kite_router.router)
 app.include_router(ticks.router)
 app.include_router(alerts.router)
+app.include_router(data_router.router)

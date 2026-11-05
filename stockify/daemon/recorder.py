@@ -68,6 +68,8 @@ class Recorder:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._started_meta = dict(meta or {})
+        # Optional writer-thread hook: on_packet(instrument_id, token, ltp, recv_ns). Must be cheap.
+        self.on_packet: Callable[[int | None, int, int, int], None] | None = None
 
     # ── start / stop ─────────────────────────────────────────────────────────
     def begin(self) -> None:
@@ -172,6 +174,8 @@ class Recorder:
                                raw))
             self._next_seq += 1
             self.stats.packets += 1
+            if self.on_packet is not None:
+                self.on_packet(iid, p["instrument_token"], p["ltp"], recv_ns)
         if len(self._rows) >= self.batch_rows:
             self.flush()
 

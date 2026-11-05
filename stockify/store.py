@@ -116,3 +116,34 @@ def table_names() -> list[str]:
         "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
     ).fetchall()
     return [r["name"] for r in rows]
+
+
+# ── recorder health (M1.5; A1 §4 recorder_status) ────────────────────────────
+
+RECORDER_STATUS_FIELDS = ("wall_ns", "connected", "subs_full", "subs_quote", "packets_per_s",
+                          "queue_depth", "writer_lag_ms", "last_packet_age_ms_json", "bytes_today")
+
+
+def write_recorder_status(row: dict) -> None:
+    conn = _connect()
+    with _lock:
+        conn.execute(
+            f"INSERT OR REPLACE INTO recorder_status ({', '.join(RECORDER_STATUS_FIELDS)}) "
+            f"VALUES ({', '.join('?' * len(RECORDER_STATUS_FIELDS))})",
+            tuple(row.get(k) for k in RECORDER_STATUS_FIELDS))
+        conn.commit()
+
+
+def latest_recorder_status() -> dict | None:
+    row = _connect().execute(
+        "SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def prune_recorder_status(older_than_ns: int) -> int:
+    """Health rows are kept 7 days (A1 §4); the scheduler calls this daily."""
+    conn = _connect()
+    with _lock:
+        cur = conn.execute("DELETE FROM recorder_status WHERE wall_ns < ?", (older_than_ns,))
+        conn.commit()
+        return cur.rowcount

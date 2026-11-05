@@ -8,6 +8,7 @@ deletes or rewrites packet rows.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -37,6 +38,8 @@ class LandingDB:
             self.conn.execute("PRAGMA synchronous=NORMAL")
             migrate.apply(self.conn, "landing")
         self.conn.row_factory = sqlite3.Row
+        # The writer thread and the session's health/ticker threads share this connection.
+        self.lock = threading.RLock()
 
     def close(self) -> None:
         self.conn.close()
@@ -50,22 +53,23 @@ class LandingDB:
 
     # ── writes (one transaction per batch) ───────────────────────────────────
     def write_batch(self, rows: list[tuple], heartbeats: dict[int, int], meta: dict[str, str]) -> None:
-        c = self.conn
-        c.execute("BEGIN")
-        try:
-            if rows:
-                c.executemany(_INSERT, rows)
-            for minute_ns, n in heartbeats.items():
-                c.execute("INSERT INTO heartbeats (minute_ns, count) VALUES (?, ?) "
-                          "ON CONFLICT (minute_ns) DO UPDATE SET count = count + excluded.count",
-                          (minute_ns, n))
-            for k, v in meta.items():
-                c.execute("INSERT INTO recorder_meta (key, value) VALUES (?, ?) "
-                          "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (k, str(v)))
-            c.execute("COMMIT")
-        except Exception:
-            c.execute("ROLLBACK")
-            raise
+        with self.lock:
+            c = self.conn
+            c.execute("BEGIN")
+            try:
+                if rows:
+                    c.executemany(_INSERT, rows)
+                for minute_ns, n in heartbeats.items():
+                    c.execute("INSERT INTO heartbeats (minute_ns, count) VALUES (?, ?) "
+                              "ON CONFLICT (minute_ns) DO UPDATE SET count = count + excluded.count",
+                              (minute_ns, n))
+                for k, v in meta.items():
+                    c.execute("INSERT INTO recorder_meta (key, value) VALUES (?, ?) "
+                              "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (k, str(v)))
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
 
     def set_meta(self, **items) -> None:
         self.write_batch([], {}, {k: str(v) for k, v in items.items()})
@@ -74,23 +78,27 @@ class LandingDB:
         return {r["key"]: r["value"] for r in self.conn.execute("SELECT key, value FROM recorder_meta")}
 
     def open_gap(self, start_ns: int, reason: str, scope: str = "all") -> int:
-        cur = self.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope) VALUES (?, NULL, ?, ?)",
-                                (start_ns, reason, scope))
-        return int(cur.lastrowid)
+        with self.lock:
+            cur = self.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope) VALUES (?, NULL, ?, ?)",
+                                    (start_ns, reason, scope))
+            return int(cur.lastrowid)
 
     def close_gap(self, gap_id: int, end_ns: int) -> None:
-        self.conn.execute("UPDATE gaps SET end_ns = ? WHERE gap_id = ? AND end_ns IS NULL", (end_ns, gap_id))
+        with self.lock:
+            self.conn.execute("UPDATE gaps SET end_ns = ? WHERE gap_id = ? AND end_ns IS NULL", (end_ns, gap_id))
 
     def add_gap(self, start_ns: int, end_ns: int, reason: str, scope: str = "all") -> int:
-        cur = self.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope) VALUES (?, ?, ?, ?)",
-                                (start_ns, end_ns, reason, scope))
-        return int(cur.lastrowid)
+        with self.lock:
+            cur = self.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope) VALUES (?, ?, ?, ?)",
+                                    (start_ns, end_ns, reason, scope))
+            return int(cur.lastrowid)
 
     def log_subscriptions(self, rows: list[tuple]) -> None:
         """rows: (recv_ns, action, instrument_id, instrument_token, mode, reason)."""
-        self.conn.executemany(
-            "INSERT INTO subscription_log (recv_ns, action, instrument_id, instrument_token, mode, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?)", rows)
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO subscription_log (recv_ns, action, instrument_id, instrument_token, mode, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)", rows)
 
     # ── reads ────────────────────────────────────────────────────────────────
     def gaps(self) -> list[dict]:

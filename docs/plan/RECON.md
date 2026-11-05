@@ -110,3 +110,13 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - **No sourced expiry rule exists before 2024-11-20**, so `generated_expiries` returns nothing earlier (I-1). Validating older expiries needs sourced weekday rules per index.
 - `broker_policy.json` values not in Z-1…Z-5 (`max_slices` 10, same-day CNC sell credit 80%, F&O MIS = full NRML) are marked `verified: false` assumptions.
 
+## 2026-11-05 — M1.5 / M1.6 notes
+
+- **Frame numbers count data frames only.** Heartbeats are stored as per-minute counts and text frames are only logged, so numbering them would leave holes a replay cannot rebuild. With this, the replay ticker reproduces `seq`, `frame_no`, `recv_ns`, `mono_ns` and raw bytes of a recorded day exactly (test).
+- **A replay writes to `ticks/replay/ticks_YYYYMMDD.sqlite`**, never to the real landing file it reads.
+- **Chains start once a reference price arrives.** The session subscribes the static set (indices, futures, equities) first; each chain is centred when the first packet of its reference instrument (same-expiry future, else the index) reaches the writer. No REST quote call is needed at start.
+- **Subscription changes from the health loop go through `reactor.callFromThread`**, because the KiteTicker reactor is not thread-safe. The landing file's connection is guarded by a lock: the writer and the session threads share it.
+- **The library reconnect budget** is raised to its maximum (300 tries, 60 s cap). When it gives up, the daemon exits 78 for a launcher restart; a 403 or token error exits 76 (wait for a fresh login).
+- **Size estimate for the default universe** (202 instruments: 133 FULL, 69 QUOTE; 06:40 h from pre-open to F&O close): about **1.44 GB/day** of landing data at one packet per instrument per second, an upper bound. Replace with the first live day's actual figure.
+- Still to build for live: the scheduler (refdata sync, session start/stop, NSE fetch, pruning), keep-awake and sleep after close (D-32), the login reminder, and the launcher's handling of exit codes 75/76/78.
+
