@@ -307,9 +307,15 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
     log.info("expected landing size today: about %.0f MB (assumes about %d chain strikes once "
              "centred and one packet per instrument per second)", est["bytes"] / 1e6, est["chain_instruments"])
     last_power_check = 0
+    bands = None
+    if not replay:
+        from stockify.data import limits
+        bands = limits.Snapshotter(day, manager, client=kite_client.get_client(), clock=clock)
     try:
         while not stop.is_set() and not session.stopped.is_set():
             session.tick()
+            if bands is not None:
+                bands.tick()                    # price bands into daily_limits (M1.5)
             if power is not None and clock.now_ns() - last_power_check >= 60 * 1_000_000_000:
                 last_power_check = clock.now_ns()
                 if power.on_ac_power() is False:
