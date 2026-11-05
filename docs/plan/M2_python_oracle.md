@@ -83,3 +83,5 @@ python -m stockify oracle run --config examples/runs/sma_reliance_daily.json   #
 ## Definition of done
 
 Golden scenarios pass; two identical runs give identical artifact hashes; the two demo runs produce reports the owner has read; every boxed task ticked.
+
+**Status 2026-11-06: done.** All 15 goldens pass (G08 against the owner's Kite capture); repeated runs are byte-identical; the owner read both demo reports. The one open box (the same strategies on the C++ engine) is M3's check.

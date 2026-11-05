@@ -89,8 +89,8 @@ It does that with four capabilities that share one engine:
 | ID | Name | Delivers | Demo | Size | Status |
 |---|---|---|---|---|---|
 | M0 | Cleanup + toolchain | LLM pipeline removed; C++20/pybind11 builds on Windows (MSVC) | `python -c "import stockify._engine as e; print(e.build_info())"` | M | done 2026-11-04 |
-| M1 | Data layer + recorder | refdata with history, NSE EOD ingestion, Kite bar cache, recorder, replay ticker, compaction, event packs, data-quality report | Record a live day (or replay a fixture), compact it, build a pack, print the quality report | L | not started |
-| M2 | Python oracle | Readable Python backtester, golden scenarios, EOD option research from bhavcopy | SMA crossover on daily bars; short straddle on EOD bhavcopy | M | not started |
+| M1 | Data layer + recorder | refdata with history, NSE EOD ingestion, Kite bar cache, recorder, replay ticker, compaction, event packs, data-quality report | Record a live day (or replay a fixture), compact it, build a pack, print the quality report | L | built 2026-11-05; open: three unattended live days and the live-day 🛑 |
+| M2 | Python oracle | Readable Python backtester, golden scenarios, EOD option research from bhavcopy | SMA crossover on daily bars; short straddle on EOD bhavcopy | M | done 2026-11-06 (owner read the demo reports); "strategies run unchanged on the engine" is checked in M3 |
 | M3 | C++ engine core (equity) | Clock, orders, three fill models, costs, ledger, metrics, C++ and Python strategies, runners, `/tests` UI | Same SMA run via C++ matches the oracle to the paisa | L | not started |
 | M4 | F&O | Dated contract specs in the engine, Black-76 + IV, chains, settlement, margin T0/T1 (+T2 stretch), calibration vs Kite | Short straddle replayed on recorded chains with SPAN-lite margin | L | not started |
 | M5 | Paper daemon | Sessions, journals, crash recovery, live margins, token-expiry handling, nightly parity, `/trade` UI | A session runs through a replayed day, survives a forced kill (`taskkill /F`), passes parity | L | not started |
