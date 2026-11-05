@@ -86,6 +86,18 @@ If the C++ workload is missing, add it to the installed Build Tools. This needs 
 4. Runs `ctest`.
 5. Prints the engine build info.
 
+### Recording every trading day (laptop, lid closed)
+
+```powershell
+.\scripts\check_power.ps1                       # lid/sleep/wake-timer/CPU settings the recorder needs (D-32)
+.\scripts\manage_stockify_daemon.ps1 Install     # start the daemon at logon (Scheduled Task)
+.\scripts\manage_stockify_daemon.ps1 Status      # task state, next self-wake, log location
+.\scripts\run_stockify_daemon.ps1 -SleepTest     # owner check: hibernate now, wake by itself in 5 min
+python -m stockify calendar                       # upcoming sessions and Kite login windows in your time zone
+```
+
+Each trading day the daemon records the session, compacts it, hibernates the laptop and schedules a self-wake for 06:00 IST on the next trading day. Log in to Kite each trading day inside the login window `calendar` shows. Logs: `%LOCALAPPDATA%\STOCKIFY\logs\stockify-daemon.log`.
+
 ### Geo monitor
 
 The geo monitor runs **outside** FastAPI, so news watching continues when the API is down:

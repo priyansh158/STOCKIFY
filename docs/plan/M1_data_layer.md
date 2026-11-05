@@ -91,7 +91,7 @@ Files: `stockify/daemon/ticker.py` (supervisor, raw frames), `stockify/daemon/su
 - [x] Tests (U-13): batching thresholds, `seq` continuation after restart, one gap row per reason, re-centring with hysteresis, pinning, the 3,000 cap, `subscription_log` contents, the queue-full alarm — all driven by the replay ticker and a fake clock.
 - [x] Run standalone: `python -m stockify daemon --recorder-only` (and via `run.ps1 -Daemon`). Log an expected bytes/day estimate at start; after the first real day, record the actuals in `RECON.md`.
 - [ ] 🛑 Before the first live day, show the owner the subscription list and the estimate. After the first day, show the quality report (M1.9).
-- [ ] **Laptop host: keep awake, then sleep after the close (D-32).** The daemon runs on the owner's laptop: plugged in, lid closed, kept in a wardrobe. That machine has Modern Standby with the network disconnected, so plain sleep would cut the feed; hibernate is used instead.
+- [x] **Laptop host: keep awake, then sleep after the close (D-32).** (RM 1.5 + GK 1.2; the login reminder email is LW 1.1) The daemon runs on the owner's laptop: plugged in, lid closed, kept in a wardrobe. That machine has Modern Standby with the network disconnected, so plain sleep would cut the feed; hibernate is used instead.
   - `stockify/daemon/keepawake.py`: `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` from `schedule.json` → `keep_awake.from` (08:45 IST) until the sleep step. Power source is checked every minute; on battery during a session → `recorder_status` alarm.
   - **Sleep after close:** once unsubscribe (15:45 IST) and compaction (M1.7, verified) have finished, and no later job of the day is due before the next wake, the daemon releases keep-awake and exits with code **75 ("sleep")**. Settings live in `schedule.json` → `sleep_after_close`: `enabled` (true), `mode` (`hibernate`), `not_before` (`16:00` IST), `idle_minutes` (15).
   - The sleep is skipped and retried every 15 minutes while the owner is using the laptop (`GetLastInputInfo` idle < `idle_minutes`). A flag file `$LAB/stay_awake` skips one night and is deleted after use.
@@ -104,7 +104,7 @@ Files: `stockify/daemon/ticker.py` (supervisor, raw frames), `stockify/daemon/su
     - catch-up of missed jobs after resume.
 
     All are driven by a fake clock and a fake power/idle probe; nothing really sleeps in tests.
-  - Manual check (owner present): `python -m stockify daemon --sleep-test` registers a wake 5 minutes ahead and hibernates. The laptop wakes, and `recorder_status` shows the resume.
+  - Manual check (owner present): `.\scripts\run_stockify_daemon.ps1 -SleepTest` registers a wake 5 minutes ahead and hibernates; the laptop wakes by itself and the log reports how long it was down. (The launcher does the hibernating, so the check lives there rather than in `python -m stockify daemon`.)
 
 ## M1.6 Replay ticker (M)
 

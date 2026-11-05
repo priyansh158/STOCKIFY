@@ -279,6 +279,10 @@ try {
         if (-not (Test-Path $DaemonScript)) {
             throw "STOCKIFY daemon launcher not found at $DaemonScript."
         }
+        & pwsh -NoProfile -File (Join-Path $Root "scripts\check_power.ps1")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Power settings differ from D-32; recording may stop if the laptop sleeps."
+        }
         Write-Host "Starting STOCKIFY daemon" -ForegroundColor Green
         $process = Start-Process -FilePath (Get-Command "pwsh.exe").Source -ArgumentList @(
             "-NoProfile", "-File", $DaemonScript
