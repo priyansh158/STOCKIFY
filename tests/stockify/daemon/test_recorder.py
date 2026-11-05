@@ -75,6 +75,15 @@ class StorageTests(RecorderTest):
         self.assertEqual([tuple(x) for x in hb], [(T0 // (60 * 10**9) * 60 * 10**9, 3)])
         self.assertEqual(self.rows("SELECT COUNT(*) FROM packets")[0][0], 0)
 
+    def test_only_data_frames_get_frame_numbers(self):
+        self.feed(pf.ltp(pf.NIFTY_CE, 1))
+        for payload, binary in ((b"\x00", True), ('{"type":"message"}', False)):
+            self.rec.on_message(None, payload, binary)
+            self.rec.process(self.rec.queue.get_nowait())
+        self.feed(pf.ltp(pf.NIFTY_CE, 2))
+        self.rec.flush()
+        self.assertEqual([x["frame_no"] for x in self.rows()], [1, 2])
+
     def test_text_and_bad_frames_do_not_stop_recording(self):
         self.rec.on_message(None, '{"type":"message","data":"hi"}', False)
         self.rec.process(self.rec.queue.get_nowait())

@@ -103,7 +103,11 @@ class Recorder:
 
     # ── listener side (KiteTicker thread): must stay cheap ───────────────────
     def on_message(self, ws, payload, is_binary) -> None:  # noqa: ANN001
-        item = (next(self._frame_counter), self.clock.now_ns(), self.clock.mono_ns(),
+        # Only data frames get a frame number: heartbeats are kept as per-minute
+        # counts and text frames are logged, so numbering them would leave holes
+        # a replay could never reproduce.
+        data_frame = bool(is_binary) and len(payload) > 1
+        item = (next(self._frame_counter) if data_frame else 0, self.clock.now_ns(), self.clock.mono_ns(),
                 bytes(payload) if is_binary else payload, bool(is_binary))
         try:
             self.queue.put_nowait(item)
