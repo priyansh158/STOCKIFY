@@ -13,7 +13,6 @@ CREATE TABLE packets (
   raw BLOB NOT NULL                              -- exact packet bytes (D-08)
 );
 CREATE INDEX ix_packets_instr ON packets(instrument_id, seq);
-CREATE INDEX ix_packets_frame ON packets(frame_no);
 CREATE TABLE gaps (gap_id INTEGER PRIMARY KEY, start_ns INTEGER, end_ns INTEGER, reason TEXT,
   scope TEXT);                                   -- all | tier:<name> | instrument:<id>
 CREATE TABLE subscription_log (recv_ns INTEGER, action TEXT, instrument_id INTEGER,

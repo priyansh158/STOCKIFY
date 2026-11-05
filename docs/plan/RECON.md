@@ -120,3 +120,10 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - **Size estimate for the default universe** (202 instruments: 133 FULL, 69 QUOTE; 06:40 h from pre-open to F&O close): about **1.44 GB/day** of landing data at one packet per instrument per second, an upper bound. Replace with the first live day's actual figure.
 - Still to build for live: the scheduler (refdata sync, session start/stop, NSE fetch, pruning), keep-awake and sleep after close (D-32), the login reminder, and the launcher's handling of exit codes 75/76/78.
 
+## 2026-11-05 — storage plan (owner question)
+
+- The owner can give STOCKIFY about **300 GB** (416 GB free). The ~1.44 GB/day estimate is the uncompressed landing file (raw + parsed columns + indexes), an upper bound.
+- Plan: M1.7 compacts each verified day to zstd Parquet (expected 5–10× smaller, so ~0.15–0.3 GB/day; to be measured on the first live day), then landing files can be deleted after `retention_days`. At those rates, 300 GB of archives is roughly 4–8 years of trading days.
+- **Owner decision 2026-11-05: backup target deferred.** `storage.json` → `retention_days` stays `null` (never delete) until a backup exists. Options discussed: a cloud bucket with an upload-only key and object lock (recommended, off-site), a USB drive (same location as the laptop), or both (3-2-1).
+- Dropped the extra landing index `ix_packets_frame` (not in A1; replay reads in `seq` order). Edited in `0001_init.sql` because no real landing file existed yet.
+
