@@ -194,7 +194,7 @@ class SubscriptionManager:
                 continue
             for i in sorted(c.kept):
                 distance = abs(i - c.center)
-                mode = FULL if distance <= c.n_full else QUOTE
+                mode = FULL if c.n_full > 0 and distance <= c.n_full else QUOTE   # n_full 0 = quote-only chain
                 for iid in c.options[c.strikes[i]]:
                     token = self._token(iid)
                     if token is None:

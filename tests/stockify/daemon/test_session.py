@@ -158,7 +158,8 @@ class RecentreAndHealthTests(SessionTest):
         spacing = {b["wall_ns"] - a["wall_ns"] for a, b in zip(rows, rows[1:])}
         self.assertTrue(all(s >= 5 * SEC for s in spacing))
         last = dict(rows[-1])
-        self.assertEqual(last["subs_full"], 2)                  # the index and the ATM call
+        # The index in FULL; the chain has n_full 0, so its ATM call is QUOTE (RM 1.6).
+        self.assertEqual((last["subs_full"], last["subs_quote"]), (1, 1))
         ages = json.loads(last["last_packet_age_ms_json"])
         self.assertEqual(set(ages), {"full", "quote"})
         self.assertGreater(last["bytes_today"], 0)

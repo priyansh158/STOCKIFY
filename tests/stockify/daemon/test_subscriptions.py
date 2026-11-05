@@ -87,6 +87,12 @@ class BuildTests(SubscriptionTest):
         self.assertEqual(refs["NIFTY:monthly:0"], instruments.find("NFO", "NIFTY26NOVFUT"))
         self.assertEqual(m.reference_ids(), set(refs.values()))
 
+    def test_n_full_zero_is_a_quote_only_chain(self):
+        m = self.manager(chains=[{"underlying": "NIFTY", "expiry": "weekly:0", "n_full": 0, "n_quote": 2}])
+        m.build({self.index: 2_501_000})
+        self.assertEqual(self.strikes(m, FULL), [])
+        self.assertEqual(self.strikes(m, QUOTE), [24_900, 24_950, 25_000, 25_050, 25_100])
+
     def test_no_price_means_no_chain_yet(self):
         m = self.manager()
         m.build({})
