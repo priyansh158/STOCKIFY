@@ -141,3 +141,22 @@ class GoldenTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaptureCompareTests(unittest.TestCase):
+    def test_kite_note_mapping(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from stockify.tools import capture_charges
+        req = {"case": "fut_sell", "kind": "FUT", "product": "NRML", "transaction_type": "SELL", "quantity": 65,
+               "price_paise": 2500000}
+        # 2026-10-29 rows: brokerage 20, STT 0.05 %, exchange 0.00183 %, SEBI 0.0001 %, GST 18 %
+        note = {"charges": {"brokerage": 20.0, "transaction_tax": 812.5, "exchange_turnover_charge": 29.74,
+                            "sebi_turnover_charge": 1.63, "stamp_duty": 0, "gst": {"total": 9.25}}}
+        path = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT))) / "2026-10-30.json"
+        path.write_text(json.dumps({"captured_on": "2026-10-30", "cases": [{"request": req, "response": note}]}))
+        self.assertEqual(capture_charges.compare_capture(path), [])
+        note["charges"]["transaction_tax"] = 812.6
+        path.write_text(json.dumps({"captured_on": "2026-10-30", "cases": [{"request": req, "response": note}]}))
+        self.assertEqual(capture_charges.compare_capture(path), ["fut_sell stt: ours 81250 vs Kite 81260"])

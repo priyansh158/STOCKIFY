@@ -1,0 +1,10 @@
+[
+  { "name": "eq_cnc_buy",   "kind": "EQ",  "symbol": "INFY", "side": "BUY",  "product": "CNC",  "qty": 10, "price_paise": 150000 },
+  { "name": "eq_cnc_sell",  "kind": "EQ",  "symbol": "INFY", "side": "SELL", "product": "CNC",  "qty": 10, "price_paise": 150000 },
+  { "name": "eq_mis_buy",   "kind": "EQ",  "symbol": "INFY", "side": "BUY",  "product": "MIS",  "qty": 10, "price_paise": 150000 },
+  { "name": "eq_mis_sell",  "kind": "EQ",  "symbol": "INFY", "side": "SELL", "product": "MIS",  "qty": 10, "price_paise": 150000 },
+  { "name": "fut_buy",      "kind": "FUT", "underlying": "NIFTY", "side": "BUY",  "product": "NRML", "qty": 65, "price_paise": 2500000 },
+  { "name": "fut_sell",     "kind": "FUT", "underlying": "NIFTY", "side": "SELL", "product": "NRML", "qty": 65, "price_paise": 2500000 },
+  { "name": "opt_ce_buy",   "kind": "CE",  "underlying": "NIFTY", "side": "BUY",  "product": "NRML", "qty": 65, "price_paise": 10000 },
+  { "name": "opt_ce_sell",  "kind": "CE",  "underlying": "NIFTY", "side": "SELL", "product": "NRML", "qty": 65, "price_paise": 10000 }
+]

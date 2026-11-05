@@ -1,0 +1,12 @@
+id: G08
+title: Every charge component equals Kite's virtual contract note for the captured cases
+semantics: ["A4 §5", "K-10", "V-01"]
+impl: kite_capture
+cases: tests/golden/charges_cases.json
+notes: |
+  Not a simulated world: ground truth comes from Kite. `python -m stockify tools capture-charges
+  --cases tests/golden/charges_cases.json` (needs a fresh Kite login; the owner runs it) asks
+  `POST /charges/orders` for the charges of imaginary orders (equity CNC and MIS, NIFTY futures and
+  options, buy and sell) and saves the answers to tests/fixtures/kite_charges/<date>.json. The check
+  recomputes every component with the live charges.json rows for that date and the oracle's cost code
+  and requires paisa equality. Re-capture whenever charges change; old captures stay as dated evidence.

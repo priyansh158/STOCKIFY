@@ -44,10 +44,10 @@ File: `stockify/strategy.py`. Interface: `A2_interfaces.md` §4.
 
 Files: `stockify/strategies/`.
 
-- [ ] `buy_and_hold` (benchmark for every equity test).
-- [ ] `sma_cross` (fast/slow on daily or minute bars; long-only and long-short variants).
-- [ ] `opening_range_breakout` (minute bars; MIS; exit by time or stop).
-- [ ] `eod_short_straddle` (`bhav_eod` dataset, `eod_close` fill model, A4 §4.9): after each day's file is published, decide whether to sell the ATM call and put of the nearest NIFTY weekly; the orders fill at the next day's close moved adversely by `half_spread_ticks`; hold to expiry (cash settlement at the FSP) or exit when a stop measured on daily closes is hit. Labelled `eod_approx` (I-14). This gives option research a first answer from free data while the recorder accumulates intraday history.
+- [x] `buy_and_hold` (benchmark for every equity test).
+- [x] `sma_cross` (fast/slow on daily or minute bars; long-only and long-short variants).
+- [x] `opening_range_breakout` (minute bars; MIS; exit by time or stop).
+- [x] `eod_short_straddle` (`bhav_eod` dataset, `eod_close` fill model, A4 §4.9): after each day's file is published, decide whether to sell the ATM call and put of the nearest NIFTY weekly; the orders fill at the next day's close moved adversely by `half_spread_ticks`; hold to expiry (cash settlement at the FSP) or exit when a stop measured on daily closes is hit. Labelled `eod_approx` (I-14). This gives option research a first answer from free data while the recorder accumulates intraday history.
 
 ## M2.5 Golden scenarios (M)
 
@@ -55,18 +55,18 @@ Format and list: `A3_testing.md` §2–§3.
 
 - [x] Golden runner `python -m stockify golden run --impl oracle` loads every `tests/golden/*.yaml`, builds a tiny pack and bundle from the YAML, runs, and compares artifacts to the expected values in the YAML.
 - [ ] Write G01–G10, G12, G14, G16, G19 and G20 *(2026-11-05: all written and passing except G08, which waits for the owner's charge capture below)* with hand-computed expectations (G11 waits for M4.6, G17–G18 for M4.3; G13 and G15 are data-layer tests written in M1). Each YAML explains its expected numbers in a `notes` block, step by step, so a human can audit them.
-- [ ] G08 (costs) uses ground truth from Kite's virtual contract note (K-10): `python -m stockify tools capture-charges --cases tests/golden/charges_cases.json` calls `POST /charges/orders` for a list of imaginary orders and saves the responses (no secrets) to `tests/fixtures/kite_charges/<date>.json`. 🛑 The owner runs the capture, since it needs a live access token. Re-capture whenever charges change, and keep old captures with their dates.
+- [ ] G08 (costs) uses ground truth *(2026-11-05: capture tool, cases and comparison built; `golden run` shows G08 PENDING until the owner's capture exists)* from Kite's virtual contract note (K-10): `python -m stockify tools capture-charges --cases tests/golden/charges_cases.json` calls `POST /charges/orders` for a list of imaginary orders and saves the responses (no secrets) to `tests/fixtures/kite_charges/<date>.json`. 🛑 The owner runs the capture, since it needs a live access token. Re-capture whenever charges change, and keep old captures with their dates.
 
 ## M2.6 Metrics and run report (S)
 
-- [ ] Metrics per `A4` §8 (C-16): NAV series, daily returns, CAGR, volatility, Sharpe (√252), Sortino, max drawdown and duration, Calmar, trades, win rate, profit factor, average trade, exposure, turnover, total costs by component, cost share of gross P&L, rejects by reason, maximum participation used.
-- [ ] `report.md` per run: headline metrics, labels (approximations, unverified charges), equity-curve PNG (matplotlib), cost breakdown, and the manifest summary.
+- [x] Metrics per `A4` §8 (C-16): NAV series, daily returns, CAGR, volatility, Sharpe (√252), Sortino, max drawdown and duration, Calmar, trades, win rate, profit factor, average trade, exposure, turnover, total costs by component, cost share of gross P&L, rejects by reason, maximum participation used.
+- [x] `report.md` per run: headline metrics, labels (approximations, unverified charges), equity-curve PNG (matplotlib), cost breakdown, and the manifest summary.
 
 ## M2.7 CLI and notebook use (S)
 
-- [ ] `python -m stockify oracle run --config run.json` → run folder path.
-- [ ] `from stockify.oracle import run; res = run(config_dict)` returns a `RunResult` with pandas DataFrames (orders, fills, equity, metrics) for notebooks.
-- [ ] `python -m stockify compare-artifacts <runA> <runB> --tol-paise 0` diffs two run folders (used heavily in M3).
+- [x] `python -m stockify oracle run --config run.json` → run folder path.
+- [x] `from stockify.oracle import run; res = run(config_dict)` returns a `RunResult` with pandas DataFrames (orders, fills, equity, metrics) for notebooks.
+- [x] `python -m stockify compare-artifacts <runA> <runB> --tol-paise 0` diffs two run folders (used heavily in M3).
 
 ---
 

@@ -298,16 +298,27 @@ def load(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def goldens(only: list[str] | None = None) -> list[tuple[Path, dict]]:
+def goldens(only: list[str] | None = None, include_capture: bool = False) -> list[tuple[Path, dict]]:
+    """Simulated goldens; `include_capture` adds G08-style checks against captured Kite data."""
     out = []
     for path in sorted(GOLDEN_DIR.glob("G*.yaml")):
         g = load(path)
         if only and g["id"] not in only:
             continue
-        if g.get("impl") == "data_layer":
+        if g.get("impl") == "data_layer" or (g.get("impl") == "kite_capture" and not include_capture):
             continue
         out.append((path, g))
     return out
+
+
+def capture_status(g: dict) -> tuple[str, list[str]]:
+    """('PENDING', []) without a capture; otherwise the latest capture compared with our charges."""
+    from stockify.tools import capture_charges
+    caps = sorted(capture_charges.FIXTURES.glob("*.json"))
+    if not caps:
+        return "PENDING", [f"no capture yet: run `python -m stockify tools capture-charges --cases {g['cases']}`"]
+    problems = capture_charges.compare_capture(caps[-1])
+    return ("PASS" if not problems else "FAIL"), problems
 
 
 def _merge(a: dict, b: dict) -> dict:
@@ -344,7 +355,7 @@ def _run_single(g: dict, impl: str) -> list[str]:
         bundle = build_bundle(g)
         expect_error = g.get("expect", {}).get("error")
         try:
-            run_bundle(bundle, [pack], folder / "run")
+            run_bundle(bundle, [pack], folder / "run", report=False)
         except Exception as e:                       # noqa: BLE001 — goldens may expect a failure
             if expect_error and expect_error in str(e):
                 return []
