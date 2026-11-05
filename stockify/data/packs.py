@@ -19,7 +19,7 @@ Spec (JSON):
 | skip_missing_days| ticks: trading days without a recording are skipped instead of an error |
 
 Selectors: `"NSE:RELIANCE"` (shorthand), `{"ids": [..]}`, `{"symbols": ["NSE:RELIANCE", "NFO:NIFTY26NOVFUT"]}`,
-`{"chain": {"underlying": "NIFTY", "expiry": "nearest" | "YYYY-MM-DD", "strikes": N,
+`{"chain": {"underlying": "NIFTY", "expiry": "nearest" | "next" | "YYYY-MM-DD", "strikes": N,
 "kinds": ["CE", "PE"], "futures": true}}`. A chain's ATM comes from the
 underlying's close on the previous trading day (`index_eod` / `cm_eod`), which
 was known before the session; `strikes` = N strikes either side.
@@ -237,11 +237,12 @@ def _chain(sel: dict, day: date) -> list[int]:
     und = sel["underlying"].upper()
     kinds = [k.upper() for k in sel.get("kinds", ["CE", "PE"])]
     exp = sel.get("expiry", "nearest")
-    if exp == "nearest":
+    if exp in ("nearest", "next"):
         listed = instruments.expiries(und, "OPT", day)
-        if not listed:
-            raise PackError(f"no {und} option expiry listed on {day}")
-        exp = listed[0]
+        k = 0 if exp == "nearest" else 1
+        if len(listed) <= k:
+            raise PackError(f"no {exp} {und} option expiry listed on {day}")
+        exp = listed[k]
     chain = [r for r in instruments.option_chain(und, exp, day) if r["kind"] in kinds]
     if not chain:
         raise PackError(f"no {und} {exp} options listed on {day}")

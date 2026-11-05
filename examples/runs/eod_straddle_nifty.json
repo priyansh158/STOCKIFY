@@ -1,0 +1,19 @@
+{
+  "schema": "stockify.run/1",
+  "name": "eod_straddle_nifty",
+  "family_id": "eod_short_straddle/NIFTY/weekly",
+  "strategy": { "kind": "python", "ref": "stockify.strategies.eod_short_straddle:EodShortStraddle",
+                "params": { "underlying": "NIFTY", "index": "NSE:NIFTY 50", "lots": 1, "stop_multiple": "1.5",
+                            "min_days": 2, "protection_bp": 5000 } },
+  "data": { "packs": [ { "spec": { "dataset": "bhav_eod", "from": "2025-01-01", "to": "2026-10-30",
+            "instruments": [ "NSE:NIFTY 50",
+                             { "chain": { "underlying": "NIFTY", "expiry": "nearest", "strikes": 10 } },
+                             { "chain": { "underlying": "NIFTY", "expiry": "next", "strikes": 10 } } ] } } ] },
+  "price_basis": "raw",
+  "capital_paise": 100000000,
+  "fill_model": { "kind": "eod_close", "participation": "0.10", "half_spread_ticks": 1 },
+  "costs": { "broker": "zerodha", "allow_unverified": true },
+  "margin": { "model": "flat" },
+  "mark": "ltp",
+  "seed": 42
+}
