@@ -1,0 +1,4 @@
+instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange
+9001,35,NIFTY2610624600CE,NIFTY,0,2026-01-06,24600.0,0.05,65,CE,NFO-OPT,NFO
+9200,41,NIFTY26MARFUT,NIFTY,0,2026-03-31,0.0,0.1,65,FUT,NFO-FUT,NFO
+9300,42,RELIANCE26JANFUT,RELIANCE,0,2026-01-27,0.0,0.1,500,FUT,NFO-FUT,NFO

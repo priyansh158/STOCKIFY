@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "refdata": ("M1", "sync instruments and reference data"),
     "nse": ("M1", "fetch NSE public end-of-day files"),
     "bars": ("M1", "fetch and cache Kite historical candles"),
     "compact": ("M1", "verify and archive landing tick files"),
@@ -47,6 +46,33 @@ def _cmd_config(args) -> int:
     return 0
 
 
+def _cmd_refdata_sync(args) -> int:
+    from datetime import date
+    from pathlib import Path
+
+    from stockify import timeutil
+    from stockify.data import instruments
+
+    day = date.fromisoformat(args.date) if args.date else timeutil.ist_today()
+    if args.dir:
+        folder = Path(args.dir)
+        dumps = {ex: (folder / f"{ex}.csv").read_text(encoding="utf-8")
+                 for ex in instruments.DUMP_EXCHANGES if (folder / f"{ex}.csv").exists()}
+        if not dumps:
+            print(f"no NSE.csv / NFO.csv in {folder}", file=sys.stderr)
+            return 1
+    else:
+        dumps = instruments.download_dumps()
+    stats = instruments.sync(day, dumps)
+    if not args.dir:
+        # Compatibility: search still reads the old instruments.sqlite cache (RECON M1.0).
+        import kite_client
+        kite_client.refresh_instruments(force=True)
+    json.dump(stats.__dict__, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -69,6 +95,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("config", help="validate stockify/config/").set_defaults(func=_cmd_config)
     sub.add_parser("engine", help="print the engine build info").set_defaults(func=_cmd_engine)
+
+    r = sub.add_parser("refdata", help="reference data (instruments with history)")
+    rsub = r.add_subparsers(dest="refdata_command", required=True)
+    rs = rsub.add_parser("sync", help="fold today's Kite instrument dumps into refdata.sqlite")
+    rs.add_argument("--date", help="trade date YYYY-MM-DD (default: today in IST)")
+    rs.add_argument("--dir", help="read NSE.csv / NFO.csv from this folder instead of downloading")
+    rs.set_defaults(func=_cmd_refdata_sync)
 
     for name, (milestone, text) in _STUBS.items():
         s = sub.add_parser(name, help=f"{text} ({milestone}, not implemented yet)")

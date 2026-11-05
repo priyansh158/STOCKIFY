@@ -85,3 +85,12 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 | Instruments cache readers | `kite_client._instruments_db()` → `state_dir()/instruments.sqlite`. Read by `resolve_symbol` (`server/routers/search.py`) and `get_instrument_token` (`stockify/data/history.py`). `get_instrument_token_for_index` has no callers since M0. `refresh_instruments` / `_async` have no callers. | M1.1 keeps `instruments.sqlite` as a compatibility copy filled by `instruments.sync`; search keeps working unchanged. |
 | Existing `tick_buffer` / UI ticker | `kite_ticker_worker` (API process) writes to `ticks.sqlite` and fans out to `/api/ws/ticks`. | Stays as connection #1 for the UI; the recorder is connection #2 in the daemon process (D-20). |
 | Paid Kite plan (🛑 M1.0) | Pending owner confirmation. | Without it there is no WebSocket or historical data. |
+
+### 2026-11-04 — M1.1 notes
+
+- The token interval `valid_to` is **exclusive**: the first day the token no longer maps to the instrument (`valid_from <= d < valid_to`).
+- Dumps must be synced in date order per exchange; an older dump after a newer one raises `SyncError`. To backfill old dumps, sync them oldest first.
+- A re-download of the same day with a different hash (the dump's `last_price` column changes intraday) is kept as `<day>_<EX>_r2.csv.gz`; it never overwrites.
+- Indices are kept without `contract_specs` rows (their dump lot and tick sizes are 0).
+- **Follow-up:** `kite_client.instruments.sqlite` (search) is still filled by the old `refresh_instruments`, called after each live `refdata sync`. Moving search onto `refdata.sqlite` is a later CM task. The `underlyings` map in `contract_rules.json` is filled in M1.2 (⚠ verify the Kite tradingsymbols).
+- Uses the SDK's private `KiteConnect._get("market.instruments", …)`, because it returns the raw CSV bytes, so strikes stay exact decimals. Re-check this on a `kiteconnect` upgrade.

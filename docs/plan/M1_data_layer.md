@@ -21,17 +21,17 @@ Concepts: C-1, C-5, C-6, C-7. Schemas: `A1_schemas.md` §1–§5, §7. Numbers: 
 
 Files: `stockify/data/refdata.py`, `stockify/data/instruments.py`. Tables: `A1_schemas.md` §1.1.
 
-- [ ] Create `refdata.sqlite` with migrations (`stockify/data/migrations/refdata/0001_init.sql`, applied in order, recorded in `schema_version`), including `index_underlyings` (populated from `contract_rules.json`). Same migration pattern for every SQLite store from now on (I-13).
-- [ ] `instruments.sync(on_date)`:
+- [x] Create `refdata.sqlite` with migrations (`stockify/data/migrations/refdata/0001_init.sql`, applied in order, recorded in `schema_version`), including `index_underlyings` (populated from `contract_rules.json`). Same migration pattern for every SQLite store from now on (I-13).
+- [x] `instruments.sync(on_date)`:
   1. Download the Kite instrument dumps for `NSE` and `NFO`; save each as `$LAB/nse/raw/kite_instruments/{YYYYMMDD}_{EXCHANGE}.csv.gz` with a `.sha256` sidecar (cheap, and it makes the whole table rebuildable).
   2. Classify each row: `EQ`, `INDEX` (segment `INDICES`), `FUT`, `CE`, `PE` (K-9).
   3. Resolve the natural key (D-06): derivatives by `(exchange, underlying, kind, expiry, strike_paise)`, equities and indices by `(exchange, tradingsymbol)`. Parse strikes and prices with `stockify.numerics` (exact decimal), never `round(x * 100)` on a float.
   4. Upsert `instruments` (`first_seen`, `last_seen`); close or open `instrument_tokens` intervals when a token appears, moves to another instrument, or disappears.
   5. Append a `contract_specs` row (`source = 'kite_dump'`) only when lot size or tick size differs from the latest row for that instrument.
-- [ ] Public API (used by everything else): `resolve_token(token, on_date) -> instrument_id`, `get(instrument_id)`, `find(exchange, tradingsymbol)`, `spec_at(instrument_id, on_date)`, `expiries(underlying, kind, on_date)`, `option_chain(underlying, expiry, on_date)`, `underlying_of(instrument_id)`.
+- [x] Public API (used by everything else): `resolve_token(token, on_date) -> instrument_id`, `get(instrument_id)`, `find(exchange, tradingsymbol)`, `spec_at(instrument_id, on_date)`, `expiries(underlying, kind, on_date)`, `option_chain(underlying, expiry, on_date)`, `underlying_of(instrument_id)`.
 - [ ] Underlying links: index derivatives name an underlying like `NIFTY`; the index itself is `NIFTY 50`. Keep that map in `contract_rules.json` → `underlyings` (⚠ verify each Kite tradingsymbol in the dump).
-- [ ] One source of truth: make `kite_client.refresh_instruments` call `instruments.sync` and keep populating whatever table search/portfolio read today (a compatibility copy or view), so existing features keep working. If that is invasive, keep both for M1 and log a follow-up in `RECON.md`.
-- [ ] Tests (`tests/stockify/data/test_instruments.py`, fixture dumps under `tests/fixtures/kite_instruments/`): token reuse resolves by date (A3 G13); a mid-life lot change produces two `contract_specs` rows and `spec_at` returns the right one on each side (the data half of G12); syncing the same dump twice changes nothing.
+- [x] One source of truth (kept both for M1: `refdata sync` runs `instruments.sync`, then `kite_client.refresh_instruments` for the old cache; follow-up in RECON): make `kite_client.refresh_instruments` call `instruments.sync` and keep populating whatever table search/portfolio read today (a compatibility copy or view), so existing features keep working. If that is invasive, keep both for M1 and log a follow-up in `RECON.md`.
+- [x] Tests (`tests/stockify/data/test_instruments.py`, fixture dumps under `tests/fixtures/kite_instruments/`): token reuse resolves by date (A3 G13); a mid-life lot change produces two `contract_specs` rows and `spec_at` returns the right one on each side (the data half of G12); syncing the same dump twice changes nothing.
 
 ## M1.2 Calendar, sessions and rule configs (M)
 
