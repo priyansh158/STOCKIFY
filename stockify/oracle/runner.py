@@ -30,7 +30,7 @@ from stockify.oracle.ledger import Ledger
 from stockify.oracle.margin import FlatMargin
 from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, participation_cap, path_points, protection_limit,
                                      slipped)
-from stockify.oracle.orders import ACTIVE, SYSTEM_TAGS, Fill, FillView, Order, OrderView
+from stockify.oracle.orders import ACTIVE, FINAL, SYSTEM_TAGS, Fill, FillView, Order, OrderView
 from stockify.oracle.rng import SLIPPAGE_STREAM, STRATEGY_STREAM, Pcg32
 from stockify.strategy import Bar, Funds, PhaseChange, PositionView, Tick
 
@@ -105,6 +105,8 @@ class Engine:
         self.now = 0
         self.key = (0, -1, 0, 0)
         self.next_order = 1
+        self.min_live = 1                               # orders below this id are all final
+        self.day_ends = [d["day_end_ns"] for d in self.days]
         self.sub_ticks: set[int] = set()
         self.sub_bars: dict[int, set[int]] = {}
         self.built: dict = {}                          # (iid, interval) -> {start: [o,h,l,c,v,oi]}
@@ -114,7 +116,7 @@ class Engine:
         self.equity: list = []
         self.log_lines = log_lines if log_lines is not None else []
         self.labels: set[str] = set(bundle.get("labels", []))
-        self.settled: set = set()
+        self.settle_closes: list = []                  # (t, iid, product, side, units, price): expiry closes (D-45)
         self.fsp_seen: dict = {}                       # (underlying_id, date) -> fsp
         self.underlying_last: dict[int, int] = {}
         self.participation_used = 0                    # ppm of a bar's volume, max over the run
@@ -154,9 +156,8 @@ class Engine:
         return min(starts) if starts else None
 
     def next_continuous_start(self, iid: int, t: int) -> int | None:
-        for day in self.days:
-            if day["day_end_ns"] < t:
-                continue
+        import bisect
+        for day in self.days[bisect.bisect_left(self.day_ends, t):]:
             g = self.group_of(iid, day["date"])
             for p in day["groups"][g]:
                 if p["phase"] == "CONTINUOUS" and p["start_ns"] >= t:
@@ -435,8 +436,15 @@ class Engine:
         o.status = "PENDING"
         o.trade_date = self._date(o.t_activate)
 
+    def live_orders(self) -> list[Order]:
+        """Orders that are not final, in id order (finished ones are skipped once)."""
+        orders = self.book.orders
+        while self.min_live < self.next_order and orders[self.min_live].status in FINAL:
+            self.min_live += 1
+        return [orders[i] for i in range(self.min_live, self.next_order) if orders[i].status not in FINAL]
+
     def _activate_due(self, t: int) -> None:
-        due = sorted((o for o in self.book.orders.values() if o.status == "PENDING" and o.t_activate <= t),
+        due = sorted((o for o in self.live_orders() if o.status == "PENDING" and o.t_activate <= t),
                      key=lambda o: (o.t_activate, o.order_id))
         for o in due:
             self._activate(o)
@@ -567,7 +575,7 @@ class Engine:
         book.ledger.debit(tot)
 
     def _eligible(self, iid: int, t_start: int) -> list[Order]:
-        out = [o for o in self.book.orders.values()
+        out = [o for o in self.live_orders()
                if o.instrument_id == iid and o.status in ACTIVE and o.t_activate <= t_start]
         return sorted(out, key=lambda o: (o.t_activate, o.order_id))
 
@@ -660,12 +668,15 @@ class Engine:
         g = self.group_of(iid, d)
         cs = self.continuous_start(g, d)
         eff_start = max(bar["start"], cs) if cs is not None else bar["start"]
+        eligible = self._eligible(iid, eff_start)
+        if not eligible:
+            return                                       # also every index bar: indices are not tradable
         spec = self.spec(iid, d)
         tick, lot = spec["tick_paise"], spec["lot"]
         h = self.fill_cfg["half_spread_ticks"]
         cap_left = participation_cap(bar["volume"], self.fill_cfg["participation_ppm"], lot)
         c = bar["close"]
-        for o in self._eligible(iid, eff_start):
+        for o in eligible:
             buy = o.side == "BUY"
             if o.status == "TRIGGER_PENDING":
                 if (c >= o.trigger) if buy else (c <= o.trigger):
@@ -687,6 +698,13 @@ class Engine:
             cap_left -= qty
             self._fill(self.book, o, qty, price, "eod_close", bar["t"])
             o.first_eligible_done = True
+        # The fill is the close of `d`, published at 19:00, after an expiring contract's 16:00 FSP:
+        # settle it now at that FSP rather than falling back at DAY_END.
+        row = self.inst[iid]
+        if row["kind"] in ("FUT", "CE", "PE") and (row.get("actual_expiry") or row["expiry"]) == d:
+            fsp = self.fsp_seen.get((row["underlying_id"], d))
+            if fsp is not None:
+                self._settle_final(row["underlying_id"], d, fsp, "settle")
 
     # snapshot models (A4 §4.2, §4.3) -----------------------------------------
 
@@ -802,7 +820,7 @@ class Engine:
 
     def _after_market(self, iid: int) -> None:
         """IOC remainders are cancelled right after their first eligible event (A4 §3.7)."""
-        for o in list(self.book.orders.values()):
+        for o in self.live_orders():
             if o.instrument_id == iid and o.validity == "IOC" and o.status in ACTIVE and o.first_eligible_done:
                 self._cancel(self.book, o, "IOC")
 
@@ -831,6 +849,10 @@ class Engine:
                     self._match_eod(iid, bar)
                 m.ltp, m.t = rec["close"], rec["t_event"]
                 self._underlying_seen(iid, rec["close"])
+                bar_day = self._date(rec["start_ns"])
+                for o in self.live_orders():               # D-44: the session's daily bar has now been used
+                    if o.instrument_id == iid and o.eod_after is not None and o.eod_after <= bar_day:
+                        self._cancel(self.book, o, "EOD")
             self._after_market(iid)
             self._deliver()
             if iid in self.sub_bars and isec in self.sub_bars[iid]:
@@ -922,7 +944,7 @@ class Engine:
         for (iid, prod), p in self.book.ledger.positions.items():
             row = self.inst[iid]
             if p.q and row["kind"] in ("FUT", "CE", "PE") and row["underlying_id"] == underlying_id and \
-                    (row.get("actual_expiry") or row["expiry"]) == d and (iid, prod) not in self.settled:
+                    (row.get("actual_expiry") or row["expiry"]) == d:
                 out.append(p)
         return out
 
@@ -933,7 +955,10 @@ class Engine:
             if row["settlement"] != "cash":
                 raise RunError(f"{row['tradingsymbol']}: physical settlement is out of scope until M4.6")
             led = self.book.ledger
+            closing_side = "SELL" if p.d > 0 else "BUY"
+            units = p.q
             if row["kind"] == "FUT":
+                self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, fsp))
                 led.settle_variation(p, fsp, source)
                 p.realised = p.pnl(fsp)
                 p.vm = p.realised
@@ -941,6 +966,7 @@ class Engine:
             else:
                 k = row["strike_paise"]
                 intrinsic = max(0, fsp - k) if row["kind"] == "CE" else max(0, k - fsp)
+                self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, intrinsic))
                 led.cash += p.qty * intrinsic
                 p.realised += p.d * (p.q * intrinsic - p.c)
                 if p.d > 0 and intrinsic > 0:
@@ -948,7 +974,6 @@ class Engine:
                     self._charge_row(self.book, "settlement", 0, p.instrument_id, d, parts)
                 p.q, p.c = 0, 0
                 p.last_mark, p.mark_source = intrinsic, source
-            self.settled.add((p.instrument_id, p.product))
             self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
 
     def _on_phase(self, payload: tuple) -> None:
@@ -961,13 +986,19 @@ class Engine:
         self.strategy.on_session_phase(self.ctx, PhaseChange(g, phase, self.now))
         self._deliver()
 
+    def _daily_bars(self, iid: int) -> bool:
+        m = self.market.get(iid)
+        return m is not None and m.min_interval is not None and m.min_interval >= 86400
+
     def _seg_close(self, payload: tuple) -> None:
         g, d = payload
-        for o in list(self.book.orders.values()):
-            if o.status in ("PENDING", "OPEN", "TRIGGER_PENDING") and o.validity == "DAY" and \
-                    self.group_of(o.instrument_id, d) == g and (o.trade_date or d) <= d:
+        for o in self.live_orders():
+            if o.validity == "DAY" and self.group_of(o.instrument_id, d) == g and (o.trade_date or d) <= d:
                 if o.status == "PENDING" and o.t_activate > self.now:
                     continue                              # queued for a later session
+                if self._daily_bars(o.instrument_id):
+                    o.eod_after = d                       # D-44: cancelled once today's daily bar is matched
+                    continue
                 self._cancel(self.book, o, "EOD")
         if g in ("FO_FUT", "FO_OPT"):
             for (iid, prod), p in self.book.ledger.positions.items():
@@ -994,8 +1025,7 @@ class Engine:
         # expiry fallback (A4 §7.2): no FSP by DAY_END
         for (iid, prod), p in list(self.book.ledger.positions.items()):
             row = self.inst[iid]
-            if p.q and row["kind"] in ("FUT", "CE", "PE") and (row.get("actual_expiry") or row["expiry"]) == d and \
-                    (iid, prod) not in self.settled:
+            if p.q and row["kind"] in ("FUT", "CE", "PE") and (row.get("actual_expiry") or row["expiry"]) == d:
                 uid = row["underlying_id"]
                 last = self.underlying_last.get(uid) if uid else None
                 if last is None:

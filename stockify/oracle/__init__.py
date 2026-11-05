@@ -46,7 +46,8 @@ class RunResult:
         return self._df("charges.csv")
 
 
-def run_bundle(bundle: dict, pack_paths: list, folder: Path, strategy=None, manifest: dict | None = None) -> RunResult:  # noqa: ANN001
+def run_bundle(bundle: dict, pack_paths: list, folder: Path, strategy=None, manifest: dict | None = None,  # noqa: ANN001
+               report: bool = True) -> RunResult:
     """Run a resolved bundle over its packs and write the run folder."""
     from stockify import bundle as bundle_mod
     from stockify import strategy as strategy_mod
@@ -71,11 +72,14 @@ def run_bundle(bundle: dict, pack_paths: list, folder: Path, strategy=None, mani
     m = metrics.compute(capital=run_cfg["capital_paise"], equity=engine.equity, fills=engine.book.fills,
                         orders=engine.book.orders, charges=engine.book.charges, risk_free=risk_free,
                         rejects=engine.rejects, participation_ppm=engine.participation_used,
-                        exposure=engine.exposure())
+                        exposure=engine.exposure(), closes=engine.settle_closes)
     hashes = artifacts.write(folder, engine, m, {
         "run_id": folder.name, "bundle_sha256": bundle_sha, **(manifest or {}),
         "packs": [p["sha256"] for p in bundle["packs"]], "started_ns": started,
         "duration_ms": (timeutil.now_ns() - started) // 1_000_000, "engine": "oracle"})
+    if report:
+        from stockify.oracle import report as report_mod
+        report_mod.write(folder)
     return RunResult(folder, folder.name, m, sorted(engine.labels), hashes)
 
 

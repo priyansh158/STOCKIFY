@@ -41,6 +41,7 @@ class Order:
     first_eligible_done: bool = False   # snapshot_quote: arrived vs resting; IOC: matched once
     trade_date: str | None = None
     charged: bool = False
+    eod_after: str | None = None   # D-44: DAY order on daily bars, cancel after this date's bar
 
     @property
     def remaining(self) -> int:

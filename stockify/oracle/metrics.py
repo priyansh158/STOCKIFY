@@ -18,7 +18,9 @@ def _rate_on(rows: list[dict], d: str) -> float:
 
 
 def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, charges: list[dict],
-            risk_free: list[dict], rejects: dict, participation_ppm: int, exposure: float | None) -> dict:
+            risk_free: list[dict], rejects: dict, participation_ppm: int, exposure: float | None,
+            closes: list | None = None) -> dict:
+    """`closes`: expiry settlements (t, iid, product, side, units, price); they close trades too (D-45)."""
     navs = [float(capital)] + [float(row[1]) for row in equity]
     dates = [row[0] for row in equity]
     T = len(equity)
@@ -39,6 +41,8 @@ def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, cha
         for v in x:
             ss += (v - mean) ** 2
         sd = math.sqrt(ss / (T - 1))
+        if min(x) == max(x):                  # all equal: the deviation is exactly 0, not rounding noise
+            sd = 0.0
         if sd != 0:
             sharpe = mean / sd * math.sqrt(252)
         dn = 0.0
@@ -55,7 +59,7 @@ def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, cha
         ssr = 0.0
         for v in r:
             ssr += (v - mr) ** 2
-        vol = math.sqrt(ssr / (T - 1)) * math.sqrt(252)
+        vol = 0.0 if min(r) == max(r) else math.sqrt(ssr / (T - 1)) * math.sqrt(252)
     cagr = (navs[T] / navs[0]) ** (252 / T) - 1 if T >= 1 and navs[0] > 0 and navs[T] > 0 else None
 
     peak = navs[0]
@@ -72,28 +76,33 @@ def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, cha
             max_dd = max(max_dd, dd)
     calmar = cagr / max_dd if cagr is not None and max_dd != 0 else None
 
-    # trades: FIFO matching of closing fills against opening fills per (instrument, product)
+    # trades: FIFO matching of closing fills (and expiry settlements, D-45) against opening fills
+    # per (instrument, product)
     lots: dict = {}
     trades = []
     traded_value = 0
-    for f in fills:
-        traded_value += f.qty * f.price
-        o = orders[f.order_id]
-        key = (f.instrument_id, o.product)
+    flow = [(f.t_ns, 0, n, f.instrument_id, orders[f.order_id].product, f.side, f.qty, f.price)
+            for n, f in enumerate(fills)]
+    flow += [(t, 1, n, iid, prod, side, units, price) for n, (t, iid, prod, side, units, price) in enumerate(closes or [])]
+    flow.sort(key=lambda e: (e[0], e[1], e[2]))
+    for _, is_settle, _, iid, product, side, qty, price in flow:
+        if not is_settle:
+            traded_value += qty * price
+        key = (iid, product)
         q = lots.setdefault(key, [])
-        sign = 1 if f.side == "BUY" else -1
-        left = f.qty
+        sign = 1 if side == "BUY" else -1
+        left = qty
         while left and q and q[0][0] != sign:
             open_sign, open_qty, open_price = q[0]
             k = min(left, open_qty)
-            trades.append(open_sign * k * (f.price - open_price))
+            trades.append(open_sign * k * (price - open_price))
             left -= k
             if k == open_qty:
                 q.pop(0)
             else:
                 q[0] = (open_sign, open_qty - k, open_price)
         if left:
-            q.append((sign, left, f.price))
+            q.append((sign, left, price))
     wins = losses = 0
     gross_win = gross_loss = 0
     total_pnl = 0
