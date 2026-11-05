@@ -83,8 +83,119 @@ def estimate_bytes_per_day(day: date, manager) -> dict:  # noqa: ANN001
             "chain_instruments": chain_full + chain_quote, "seconds": seconds}
 
 
+RETRY_SLEEP_CHECK_S = 15 * 60
+
+
+def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
+    """Jobs whose milestone is not built yet are logged, not faked."""
+    if job == "compaction":
+        log.info("compaction for %s: not built yet (M1.7); landing file kept as is", day)
+        state.mark(job, day)
+    elif job == "nse_fetch":
+        log.info("NSE fetch for %s: not built yet (M1.3); use `nse backfill` once it exists", day)
+    elif job == "prune":
+        from stockify import store
+        week_ago = timeutil.now_ns() - 7 * 86_400 * 1_000_000_000
+        removed = store.prune_recorder_status(week_ago)
+        log.info("pruned %d recorder_status rows older than 7 days", removed)
+        state.mark(job, day)
+
+
+def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  # noqa: ANN001
+               recorder=None) -> int:  # noqa: ANN001
+    """The live daemon: wait for the session, record it, then hibernate (D-32).
+
+    Each pass handles one of three situations:
+
+    1. today's session is over: run its post-session jobs, then try to sleep;
+    2. the next session's wake time is still ahead (night, weekend, holiday):
+       try to sleep until it;
+    3. otherwise: wait for keep-awake time, hold the laptop awake, record the
+       session, then continue with 1.
+
+    Returns an exit code for the launcher: SLEEP (75) with next_wake.json
+    written, TOKEN_EXPIRED (76) to wait for a Kite login, or the recorder's code.
+    """
+    from stockify.daemon import scheduler
+    from stockify.daemon.clock import WallClock
+    from stockify.daemon.keepawake import Power
+
+    power = power or Power()
+    clock = clock or WallClock()
+    stop = stop or threading.Event()
+    record = recorder or (lambda: run_recorder(ticker_spec="live", stop=stop, power=power))
+    state = scheduler.State()
+
+    while not stop.is_set():
+        now = clock.now_ns()
+        for job, d in scheduler.missed_jobs(now, state):
+            _run_job(job, d, state)
+
+        today = timeutil.ns_to_ist(now).date()
+        if calendar_is_trading(today) and now >= scheduler.plan(today).unsubscribe_ns:
+            obligations = today                                   # situation 1
+            for job in ("compaction", "prune"):
+                if not state.done(job, today):
+                    _run_job(job, today, state)
+        else:
+            day = scheduler.session_day(now)
+            p = scheduler.plan(day)
+            wake = scheduler.next_wake_ns(now)
+            if now < wake and wake <= p.keep_awake_ns:
+                obligations = None                                # situation 2
+            else:                                                 # situation 3
+                if now < p.keep_awake_ns:
+                    log.info("session %s starts soon; waiting until %s IST", day,
+                             timeutil.ns_to_ist(p.keep_awake_ns).strftime("%H:%M"))
+                    if not clock.sleep_until(p.keep_awake_ns, stop):
+                        return exitcodes.OK
+                power.hold()
+                try:
+                    code = record()
+                finally:
+                    power.release()
+                if code != exitcodes.OK:
+                    return code
+                state.mark("session", day)
+                continue                                          # now situation 1
+
+        result = _sleep_or_wait(clock, power, state, obligations, stop)
+        if result is not None:
+            return result
+    return exitcodes.OK
+
+
+def _sleep_or_wait(clock, power, state, day, stop):  # noqa: ANN001
+    """Hibernate when allowed (return SLEEP), or wait and return None to re-plan."""
+    from stockify.daemon import scheduler
+
+    now = clock.now_ns()
+    flag = scheduler.stay_awake_flag()
+    ok, why = scheduler.should_sleep(now, day, state, idle_s=power.idle_seconds(),
+                                     stay_awake=flag.exists())
+    wake = scheduler.next_wake_ns(now)
+    if ok:
+        scheduler.write_next_wake(wake)
+        log.info("hibernating until %s IST", timeutil.ns_to_ist(wake).strftime("%Y-%m-%d %H:%M"))
+        return exitcodes.SLEEP
+    if why.startswith("stay_awake") or why.startswith("sleep_after_close disabled"):
+        if flag.exists():
+            flag.unlink()
+        log.info("not sleeping (%s); staying up until %s IST", why,
+                 timeutil.ns_to_ist(wake).strftime("%Y-%m-%d %H:%M"))
+        return None if clock.sleep_until(wake, stop) else exitcodes.OK
+    log.info("not sleeping yet: %s; checking again in 15 min", why)
+    until = min(wake, now + RETRY_SLEEP_CHECK_S * 1_000_000_000)
+    return None if clock.sleep_until(until, stop) else exitcodes.OK
+
+
+def calendar_is_trading(day: date) -> bool:
+    from stockify.data import calendar
+    return calendar.is_trading_day("FO", day)
+
+
 def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
-                 stop: threading.Event | None = None) -> int:
+                 stop: threading.Event | None = None, power=None) -> int:  # noqa: ANN001
     from stockify.config import loader
     from stockify.daemon.clock import WallClock
     from stockify.daemon.landing import LandingDB
@@ -145,9 +256,16 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
     est = estimate_bytes_per_day(day, manager)
     log.info("expected landing size today: about %.0f MB (assumes about %d chain strikes once "
              "centred and one packet per instrument per second)", est["bytes"] / 1e6, est["chain_instruments"])
+    last_power_check = 0
     try:
         while not stop.is_set() and not session.stopped.is_set():
             session.tick()
+            if power is not None and clock.now_ns() - last_power_check >= 60 * 1_000_000_000:
+                last_power_check = clock.now_ns()
+                if power.on_ac_power() is False:
+                    if "on_battery" not in recorder.stats.alarms:
+                        recorder.stats.alarms.append("on_battery")
+                    log.warning("running on battery during the session: closing the lid would sleep the laptop")
             if replay and ticker.finished.is_set():
                 break
             if clock.now_ns() >= end_ns:

@@ -39,8 +39,11 @@ def _cmd_daemon(args) -> int:
         if args.ticker == "live":
             _load_env()
         return daemon.run_recorder(ticker_spec=args.ticker, faults=args.inject)
-    daemon.run_forever(once=args.once)
-    return 0
+    if args.once:
+        daemon.run_forever(once=True)
+        return 0
+    _load_env()
+    return daemon.run_daemon()
 
 
 def _cmd_config(args) -> int:
@@ -145,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
 
-    d = sub.add_parser("daemon", help="market daemon (recorder + paper sessions)")
+    d = sub.add_parser("daemon", help="market daemon: record each session, then hibernate (D-32)")
     d.add_argument("--once", action="store_true", help="log one idle cycle and exit")
     d.add_argument("--recorder-only", action="store_true", help="record today's ticks (M1.5)")
     d.add_argument("--ticker", default="live",
