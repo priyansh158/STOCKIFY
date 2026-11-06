@@ -102,6 +102,98 @@ export interface DataQualityResponse {
   instruments: InstrumentQuality[];
 }
 
+// ── Strategy tests (M3.14) ───────────────────────────────────────────────────
+// Money is integer paise, times are UTC epoch ns with an ISO IST string beside them.
+
+export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" | "underlying";
+
+export interface StrategyParam {
+  name: string;
+  type: ParamType;
+  default?: unknown;
+  required: boolean;
+  help: string;
+}
+
+export interface Strategy {
+  kind: "python" | "cpp";
+  ref: string;
+  name: string;
+  doc: string;
+  params: StrategyParam[];
+}
+
+export type TestStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface TestRun {
+  run_id: string;
+  name?: string | null;
+  family_id?: string | null;
+  status: TestStatus;
+  impl?: string | null;
+  strategy_ref?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  price_basis?: string | null;
+  capital_paise?: number | null;
+  created_ns?: number | null;
+  created_ist?: string | null;
+  finished_ns?: number | null;
+  finished_ist?: string | null;
+  nav_start_paise?: number | null;
+  nav_end_paise?: number | null;
+  max_drawdown?: number | null;
+  trades?: number | null;
+  costs_total_paise?: number | null;
+  labels: string[];
+  error?: string | null;
+}
+
+export interface TestRunDetail {
+  run: TestRun;
+  config: Record<string, unknown>;
+  metrics: Record<string, unknown>;
+  manifest?: Record<string, unknown> | null;
+}
+
+export interface TestFill {
+  fill_id: number;
+  order_id: number;
+  t_ns: number;
+  t_ist: string;
+  instrument_id: number;
+  side: string;
+  qty: number;
+  price_paise: number;
+}
+
+export interface TestEquity {
+  trade_date: string;
+  nav_paise: number;
+  cash_paise: number;
+  margin_paise?: number | null;
+}
+
+export interface TestCharge {
+  row_no: number;
+  kind: string;
+  order_id?: number | null;
+  trade_date: string;
+  components: Record<string, number>;
+  total_paise: number;
+}
+
+export interface TestLogs {
+  events_log: string[];
+  runner_log: string[];
+  offset: number;
+  total_lines: number;
+}
+
+export interface TestCreated {
+  run_id: string;
+}
+
 // ── Live ticks (WS) ──────────────────────────────────────────────────────────
 
 export interface TickEvent {
