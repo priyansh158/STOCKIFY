@@ -251,6 +251,8 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 
 **Record prefix (24 bytes)**: `u16 kind`, `u16 size` (whole record incl. prefix), `u32 instrument_id` (0 if none), `i64 t_event`, `u64 seq`.
 
+<!-- <block name="event-kinds" same-as-pattern='^\| (?P<key>\d+) \| \x60(?P<value>[A-Z_]+)\x60'> -->
+
 | kind | name | rank (A4 §1.3) | payload after prefix | size |
 |---|---|---|---|---|
 | 1 | `TICK_QUOTE` | 4 | i64 × 10: ltp, last_qty, atp, volume, buy_qty, sell_qty, open, high, low, close | 104 |
@@ -262,8 +264,14 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 | 7 | `REFDATA` | 2 | u16 subtype, u16 pad, u32 len, then `len` bytes of canonical JSON (sorted keys, no whitespace) | 32 + len |
 | 8 | `SETTLE` | 3 | u8 subtype (0 final settlement price of the underlying in the prefix for an expiry, 1 daily settlement price of the contract in the prefix), u8[3] pad, i32 date (YYYYMMDD: the expiry or the trade date), i64 price_paise | 40 |
 
+<!-- </block> -->
+
+<!-- <block name="refdata-subtypes" same-as-pattern='(?P<key>\d) \x60(?P<value>[a-z_]+)\x60'> -->
 - REFDATA subtypes: 1 `instrument_add` (static fields + spec), 2 `price_band`, 3 `margin_requirement` (portfolio hash, amount, components, source), 4 `spec_change`. Because `size` is a u16, a REFDATA JSON payload is at most 65,503 bytes; larger content is split into several records (one instrument per `instrument_add`).
+<!-- </block> -->
+<!-- <block name="gap-reasons" same-as-pattern='(?P<key>\d) (?P<value>[a-z_]+)'> -->
 - GAP reasons: 1 disconnect, 2 process_stop, 3 token_expired, 4 stall, 5 not_subscribed. Landing gaps scoped to a tier are expanded into one GAP record per affected instrument.
+<!-- </block> -->
 - Sorting inside a file: `(t_event, rank, seq)`. In packs, `seq` is reassigned 1…N after sorting by `(t_event, rank, source seq, instrument_id)`, where bars' source seq is their row order by `(instrument_id, start_ns)`. Several packs in one run are merged by `(t_event, rank, pack index, seq)` (A4 §1.3). In journals, `seq` is the dispatcher's per-day counter.
 - Prices are paise; index values are points × 100. Unknown kinds are an error, never skipped.
 
@@ -328,6 +336,8 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 
 ### 6.3 Run folder `runs/<run_id>/`
 
+<!-- <block name="deterministic-files" same-as-pattern='^\| \x60(?P<value>[a-z_]+\.[a-z]+)\x60 \| ✔'> -->
+
 | File | Deterministic (A4 §9) | Content |
 |---|---|---|
 | `run.json`, `bundle.json` | input | as above |
@@ -343,6 +353,8 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 | `determinism.json` | — | SHA-256 of each deterministic file |
 | `manifest.json` | ✗ | engine build info, Python version, OS, wall-clock start/duration, input hashes, labels |
 | `report.md` (+ `equity.png`) | ✗ | human summary (M2.6) |
+
+<!-- </block> -->
 
 ## §7 Config files (`stockify/config/`)
 

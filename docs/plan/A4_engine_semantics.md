@@ -47,19 +47,23 @@ Records appended to a live journal get `t_event = max(intended time, last journa
 
 **1.3 One ordering for everything.** Every event, input or internal, has a key `(t, rank, src, seq)`:
 
+<!-- <block name="event-ranks" same-as-pattern='^\| \d+ \| \x60(?P<value>[A-Z_]+)\x60'> -->
+
 | rank | event | origin |
 |---|---|---|
 | 0 | `PHASE` | internal |
 | 1 | `GAP` | input |
 | 2 | `REFDATA` | input |
 | 3 | `SETTLE` | input |
-| 4 | market data: `TICK_FULL`, `TICK_QUOTE`, `INDEX`, `BAR` | input |
+| 4 | `MARKET` (market data): `TICK_FULL`, `TICK_QUOTE`, `INDEX`, `BAR` | input |
 | 5 | `CLOCK` | input |
 | 6 | `BAR_BUILT` | internal |
 | 7 | `MIS_SQOFF` | internal |
 | 8 | `TIMER` | internal |
 | 9 | `SEG_CLOSE` | internal |
 | 10 | `DAY_END` | internal |
+
+<!-- </block> -->
 
 `src` = the pack's index in the bundle's pack list (0 for journals and for internal events); `seq` = the record's sequence number (input) or a creation counter (internal). The engine always processes the smallest key next. Internal events are only ever created with keys greater than the key being processed.
 
@@ -102,6 +106,8 @@ Orders placed during steps 4–5 get `t_submit = t_event(E)`.
 
 **3.2 Validation at submit.** Checks run in this order; the first failure rejects with that code:
 
+<!-- <block name="reject-codes" same-as-pattern='^\| \x60(?P<value>R_[A-Z_]+)\x60'> -->
+
 | Code | Rule |
 |---|---|
 | `R_INSTRUMENT` | Unknown instrument, or past its last trading moment |
@@ -115,6 +121,8 @@ Orders placed during steps 4–5 get `t_submit = t_event(E)`.
 | `R_HOLDINGS` | CNC sell above holdings (no CNC short selling) |
 | `R_NO_REFERENCE` | MARKET or SL-M with no LTP known for protection or for the funds check |
 | `R_MARGIN` | Required funds (§6.5) exceed available funds |
+
+<!-- </block> -->
 
 System orders tagged `AUTO_SQOFF` or `RMS_SQOFF` skip `R_SESSION`, `R_CAS`, `R_FREEZE` (they are sliced) and `R_MARGIN`.
 

@@ -67,16 +67,25 @@ REFDATA = struct.Struct("<HHI")
 SETTLE = struct.Struct("<B3xiq")
 
 TICK_QUOTE, TICK_FULL, INDEX_K, BAR_K, CLOCK, GAP_K, REFDATA_K, SETTLE_K = range(1, 9)
+# The blocks below must match docs/plan/A1_schemas.md (or history.py); blockwatch checks them.
+# <block name="event-kinds" same-as="docs/plan/A1_schemas.md:event-kinds" same-as-pattern='(?P<key>\d+): "(?P<value>[A-Z_]+)"'>
 KIND_NAMES = {1: "TICK_QUOTE", 2: "TICK_FULL", 3: "INDEX", 4: "BAR", 5: "CLOCK", 6: "GAP", 7: "REFDATA", 8: "SETTLE"}
+# </block>
 RANK = {TICK_QUOTE: 4, TICK_FULL: 4, INDEX_K: 4, BAR_K: 4, CLOCK: 5, GAP_K: 1, REFDATA_K: 2, SETTLE_K: 3}
 SIZE = {TICK_QUOTE: 104, TICK_FULL: 384, INDEX_K: 80, BAR_K: 88, CLOCK: 24, GAP_K: 32, SETTLE_K: 40}
+# <block name="gap-reasons" same-as="docs/plan/A1_schemas.md:gap-reasons" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
 GAP_REASONS = {"disconnect": 1, "process_stop": 2, "token_expired": 3, "stall": 4, "not_subscribed": 5}
+# </block>
+# <block name="refdata-subtypes" same-as="docs/plan/A1_schemas.md:refdata-subtypes" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
 REFDATA_SUBTYPES = {"instrument_add": 1, "price_band": 2, "margin_requirement": 3, "spec_change": 4}
+# </block>
 BASIS = {"raw": 0, "adjusted": 1}
 FLAG_CLOCK = 2
 MAX_JSON = 65_535 - 32
+# <block name="bar-intervals" same-as="stockify/data/history.py#/INTERVALS" same-as-mode="sequence" same-as-pattern='"(?P<value>[0-9a-z]+)"'>
 INTERVAL_S = {"minute": 60, "3minute": 180, "5minute": 300, "10minute": 600, "15minute": 900,
               "30minute": 1800, "60minute": 3600, "day": 86400}
+# </block>
 SEC = 1_000_000_000
 
 

@@ -40,8 +40,11 @@ log = logging.getLogger("stockify.data.nse")
 
 DATASETS = ("fo", "cm", "idx", "qtyfreeze")
 MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+# quality.FOREIGN_METRICS must list these two (checked by blockwatch).
+# <block name="fsp-metrics" same-as="stockify/data/quality.py#/FOREIGN_METRICS" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 FSP_METRIC = "fsp_vs_close_paise"                   # FSP differs from the index / official close
 FSP_SPREAD_METRIC = "fsp_settle_spread_paise"       # expiring contracts disagree on the FSP
+# </block>
 
 
 class NseError(RuntimeError):

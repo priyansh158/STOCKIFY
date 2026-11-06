@@ -34,7 +34,10 @@ from stockify.oracle.orders import ACTIVE, FINAL, SYSTEM_TAGS, Fill, FillView, O
 from stockify.oracle.rng import SLIPPAGE_STREAM, STRATEGY_STREAM, Pcg32
 from stockify.strategy import Bar, Funds, PhaseChange, PositionView, Tick
 
+# Event ranks, in A4 §1.3 order (checked by blockwatch).
+# <block name="event-ranks" same-as="docs/plan/A4_engine_semantics.md:event-ranks" same-as-mode="sequence" same-as-pattern='\b(?P<value>[A-Z][A-Z_]+)\b'>
 PHASE, GAP, REFDATA, SETTLE, MARKET, CLOCK, BAR_BUILT, MIS_SQOFF, TIMER, SEG_CLOSE, DAY_END = range(11)
+# </block>
 RANK = {"GAP": GAP, "REFDATA": REFDATA, "SETTLE": SETTLE, "TICK_QUOTE": MARKET, "TICK_FULL": MARKET,
         "INDEX": MARKET, "BAR": MARKET, "CLOCK": CLOCK}
 PPB = 1_000_000_000
@@ -341,8 +344,11 @@ class Engine:
         return o
 
     def _validate(self, o: Order, system: bool, start: str = "R_INSTRUMENT", upto: str = "R_MARGIN") -> str | None:
+        # The A4 §3.2 check order (checked by blockwatch).
+        # <block name="reject-codes" same-as="docs/plan/A4_engine_semantics.md:reject-codes" same-as-mode="sequence" same-as-pattern='"(?P<value>R_[A-Z_]+)"'>
         order = ["R_INSTRUMENT", "R_PRODUCT", "R_SESSION", "R_CAS", "R_QTY_LOT", "R_TICK", "R_BAND", "R_FREEZE",
                  "R_HOLDINGS", "R_NO_REFERENCE", "R_MARGIN"]
+        # </block>
         checks = order[order.index(start): order.index(upto) + 1]
         row = self.inst.get(o.instrument_id)
         d = self._date(self.now)

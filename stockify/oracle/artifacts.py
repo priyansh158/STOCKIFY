@@ -26,8 +26,11 @@ POSITIONS = ("trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,ma
              "realised_paise")
 EQUITY = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise"
 MARGIN = "trade_date,underlying_id,model,scan,somc,elm,addons,total"
+# The ✔ rows of A1 §6.3, in order (checked by blockwatch).
+# <block name="deterministic-files" same-as="docs/plan/A1_schemas.md:deterministic-files" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+\.[a-z]+)"'>
 DETERMINISTIC = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
                  "margin_daily.csv", "metrics.json", "events_log.txt")
+# </block>
 
 
 def _cell(v) -> str:  # noqa: ANN001

@@ -2,7 +2,8 @@
 frontend has a single source of truth.
 
 When the underlying dataclass changes shape, update both here AND in
-`web/lib/types.ts` (the TS mirror).
+`web/src/lib/types.ts` (the TS mirror). blockwatch checks that the two
+files list the same field names in the same order.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+# <block name="dto-fields" same-as="web/src/lib/types.ts:dto-fields" same-as-mode="sequence" same-as-pattern='^\s*(?P<value>[a-z_0-9]+): '>
 # ── Search ───────────────────────────────────────────────────────────────────
 
 class SearchHit(BaseModel):
@@ -119,3 +121,4 @@ class TickEvent(BaseModel):
     ltp: float
     change_pct: float | None = None
     ts: int  # unix seconds
+# </block>
