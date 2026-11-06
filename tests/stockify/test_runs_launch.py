@@ -142,3 +142,50 @@ class LaunchTests(RunsTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class CppConfigTests(RunsTestBase):
+    """A `strategy.kind: cpp` config runs end to end and equals its Python twin on the same data."""
+
+    PARAMS = {"symbol": "NSE:RELIANCE", "fast": 2, "slow": 3}
+
+    def setUp(self):
+        super().setUp()
+        from stockify.data import history
+        # up, then down (one round trip); each day opens at the previous close, moves stay inside the 2 % band
+        closes = {22: 10000, 23: 10050, 24: 10150, 26: 10200, 29: 10100, 30: 10000, 31: 9950}
+        from datetime import date
+        from stockify import timeutil
+        prev = 10000
+        with history._Tx() as conn:
+            for d, c in closes.items():
+                conn.execute("UPDATE bars SET open_paise = ?, high_paise = ?, low_paise = ?, close_paise = ? "
+                             "WHERE instrument_id = ? AND ts_ns = ?",
+                             (prev, max(prev, c) + 10, min(prev, c) - 10, c, self.rel,
+                              timeutil.ist_ns(date(2025, 12, d), "00:00")))
+                prev = c
+
+    def test_sma_cross_cpp_equals_the_python_strategy(self):
+        from tests.stockify.test_engine_parity import assert_same_artifacts
+        py = runs.launch(self.config({"kind": "python", "ref": "stockify.strategies.sma_cross:SmaCross",
+                                      "params": self.PARAMS}, "py"), report=False)
+        code, out, err = _cli("run", "--config", str(self.config({"kind": "cpp", "ref": "sma_cross_cpp",
+                                                                   "params": self.PARAMS}, "cpp")), "--no-report")
+        self.assertEqual(code, 0, err)
+        cpp = Path(out.strip())
+        assert_same_artifacts(self, paths.runs_dir() / py, cpp)
+        self.assertEqual([f["side"] for f in store.run_rows(py, "fills")], ["BUY", "SELL"])
+        bundle = json.loads((cpp / "bundle.json").read_text(encoding="utf-8"))
+        import hashlib
+        build = engine.build_info()["engine_build_id"]
+        self.assertEqual(bundle["strategy"]["source_sha256"],
+                         hashlib.sha256(f"{build}:sma_cross_cpp".encode()).hexdigest())
+        self.assertEqual(store.get_run(cpp.name)["status"], "done")
+        self.assertTrue(runs.rerun(cpp.name)[1])
+
+    def test_an_unknown_cpp_name_is_a_failed_run(self):
+        with self.assertRaises(runs.RunFailed) as ctx:
+            runs.launch(self.config({"kind": "cpp", "ref": "nope_cpp", "params": {}}), report=False)
+        self.assertRegex(store.get_run(ctx.exception.run_id)["error"],
+                         r"^BundleError: strategy nope_cpp: no C\+\+ strategy is registered .*known: orb_cpp")

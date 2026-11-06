@@ -274,7 +274,18 @@ def strategy_ref(cfg: dict) -> dict:
     elif s["kind"] == "script":
         source = hashlib.sha256(numerics.dumps_canonical(s["actions"]).encode()).hexdigest()
     else:
-        raise BundleError("C++ strategies arrive in M3")
+        # A registered C++ strategy: its code is the engine build, so the build id and the name identify it.
+        from stockify import engine
+        try:
+            mod = engine.load()
+        except engine.EngineUnavailable as e:
+            raise BundleError(f"strategy {s['ref']}: a C++ strategy needs the engine: {e}") from e
+        known = list(mod.strategies())
+        if s["ref"] not in known:
+            raise BundleError(f"strategy {s['ref']}: no C++ strategy is registered under that name "
+                              f"(known: {', '.join(known)})")
+        build_id = mod.build_info()["engine_build_id"]
+        source = hashlib.sha256(f"{build_id}:{s['ref']}".encode()).hexdigest()
     return {"kind": s["kind"], "ref": s.get("ref"), "source_sha256": source, "params": s.get("params", {}),
             **({"actions": s["actions"]} if s["kind"] == "script" else {})}
 
