@@ -51,9 +51,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("config OK", out)
 
     def test_unimplemented_command_names_its_milestone(self):
-        code, _, err = self.run_cli("run")
+        code, _, err = self.run_cli("margin")
         self.assertEqual(code, 2)
-        self.assertIn("M3", err)
+        self.assertIn("M4", err)
 
     def test_daemon_once_returns(self):
         code, _, _ = self.run_cli("daemon", "--once")

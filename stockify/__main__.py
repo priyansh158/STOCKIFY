@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "run": ("M3", "run a backtest or replay"),
     "margin": ("M4", "margin calibration tools"),
     "parity": ("M5", "nightly journal parity"),
     "compare": ("M6", "compare runs"),
@@ -300,6 +299,49 @@ def _cmd_oracle_run(args) -> int:
     return 0
 
 
+def _cmd_run(args) -> int:
+    """Exit 0 done, 1 run failed (or re-run not reproduced), 2 bad config / usage / a --run-id not queued."""
+    import json
+
+    from stockify import paths, runconfig, runs, store
+
+    if args.rerun:
+        try:
+            new_id, same = runs.rerun(args.rerun)
+        except runs.RunFailed as e:
+            print(e, file=sys.stderr)
+            return 1
+        except runs.RunNotQueued as e:
+            print(e, file=sys.stderr)
+            return 2
+        print(paths.runs_dir() / new_id)
+        if same:
+            print(f"determinism.json reproduced byte for byte ({args.rerun} -> {new_id})", file=sys.stderr)
+            return 0
+        for name in runs.determinism_diff(args.rerun, new_id):
+            print(f"differs: {name}", file=sys.stderr)
+        return 1
+    if args.config is None and args.run_id is None:
+        print("stockify run: give --config or --rerun", file=sys.stderr)
+        return 2
+    try:
+        run_id = runs.launch(args.config, run_id=args.run_id, impl=args.impl, report=not args.no_report)
+    except (runconfig.RunConfigError, runs.RunNotQueued) as e:
+        print(e, file=sys.stderr)
+        return 2
+    except runs.RunFailed as e:
+        print(e, file=sys.stderr)
+        return 1
+    row = store.get_run(run_id)
+    print(row["folder"])
+    m = json.loads(row["metrics_json"]) if row.get("metrics_json") else {}
+    labels = json.loads(row["labels_json"]) if row.get("labels_json") else []
+    print(f"NAV {m.get('nav_start_paise', 0) / 100:,.2f} -> {m.get('nav_end_paise', 0) / 100:,.2f}; "
+          f"trades {m.get('trades')}; costs {m.get('costs_total_paise', 0) / 100:,.2f}; "
+          f"labels {', '.join(labels)}", file=sys.stderr)
+    return 0
+
+
 def _cmd_golden_run(args) -> int:
     from stockify import golden
 
@@ -446,6 +488,15 @@ def main(argv: list[str] | None = None) -> int:
     orun.add_argument("--config", required=True, help="path to run.json")
     orun.add_argument("--run-id", help="run folder name (default: <name>-<bundle hash>)")
     orun.set_defaults(func=_cmd_oracle_run)
+    rn = sub.add_parser("run", help="run a backtest on the engine and record it in lab.sqlite (M3.11)")
+    rmode = rn.add_mutually_exclusive_group()
+    rmode.add_argument("--config", help="path to run.json")
+    rmode.add_argument("--rerun", metavar="RUN_ID", help="re-run a finished run from its folder; exit 1 unless "
+                       "determinism.json is reproduced byte for byte (DT-03)")
+    rn.add_argument("--run-id", help="run this queued run (its stored config); --config is then optional")
+    rn.add_argument("--impl", default="engine", choices=["engine", "oracle"])
+    rn.add_argument("--no-report", action="store_true", help="skip report.md and the charts")
+    rn.set_defaults(func=_cmd_run)
     g = sub.add_parser("golden", help="golden scenarios (A3)")
     gsub = g.add_subparsers(dest="golden_command", required=True)
     grun = gsub.add_parser("run", help="run every golden on an implementation")
