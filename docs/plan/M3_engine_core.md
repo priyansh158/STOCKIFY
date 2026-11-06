@@ -47,7 +47,7 @@ Files: `engine.hpp/.cpp`, `session.hpp/.cpp`, `timers.hpp`.
 
 ## M3.4 Instruments and specs (S)
 
-- [ ] Build an `InstrumentTable` from the bundle: static fields, dated specs (lot, tick, freeze) per trading day, underlying links, price bands from `REFDATA` events.
+- [x] Build an `InstrumentTable` from the bundle: static fields, dated specs (lot, tick, freeze) per trading day, underlying links, price bands from `REFDATA` events.
 - [ ] `spec_on(instrument, date)` is O(1) per day (pre-resolved arrays). Test against G12 (mid-life lot change).
 
 ## M3.5 Orders (M)

@@ -15,6 +15,10 @@
 
 namespace stocksim {
 
+// ordered_json keeps the file's key order, so anything the oracle iterates in dict order (a day's groups,
+// mis_cutoff_ns, strategy params) is iterated in the same order here.
+using Json = nlohmann::ordered_json;
+
 inline constexpr std::string_view kBundleSchema = "stockify.bundle/1";
 
 struct PackRef {
@@ -27,7 +31,7 @@ struct StrategyRef {
     std::string kind;  // "python" | "cpp"
     std::string ref;
     std::string source_sha256;
-    nlohmann::json params;
+    Json params;
 };
 
 struct Bundle {
@@ -36,7 +40,7 @@ struct Bundle {
     std::vector<PackRef> packs;
     StrategyRef strategy;
     std::vector<std::string> labels;
-    nlohmann::json root;  // the whole document
+    Json root;  // the whole document
 };
 
 // FormatError on unreadable input, invalid JSON, a wrong schema or a missing / mistyped envelope field.
@@ -44,8 +48,8 @@ Bundle parse_bundle(std::string_view text);
 Bundle load_bundle(const std::filesystem::path& path);
 
 // Typed access with a FormatError that names the JSON path.
-const nlohmann::json& require(const nlohmann::json& obj, std::string_view key, std::string_view where);
-std::int64_t require_int(const nlohmann::json& obj, std::string_view key, std::string_view where);
-std::string require_string(const nlohmann::json& obj, std::string_view key, std::string_view where);
+const Json& require(const Json& obj, std::string_view key, std::string_view where);
+std::int64_t require_int(const Json& obj, std::string_view key, std::string_view where);
+std::string require_string(const Json& obj, std::string_view key, std::string_view where);
 
 }  // namespace stocksim

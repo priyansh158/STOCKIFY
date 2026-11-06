@@ -74,7 +74,9 @@ add_library(stocksim_core STATIC
   src/json_bundle.cpp
   src/event.cpp
   src/pack_reader.cpp
-  src/source.cpp)
+  src/source.cpp
+  src/session.cpp
+  src/instruments.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -99,7 +101,8 @@ add_executable(stocksim_tests
   tests/test_pcg32.cpp
   tests/test_output.cpp
   tests/test_bundle.cpp
-  tests/test_packs.cpp)
+  tests/test_packs.cpp
+  tests/test_session.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_core)
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
 

@@ -9,7 +9,7 @@
 
 namespace stocksim {
 
-const nlohmann::json& require(const nlohmann::json& obj, std::string_view key, std::string_view where) {
+const Json& require(const Json& obj, std::string_view key, std::string_view where) {
     if (!obj.is_object()) {
         throw FormatError("bundle: " + std::string(where) + " is not an object");
     }
@@ -20,8 +20,8 @@ const nlohmann::json& require(const nlohmann::json& obj, std::string_view key, s
     return *it;
 }
 
-std::int64_t require_int(const nlohmann::json& obj, std::string_view key, std::string_view where) {
-    const nlohmann::json& v = require(obj, key, where);
+std::int64_t require_int(const Json& obj, std::string_view key, std::string_view where) {
+    const Json& v = require(obj, key, where);
     if (!v.is_number_integer()) {
         throw FormatError("bundle: " + std::string(where) + "." + std::string(key) + " is not an integer");
     }
@@ -31,8 +31,8 @@ std::int64_t require_int(const nlohmann::json& obj, std::string_view key, std::s
     return v.get<std::int64_t>();
 }
 
-std::string require_string(const nlohmann::json& obj, std::string_view key, std::string_view where) {
-    const nlohmann::json& v = require(obj, key, where);
+std::string require_string(const Json& obj, std::string_view key, std::string_view where) {
+    const Json& v = require(obj, key, where);
     if (!v.is_string()) {
         throw FormatError("bundle: " + std::string(where) + "." + std::string(key) + " is not a string");
     }
@@ -43,23 +43,23 @@ Bundle parse_bundle(std::string_view text) {
     Bundle b;
     b.sha256 = sha256_hex(text);
     try {
-        b.root = nlohmann::json::parse(text.begin(), text.end());
-    } catch (const nlohmann::json::parse_error& e) {
+        b.root = Json::parse(text.begin(), text.end());
+    } catch (const Json::parse_error& e) {
         throw FormatError(std::string("bundle: invalid JSON: ") + e.what());
     }
-    const nlohmann::json& r = b.root;
+    const Json& r = b.root;
     if (require_string(r, "schema", "bundle") != kBundleSchema) {
         throw FormatError("bundle: unsupported schema '" + r["schema"].get<std::string>() + "', expected " +
                           std::string(kBundleSchema));
     }
-    const nlohmann::json& seed = require(r, "seed", "bundle");
+    const Json& seed = require(r, "seed", "bundle");
     if (!seed.is_number_integer() || (seed.is_number_integer() && !seed.is_number_unsigned() &&
                                       seed.get<std::int64_t>() < 0)) {
         throw FormatError("bundle: seed must be a non-negative integer");
     }
     b.seed = seed.get<std::uint64_t>();
 
-    const nlohmann::json& packs = require(r, "packs", "bundle");
+    const Json& packs = require(r, "packs", "bundle");
     if (!packs.is_array()) {
         throw FormatError("bundle: packs is not a list");
     }
@@ -69,15 +69,18 @@ Bundle parse_bundle(std::string_view text) {
                                   require_string(packs[i], "price_basis", where)});
     }
 
-    const nlohmann::json& s = require(r, "strategy", "bundle");
+    const Json& s = require(r, "strategy", "bundle");
     b.strategy.kind = require_string(s, "kind", "strategy");
-    b.strategy.ref = require_string(s, "ref", "strategy");
+    // A scripted strategy (goldens) has actions instead of a ref; Python supplies the object either way.
+    if (const auto it = s.find("ref"); it != s.end() && it->is_string()) {
+        b.strategy.ref = it->get<std::string>();
+    }
     if (const auto it = s.find("source_sha256"); it != s.end() && it->is_string()) {
         b.strategy.source_sha256 = it->get<std::string>();
     }
-    b.strategy.params = s.contains("params") ? s["params"] : nlohmann::json::object();
+    b.strategy.params = s.contains("params") ? s["params"] : Json::object();
 
-    const nlohmann::json& labels = require(r, "labels", "bundle");
+    const Json& labels = require(r, "labels", "bundle");
     if (!labels.is_array()) {
         throw FormatError("bundle: labels is not a list");
     }
