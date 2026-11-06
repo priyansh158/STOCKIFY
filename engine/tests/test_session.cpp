@@ -59,6 +59,20 @@ TEST_CASE("IST dates of UTC nanoseconds") {
     CHECK_THROWS_AS(parse_iso_date("2026-1-05"), FormatError);
 }
 
+TEST_CASE("IST wall times, parsed as timeutil.parse_hhmm parses them") {
+    CHECK(ist_ns(20261103, "09:15") == k0915);
+    CHECK(ist_ns(20261103, "9:15") == k0915);
+    CHECK(ist_ns(20261103, " 9:15") == k0915);  // int(" 9") == 9
+    CHECK(ist_ns(20261103, "+09:015") == k0915);
+    CHECK(ist_ns(20261103, "15:30") == k1530);
+    CHECK(ist_ns(20261103, "0:0") == kMidnight);
+    CHECK(ist_ns(20261103, "23:59:59") == 1'793'730'599'000'000'000);
+    for (const char* bad : {"24:00", "9", "9:60", "9:15:60", "09:15:00:00", "a:15", "", "-1:15", "9::15", "9:1_5_"}) {
+        CAPTURE(bad);
+        CHECK_THROWS_AS(ist_ns(20261103, bad), FormatError);
+    }
+}
+
 TEST_CASE("phases come only from the bundle") {
     const SessionCalendar cal(days_json());
     REQUIRE(cal.days().size() == 2);

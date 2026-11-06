@@ -134,6 +134,13 @@ class Context {
     bool stale(InstrumentId iid) const;
     std::vector<Bar> bars(InstrumentId iid, std::int32_t interval_s, std::int64_t n) const;
 
+    // Indicators over the instrument's bars of one interval (A2 §4.3); NaN during warm-up.
+    double sma(InstrumentId iid, std::int32_t interval_s, std::int64_t n) const;
+    double ema(InstrumentId iid, std::int32_t interval_s, std::int64_t n) const;
+    double rsi(InstrumentId iid, std::int32_t interval_s, std::int64_t n) const;
+    double atr(InstrumentId iid, std::int32_t interval_s, std::int64_t n) const;
+    double session_vwap(InstrumentId iid) const;  // bars only: Σ((H+L+C)//3 · V) / Σ V since today's open
+
     OrderId place(const PlaceRequest& r);
     bool modify(OrderId id, const ModifyRequest& m);
     bool cancel(OrderId id);
@@ -153,6 +160,16 @@ class Context {
     std::optional<InstrumentId> resolve(std::string_view exchange_symbol) const;  // "NSE:RELIANCE" or "RELIANCE"
     const Spec* spec(InstrumentId iid) const;
     const Json& instrument_rows() const;  // the bundle's rows (the oracle's ctx._rows())
+
+    // F&O lookups over the bundle's rows (the oracle's ctx.expiries / futures_chain / chain).
+    std::vector<Date> expiries(std::string_view underlying, std::string_view kind) const;  // "FUT", "OPT", "CE", "PE"
+    std::vector<InstrumentId> futures_chain(std::string_view underlying) const;
+    struct ChainRow {
+        InstrumentId instrument = 0;
+        std::string kind;
+        Paise strike = 0;
+    };
+    std::vector<ChainRow> chain(std::string_view underlying, std::string_view expiry) const;
 
  private:
     Engine& e_;
@@ -183,6 +200,16 @@ struct SettleClose {
     Paise price = 0;
 };
 
+// What happened since the last drain (A2 §2, for the M5 journals): new orders as they are now, and half-open
+// ranges into book().order_events / fills / charges, which only ever grow (a bar path's rows are appended).
+struct Outputs {
+    std::vector<OrderId> orders;
+    std::size_t events_from = 0, events_to = 0;
+    std::size_t fills_from = 0, fills_to = 0;
+    std::size_t charges_from = 0, charges_to = 0;  // charge row_no = index + 1
+    std::vector<std::string> log;
+};
+
 // ── The engine ───────────────────────────────────────────────────────────────
 
 class Engine {
@@ -190,6 +217,7 @@ class Engine {
     explicit Engine(Bundle bundle);
 
     void set_strategy(std::shared_ptr<Strategy> strategy);
+    const Strategy* strategy() const { return strategy_.get(); }
     void add_pack(std::shared_ptr<const PackReader> pack);  // packs in bundle order: the pack's src is its index
 
     void run();                                    // backtest over the added packs, then finish()
@@ -200,6 +228,7 @@ class Engine {
     const Bundle& bundle() const { return bundle_; }
     const std::vector<std::string>& log_lines() const { return log_lines_; }
     std::vector<std::string> drain_log();          // log lines since the last call
+    Outputs drain_outputs();                       // everything since the last call (the log included)
     std::vector<std::string> labels() const;       // sorted
     Context& context() { return ctx_; }
     TimeNs now() const { return now_; }
@@ -341,6 +370,8 @@ class Engine {
 
     std::vector<std::string> log_lines_;
     std::size_t log_drained_ = 0;
+    OrderId orders_drained_ = 1;  // the next order id not yet drained
+    std::size_t events_drained_ = 0, fills_drained_ = 0, charges_drained_ = 0;
     std::set<std::string> labels_;
 };
 

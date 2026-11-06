@@ -10,6 +10,9 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <type_traits>
+#include <variant>
 #include <vector>
 
 #include "stocksim/artifacts.hpp"
@@ -108,6 +111,85 @@ class StrategyTrampoline : public stocksim::Strategy {
     py::object ctx_obj_;
 };
 
+// A CSV cell as the Python value its text spells: None, bool, int or str.
+py::object cell_object(const stocksim::CsvCell& c) {
+    return std::visit(
+        [](const auto& v) -> py::object {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, stocksim::CsvNull>) {
+                return py::none();
+            } else if constexpr (std::is_same_v<T, bool>) {
+                return py::bool_(v);
+            } else if constexpr (std::is_same_v<T, std::int64_t>) {
+                return py::int_(v);
+            } else {
+                return py::str(v.data(), v.size());
+            }
+        },
+        c);
+}
+
+// A row sink (artifacts.hpp) that collects dicts keyed by the CSV header's column names.
+class DictRows {
+ public:
+    explicit DictRows(std::string_view header) {
+        for (std::size_t a = 0; a <= header.size();) {
+            const std::size_t z = std::min(header.find(',', a), header.size());
+            names_.emplace_back(std::string(header.substr(a, z - a)));
+            a = z + 1;
+        }
+    }
+    void operator()(std::initializer_list<stocksim::CsvCell> cells) {
+        py::dict d;
+        std::size_t i = 0;
+        for (const stocksim::CsvCell& c : cells) {
+            d[names_.at(i++)] = cell_object(c);
+        }
+        rows.append(d);
+    }
+    py::list rows;
+
+ private:
+    std::vector<py::str> names_;
+};
+
+// A Python exception from a strategy hook ends the run (A2 §3, M3.10): its traceback goes into the log (so into
+// events_log.txt) and the exception reaches the caller unchanged. An engine error is logged the same way.
+// Nothing is swallowed.
+//
+// A C++ strategy never touches Python, so its runs release the GIL (A2 §3) and daemon threads keep moving;
+// the GIL is back before any handler below runs (the release is undone as the stack unwinds).
+template <class F>
+void guarded(Engine& e, F&& step) {
+    try {
+        if (dynamic_cast<const StrategyTrampoline*>(e.strategy()) == nullptr) {
+            py::gil_scoped_release nogil;
+            step();
+        } else {
+            step();
+        }
+    } catch (py::error_already_set& err) {
+        e.context().log("ERROR", "the strategy raised an exception; the run stops");
+        const py::list parts = py::module_::import("traceback").attr("format_exception")(err.type(), err.value(),
+                                                                                         err.trace());
+        for (const py::handle part : parts) {
+            for (const py::handle line : py::str(part).attr("splitlines")()) {
+                e.context().log("ERROR", std::string(py::str(line)));
+            }
+        }
+        throw;
+    } catch (const std::exception& ex) {
+        e.context().log("ERROR", std::string("the run stops: ") + ex.what());
+        throw;
+    }
+}
+
+[[noreturn]] void not_until_m5(const char* what) {
+    PyErr_SetString(PyExc_NotImplementedError,
+                    (std::string(what) + ": the start/end-of-day state arrives with the paper daemon (M5.3, D-47)").c_str());
+    throw py::error_already_set();
+}
+
 }  // namespace
 
 void bind_engine(py::module_& m) {
@@ -149,6 +231,19 @@ void bind_engine(py::module_& m) {
             }
             return out;
         })
+        .def("sma", [](const CtxProxy& x, stocksim::InstrumentId iid, std::int32_t isec, std::int64_t n) {
+            return x.c().sma(iid, isec, n);
+        })
+        .def("ema", [](const CtxProxy& x, stocksim::InstrumentId iid, std::int32_t isec, std::int64_t n) {
+            return x.c().ema(iid, isec, n);
+        })
+        .def("rsi", [](const CtxProxy& x, stocksim::InstrumentId iid, std::int32_t isec, std::int64_t n) {
+            return x.c().rsi(iid, isec, n);
+        })
+        .def("atr", [](const CtxProxy& x, stocksim::InstrumentId iid, std::int32_t isec, std::int64_t n) {
+            return x.c().atr(iid, isec, n);
+        })
+        .def("session_vwap", [](const CtxProxy& x, stocksim::InstrumentId iid) { return x.c().session_vwap(iid); })
         .def("schedule_at", [](CtxProxy& x, stocksim::TimeNs t) { return x.c().schedule_at(t); })
         .def("schedule_every", [](CtxProxy& x, stocksim::TimeNs period, stocksim::TimeNs first) {
             return x.c().schedule_every(period, first);
@@ -237,6 +332,27 @@ void bind_engine(py::module_& m) {
             const stocksim::Funds f = x.c().funds();
             return x.types.funds(f.available, f.cash, f.blocked, f.reserved);
         })
+        .def("expiries", [](const CtxProxy& x, const std::string& underlying, const std::string& kind) {
+            py::list out;  // ISO strings, like the oracle's (the bundle's expiry fields)
+            for (const stocksim::Date d : x.c().expiries(underlying, kind)) {
+                out.append(stocksim::iso_date(d));
+            }
+            return out;
+        })
+        .def("futures_chain", [](const CtxProxy& x, const std::string& underlying) {
+            return x.c().futures_chain(underlying);
+        })
+        .def("chain", [](const CtxProxy& x, const std::string& underlying, const std::string& expiry) {
+            py::list out;
+            for (const auto& r : x.c().chain(underlying, expiry)) {
+                py::dict d;  // the oracle's key order
+                d["instrument_id"] = r.instrument;
+                d["kind"] = r.kind;
+                d["strike_paise"] = r.strike;
+                out.append(d);
+            }
+            return out;
+        })
         .def("_rows", [](CtxProxy& x) {
             if (!x.rows) {
                 x.rows = to_python(x.c().instrument_rows(), x.types);
@@ -265,26 +381,51 @@ void bind_engine(py::module_& m) {
             ctx->params = to_python(e->bundle().strategy.params, ctx->types);
             e->set_strategy(std::make_shared<StrategyTrampoline>(std::move(strategy), ctx));
         })
-        .def("run", [](Engine& e) { e.run(); })
+        .def("set_strategy_cpp", [](Engine& e, const std::string& name) { e.set_strategy(stocksim::make_strategy(name)); },
+             "A registered C++ strategy (STOCKSIM_STRATEGY); its params come from the bundle.")
+        .def("run", [](Engine& e) { guarded(e, [&] { e.run(); }); })
         .def("push", [](Engine& e, const py::bytes& batch) {
             const std::string data = batch;
-            e.push(std::as_bytes(std::span<const char>(data.data(), data.size())));
+            guarded(e, [&] { e.push(std::as_bytes(std::span<const char>(data.data(), data.size()))); });
         })
-        .def("finish", &Engine::finish)
+        .def("finish", [](Engine& e) { guarded(e, [&] { e.finish(); }); })
         .def("drain_outputs", [](Engine& e) {
+            // Rows exactly as the CSVs spell them (artifacts.hpp), as dicts keyed by column name.
+            const stocksim::Outputs o = e.drain_outputs();
+            const stocksim::Book& b = e.book();
+            DictRows orders(stocksim::kOrdersHeader), events(stocksim::kOrderEventsHeader),
+                fills(stocksim::kFillsHeader), charges(stocksim::kChargesHeader);
+            for (const stocksim::OrderId id : o.orders) {
+                stocksim::order_row(b.orders.at(id), orders);
+            }
+            for (std::size_t i = o.events_from; i < o.events_to; ++i) {
+                stocksim::order_event_row(b.order_events[i], events);
+            }
+            for (std::size_t i = o.fills_from; i < o.fills_to; ++i) {
+                stocksim::fill_row(b.fills[i], fills);
+            }
+            for (std::size_t i = o.charges_from; i < o.charges_to; ++i) {
+                stocksim::charge_row(static_cast<std::int64_t>(i) + 1, b.charges[i], charges);
+            }
             py::dict out;
-            out["orders"] = py::list();
-            out["order_events"] = py::list();
-            out["fills"] = py::list();
-            out["charges"] = py::list();
-            out["log"] = e.drain_log();
+            out["orders"] = orders.rows;
+            out["order_events"] = events.rows;
+            out["fills"] = fills.rows;
+            out["charges"] = charges.rows;
+            out["log"] = o.log;
             return out;
         })
         .def("events_log", [](const Engine& e) { return e.log_lines(); })
         .def("write_artifacts", [](const Engine& e, const std::string& folder) {
             return stocksim::write_artifacts(e, std::filesystem::path(folder));
         })
-        .def("labels", &Engine::labels);
+        .def("labels", &Engine::labels)
+        // A paper session's day-to-day state (A1 `sod_state`, M5.3) is defined with the daemon that carries it,
+        // against an oracle twin; until then both refuse loudly rather than hand back a partial state (D-47).
+        .def("load_sod_state", [](Engine&, const std::string&) { not_until_m5("load_sod_state"); })
+        .def("eod_state", [](const Engine&) -> std::string { not_until_m5("eod_state"); });
+
+    m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");
 
     py::register_exception<stocksim::RunError>(m, "RunError", PyExc_RuntimeError);
 }

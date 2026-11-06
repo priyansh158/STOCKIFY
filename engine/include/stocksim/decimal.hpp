@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace stocksim {
@@ -18,5 +19,9 @@ inline std::int64_t to_ppb(std::string_view fraction) { return decimal_scaled(fr
 inline std::int64_t to_ppm(std::string_view fraction) { return decimal_scaled(fraction, 6, "ppm"); }
 inline std::int64_t to_bp(std::string_view fraction) { return decimal_scaled(fraction, 4, "bp"); }
 inline std::int64_t to_paise(std::string_view rupees) { return decimal_scaled(rupees, 2, "paise"); }
+
+// Python's int(text) for ASCII text: surrounding whitespace, an optional sign, decimal digits with single '_'
+// between them. nullopt where int() would refuse, and for values outside int64 (which Python would accept).
+std::optional<std::int64_t> python_int(std::string_view text);
 
 }  // namespace stocksim

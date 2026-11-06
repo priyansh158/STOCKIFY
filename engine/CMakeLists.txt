@@ -77,6 +77,8 @@ add_library(stocksim_core STATIC
   src/source.cpp
   src/session.cpp
   src/instruments.cpp
+  src/indicators.cpp
+  src/strategy.cpp
   src/engine.cpp
   src/engine_trading.cpp
   src/ledger.cpp
@@ -91,12 +93,20 @@ target_include_directories(stocksim_core
 target_include_directories(stocksim_core SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 target_compile_options(stocksim_core PRIVATE ${STOCKSIM_CXX_FLAGS})
 
+# The C++ reference strategies register themselves at static-init time (STOCKSIM_STRATEGY). An OBJECT library
+# puts their objects straight into each binary; members of a static library nobody references would be dropped.
+add_library(stocksim_strategies OBJECT
+  strategies/sma_cross_cpp.cpp
+  strategies/orb_cpp.cpp)
+target_link_libraries(stocksim_strategies PUBLIC stocksim_core)
+target_compile_options(stocksim_strategies PRIVATE ${STOCKSIM_CXX_FLAGS})
+
 add_executable(stocksim_run src/run_main.cpp)
-target_link_libraries(stocksim_run PRIVATE stocksim_core)
+target_link_libraries(stocksim_run PRIVATE stocksim_strategies stocksim_core)
 target_compile_options(stocksim_run PRIVATE ${STOCKSIM_CXX_FLAGS})
 
-pybind11_add_module(_engine python/engine_module.cpp python/testing_packs.cpp python/engine_bindings.cpp)
-target_link_libraries(_engine PRIVATE stocksim_core)
+pybind11_add_module(_engine bindings/module.cpp bindings/engine.cpp bindings/testing_packs.cpp)
+target_link_libraries(_engine PRIVATE stocksim_strategies stocksim_core)
 target_compile_options(_engine PRIVATE ${STOCKSIM_CXX_FLAGS})
 add_custom_command(TARGET _engine POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:_engine>" "${REPO_ROOT}/stockify/"
@@ -111,7 +121,7 @@ add_executable(stocksim_tests
   tests/test_bundle.cpp
   tests/test_packs.cpp
   tests/test_session.cpp)
-target_link_libraries(stocksim_tests PRIVATE stocksim_core)
+target_link_libraries(stocksim_tests PRIVATE stocksim_strategies stocksim_core)
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
 
 enable_testing()

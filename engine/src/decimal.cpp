@@ -120,4 +120,43 @@ std::int64_t decimal_scaled(std::string_view text, int scale_exponent, std::stri
     return acc;
 }
 
+std::optional<std::int64_t> python_int(std::string_view s) {  // int(text), see decimal.hpp
+    while (!s.empty() && is_space(s.front())) {
+        s.remove_prefix(1);
+    }
+    while (!s.empty() && is_space(s.back())) {
+        s.remove_suffix(1);
+    }
+    bool negative = false;
+    if (!s.empty() && (s.front() == '+' || s.front() == '-')) {
+        negative = s.front() == '-';
+        s.remove_prefix(1);
+    }
+    if (s.empty() || s.front() == '_' || s.back() == '_') {
+        return std::nullopt;
+    }
+    std::uint64_t v = 0;
+    char prev = 0;
+    for (const char c : s) {
+        if (c == '_') {
+            if (prev == '_') {
+                return std::nullopt;
+            }
+        } else if (c >= '0' && c <= '9') {
+            const auto d = static_cast<std::uint64_t>(c - '0');
+            if (v > (static_cast<std::uint64_t>(INT64_MAX) + 1 - d) / 10) {
+                return std::nullopt;  // beyond int64: Python would accept it, the engine cannot hold it
+            }
+            v = v * 10 + d;
+        } else {
+            return std::nullopt;
+        }
+        prev = c;
+    }
+    if (!negative && v > static_cast<std::uint64_t>(INT64_MAX)) {
+        return std::nullopt;
+    }
+    return negative ? static_cast<std::int64_t>(0 - v) : static_cast<std::int64_t>(v);
+}
+
 }  // namespace stocksim

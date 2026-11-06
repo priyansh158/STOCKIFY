@@ -4,10 +4,13 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "stocksim/json_bundle.hpp"
 #include "stocksim/types.hpp"
 
 namespace stocksim {
@@ -99,4 +102,29 @@ class Strategy {
     virtual void load_state(std::string_view) {}
 };
 
+// ── The C++ strategy registry (A2 §2) ───────────────────────────────────────
+//
+// STOCKSIM_STRATEGY(Class, "name"), written in the class's own namespace with its unqualified name, registers a
+// factory at static-init time; a bundle's `strategy.kind: cpp`
+// names it in `strategy.ref` (A1 §6.1). Strategy sources are built as an OBJECT library and linked straight
+// into each binary, so the linker can never drop a registration the way it drops unreferenced members of a
+// static library.
+using StrategyFactory = std::shared_ptr<Strategy> (*)();
+
+bool register_strategy(std::string_view name, StrategyFactory make);  // std::logic_error for a name taken twice
+std::shared_ptr<Strategy> make_strategy(std::string_view name);       // RunError for an unknown name
+std::vector<std::string> strategy_names();                            // sorted
+
+// Params as the Python strategies read them (A2 §4.2): int(p.get(k, default)), bool(...) and str values.
+// A missing key without a default, or a value int() would refuse, is a RunError naming the key.
+std::int64_t param_int(const Json& params, std::string_view key, std::optional<std::int64_t> fallback = std::nullopt);
+bool param_bool(const Json& params, std::string_view key, bool fallback);  // Python truthiness
+std::string param_string(const Json& params, std::string_view key, std::optional<std::string> fallback = std::nullopt);
+
 }  // namespace stocksim
+
+#define STOCKSIM_STRATEGY(Class, Name)                                                              \
+    namespace {                                                                                     \
+    [[maybe_unused]] const bool stocksim_registered_##Class = ::stocksim::register_strategy(        \
+        Name, []() -> std::shared_ptr<::stocksim::Strategy> { return std::make_shared<Class>(); }); \
+    }

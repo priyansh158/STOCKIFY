@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "stocksim/decimal.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
 
@@ -62,6 +63,28 @@ std::string iso_date(Date d) {
 }
 
 Date next_date(Date d) { return civil_from_days(days_from_civil(d / 10000, d / 100 % 100, d % 100) + 1); }
+
+TimeNs ist_ns(Date d, std::string_view hhmm) {  // timeutil.ist_ns: [int(p) for p in text.split(":")], then time()
+    const auto refuse = [&] { return FormatError("not HH:MM[:SS]: '" + std::string(hhmm) + "'"); };
+    std::vector<std::int64_t> parts;
+    for (std::size_t a = 0; a <= hhmm.size();) {
+        const std::size_t z = std::min(hhmm.find(':', a), hhmm.size());
+        const std::optional<std::int64_t> v = python_int(hhmm.substr(a, z - a));
+        if (!v) {
+            throw refuse();
+        }
+        parts.push_back(*v);
+        a = z + 1;
+    }
+    const auto in = [](std::int64_t v, std::int64_t hi) { return v >= 0 && v <= hi; };
+    if (parts.size() < 2 || parts.size() > 3 || !in(parts[0], 23) || !in(parts[1], 59) ||
+        (parts.size() == 3 && !in(parts[2], 59))) {
+        throw refuse();
+    }
+    const std::int64_t secs = parts[0] * 3600 + parts[1] * 60 + (parts.size() == 3 ? parts[2] : 0);
+    const std::int64_t days = days_from_civil(d / 10000, d / 100 % 100, d % 100);
+    return days * kNsPerDay + secs * kNsPerSecond - kIstOffsetNs;
+}
 
 int weekday(Date d) {
     const std::int64_t days = days_from_civil(d / 10000, d / 100 % 100, d % 100);  // 1970-01-01 was a Thursday

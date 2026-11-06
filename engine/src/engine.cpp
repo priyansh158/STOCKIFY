@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <stdexcept>
 
 #include "stocksim/errors.hpp"
+#include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
 
 namespace stocksim {
@@ -52,6 +54,22 @@ void Engine::add_pack(std::shared_ptr<const PackReader> pack) {
 std::vector<std::string> Engine::drain_log() {
     std::vector<std::string> out(log_lines_.begin() + static_cast<std::ptrdiff_t>(log_drained_), log_lines_.end());
     log_drained_ = log_lines_.size();
+    return out;
+}
+
+Outputs Engine::drain_outputs() {
+    Outputs out;
+    for (auto it = book_.orders.lower_bound(orders_drained_); it != book_.orders.end(); ++it) {
+        out.orders.push_back(it->first);
+        orders_drained_ = it->first + 1;
+    }
+    out.events_from = events_drained_;
+    out.events_to = events_drained_ = book_.order_events.size();
+    out.fills_from = fills_drained_;
+    out.fills_to = fills_drained_ = book_.fills.size();
+    out.charges_from = charges_drained_;
+    out.charges_to = charges_drained_ = book_.charges.size();
+    out.log = drain_log();
     return out;
 }
 
@@ -736,6 +754,121 @@ std::optional<InstrumentId> Context::resolve(std::string_view symbol) const {
 const Spec* Context::spec(InstrumentId iid) const { return e_.instruments_.spec_on(iid, e_.date_of(e_.now_)); }
 
 const Json& Context::instrument_rows() const { return require(e_.bundle_.root, "instruments", "bundle"); }
+
+namespace {
+
+std::vector<Paise> closes_of(const std::map<InstrumentId, MarketState>& market, InstrumentId iid, std::int32_t isec) {
+    std::vector<Paise> out;
+    const auto it = market.find(iid);
+    if (it != market.end()) {
+        const auto rows = it->second.bars.find(isec);
+        if (rows != it->second.bars.end()) {
+            for (const BarRow& r : rows->second) {
+                out.push_back(r.close);
+            }
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+double Context::sma(InstrumentId iid, std::int32_t isec, std::int64_t n) const {
+    return stocksim::sma(closes_of(e_.market_, iid, isec), n);
+}
+
+double Context::ema(InstrumentId iid, std::int32_t isec, std::int64_t n) const {
+    return stocksim::ema(closes_of(e_.market_, iid, isec), n);
+}
+
+double Context::rsi(InstrumentId iid, std::int32_t isec, std::int64_t n) const {
+    return stocksim::rsi(closes_of(e_.market_, iid, isec), n);
+}
+
+double Context::atr(InstrumentId iid, std::int32_t isec, std::int64_t n) const {
+    std::vector<std::array<Paise, 3>> hlc;
+    const auto it = e_.market_.find(iid);
+    if (it != e_.market_.end()) {
+        const auto rows = it->second.bars.find(isec);
+        if (rows != it->second.bars.end()) {
+            for (const BarRow& r : rows->second) {
+                hlc.push_back({r.high, r.low, r.close});
+            }
+        }
+    }
+    return stocksim::atr(hlc, n);
+}
+
+double Context::session_vwap(InstrumentId iid) const {  // context.session_vwap: bars only for now
+    const auto it = e_.market_.find(iid);
+    if (it == e_.market_.end() || it->second.bars.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const Date d = e_.date_of(e_.now_);
+    const std::optional<TimeNs> cs = e_.calendar_.continuous_start(e_.group_of(iid, d), d);
+    const auto& rows = it->second.bars.begin()->second;  // the smallest interval (min(m.bars))
+    Int128 pv = 0, v = 0;
+    for (const BarRow& r : rows) {
+        if (cs && r.start >= *cs && e_.date_of(r.start) == d) {
+            pv += Int128::mul(floor_div(checked_add(checked_add(r.high, r.low), r.close), 3), r.volume);
+            v += r.volume;
+        }
+    }
+    return v.is_zero() ? std::numeric_limits<double>::quiet_NaN() : pv.to_double() / v.to_double();
+}
+
+std::vector<Date> Context::expiries(std::string_view underlying, std::string_view kind) const {
+    std::string k(kind);
+    for (char& c : k) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    const Date today = e_.date_of(e_.now_);
+    std::set<Date> out;
+    for (const Instrument& r : e_.instruments_.rows()) {
+        const bool kind_ok = k == "OPT" ? r.is_option() : r.kind == k;
+        if (r.underlying == std::optional<std::string>(std::string(underlying)) && kind_ok && r.expiry &&
+            r.last_day() >= today) {
+            out.insert(*r.expiry);
+        }
+    }
+    return {out.begin(), out.end()};
+}
+
+std::vector<InstrumentId> Context::futures_chain(std::string_view underlying) const {
+    std::vector<const Instrument*> rows;
+    for (const Instrument& r : e_.instruments_.rows()) {
+        if (r.underlying == std::optional<std::string>(std::string(underlying)) && r.kind == "FUT") {
+            rows.push_back(&r);
+        }
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const Instrument* a, const Instrument* b) {
+        return a->expiry.value_or(0) < b->expiry.value_or(0);
+    });
+    std::vector<InstrumentId> out;
+    for (const Instrument* r : rows) {
+        out.push_back(r->id);
+    }
+    return out;
+}
+
+std::vector<Context::ChainRow> Context::chain(std::string_view underlying, std::string_view expiry) const {
+    std::optional<Date> want;
+    try {
+        want = parse_iso_date(expiry);
+    } catch (const FormatError&) {
+        return {};  // the oracle compares strings: a non-date matches nothing
+    }
+    std::vector<ChainRow> out;
+    for (const Instrument& r : e_.instruments_.rows()) {
+        if (r.underlying == std::optional<std::string>(std::string(underlying)) && r.expiry == want && r.is_option()) {
+            out.push_back(ChainRow{r.id, r.kind, r.strike.value_or(0)});
+        }
+    }
+    std::stable_sort(out.begin(), out.end(), [](const ChainRow& a, const ChainRow& b) {
+        return a.strike != b.strike ? a.strike < b.strike : a.kind < b.kind;
+    });
+    return out;
+}
 
 OrderId Context::place(const PlaceRequest& r) { return e_.place(r); }
 

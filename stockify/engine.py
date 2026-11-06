@@ -51,8 +51,11 @@ def available() -> bool:
 
 
 def strategy_for(bundle: dict):  # noqa: ANN201
-    """The strategy object a bundle names, as the oracle builds it (a golden's script, or a loaded ref)."""
+    """The strategy a bundle names: a Python object as the oracle builds it (a golden's script, or a loaded
+    ref), or for `kind: cpp` the registered C++ strategy's name (a `str`)."""
     s = bundle["strategy"]
+    if s["kind"] == "cpp":
+        return s["ref"]
     if s["kind"] == "script":
         from stockify.strategies._script import Script
         return Script(s["actions"])
@@ -60,10 +63,19 @@ def strategy_for(bundle: dict):  # noqa: ANN201
     return strategy_mod.load(s["ref"])
 
 
+def _write_log(folder, lines: list[str]) -> None:  # noqa: ANN001
+    """events_log.txt exactly as the engine writes it: each line ends in a newline."""
+    (folder / "events_log.txt").write_bytes("".join(f"{x}\n" for x in lines).encode("utf-8"))
+
+
 def run_bundle(bundle: dict, pack_paths: list, folder, strategy=None, manifest: dict | None = None,  # noqa: ANN001, ANN201
                report: bool = True):
     """The engine's twin of `stockify.oracle.run_bundle`: write bundle.json and run.json, run the C++ engine
-    over the packs from that bundle.json, write the run folder. Returns an `oracle.RunResult`."""
+    over the packs from that bundle.json, write the run folder. Returns an `oracle.RunResult`.
+
+    `strategy` is a Python strategy object or a registered C++ strategy's name; by default, what the bundle
+    names. If the run fails (a strategy hook raises, or the engine stops), events_log.txt is written with the
+    traceback at its end, no other artifact is, and the exception propagates: the caller marks the run failed."""
     import json
     import platform
     from pathlib import Path
@@ -82,9 +94,17 @@ def run_bundle(bundle: dict, pack_paths: list, folder, strategy=None, manifest: 
     try:
         for p in pack_paths:
             e.add_pack(str(p))
-        e.set_strategy_py(strategy if strategy is not None else strategy_for(on_disk))
+        chosen = strategy if strategy is not None else strategy_for(on_disk)
+        if isinstance(chosen, str):
+            e.set_strategy_cpp(chosen)
+        else:
+            e.set_strategy_py(chosen)
         started = timeutil.now_ns()
-        e.run()
+        try:
+            e.run()
+        except BaseException:
+            _write_log(folder, e.events_log())
+            raise
         hashes = e.write_artifacts(str(folder))
         labels = list(e.labels())
     finally:

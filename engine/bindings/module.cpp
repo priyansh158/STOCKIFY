@@ -10,6 +10,7 @@
 #include "stocksim/costs.hpp"
 #include "stocksim/decimal.hpp"
 #include "stocksim/format.hpp"
+#include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/json_bundle.hpp"
 #include "stocksim/json_out.hpp"
@@ -19,7 +20,7 @@
 namespace py = pybind11;
 
 void bind_testing_packs(py::module_& t);  // testing_packs.cpp
-void bind_engine(py::module_& m);         // engine_bindings.cpp
+void bind_engine(py::module_& m);         // engine.cpp
 
 namespace {
 
@@ -85,6 +86,10 @@ void bind_testing(py::module_& t) {
     t.def("to_bp", [](const std::string& s) { return stocksim::to_bp(s); });
     t.def("to_paise", [](const std::string& s) { return stocksim::to_paise(s); });
     t.def("format_float", &stocksim::format_float);
+    t.def("sma", &stocksim::sma);
+    t.def("ema", &stocksim::ema);
+    t.def("rsi", &stocksim::rsi);
+    t.def("atr", &stocksim::atr);  // [(high, low, close), …]
     // Many doubles at once (little-endian float64 bytes) → the formatted strings joined by "\n".
     t.def("format_floats", [](const py::bytes& raw) {
         const std::string buf = raw;

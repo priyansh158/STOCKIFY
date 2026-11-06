@@ -95,11 +95,11 @@ Files: `ledger.hpp/.cpp`, `margin_flat.cpp`.
 
 Files: `strategy.hpp`, `context.hpp/.cpp`, `indicators.hpp`, `engine/strategies/*.cpp`, `engine/bindings/module.cpp`. Interface: `A2_interfaces.md` §3–§4.
 
-- [ ] C++ `Strategy` base class and `Context`; indicators (SMA, EMA, RSI and ATR with Wilder smoothing, session VWAP) identical in definition to the oracle's (golden indicator vectors, A3 U-05).
-- [ ] Registry: `STOCKSIM_STRATEGY(ClassName, "name")`; C++ reference strategies `sma_cross_cpp` and `orb_cpp` (port the Python ones to prove the native path).
-- [ ] pybind11 module `stockify._engine` exactly as `A2_interfaces.md` §3: `Engine(bundle_path)`, `add_pack(path)`, `set_strategy_cpp(name)`, `set_strategy_py(obj)`, `load_sod_state(json)`, `run()`, `push(bytes)`, `finish()`, `drain_outputs()` (new orders, order events, fills, charges and logs since the last call, for M5), `eod_state()`, `write_artifacts(dir)`, `labels()`, plus module-level `build_info()`.
-- [ ] Python strategies: a trampoline subclass forwards hooks to the Python object; `Context` methods are exposed with the same names and semantics as the oracle's `Context` (M2.3). Python exceptions inside a hook stop the run with the traceback in `events_log.txt` and status `failed` (never swallowed).
-- [ ] Every M2 reference strategy (Python) runs unchanged on the engine and matches the oracle.
+- [x] C++ `Strategy` base class and `Context`; indicators (SMA, EMA, RSI and ATR with Wilder smoothing, session VWAP) identical in definition to the oracle's (golden indicator vectors, A3 U-05).
+- [x] Registry: `STOCKSIM_STRATEGY(ClassName, "name")`; C++ reference strategies `sma_cross_cpp` and `orb_cpp` (port the Python ones to prove the native path).
+- [x] pybind11 module `stockify._engine` exactly as `A2_interfaces.md` §3: `Engine(bundle_path)`, `add_pack(path)`, `set_strategy_cpp(name)`, `set_strategy_py(obj)`, `load_sod_state(json)`, `run()`, `push(bytes)`, `finish()`, `drain_outputs()` (new orders, order events, fills, charges and logs since the last call, for M5), `eod_state()`, `write_artifacts(dir)`, `labels()`, plus module-level `build_info()`. (The two state methods raise until M5.3, D-47.)
+- [x] Python strategies: a trampoline subclass forwards hooks to the Python object; `Context` methods are exposed with the same names and semantics as the oracle's `Context` (M2.3). Python exceptions inside a hook stop the run with the traceback in `events_log.txt` and status `failed` (never swallowed).
+- [x] Every M2 reference strategy (Python) runs unchanged on the engine and matches the oracle.
 
 ## M3.11 Runners and import (M)
 

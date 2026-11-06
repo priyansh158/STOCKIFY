@@ -28,6 +28,7 @@ Date parse_iso_date(std::string_view text);         // "2026-11-03" → 20261103
 std::string iso_date(Date d);                       // 20261103 → "2026-11-03"
 Date next_date(Date d);                             // the calendar day after d
 int weekday(Date d);                                // Monday 0 … Sunday 6
+TimeNs ist_ns(Date d, std::string_view hhmm);       // "09:15" / "23:59:59" IST on d → UTC ns (timeutil.ist_ns)
 
 struct PhaseSpan {
     std::string phase;

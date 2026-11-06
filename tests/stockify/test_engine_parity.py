@@ -49,10 +49,25 @@ class Recorder(Strategy):
         except ValueError as e:
             ctx.log("info", f"refused: {e}")
 
+    @staticmethod
+    def _indicators(ctx, iid: int, isec: int) -> str:  # noqa: ANN001
+        return (f"sma={ctx.sma(iid, isec, 3)!r} ema={ctx.ema(iid, isec, 3)!r} rsi={ctx.rsi(iid, isec, 2)!r} "
+                f"atr={ctx.atr(iid, isec, 2)!r} vwap={ctx.session_vwap(iid)!r}")
+
+    @staticmethod
+    def _fno(ctx) -> str:  # noqa: ANN001
+        parts = []
+        for u in sorted({r["underlying"] for r in ctx._rows() if r.get("underlying")}):
+            opt = ctx.expiries(u, "opt")
+            parts.append(f"{u} fut={ctx.expiries(u, 'FUT')} opt={opt} ce={ctx.expiries(u, 'CE')} "
+                         f"futs={ctx.futures_chain(u)} chain={ctx.chain(u, opt[0]) if opt else None}")
+        return " | ".join(parts) + f" none={ctx.chain('NOPE', '2026-13-01')} {ctx.futures_chain('NOPE')}"
+
     def on_bar(self, ctx, bar):  # noqa: ANN001
         recent = ctx.bars(bar.instrument, bar.interval_s, 2)
         ctx.log("info", f"bar {bar!r} recent={[(b.start_ns, b.close) for b in recent]} "
-                        f"all={len(ctx.bars(bar.instrument, bar.interval_s, 0))} {self._state(ctx, bar.instrument)}")
+                        f"all={len(ctx.bars(bar.instrument, bar.interval_s, 0))} {self._state(ctx, bar.instrument)} "
+                        f"{self._indicators(ctx, bar.instrument, bar.interval_s)}")
 
     def on_tick(self, ctx, tick):  # noqa: ANN001
         ctx.log("info", f"tick {tick!r} {self._state(ctx, tick.instrument)}")
@@ -65,7 +80,7 @@ class Recorder(Strategy):
             ctx.log("info", "periodic cancelled")
 
     def on_session_phase(self, ctx, change):  # noqa: ANN001
-        ctx.log("info", f"phase {change!r} " + " ".join(ctx.phase(i) for i in self.ids))
+        ctx.log("info", f"phase {change!r} " + " ".join(ctx.phase(i) for i in self.ids) + f" fno: {self._fno(ctx)}")
 
     def on_session_end(self, ctx):  # noqa: ANN001
         ctx.log("info", f"end {ctx.now()} {ctx.today()}")

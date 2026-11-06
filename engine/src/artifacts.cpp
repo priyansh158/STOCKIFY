@@ -12,15 +12,7 @@ namespace stocksim {
 
 namespace {
 
-// Column headers, as stockify.oracle.artifacts writes them (A1 §6.3).
-constexpr const char* kOrders =
-    "order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,"
-    "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason";
-constexpr const char* kOrderEvents = "t_ns,order_id,event,detail";
-constexpr const char* kFills = "fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence";
-constexpr const char* kCharges =
-    "row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,"
-    "other,total";
+// Column headers of the other files, as stockify.oracle.artifacts writes them (A1 §6.3).
 constexpr const char* kPositions =
     "trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise";
 constexpr const char* kEquity = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise";
@@ -31,8 +23,6 @@ constexpr const char* kMargin = "trade_date,underlying_id,model,scan,somc,elm,ad
 constexpr const char* kDeterministic[] = {"orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
                                           "margin_daily.csv", "metrics.json", "events_log.txt"};
 // </block>
-
-std::int64_t i64(std::uint64_t v) { return static_cast<std::int64_t>(v); }
 
 std::string read_all(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -45,39 +35,30 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
     std::filesystem::create_directories(folder);
     const Book& b = e.book();
 
-    CsvWriter orders(kOrders);
+    const auto into = [](CsvWriter& w) { return [&w](std::initializer_list<CsvCell> cells) { w.add_row(cells); }; };
+
+    CsvWriter orders{std::string(kOrdersHeader)};
     for (const auto& [id, o] : b.orders) {  // std::map: order_id order
-        const std::string status(to_string(o.status));
-        const std::string reason(to_string(o.reason));
-        orders.add_row({i64(o.order_id), i64(o.parent_id), std::int64_t{o.instrument}, std::string_view(o.side_text),
-                        std::string_view(o.product_text), std::string_view(o.type_text),
-                        std::string_view(o.validity_text), o.qty, o.price, o.trigger,
-                        o.protection_bp ? CsvCell(std::int64_t{*o.protection_bp}) : CsvCell(CsvNull{}),
-                        std::string_view(o.tag), o.t_submit, o.t_activate, std::string_view(status), o.filled_qty,
-                        o.avg_price(), std::string_view(reason)});
+        order_row(o, into(orders));
     }
     orders.write(folder / "orders.csv");
 
-    CsvWriter events(kOrderEvents);
+    CsvWriter events{std::string(kOrderEventsHeader)};
     for (const OrderEventRow& r : b.order_events) {
-        events.add_row({r.t, i64(r.order_id), std::string_view(r.event), std::string_view(r.detail)});
+        order_event_row(r, into(events));
     }
     events.write(folder / "order_events.csv");
 
-    CsvWriter fills(kFills);
+    CsvWriter fills{std::string(kFillsHeader)};
     for (const Fill& f : b.fills) {
-        fills.add_row({i64(f.fill_id), i64(f.order_id), f.t_ns, std::int64_t{f.instrument}, to_string(f.side), f.qty,
-                       f.price, std::string_view(f.evidence)});
+        fill_row(f, into(fills));
     }
     fills.write(folder / "fills.csv");
 
-    CsvWriter charges(kCharges);
+    CsvWriter charges{std::string(kChargesHeader)};
     std::int64_t n = 0;
     for (const ChargeRow& c : b.charges) {
-        const std::string d = iso_date(c.trade_date);
-        const ChargeParts& p = c.parts;
-        charges.add_row({++n, std::string_view(c.kind), i64(c.order_id), std::int64_t{c.instrument}, std::string_view(d),
-                         p.turnover, p.brokerage, p.stt, p.exchange, p.sebi, p.stamp, p.gst, p.dp, p.other, c.total});
+        charge_row(++n, c, into(charges));
     }
     charges.write(folder / "charges.csv");
 
