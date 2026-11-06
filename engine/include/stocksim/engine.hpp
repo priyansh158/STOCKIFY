@@ -316,6 +316,8 @@ class Engine {
     void on_settle(const Event& e);
     std::vector<std::size_t> expiring(InstrumentId underlying_id, Date d);
     void settle_final(InstrumentId underlying_id, Date d, Paise fsp, const std::string& source);
+    void settle_physical(InstrumentId stock, Date d, Paise fsp, const std::string& source,
+                         std::vector<std::size_t> idx);
     void on_phase(const InternalEvent& ev);
     bool daily_bars(InstrumentId iid) const;
     void seg_close(const InternalEvent& ev);

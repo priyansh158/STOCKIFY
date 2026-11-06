@@ -242,7 +242,14 @@ Margin-model results are converted with `ceil_to(ceil(x), 100)` (§0.3). Charges
 
 **7.2 Index futures and options** settle in cash when the `SETTLE` record with the final settlement price (FSP) of the underlying for that expiry arrives (D-13): futures at `(FSP − last mark)·qty`; ITM options at intrinsic `|FSP − K|·qty`; OTM options at 0. Long ITM options pay exercise STT on intrinsic value and exercise brokerage (rows in `charges.json`). If no FSP has arrived by `DAY_END` of the expiry date, settle at the last underlying price seen (index value, or the underlying's bar close) and label the run `settlement_fallback` (I-14); if none was ever seen, the run fails.
 
-**7.3 Stock F&O** settle physically (M4.6, Z-4): futures and ITM options become CNC holdings (futures at the settlement price, options at the strike); STT of 0.1% of contract value on both sides plus exercise STT on intrinsic value; physical-delivery brokerage 0.25%, or 0.1% for positions netted in the same stock and expiry. Delivery margins before expiry come from the margin model.
+**7.3 Stock F&O** settle physically (M4.6, Z-4, D-58). When the stock's FSP arrives (the `SETTLE` record for the stock on the expiry date), or at the §7.2 fallback, every expiring position of that stock and expiry, taken in `(instrument_id, product)` order:
+1. **closes**: a future is marked to the FSP (variation, §6.4); an option closes at price 0, so its premium is its whole P&L (an OTM option ends here);
+2. **becomes a delivery leg** in the stock, product CNC: a long future, long ITM call or short ITM put *takes* (buys) its units; a short future, short ITM call or long ITM put *gives* (sells) them; futures at the FSP, options at the strike;
+3. **nets**: with T units taken and G units given in that stock and expiry, N = min(T, G) units are netted. Take legs claim N in order, and so do give legs; a leg's claimed units are *netted*, the rest *delivered*;
+4. **is booked** as a CNC trade of the stock at its price, through the ordinary CNC path: its cash follows the CNC credit rules of §6.2 and §6.5 (a give's sale proceeds are usable when any CNC sale's would be), not a separate delivery-date calendar. A give larger than the CNC holding leaves a short CNC holding and labels the run `short_delivery` (the NSE auction and close-out penalty are not modelled);
+5. **is charged** in one `settlement` row (`physical_delivery` in `charges.json`): STT of 0.1% of the leg's value (units × price) for both sides, plus exercise STT (§7.2) on the intrinsic value of a long ITM option; brokerage of 0.25% of the delivered value plus 0.1% of the netted value; GST on that brokerage. No exercise brokerage, exchange, SEBI or stamp charges;
+6. is logged `delivered <stock id> CNC <BUY|SELL> <units> at <price> (<source>)`, after the `settled …` lines.
+Delivery margins before expiry come from the margin model (M4.7).
 
 ## §8 Metrics
 

@@ -64,6 +64,9 @@ def _charges(spec) -> dict:  # noqa: ANN001
                       "source": "golden"}] for c in ZERO_COMPONENTS}
         comps["brokerage"][0] = {"applies": {}, "effective_from": "2015-01-01", "kind": "zero", "verified": True,
                                  "verified_on": "2026-01-01", "source": "golden"}
+        comps["physical_delivery"] = [{"applies": {}, "effective_from": "2015-01-01", "brokerage_pct": "0",
+                                       "netted_brokerage_pct": "0", "stt_each_side_pct_of_value": "0",
+                                       "verified": True, "verified_on": "2026-01-01", "source": "golden"}]
         doc = {"components": comps}
     else:
         doc = {"components": copy.deepcopy(spec)}
@@ -177,6 +180,11 @@ def build_bundle(g: dict) -> dict:
     if "exercise_brokerage_paise" in b:
         charges["components"]["exercise_brokerage"] = [{"applies": {}, "effective_from": "2015-01-01", "kind": "flat",
                                                         "flat_paise": b["exercise_brokerage_paise"]}]
+    if "physical_delivery" in b:                     # {brokerage_pct, netted_brokerage_pct, stt_each_side_pct_of_value}
+        row = {"applies": {}, "effective_from": "2015-01-01", **b["physical_delivery"]}
+        for f in ("brokerage_pct", "netted_brokerage_pct", "stt_each_side_pct_of_value"):
+            row[f"{f}_ppb"] = numerics.to_ppb(row[f])
+        charges["components"]["physical_delivery"] = [row]
     if sqoff is not None:
         charges["components"]["auto_square_off_fee"] = [{"applies": {}, "effective_from": "2015-01-01",
                                                          "per_order_paise": sqoff, "plus_gst": b.get("sqoff_plus_gst", True)}]

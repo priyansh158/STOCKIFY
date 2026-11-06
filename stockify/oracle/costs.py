@@ -154,6 +154,22 @@ class Costs:
         exact["gst"] = self._gst_exact(trade_date, exact)
         return _parts(intrinsic_value, exact)
 
+    def delivery(self, kind: str, value: int, netted_value: int, exercised_intrinsic: int, trade_date: str) -> dict:
+        """One physical-delivery leg of a stock future or option at expiry (A4 §7.3, D-58): STT on the leg's value
+        for both sides, plus exercise STT on a long ITM option's intrinsic value; brokerage on the delivered and
+        the netted value at their two rates; GST on the brokerage."""
+        attrs = {"segment": "FO", "kind": kind}
+        row = row_for(self.rows.get("physical_delivery", []), attrs, trade_date, "physical_delivery")
+        stt = value * row["stt_each_side_pct_of_value_ppb"] * PPB
+        if exercised_intrinsic:
+            ex = row_for(self.rows.get("exercise_stt", []), attrs, trade_date, "exercise_stt")
+            stt += exercised_intrinsic * ex["pct_of_intrinsic_ppb"] * PPB
+        brokerage = ((value - netted_value) * row["brokerage_pct_ppb"]
+                     + netted_value * row["netted_brokerage_pct_ppb"]) * PPB
+        exact = {"brokerage": brokerage, "stt": stt, "exchange_txn": 0, "sebi": 0, "stamp": 0}
+        exact["gst"] = self._gst_exact(trade_date, exact)
+        return _parts(value, exact)
+
 
 E = PPB * PPB                                         # exact charge units: 10⁻¹⁸ paisa
 

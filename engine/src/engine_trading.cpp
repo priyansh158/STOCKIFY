@@ -939,11 +939,24 @@ std::vector<std::size_t> Engine::expiring(InstrumentId underlying_id, Date d) { 
 }
 
 void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const std::string& source) {  // runner._settle_final
-    for (const std::size_t i : expiring(underlying_id, d)) {
+    const std::vector<std::size_t> all = expiring(underlying_id, d);
+    std::vector<std::size_t> physical;
+    for (const std::size_t i : all) {
+        if (instruments_.at(book_.ledger.positions()[i].instrument).settlement == std::optional<std::string>("physical")) {
+            physical.push_back(i);
+        }
+    }
+    if (!physical.empty()) {
+        settle_physical(underlying_id, d, fsp, source, physical);
+    }
+    for (const std::size_t i : all) {
         Position& p = book_.ledger.positions()[i];
         const Instrument& row = instruments_.at(p.instrument);
+        if (row.settlement == std::optional<std::string>("physical")) {
+            continue;
+        }
         if (row.settlement != std::optional<std::string>("cash")) {
-            throw RunError(row.tradingsymbol + ": physical settlement is out of scope until M4.6");
+            throw RunError(row.tradingsymbol + ": unknown settlement '" + row.settlement.value_or("") + "'");
         }
         Ledger& led = book_.ledger;
         const Side closing = p.d > 0 ? Side::Sell : Side::Buy;
@@ -972,6 +985,85 @@ void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const s
         }
         log("INFO", "settled " + std::to_string(p.instrument) + " " + std::string(to_string(p.product)) + " at FSP " +
                         std::to_string(fsp) + " (" + source + ")");
+    }
+}
+
+void Engine::settle_physical(InstrumentId stock, Date d, Paise fsp, const std::string& source,
+                             std::vector<std::size_t> idx) {  // runner._settle_physical (A4 §7.3, D-58)
+    const Instrument* srow = instruments_.find(stock);
+    if (srow == nullptr || srow->kind != "EQ") {
+        throw RunError(instruments_.at(book_.ledger.positions()[idx.front()].instrument).tradingsymbol +
+                       ": physical settlement needs its underlying stock in the bundle");
+    }
+    Ledger& led = book_.ledger;
+    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) {
+        const Position& x = led.positions()[a];
+        const Position& y = led.positions()[b];
+        return std::pair(x.instrument, to_string(x.product)) < std::pair(y.instrument, to_string(y.product));
+    });
+    struct Leg {
+        bool take;
+        Qty units;
+        Paise price;
+        InstrumentId contract;
+        std::string kind;
+        Paise exercised;
+    };
+    std::vector<Leg> legs;
+    for (const std::size_t i : idx) {  // close every position first: booking the stock may grow the ledger
+        Position& p = led.positions()[i];
+        const Instrument& row = instruments_.at(p.instrument);
+        const Side closing = p.d > 0 ? Side::Sell : Side::Buy;
+        const Qty units = p.q;
+        if (row.kind == "FUT") {
+            settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, fsp});
+            led.settle_variation(p, fsp, source);
+            p.realised = p.pnl(fsp);
+            p.vm = p.realised;
+            legs.push_back(Leg{p.d > 0, units, fsp, p.instrument, row.kind, 0});
+        } else {
+            const Paise k = row.strike.value_or(0);
+            settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, 0});
+            p.realised = checked_add(p.realised, p.d * checked_sub(0, p.c));  // closes at 0: the premium is its P&L
+            p.last_mark = 0;
+            p.mark_source = source;
+            const bool itm = row.kind == "CE" ? fsp > k : fsp < k;
+            if (itm) {
+                const bool take = (row.kind == "CE") == (p.d > 0);
+                const Paise exercised = p.d > 0 ? checked_mul(units, fsp > k ? fsp - k : k - fsp) : 0;
+                legs.push_back(Leg{take, units, k, p.instrument, row.kind, exercised});
+            }
+        }
+        p.q = 0;
+        p.c = 0;
+        log("INFO", "settled " + std::to_string(p.instrument) + " " + std::string(to_string(p.product)) + " at FSP " +
+                        std::to_string(fsp) + " (" + source + ")");
+    }
+    Qty taken = 0;
+    Qty given = 0;
+    for (const Leg& l : legs) {
+        if (l.take) {
+            taken = checked_add(taken, l.units);
+        } else {
+            given = checked_add(given, l.units);
+        }
+    }
+    Qty left_take = std::min(taken, given);
+    Qty left_give = left_take;
+    for (const Leg& l : legs) {
+        Qty& left = l.take ? left_take : left_give;
+        const Qty n = std::min(l.units, left);
+        left -= n;
+        const Side side = l.take ? Side::Buy : Side::Sell;
+        led.apply_fill(stock, Product::CNC, style(stock, Product::CNC), side, l.units, l.price, cnc_credit_ppb(), d);
+        if (const Position* held = led.position(stock, Product::CNC); held != nullptr && held->qty() < 0) {
+            labels_.insert("short_delivery");
+        }
+        const ChargeParts parts =
+            costs_.delivery(l.kind, checked_mul(l.units, l.price), checked_mul(n, l.price), l.exercised, iso(d));
+        charge_row(book_, "settlement", 0, l.contract, d, parts);
+        log("INFO", "delivered " + std::to_string(stock) + " CNC " + std::string(to_string(side)) + " " +
+                        std::to_string(l.units) + " at " + std::to_string(l.price) + " (" + source + ")");
     }
 }
 

@@ -955,11 +955,17 @@ class Engine:
         return out
 
     def _settle_final(self, underlying_id: int, d: str, fsp: int, source: str) -> None:
-        """Cash settlement at the FSP (A4 §7.2)."""
-        for p in self._expiring(underlying_id, d):
+        """Settlement at the FSP: in cash (A4 §7.2), or by delivery of the stock (§7.3)."""
+        expiring = self._expiring(underlying_id, d)
+        physical = [p for p in expiring if self.inst[p.instrument_id]["settlement"] == "physical"]
+        if physical:
+            self._settle_physical(underlying_id, d, fsp, source, physical)
+        for p in expiring:
             row = self.inst[p.instrument_id]
+            if row["settlement"] == "physical":
+                continue
             if row["settlement"] != "cash":
-                raise RunError(f"{row['tradingsymbol']}: physical settlement is out of scope until M4.6")
+                raise RunError(f"{row['tradingsymbol']}: unknown settlement {row['settlement']!r}")
             led = self.book.ledger
             closing_side = "SELL" if p.d > 0 else "BUY"
             units = p.q
@@ -981,6 +987,49 @@ class Engine:
                 p.q, p.c = 0, 0
                 p.last_mark, p.mark_source = intrinsic, source
             self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
+
+    def _settle_physical(self, stock: int, d: str, fsp: int, source: str, positions: list) -> None:
+        """Stock F&O at expiry (A4 §7.3, D-58): close each position, then deliver the stock as CNC trades."""
+        if stock not in self.inst or self.inst[stock]["kind"] != "EQ":
+            raise RunError(f"{self.inst[positions[0].instrument_id]['tradingsymbol']}: physical settlement needs "
+                           f"its underlying stock in the bundle")
+        led = self.book.ledger
+        legs = []                                   # (take, units, price, contract id, kind, exercised intrinsic)
+        for p in sorted(positions, key=lambda p: (p.instrument_id, p.product)):
+            row = self.inst[p.instrument_id]
+            closing_side = "SELL" if p.d > 0 else "BUY"
+            units = p.q
+            if row["kind"] == "FUT":
+                self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, fsp))
+                led.settle_variation(p, fsp, source)
+                p.realised = p.pnl(fsp)
+                p.vm = p.realised
+                legs.append((p.d > 0, units, fsp, p.instrument_id, row["kind"], 0))
+            else:
+                k = row["strike_paise"]
+                self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, 0))
+                p.realised += p.d * (0 - p.c)        # the option closes at 0: its premium is its P&L
+                p.last_mark, p.mark_source = 0, source
+                itm = fsp > k if row["kind"] == "CE" else fsp < k
+                if itm:
+                    take = (row["kind"] == "CE") == (p.d > 0)
+                    exercised = units * abs(fsp - k) if p.d > 0 else 0
+                    legs.append((take, units, k, p.instrument_id, row["kind"], exercised))
+            p.q, p.c = 0, 0
+            self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
+        netted = {True: min(sum(u for t, u, *_ in legs if t), sum(u for t, u, *_ in legs if not t))}
+        netted[False] = netted[True]
+        for take, units, price, iid, kind, exercised in legs:
+            n = min(units, netted[take])
+            netted[take] -= n
+            side = "BUY" if take else "SELL"
+            led.apply_fill(stock, "CNC", self._style(stock, "CNC"), side, units, price, self._cnc_credit_ppb(), d)
+            held = led.position(stock, "CNC")
+            if held is not None and held.qty < 0:
+                self.labels.add("short_delivery")
+            parts = self.costs.delivery(kind, units * price, n * price, exercised, d)
+            self._charge_row(self.book, "settlement", 0, iid, d, parts)
+            self.log("INFO", f"delivered {stock} CNC {side} {units} at {price} ({source})")
 
     def _on_phase(self, payload: tuple) -> None:
         g, phase = payload

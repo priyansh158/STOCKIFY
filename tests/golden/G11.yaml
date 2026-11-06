@@ -1,0 +1,81 @@
+id: G11
+title: Stock future and ITM stock options go to physical delivery, with a netted give and take
+semantics: ["A4 §7.3", "Z-4", "D-58"]
+bundle:
+  dates: ["2026-03-31"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: ACME, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+    - { id: 2, kind: FUT, tradingsymbol: ACME26MARFUT, underlying: ACME, underlying_id: 1, expiry: "2026-03-31",
+        underlying_class: STOCK, settlement: physical, specs: [ { from: "2026-01-01", lot: 100, tick_paise: 10 } ] }
+    - { id: 3, kind: CE, tradingsymbol: ACME26MAR950CE, underlying: ACME, underlying_id: 1, expiry: "2026-03-31",
+        strike_paise: 95000, underlying_class: STOCK, settlement: physical,
+        specs: [ { from: "2026-01-01", lot: 100, tick_paise: 5 } ] }
+    - { id: 4, kind: PE, tradingsymbol: ACME26MAR1050PE, underlying: ACME, underlying_id: 1, expiry: "2026-03-31",
+        strike_paise: 105000, underlying_class: STOCK, settlement: physical,
+        specs: [ { from: "2026-01-01", lot: 100, tick_paise: 5 } ] }
+  physical_delivery: { brokerage_pct: "0.0025", netted_brokerage_pct: "0.001", stt_each_side_pct_of_value: "0.001" }
+  exercise_stt: "0.00125"
+  gst_rate: "0.18"
+run: { fill_model: { kind: bar }, capital_paise: 50000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-03-31T09:15:00+05:30", o: 100000, h: 100000, l: 100000, c: 100000, v: 10000 }
+  - { kind: BAR, instrument: 3, interval_s: 60, start: "2026-03-31T09:15:00+05:30", o: 6000, h: 6000, l: 6000, c: 6000, v: 10000 }
+  - { kind: BAR, instrument: 4, interval_s: 60, start: "2026-03-31T09:15:00+05:30", o: 7000, h: 7000, l: 7000, c: 7000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:15:00+05:30", o: 100000, h: 100000, l: 100000, c: 100000, v: 10000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-03-31T09:16:00+05:30", o: 100000, h: 100000, l: 100000, c: 100000, v: 10000 }
+  - { kind: BAR, instrument: 3, interval_s: 60, start: "2026-03-31T09:16:00+05:30", o: 6000, h: 6000, l: 6000, c: 6000, v: 10000 }
+  - { kind: BAR, instrument: 4, interval_s: 60, start: "2026-03-31T09:16:00+05:30", o: 7000, h: 7000, l: 7000, c: 7000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T15:29:00+05:30", o: 102000, h: 102000, l: 102000, c: 102000, v: 10000 }
+  - { kind: SETTLE, instrument: 1, t: "2026-03-31T16:00:00+05:30", date: "2026-03-31", price: 102000, subtype: final }
+strategy:
+  actions:
+    - { on_event: 4, place: { instrument: 2, side: BUY, qty: 100, product: NRML, type: LIMIT, price: 100000 } }
+    - { on_event: 4, place: { instrument: 3, side: BUY, qty: 100, product: NRML, type: LIMIT, price: 6000 } }
+    - { on_event: 4, place: { instrument: 4, side: BUY, qty: 100, product: NRML, type: LIMIT, price: 7000 } }
+variants:
+  - name: fsp
+    expect:
+      orders:
+        - { order_id: 1, status: COMPLETE, avg_price_paise: 100000 }
+        - { order_id: 2, status: COMPLETE, avg_price_paise: 6000 }
+        - { order_id: 3, status: COMPLETE, avg_price_paise: 7000 }
+      charges:
+        - { kind: order, order_id: 1, total: 0 }
+        - { kind: order, order_id: 2, total: 0 }
+        - { kind: order, order_id: 3, total: 0 }
+        - { kind: settlement, order_id: 0, instrument_id: 2, turnover_paise: 10200000, brokerage: 10200, stt: 10200, gst: 1836, total: 22236 }
+        - { kind: settlement, order_id: 0, instrument_id: 3, turnover_paise: 9500000, brokerage: 23750, stt: 10375, gst: 4275, total: 38400 }
+        - { kind: settlement, order_id: 0, instrument_id: 4, turnover_paise: 10500000, brokerage: 10500, stt: 10875, gst: 1890, total: 23265 }
+      charges_count: 6
+      positions:
+        - { trade_date: "2026-03-31", instrument_id: 1, product: CNC, qty: 100, avg_price_paise: 98500, mark_paise: 102000,
+            unrealised_paise: 350000, realised_paise: 650000 }
+      positions_count: 1
+      equity: [ { trade_date: "2026-03-31", cash_paise: 39616099, nav_paise: 49816099, charges_paise: 83901 } ]
+  - name: fallback
+    drop_events: [9]
+    expect:
+      equity: [ { trade_date: "2026-03-31", cash_paise: 39616099, nav_paise: 49816099, charges_paise: 83901 } ]
+      labels: [ settlement_fallback ]
+notes: |
+  Bought at 09:16: 1 lot (100) of the future at 1,000.00, 100 calls strike 950.00 at 60.00 (-600,000) and 100
+  puts strike 1,050.00 at 70.00 (-700,000). FSP 1,020.00. All three expire in the money, so all are delivered
+  (A4 §7.3): the future takes 100 shares at the FSP 1,020.00 (its variation pays +200,000 first), the call
+  takes 100 at its strike 950.00, the put gives 100 at its strike 1,050.00. The options close at 0, so their
+  premiums are their P&L.
+  Netting: take 200, give 100, so N = 100 units are netted. In instrument order the future (id 2) claims the 100
+  take units first and the put (id 4) the 100 give units; the call (id 3) is delivered.
+  Charges (STT 0.1% of each leg's value both sides; brokerage 0.25% delivered / 0.1% netted; GST 18% on
+  brokerage; exercise STT 0.125% of a long ITM option's intrinsic value):
+    future 10,200,000: brokerage 0.1% 10,200; STT 10,200; GST 1,836: 22,236.
+    call    9,500,000: brokerage 0.25% 23,750; STT 9,500 + 0.125% of intrinsic 700,000 = 875 -> 10,375; GST 4,275:
+            38,400.
+    put    10,500,000: brokerage 0.1% 10,500; STT 10,500 + 0.125% of 300,000 = 375 -> 10,875; GST 1,890: 23,265.
+    Total 83,901.
+  Cash 50,000,000 - 600,000 - 700,000 + 200,000 - 10,200,000 - 9,500,000 + 10,500,000 - 83,901 = 39,616,099.
+  Holding: buy 100 at 1,020.00, buy 100 at 950.00 (cost 19,700,000 for 200), sell 100 at 1,050.00 (removes
+  half the cost, 9,850,000; realised 10,500,000 - 9,850,000 = 650,000): 100 shares at 985.00 average; marked at
+  the stock's last price 1,020.00, unrealised 350,000. NAV 39,616,099 + 100 x 102,000 = 49,816,099.
+  Check: call +100,000 (70 intrinsic - 60 premium), put -400,000 (30 - 70), future +200,000: -100,000, less
+  83,901 charges = -183,901 = NAV - capital. Without the SETTLE record the fallback settles at DAY_END at the
+  stock's last price (the 15:29 bar's close, 1,020.00): the same numbers, labelled.

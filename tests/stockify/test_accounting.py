@@ -1,7 +1,8 @@
 """A3 P-06: the accounting identity, checked from a run folder's artifacts alone (A4 §6).
 
 `accounting_problems(run_dir)` rebuilds every position from `fills.csv` plus the expiry settlements logged in
-`events_log.txt` ("settled <iid> <product> at FSP <price> (<source>)"), using A4 §6.1's average-cost rule, and
+`events_log.txt` ("settled <iid> <product> at FSP <price> (<source>)"; a physical delivery's "delivered <stock> CNC
+<side> <units> at <price> (<source>)" lines are CNC trades), using A4 §6.1's average-cost rule, and
 checks, for every trade date d in `equity.csv`:
 
 * charges_d = Σ `charges.csv` totals with trade_date ≤ d;
@@ -96,6 +97,9 @@ def accounting_problems(run_dir: Path) -> list[str]:
         if level == "INFO" and msg.startswith("settled "):
             _, iid, product, _, _, fsp, _ = msg.split(" ")
             events.append((int(t), 1, n, int(iid), product, 0, 0, int(fsp)))   # sign/qty: from the position
+        elif level == "INFO" and msg.startswith("delivered "):         # physical delivery (A4 §7.3): a CNC trade
+            _, iid, product, side, qty, _, price, _ = msg.split(" ")
+            events.append((int(t), 1, n, int(iid), product, 1 if side == "BUY" else -1, int(qty), int(price)))
 
     events.sort()
     pos: dict[tuple[int, str], _Pos] = {}
@@ -115,14 +119,17 @@ def accounting_problems(run_dir: Path) -> list[str]:
             t, is_settle, _, iid, product, sign, qty, price = events[i]
             i += 1
             p = pos.setdefault((iid, product), _Pos(style(iid, product)))
-            if is_settle:
+            if is_settle and sign == 0:              # a "settled" line: close at the FSP or an option's value
                 if not p.q:
                     problems.append(f"{d}: {iid} {product} settled while flat")
                     continue
                 r = inst[iid]
                 if r["kind"] != "FUT":
                     k = r["strike_paise"]
-                    price = max(0, price - k) if r["kind"] == "CE" else max(0, k - price)
+                    if r.get("settlement") == "physical":
+                        price = 0                    # the option closes at 0; the stock is delivered (§7.3)
+                    else:
+                        price = max(0, price - k) if r["kind"] == "CE" else max(0, k - price)
                 sign, qty = -p.d, p.q
             _apply(p, sign, qty, price)
             if p.style == "premium":

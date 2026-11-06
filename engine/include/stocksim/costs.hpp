@@ -32,6 +32,9 @@ class Costs {
     std::optional<ChargeParts> dp(const std::string& trade_date) const;
     std::optional<ChargeParts> sqoff_fee(const std::string& trade_date) const;
     ChargeParts exercise(std::string_view kind, Paise intrinsic_value, const std::string& trade_date) const;
+    // One physical-delivery leg of a stock future or option at expiry (A4 §7.3, D-58; costs.delivery).
+    ChargeParts delivery(std::string_view kind, Paise value, Paise netted_value, Paise exercised_intrinsic,
+                         const std::string& trade_date) const;
 
  private:
     using Attrs = std::map<std::string, std::string>;

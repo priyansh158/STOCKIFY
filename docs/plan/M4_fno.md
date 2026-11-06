@@ -47,9 +47,9 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 
 ## M4.6 Stock F&O physical settlement (M)
 
-- [ ] A4 §7.3 with Z-4: at expiry, futures and ITM options become CNC holdings (futures at the settlement price, options at the strike, option P&L exit price 0); STT 0.1% of contract value for both sides plus exercise STT; brokerage 0.25% of delivery value, 0.1% for positions netted in the same stock; cash moves on the delivery date.
-- [ ] Netting: equal take and give quantities in the same stock and expiry produce no delivery.
-- [ ] A3 G11 passes on both implementations.
+- [x] A4 §7.3 with Z-4: at expiry, futures and ITM options become CNC holdings (futures at the settlement price, options at the strike, option P&L exit price 0); STT 0.1% of contract value for both sides plus exercise STT; brokerage 0.25% of delivery value, 0.1% for positions netted in the same stock; cash moves on the delivery date.
+- [x] Netting: equal take and give quantities in the same stock and expiry produce no delivery.
+- [x] A3 G11 passes on both implementations.
 
 ## M4.7 Margin T0 completed (S)
 

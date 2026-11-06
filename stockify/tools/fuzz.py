@@ -77,6 +77,18 @@ def fuzz_world(seed: int) -> dict:
          "underlying_class": "STOCK", "settlement": "physical",
          "specs": [{"from": "2015-01-01", "lot": 250, "tick_paise": 10}]},
     ]
+    # M4.6: some worlds let the stock future expire mid-run with stock options beside it, settled by delivery
+    # (A4 §7.3). Drawn from its own RNG, so the worlds without it are exactly as before.
+    alt = random.Random(seed * 7919 + 4006)
+    delivery = alt.random() < 0.35
+    if delivery:
+        instruments[6]["expiry"] = expiry
+        for iid, kind, strike in ((8, "CE", alt.choice([240_000, 250_000, 260_000])),
+                                  (9, "PE", alt.choice([240_000, 250_000, 260_000]))):
+            instruments.append({"id": iid, "kind": kind, "tradingsymbol": f"AAA{kind}", "underlying": "AAA",
+                                "underlying_id": 1, "expiry": expiry, "strike_paise": strike,
+                                "underlying_class": "STOCK", "settlement": "physical",
+                                "specs": [{"from": "2015-01-01", "lot": 250, "tick_paise": 5}]})
     dataset = rng.choice(["bars", "bars", "daily", "ticks", "ticks"])
     kind = {"bars": "bar", "daily": rng.choice(["eod_close", "bar"]), "ticks": rng.choice(["snapshot_ltp", "snapshot_quote"])}[dataset]
     slip = rng.choice([{"kind": "none"}, {"kind": "fixed_ticks", "k": 1}, {"kind": "random_ticks", "k": 3},
@@ -99,10 +111,16 @@ def fuzz_world(seed: int) -> dict:
                                                        ["CAS", "15:15", "15:35"], ["POSTCLOSE", "15:50", "16:00"]]}}}
     if rng.random() < 0.8:
         bundle["charges"] = _real_charges()
+    if delivery and "charges" not in bundle:
+        bundle["physical_delivery"] = {"brokerage_pct": "0.0025", "netted_brokerage_pct": "0.001",
+                                       "stt_each_side_pct_of_value": "0.001"}
     if rng.random() < 0.5:
         bundle["sqoff_fee_paise"] = 5000
     price = {1: 250_000, 2: 100_000, 3: 2_500_000, 4: 2_502_000, 5: 15_000, 6: 14_000, 7: 251_000}
     tick = {1: 5, 2: 5, 3: 5, 4: 10, 5: 5, 6: 5, 7: 10}
+    if delivery:
+        price.update({8: 6_000, 9: 5_000})
+        tick.update({8: 5, 9: 5})
     events: list[dict] = []
     for day in days:
         def at(hhmm: str, d=day) -> int:  # noqa: ANN001
@@ -152,6 +170,9 @@ def fuzz_world(seed: int) -> dict:
         if rng.random() < 0.6:
             events.append({"kind": "SETTLE", "instrument": 4, "t": at("18:00"), "date": day.isoformat(),
                            "price": price[4], "subtype": "daily"})
+        if delivery and day.isoformat() == expiry and alt.random() < 0.8:   # else the §7.2 fallback at DAY_END
+            events.append({"kind": "SETTLE", "instrument": 1, "t": at("16:05"), "date": expiry, "price": price[1],
+                           "subtype": "final"})
     return {"id": f"FUZZ{seed}", "bundle": bundle, "run": run, "events": events, "strategy": {"actions": []},
             "fuzz": {"seed": seed, "p_act": random.Random(seed + 1).choice([5, 15, 40])}}
 
