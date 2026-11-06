@@ -78,6 +78,7 @@ class Market:
     ask: int | None = None
     book: list | None = None         # [(price, qty, orders)] bids 1-5 then asks 1-5
     band: tuple | None = None        # (lower, upper)
+    oi: int | None = None            # open interest: the last TICK_FULL or bar that carried it (M4.4)
     min_interval: int | None = None
     bars: dict = field(default_factory=dict)       # interval_s -> list of (start, o, h, l, c, v)
     day: str | None = None
@@ -845,6 +846,7 @@ class Engine:
                 m.min_interval = isec
             m.bars.setdefault(isec, []).append((rec["start_ns"], rec["open"], rec["high"], rec["low"], rec["close"],
                                                 rec["volume"], rec["oi"]))
+            m.oi = rec["oi"]
             fill_bar = isec == m.min_interval
             bar = {"start": rec["start_ns"], "open": rec["open"], "high": rec["high"], "low": rec["low"],
                    "close": rec["close"], "volume": rec["volume"], "t": rec["t_event"]}
@@ -879,6 +881,7 @@ class Engine:
         m.s0, m.s1 = m.s1, snap
         m.ltp, m.t = rec["ltp"], rec["t_event"]
         if kind == "TICK_FULL":
+            m.oi = rec["oi"]
             m.book = [(p, q, n) for p, q, n in rec["depth"]]
             bid = rec["depth"][0][0] or None
             ask = rec["depth"][5][0] or None
