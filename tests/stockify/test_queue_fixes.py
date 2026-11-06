@@ -12,6 +12,8 @@ from tests.support import SandboxedDBTest
 import stockify.store as store
 from server.services.test_queue import TestQueue
 
+_REAL_UPDATE = store.update_run  # the fakes write through this, so a patched store only hits the queue
+
 
 class ExitingProc:
     def __init__(self, rc: int):
@@ -39,10 +41,10 @@ class Launcher:
         self.procs: dict[str, ExitingProc] = {}
 
     def __call__(self, run_id: str) -> ExitingProc:
-        store.update_run(run_id, status="running", only_if_status="queued")
+        _REAL_UPDATE(run_id, status="running", only_if_status="queued")
         p = ExitingProc(self.rc)
         if self.finish:
-            store.update_run(run_id, status=self.finish, only_if_status="running")
+            _REAL_UPDATE(run_id, status=self.finish, only_if_status="running")
         self.procs[run_id] = p
         p.go.set()
         return p
@@ -216,3 +218,63 @@ class FinishRunTests(SandboxedDBTest):
         self.assertFalse(store.finish_run("a", {"status": "done", "finished_ns": 7}, **self.ROWS))
         self.assertEqual(store.get_run("a")["status"], "cancelled")
         self.assertEqual(store.run_rows("a", "orders"), [])
+
+
+class LockedDatabaseTests(SandboxedDBTest):
+    """RD 4.5: a 'database is locked' error in one status write never strands the queue or loses a run."""
+
+    db_modules = (store,)
+
+    def _locked(self, times: int):  # noqa: ANN202
+        """Patch store.update_run to raise 'database is locked' for the next `times` calls."""
+        import sqlite3
+        from unittest import mock
+        real = store.update_run
+        left = {"n": times}
+
+        def flaky(*a, **kw):  # noqa: ANN002, ANN003, ANN202
+            if left["n"] > 0:
+                left["n"] -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return real(*a, **kw)
+        return mock.patch.object(store, "update_run", flaky)
+
+    def test_a_locked_write_after_a_crash_is_retried(self):
+        store.create_run({"run_id": "r1", "status": "queued", "name": "n"})
+        q = TestQueue(launcher=Launcher(rc=3), cap=1)
+        with self._locked(2):                        # the watcher's failed-write hits the lock twice
+            q.submit("r1")
+            q.join(15)
+        self.assertEqual(store.get_run("r1")["status"], "failed")
+
+    def test_a_launch_failure_with_a_locked_db_keeps_the_run_and_the_queue(self):
+        for i in range(2):
+            store.create_run({"run_id": f"q{i}", "status": "queued", "name": "n"})
+        calls = []
+
+        def launcher(run_id):  # noqa: ANN001, ANN202
+            calls.append(run_id)
+            if run_id == "q0":
+                raise OSError("could not start")
+            return Launcher(rc=0, finish="done")(run_id)
+        q = TestQueue(launcher=launcher, cap=1)
+        with self._locked(10**6):                    # every status write the queue makes fails meanwhile
+            q.submit("q0")                           # must not raise into the API
+            q.submit("q1")
+            self.assertIn("q1", calls)               # the queue went on past q0
+            self.assertIn("q0", q.waiting())         # q0 is not lost: still waiting
+            self.assertEqual(store.get_run("q0")["status"], "queued")
+        q.join(15)
+        self.assertEqual(store.get_run("q1")["status"], "done")
+        self.assertEqual(store.get_run("q0")["status"], "failed")     # recorded once the store answers again
+        self.assertIn("could not start the runner", store.get_run("q0")["error"])
+
+    def test_cancel_keeps_a_queued_run_when_the_write_fails(self):
+        store.create_run({"run_id": "c", "status": "queued", "name": "n"})
+        q = TestQueue(launcher=Launcher(), cap=0)    # cap 0: nothing starts, so 'c' stays waiting
+        q.submit("c")
+        import sqlite3
+        with self._locked(10), self.assertRaises(sqlite3.OperationalError):
+            q.cancel("c")
+        self.assertEqual(q.waiting(), ["c"])                          # still there to cancel again
+        self.assertEqual(q.cancel("c"), "queued")
