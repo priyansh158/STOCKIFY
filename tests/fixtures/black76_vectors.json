@@ -1,0 +1,64 @@
+{
+  "about": "A3 G17: Black-76 reference vectors, shared by the Python (tests/stockify/test_black76.py) and C++ (engine/tests/test_black76.cpp) tests. Prices in rupees, t in years (ACT/365; `days` means days/365), vega per 1.00 of volatility. Expected values are strings so that their printed precision is known: prices must match within 1e-6 absolute (A3 §3) or half a unit in the last printed digit if coarser; Greeks within 1e-9 relative or half a unit in the last printed digit, whichever is wider.",
+  "vectors": [
+    {
+      "source": "Hull, Options, Futures, and Other Derivatives, Black's model example: a European put on a futures, F = K = 20, r = 9%, sigma = 25%, 4 months; Hull prints 1.12, A3 G17 quotes 1.1166",
+      "is_call": false,
+      "f": 20.0,
+      "k": 20.0,
+      "t": 0.3333333333333333,
+      "r": 0.09,
+      "sigma": 0.25,
+      "price": "1.1166"
+    },
+    {
+      "source": "A3 G17 table row 1 and C-13 worked example (plan author's reference implementation)",
+      "is_call": true,
+      "f": 25000.0,
+      "k": 25000.0,
+      "days": 7,
+      "r": 0.065,
+      "sigma": 0.12,
+      "price": "165.5341222",
+      "delta": "0.5026877831",
+      "gamma": "0.000959024827",
+      "vega": "1379.4192724"
+    },
+    {
+      "source": "A3 G17 table row 1 (the ATM put equals the call when F = K)",
+      "is_call": false,
+      "f": 25000.0,
+      "k": 25000.0,
+      "days": 7,
+      "r": 0.065,
+      "sigma": 0.12,
+      "price": "165.5341222"
+    },
+    {
+      "source": "A3 G17 table row 2",
+      "is_call": true,
+      "f": 25000.0,
+      "k": 25500.0,
+      "days": 30,
+      "r": 0.065,
+      "sigma": 0.15,
+      "price": "227.0602624",
+      "delta": "0.3285760435",
+      "gamma": "0.000335195668",
+      "vega": "2582.8433294"
+    },
+    {
+      "source": "A3 G17 table row 3 (put delta quoted)",
+      "is_call": false,
+      "f": 25000.0,
+      "k": 24000.0,
+      "days": 2,
+      "r": 0.065,
+      "sigma": 0.2,
+      "price": "0.3180899443",
+      "delta": "-0.0028470787",
+      "gamma": "0.000023580120",
+      "vega": "16.1507670"
+    }
+  ]
+}
