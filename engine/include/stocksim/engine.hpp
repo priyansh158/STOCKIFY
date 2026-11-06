@@ -63,6 +63,7 @@ struct MarketState {
     std::optional<Paise> bid, ask;
     std::optional<std::array<DepthLevel, 10>> book;  // bids 1–5, then asks 1–5
     std::optional<std::pair<Paise, Paise>> band;     // (lower, upper)
+    std::optional<std::int64_t> oi;                  // the last TICK_FULL or bar that carried it (M4.4)
     std::optional<std::int32_t> min_interval;        // smallest interval of real bars seen
     std::map<std::int32_t, std::vector<BarRow>> bars;
     Date day = 0;
@@ -164,12 +165,36 @@ class Context {
     // F&O lookups over the bundle's rows (the oracle's ctx.expiries / futures_chain / chain).
     std::vector<Date> expiries(std::string_view underlying, std::string_view kind) const;  // "FUT", "OPT", "CE", "PE"
     std::vector<InstrumentId> futures_chain(std::string_view underlying) const;
+
+    // The option-chain view (M4.4, C-13), field for field the oracle's: quotes, IVs (bid / ask / mid) and the
+    // Greeks at the mid IV, in rupees; the forward and its source; the ATM strike.
     struct ChainRow {
         InstrumentId instrument = 0;
         std::string kind;
         Paise strike = 0;
+        std::optional<Paise> bid, ask;
+        std::optional<double> mid;  // paise, (bid + ask) / 2
+        std::optional<Paise> ltp;
+        bool stale = true;
+        std::optional<std::int64_t> oi;
+        std::optional<double> iv_bid, iv_ask, iv_mid;
+        std::optional<std::string> iv_reason;  // why iv_mid is missing although there is a mid
+        std::optional<double> delta, gamma, vega, theta;
     };
-    std::vector<ChainRow> chain(std::string_view underlying, std::string_view expiry) const;
+    struct ChainView {
+        std::vector<ChainRow> rows;
+        std::optional<double> forward;  // paise
+        std::optional<std::string> forward_source;  // future | synthetic | forward_from_index
+        std::optional<Paise> atm_strike;
+    };
+    // Cached per engine step (the event key); deterministic.
+    ChainView chain(std::string_view underlying, std::string_view expiry) const;
+
+ private:
+    ChainView compute_chain(std::string_view underlying, std::string_view expiry) const;
+    std::optional<double> quote_mid(InstrumentId iid) const;  // (bid + ask) / 2 in paise, both sides quoted
+
+ public:
 
  private:
     Engine& e_;
@@ -374,6 +399,8 @@ class Engine {
 
     std::vector<std::string> log_lines_;
     std::size_t log_drained_ = 0;
+    std::optional<EventKey> chain_key_;  // the step the chain cache belongs to
+    std::map<std::pair<std::string, std::string>, Context::ChainView> chain_cache_;
     OrderId orders_drained_ = 1;  // the next order id not yet drained
     std::size_t events_drained_ = 0, fills_drained_ = 0, charges_drained_ = 0;
     std::set<std::string> labels_;

@@ -36,9 +36,9 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 
 ## M4.4 Option-chain view (M)
 
-- [ ] `ctx.chain(underlying, expiry)` returns, per strike and side: bid, ask, mid, LTP, staleness, OI, IV at bid/ask/mid, delta, gamma, vega, theta; plus the forward `F`, its source, and the ATM strike.
-- [ ] Forward: the same-expiry future's mid when it exists; otherwise the synthetic forward (C-13) — the median of `K + (C_mid − P_mid)/D` over the 3–5 strikes nearest the money with both sides quoted and not stale; with fewer than two usable strikes, the index value, labelled `forward_from_index`.
-- [ ] Computed lazily and cached per engine time step; deterministic (no unordered iteration).
+- [x] `ctx.chain(underlying, expiry)` returns, per strike and side: bid, ask, mid, LTP, staleness, OI, IV at bid/ask/mid, delta, gamma, vega, theta; plus the forward `F`, its source, and the ATM strike.
+- [x] Forward: the same-expiry future's mid when it exists; otherwise the synthetic forward (C-13) — the median of `K + (C_mid − P_mid)/D` over the 3–5 strikes nearest the money with both sides quoted and not stale; with fewer than two usable strikes, the index value, labelled `forward_from_index`.
+- [x] Computed lazily and cached per engine time step; deterministic (no unordered iteration).
 
 ## M4.5 Index derivatives at expiry (S)
 

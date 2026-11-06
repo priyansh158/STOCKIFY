@@ -435,3 +435,29 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   both now use the same operation order (TQ 4.3), and `year_fraction` divides the same two doubles on both sides
   (Python's int / int rounds once, and differs from the engine's for spans over 2^53 ns ≈ 104 days). Now every
   price, Greek and implied volatility is bit-equal, and every reason identical, all seven outcomes seen.
+
+## 2026-11-07 — M4.4 option-chain view (AP 4.1, AP 4.2)
+
+- Recon: `ctx.chain(underlying, expiry)` returned `{instrument_id, kind, strike_paise}` rows, used by EodShortStraddle and
+  logged by the Recorder parity strategy. Market state had bid/ask/LTP/time per instrument but no open interest,
+  though TICK_FULL and bar records carry it.
+- `ctx.chain` now returns `stockify.strategy.ChainView`: still a list of row dicts, so existing code is unchanged (the M2
+  strategies and every parity test pass), with the original keys first and then `bid_paise`, `ask_paise`,
+  `mid_paise` (float, (bid + ask)/2), `ltp_paise`, `stale`, `oi`, `iv_bid`, `iv_ask`, `iv_mid`, `iv_reason` (why
+  there is no mid IV), and `delta`, `gamma`, `vega`, `theta` at the mid IV (rupees; vega per 1.00 vol, theta per
+  year). On the view: `forward_paise`, `forward_source` (`future` | `synthetic` | `forward_from_index` | None) and
+  `atm_strike_paise` (nearest the forward, the lower strike on a tie). Market state gains `oi` (from TICK_FULL and
+  incoming bars, not built bars), on both sides.
+- Forward (C-13): the same-expiry future's mid; else the median of `K + (C_mid − P_mid)/D` over up to 5 strikes with
+  both sides quoted and fresh, ranked by |C_mid − P_mid| (nearest the money by parity), when at least 2 qualify;
+  else the index value; else None, and then no IVs. A non-positive forward (absurd quotes) also gives None. Time to
+  expiry from the options' `last_trading_ns` (15:40 on and after 2026-08-03, X-7), rate from the bundle.
+- Cached per engine step (the event key) on both sides; every call returns fresh objects, so a strategy that edits a
+  row cannot change what the next call sees.
+- Tests (`tests/stockify/test_chain_view.py`): chain worlds of 45 "moments" each (most of 18 options quoted within
+  2 s, sometimes one-sided or quote-only, sometimes a future, gaps, long pauses that leave quotes stale, then the
+  index tick where the chain is read), with a 6.5 % rate (golden bundles carry none). Oracle checks: row order and
+  keys, mid IV reprices the mid within 1e-10, Greeks equal Black-76's at that IV, ATM nearest the forward, all three
+  forward sources seen, plus a hand-built `_forward` table (future wins; synthetic needs two fresh two-sided strikes;
+  index; none). Parity: on 5 chain worlds the engine's log equals the oracle's byte for byte, IVs and Greeks
+  included (about 1,900 mid IVs and 2,100 bid IVs per 3 worlds); Black-76 is bit-equal on both sides (TQ 4.3).

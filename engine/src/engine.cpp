@@ -9,6 +9,7 @@
 #include "stocksim/errors.hpp"
 #include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
+#include "stocksim/pricing/black76.hpp"
 
 namespace stocksim {
 
@@ -309,6 +310,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
             m.min_interval = b.interval_s;
         }
         m.bars[b.interval_s].push_back(BarRow{b.start_ns, b.open, b.high, b.low, b.close, b.volume, b.oi});
+        m.oi = b.oi;
         if (b.interval_s == *m.min_interval) {
             if (fill_kind_ == "bar") {
                 match_bar(iid, b, e.t);
@@ -356,6 +358,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
     m.ltp = q.ltp;
     m.t = e.t;
     if (f.full) {
+        m.oi = f.oi;
         std::array<DepthLevel, 10> book{};
         for (std::size_t i = 0; i < 5; ++i) {
             book[i] = f.bids[i];
@@ -869,23 +872,187 @@ std::vector<InstrumentId> Context::futures_chain(std::string_view underlying) co
     return out;
 }
 
-std::vector<Context::ChainRow> Context::chain(std::string_view underlying, std::string_view expiry) const {
+namespace {
+
+// pricing.risk_free in force on an IST date (rate_ppb → decimal), as the oracle's black76.rate_on; 0 if none.
+double rate_on(const Json& bundle_root, const std::string& iso_day) {
+    const auto pricing = bundle_root.find("pricing");
+    if (pricing == bundle_root.end() || !pricing->contains("risk_free")) {
+        return 0.0;
+    }
+    const Json* best = nullptr;
+    for (const Json& row : pricing->at("risk_free")) {
+        const std::string& from = row.at("effective_from").get_ref<const std::string&>();
+        if (from <= iso_day && (best == nullptr || from > best->at("effective_from").get_ref<const std::string&>())) {
+            best = &row;
+        }
+    }
+    return best != nullptr ? static_cast<double>(best->at("rate_ppb").get<std::int64_t>()) / 1'000'000'000 : 0.0;
+}
+
+}  // namespace
+
+std::optional<double> Context::quote_mid(InstrumentId iid) const {
+    const auto it = e_.market_.find(iid);
+    if (it == e_.market_.end() || !it->second.bid || !it->second.ask) {
+        return std::nullopt;
+    }
+    return static_cast<double>(*it->second.bid + *it->second.ask) / 2;
+}
+
+Context::ChainView Context::chain(std::string_view underlying, std::string_view expiry) const {  // context.chain
+    if (e_.chain_key_ != e_.key_) {
+        e_.chain_key_ = e_.key_;
+        e_.chain_cache_.clear();
+    }
+    const auto k = std::make_pair(std::string(underlying), std::string(expiry));
+    auto it = e_.chain_cache_.find(k);
+    if (it == e_.chain_cache_.end()) {
+        it = e_.chain_cache_.emplace(k, compute_chain(underlying, expiry)).first;
+    }
+    return it->second;
+}
+
+Context::ChainView Context::compute_chain(std::string_view underlying, std::string_view expiry) const {
+    ChainView view;
     std::optional<Date> want;
     try {
         want = parse_iso_date(expiry);
     } catch (const FormatError&) {
-        return {};  // the oracle compares strings: a non-date matches nothing
+        return view;  // the oracle compares strings: a non-date matches nothing
     }
-    std::vector<ChainRow> out;
+    const std::optional<std::string> und{std::string(underlying)};
+    std::vector<const Instrument*> rows;
     for (const Instrument& r : e_.instruments_.rows()) {
-        if (r.underlying == std::optional<std::string>(std::string(underlying)) && r.expiry == want && r.is_option()) {
-            out.push_back(ChainRow{r.id, r.kind, r.strike.value_or(0)});
+        if (r.underlying == und && r.expiry == want && r.is_option()) {
+            rows.push_back(&r);
         }
     }
-    std::stable_sort(out.begin(), out.end(), [](const ChainRow& a, const ChainRow& b) {
-        return a.strike != b.strike ? a.strike < b.strike : a.kind < b.kind;
+    std::stable_sort(rows.begin(), rows.end(), [](const Instrument* a, const Instrument* b) {
+        const Paise sa = a->strike.value_or(0), sb = b->strike.value_or(0);
+        return sa != sb ? sa < sb : a->kind < b->kind;
     });
-    return out;
+    if (rows.empty()) {
+        return view;
+    }
+    const double t = pricing::year_fraction(e_.now_, rows.front()->last_trading_ns.value_or(e_.now_));
+    const double r = rate_on(e_.bundle_.root, iso_date(e_.date_of(e_.now_)));
+    const double disc = std::exp(-r * t);
+
+    // The forward (C-13): the same-expiry future's mid; else the synthetic median; else the index value.
+    for (const Instrument& fut : e_.instruments_.rows()) {
+        if (fut.underlying == und && fut.expiry == want && fut.kind == "FUT") {
+            if (const auto mid = quote_mid(fut.id)) {
+                view.forward = *mid;
+                view.forward_source = "future";
+                break;
+            }
+        }
+    }
+    if (!view.forward) {
+        std::map<Paise, std::pair<std::optional<double>, std::optional<double>>> sides;  // strike → (CE, PE) mids
+        for (const Instrument* row : rows) {
+            const auto mid = quote_mid(row->id);
+            if (mid && !stale(row->id)) {
+                auto& s = sides[row->strike.value_or(0)];
+                (row->kind == "CE" ? s.first : s.second) = *mid;
+            }
+        }
+        struct Pair {
+            double gap;
+            Paise strike;
+            double c, p;
+        };
+        std::vector<Pair> pairs;
+        for (const auto& [strike, s] : sides) {
+            if (s.first && s.second) {
+                pairs.push_back(Pair{std::fabs(*s.first - *s.second), strike, *s.first, *s.second});
+            }
+        }
+        std::sort(pairs.begin(), pairs.end(), [](const Pair& a, const Pair& b) {
+            return a.gap != b.gap ? a.gap < b.gap : a.strike < b.strike;
+        });
+        if (pairs.size() > 5) {
+            pairs.resize(5);
+        }
+        if (pairs.size() >= 2) {
+            std::vector<double> values;
+            for (const Pair& q : pairs) {
+                values.push_back(static_cast<double>(q.strike) + (q.c - q.p) / disc);
+            }
+            std::sort(values.begin(), values.end());
+            const std::size_t n = values.size();
+            view.forward = n % 2 == 1 ? values[n / 2] : (values[n / 2 - 1] + values[n / 2]) / 2;
+            view.forward_source = "synthetic";
+        } else if (const auto uid = rows.front()->underlying_id) {
+            const auto m = e_.market_.find(*uid);
+            if (m != e_.market_.end() && m->second.ltp) {
+                view.forward = static_cast<double>(*m->second.ltp);
+                view.forward_source = "forward_from_index";
+            }
+        }
+    }
+    if (view.forward && !(*view.forward > 0)) {
+        view.forward.reset();  // quotes that imply no positive forward give no IVs
+        view.forward_source.reset();
+    }
+    if (view.forward) {
+        std::optional<Paise> best;
+        for (const Instrument* row : rows) {  // strike order: on a tie the first, lower, strike stays
+            const Paise k = row->strike.value_or(0);
+            if (!best || std::fabs(static_cast<double>(k) - *view.forward) <
+                             std::fabs(static_cast<double>(*best) - *view.forward)) {
+                best = k;
+            }
+        }
+        view.atm_strike = best;
+    }
+
+    for (const Instrument* row : rows) {
+        ChainRow c;
+        c.instrument = row->id;
+        c.kind = row->kind;
+        c.strike = row->strike.value_or(0);
+        const bool is_call = row->kind == "CE";
+        const auto m = e_.market_.find(row->id);
+        if (m != e_.market_.end()) {
+            c.bid = m->second.bid;
+            c.ask = m->second.ask;
+            c.ltp = m->second.ltp;
+            c.oi = m->second.oi;
+        }
+        c.mid = quote_mid(row->id);
+        c.stale = stale(row->id);
+        if (view.forward) {
+            const double f_r = *view.forward / 100.0;
+            const double k_r = static_cast<double>(c.strike) / 100.0;
+            const auto side_iv = [&](const std::optional<Paise>& quote) -> std::optional<double> {
+                if (!quote) {
+                    return std::nullopt;
+                }
+                const pricing::ImpliedVol iv =
+                    pricing::implied_vol(is_call, static_cast<double>(*quote) / 100.0, f_r, k_r, t, r);
+                return iv.reason ? std::nullopt : std::optional<double>(iv.sigma);
+            };
+            c.iv_bid = side_iv(c.bid);
+            c.iv_ask = side_iv(c.ask);
+            if (c.mid) {
+                const pricing::ImpliedVol iv = pricing::implied_vol(is_call, *c.mid / 100.0, f_r, k_r, t, r);
+                if (iv.reason) {
+                    c.iv_reason = std::string(pricing::to_string(*iv.reason));
+                } else {
+                    const pricing::Greeks g = pricing::greeks(is_call, f_r, k_r, t, r, iv.sigma);
+                    c.iv_mid = iv.sigma;
+                    c.delta = g.delta;
+                    c.gamma = g.gamma;
+                    c.vega = g.vega;
+                    c.theta = g.theta;
+                }
+            }
+        }
+        view.rows.push_back(std::move(c));
+    }
+    return view;
 }
 
 OrderId Context::place(const PlaceRequest& r) { return e_.place(r); }
