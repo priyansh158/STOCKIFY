@@ -43,32 +43,32 @@ Files: `engine.hpp/.cpp`, `session.hpp/.cpp`, `timers.hpp`.
 - [x] `Engine::run(EventSource&)`, `Engine::push(batch)`, `Engine::finish()` share one code path with the batch-boundary rule of A4 §1.4, so nothing depends on how input was chunked (property test A3 P-02, including boundaries at timer, phase and bar-end times).
 - [x] Bars built from snapshots (A4 §2.2) for strategies that subscribe to bars on tick data.
 - [x] CLOCK events only advance time (A4 §1.6; property test P-03).
-- [ ] G14 (dated F&O close: 15:30 vs 15:40) passes on the engine.
+- [x] G14 (dated F&O close: 15:30 vs 15:40) passes on the engine.
 
 ## M3.4 Instruments and specs (S)
 
 - [x] Build an `InstrumentTable` from the bundle: static fields, dated specs (lot, tick, freeze) per trading day, underlying links, price bands from `REFDATA` events.
-- [ ] `spec_on(instrument, date)` is O(1) per day (pre-resolved arrays). Test against G12 (mid-life lot change).
+- [x] `spec_on(instrument, date)` is O(1) per day (pre-resolved arrays). Test against G12 (mid-life lot change).
 
 ## M3.5 Orders (M)
 
 Files: `orders.hpp/.cpp`.
 
-- [ ] Validation in A4 §3.2 order with reject codes; market protection conversion (§3.3); stop triggers (§3.4); state machine (§3.5); modify/cancel with latency (§3.6); IOC (§3.7); freeze slicing (§3.8).
-- [ ] Every transition is logged into the order-events stream that becomes `orders.csv` (one row per order with final state) and `order_events.csv` (every transition with engine time).
-- [ ] Unit tests for each reject code, each type conversion, and latency races (fill before cancel takes effect).
+- [x] Validation in A4 §3.2 order with reject codes; market protection conversion (§3.3); stop triggers (§3.4); state machine (§3.5); modify/cancel with latency (§3.6); IOC (§3.7); freeze slicing (§3.8).
+- [x] Every transition is logged into the order-events stream that becomes `orders.csv` (one row per order with final state) and `order_events.csv` (every transition with engine time).
+- [x] Unit tests for each reject code, each type conversion, and latency races (fill before cancel takes effect).
 
 ## M3.6 Fill models (L)
 
 Files: `fills/bar.cpp`, `fills/snapshot_ltp.cpp`, `fills/snapshot_quote.cpp`, `fills/common.hpp`.
 
-- [ ] The eligibility rules of A4 §4.0 in one place, used by every model (property test P-07).
-- [ ] `bar` per A4 §4.1, including the two-path pessimistic choice by end-of-bar NAV (with RNG and ledger copies) and the participation cap; `eod_close` per A4 §4.9.
-- [ ] `snapshot_ltp` per A4 §4.2 using the §2 evidence (`ΔV`, interval VWAP, new day extremes).
-- [ ] `snapshot_quote` per A4 §4.3 walking recorded depth; stale-book rule; no depth ⇒ no fill.
-- [ ] Slippage per A4 §4.4 from PCG32 stream 1.
-- [ ] Not-continuous and closing-auction policies (A4 §3.10, §4.7–§4.8).
-- [ ] Goldens G01–G07, G16, G19 and G20 pass on the engine; unit tests for each model's edge cases (gap through stop, limit exactly at the low with `touch` vs `through`, `ΔV = 0`, empty book side, stale book).
+- [x] The eligibility rules of A4 §4.0 in one place, used by every model (property test P-07).
+- [x] `bar` per A4 §4.1, including the two-path pessimistic choice by end-of-bar NAV (with RNG and ledger copies) and the participation cap; `eod_close` per A4 §4.9.
+- [x] `snapshot_ltp` per A4 §4.2 using the §2 evidence (`ΔV`, interval VWAP, new day extremes).
+- [x] `snapshot_quote` per A4 §4.3 walking recorded depth; stale-book rule; no depth ⇒ no fill.
+- [x] Slippage per A4 §4.4 from PCG32 stream 1.
+- [x] Not-continuous and closing-auction policies (A4 §3.10, §4.7–§4.8).
+- [x] Goldens G01–G07, G16, G19 and G20 pass on the engine; unit tests for each model's edge cases (gap through stop, limit exactly at the low with `touch` vs `through`, `ΔV = 0`, empty book side, stale book).
 
 ## M3.7 Costs (M)
 
@@ -82,13 +82,13 @@ Files: `costs.hpp/.cpp`.
 
 Files: `ledger.hpp/.cpp`, `margin_flat.cpp`.
 
-- [ ] Positions, average price, realised P&L, cash, NAV (A4 §6); funds reservation at submit with the required-amount table of A4 §6.5. MIS square-off at the dated cut-off with `AUTO_SQOFF` orders that bypass the session/margin checks, plus the optional fee (G04). `SEG_CLOSE` (DAY-order expiry, provisional futures marks) and `DAY_END` (settlement fallback, `positions_eod`, the single daily NAV row, `on_session_end`) per A4 §1.10 and §6.7; re-marks when daily settlement prices arrive (A4 §6.4).
-- [ ] `MarginModel` interface (A2 §2) with `FlatMargin` (T0, D-14): MIS `mis_margin_pct`; NRML futures and short options `pct × notional` by underlying class (index / stock) from `margin_params.json`; labelled approximate (I-14).
-- [ ] Index options/futures cash settlement per A4 §7.2 (needed for G10; physical settlement is M4.6).
+- [x] Positions, average price, realised P&L, cash, NAV (A4 §6); funds reservation at submit with the required-amount table of A4 §6.5. MIS square-off at the dated cut-off with `AUTO_SQOFF` orders that bypass the session/margin checks, plus the optional fee (G04). `SEG_CLOSE` (DAY-order expiry, provisional futures marks) and `DAY_END` (settlement fallback, `positions_eod`, the single daily NAV row, `on_session_end`) per A4 §1.10 and §6.7; re-marks when daily settlement prices arrive (A4 §6.4).
+- [x] `MarginModel` interface (A2 §2) with `FlatMargin` (T0, D-14): MIS `mis_margin_pct`; NRML futures and short options `pct × notional` by underlying class (index / stock) from `margin_params.json`; labelled approximate (I-14).
+- [x] Index options/futures cash settlement per A4 §7.2 (needed for G10; physical settlement is M4.6).
 
 ## M3.9 Metrics and artifacts (S)
 
-- [ ] Metrics per A4 §8; artifact files and `determinism.json` per A4 §9 and A1 §6.3.
+- [x] Metrics per A4 §8; artifact files and `determinism.json` per A4 §9 and A1 §6.3.
 - [ ] Determinism tests (A3 DT-01, DT-03): run twice and re-run from the folder, compare hashes; DT-02 compares oracle and engine with the tolerances of A4 §9.3.
 
 ## M3.10 Strategy API, registry and Python trampoline (L)
@@ -111,7 +111,7 @@ Files: `stockify/runs.py`, `stockify/__main__.py` (`run`), `engine/tools/stocksi
 
 ## M3.12 Parity with the oracle (M)
 
-- [ ] `python -m stockify golden run --impl engine` passes all goldens written so far.
+- [x] `python -m stockify golden run --impl engine` passes all goldens written so far.
 - [ ] Differential fuzzing (A3 P-04): generate random small event streams (seeded) plus a random-order strategy (seeded) and compare oracle vs engine artifacts with `compare-artifacts --tol-paise 0`. 200 seeds in the regular test run; 5,000 in a weekly job. Every failure is minimised (shrink the stream) and saved as a new golden.
 
 ## M3.13 Performance sanity (S)
