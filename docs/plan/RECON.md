@@ -336,6 +336,14 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   out of the filesystem root"). Builds were checked with a temporary, uncommitted `turbopack.root` and pass; the
   main checkout is unaffected. Imported golden runs have no pack specs or strategy ref, so their cards show no dates;
   the detail page falls back to the equity rows' first and last day.
+- WP 3.5/3.6: plain `label`s in every params schema, fill rows carry the tradingsymbol (from the run's bundle.json),
+  registered C++ strategies without a schema (the benchmark's `noop_cpp`) are not offered, and `sma_cross_cpp` /
+  `orb_cpp` launch from the API end to end through the real runner subprocess on the M2.1 offline data
+  (`test_api_tests.CppFromTheFormTests`; screenshots `wp35_*.png`).
+- **Found: two runs that build the same pack at the same moment race in `packs.build`.** Both see no pack, both build it,
+  and the second `tmp.replace(target)` fails with `PermissionError [WinError 5]` because the first run already has the
+  target open (memory-mapped by its engine). Seen with two tests submitted together. The C++ e2e test runs one test at
+  a time until `packs.build` treats "the target appeared meanwhile" as success (unlink its own temporary file).
 
 ## 2026-11-06 — P-06 accounting identity, the fuzz shrinker and the weekly job (RD 3.2, RD 3.3)
 

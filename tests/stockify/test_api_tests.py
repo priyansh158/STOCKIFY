@@ -323,5 +323,65 @@ class RealSubprocessTests(SandboxedDBTest):
         self.assertIn(run_id, (paths.runs_dir() / run_id / "runner.log").read_text(encoding="utf-8"))
 
 
+@support.requires_fastapi
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class CppFromTheFormTests(SandboxedDBTest):
+    """WP 3.5 (4): the C++ strategies the form offers launch end to end through POST /api/tests and the real
+    runner subprocess, on the M2.1 offline refdata and bars (test_bundle.BundleTest)."""
+    db_modules = (store,)
+
+    def setUp(self):
+        super().setUp()
+        from datetime import date
+        from fastapi.testclient import TestClient
+        from server.main import app
+        from server.services import test_queue
+        from stockify import timeutil
+        from stockify.data import history
+        from tests.stockify.test_bundle import BundleTest
+        fixture = BundleTest("setUp")  # its setUp writes the offline refdata and daily bars into this sandbox
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        prev = 10000  # up, then down: one SMA round trip (as test_runs_launch.CppConfigTests)
+        with history._Tx() as conn:
+            for d, c in {22: 10000, 23: 10050, 24: 10150, 26: 10200, 29: 10100, 30: 10000, 31: 9950}.items():
+                conn.execute("UPDATE bars SET open_paise = ?, high_paise = ?, low_paise = ?, close_paise = ? "
+                             "WHERE instrument_id = ? AND ts_ns = ?",
+                             (prev, max(prev, c) + 10, min(prev, c) - 10, c, fixture.rel,
+                              timeutil.ist_ns(date(2025, 12, d), "00:00")))
+                prev = c
+        # One run at a time: two runs that both have to build the same pack race in packs.build (the second's
+        # rename onto a pack the first already has open fails on Windows); reported to the supervisor, not ours.
+        self.queue = test_queue.TestQueue(launcher=test_queue.subprocess_launcher, cap=1)
+        test_queue.set_queue(self.queue)
+        self.addCleanup(test_queue.set_queue, None)
+        self.client = TestClient(app)
+
+    def test_sma_cross_cpp_and_orb_cpp_launch_from_the_form(self):
+        from tests.stockify.test_bundle import run
+        offered = {s["ref"] for s in self.client.get("/api/strategies").json() if s["kind"] == "cpp"}
+        self.assertEqual(offered, {"sma_cross_cpp", "orb_cpp"})
+        bad = run(name="orb_bad", strategy={"kind": "cpp", "ref": "orb_cpp", "params": {"symbol": "NSE:RELIANCE"}})
+        r = self.client.post("/api/tests", json=bad)
+        self.assertEqual((r.status_code, r.json()["detail"]), (422, ["strategy.params.qty: required"]))
+
+        sma = self.client.post("/api/tests", json=run(name="sma_cpp", strategy={
+            "kind": "cpp", "ref": "sma_cross_cpp", "params": {"symbol": "NSE:RELIANCE", "fast": 2, "slow": "3"}}))
+        orb = self.client.post("/api/tests", json=run(name="orb_cpp", strategy={
+            "kind": "cpp", "ref": "orb_cpp", "params": {"symbol": "NSE:RELIANCE", "qty": 10}}))
+        self.assertEqual((sma.status_code, orb.status_code), (201, 201))
+        self.queue.join(180)
+
+        s = self.client.get(f"/api/tests/{sma.json()['run_id']}").json()
+        self.assertEqual((s["run"]["status"], s["run"]["strategy_ref"], s["run"]["error"]), ("done", "sma_cross_cpp", None))
+        fills = self.client.get(f"/api/tests/{sma.json()['run_id']}/fills").json()
+        self.assertEqual([(f["side"], f["tradingsymbol"]) for f in fills], [("BUY", "RELIANCE"), ("SELL", "RELIANCE")])
+        self.assertEqual(len(self.client.get(f"/api/tests/{sma.json()['run_id']}/equity").json()), 7)
+
+        o = self.client.get(f"/api/tests/{orb.json()['run_id']}").json()
+        # daily bars only: the intraday strategy runs to the end and simply never trades
+        self.assertEqual((o["run"]["status"], o["run"]["strategy_ref"], o["run"]["trades"]), ("done", "orb_cpp", 0))
+
+
 if __name__ == "__main__":
     unittest.main()

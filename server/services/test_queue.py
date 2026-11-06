@@ -151,9 +151,17 @@ class TestQueue:
         return queued, failed
 
     def join(self, timeout: float = 30.0) -> None:
-        """Tests: wait for every watcher started so far."""
-        for t in list(self._watchers):
-            t.join(timeout)
+        """Tests: wait until nothing is waiting or running (runs started while waiting included)."""
+        import time
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self._lock:
+                watchers = list(self._watchers)
+                idle = not self._waiting and not self._running
+            if idle and all(not t.is_alive() for t in watchers):
+                return
+            for t in watchers:
+                t.join(max(0.0, min(0.2, end - time.monotonic())))
 
 
 _queue: TestQueue | None = None
