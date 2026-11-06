@@ -12,7 +12,7 @@ Concepts: C-2, C-7, C-12, C-13, C-15. Contract: `A4_engine_semantics.md` §6–�
 
 ## M4.0 Recon and fact check (S)
 
-- [ ] 🛑 Verify every ⚠ row this milestone depends on and record evidence in `01_facts.md`: X-4 (2024 lot values), X-5 (other indices on 2026-10-05), X-9 (stock calendar-spread benefit), X-10 (upfront premium), X-12 and X-13 (ELM and SPAN files), Z-3 (transaction-charge history), Z-5 (CAS-era MIS cut-off), S-7 (public URLs). Stop if any changes a rule below.
+- [x] 🛑 Verify every ⚠ row this milestone depends on and record evidence in `01_facts.md`: X-4 (2024 lot values), X-5 (other indices on 2026-10-05), X-9 (stock calendar-spread benefit), X-10 (upfront premium), X-12 and X-13 (ELM and SPAN files), Z-3 (transaction-charge history), Z-5 (CAS-era MIS cut-off), S-7 (public URLs). Stop if any changes a rule below.
 
 ## M4.1 Derivative contract model (S)
 
@@ -53,7 +53,7 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 
 ## M4.7 Margin T0 completed (S)
 
-- [ ] Flat model additions: long options = premium only (X-10); +2% expiry-day ELM on short index options expiring that day (X-9, ⚠ notional basis: Zerodha's example uses strike × quantity; confirm with Kite basket margins on an expiry day); the stock F&O delivery-margin schedule of Z-4 from `broker_policy.json` (holiday shift included).
+- [ ] Flat model additions: long options = premium only (X-10); +2% expiry-day ELM on short index options expiring that day (X-9: notional = underlying price × quantity, Zerodha's formula, decided 2026-11-07; confirm once with Kite basket margins on an expiry day); the stock F&O delivery-margin schedule of Z-4 from `broker_policy.json` (holiday shift included).
 - [ ] RMS behaviour on shortfall (A4 §6.5): reject risk-increasing orders; optional `RMS_SQOFF` at a policy time.
 
 ## M4.8 Margin T1: SPAN-lite (L)
