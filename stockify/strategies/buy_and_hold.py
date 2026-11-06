@@ -11,6 +11,13 @@ from stockify.strategy import Strategy
 
 
 class BuyAndHold(Strategy):
+    # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
+    PARAMS = [
+        {'name': 'symbol', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to buy, e.g. NSE:RELIANCE'},
+        {'name': 'interval_s', 'type': 'int', 'default': 86400, 'required': False, 'help': 'bar length in seconds: 86400 daily, 60 minute'},
+        {'name': 'invest', 'type': 'decimal', 'default': '0.95', 'required': False, 'help': 'share of available cash to invest, e.g. 0.95'},
+    ]
+
     def on_start(self, ctx):  # noqa: ANN001
         self.iid = ctx.resolve(ctx.params["symbol"])
         self.isec = int(ctx.params.get("interval_s", 86400))
