@@ -97,7 +97,8 @@ target_compile_options(stocksim_core PRIVATE ${STOCKSIM_CXX_FLAGS})
 # puts their objects straight into each binary; members of a static library nobody references would be dropped.
 add_library(stocksim_strategies OBJECT
   strategies/sma_cross_cpp.cpp
-  strategies/orb_cpp.cpp)
+  strategies/orb_cpp.cpp
+  strategies/noop_cpp.cpp)
 target_link_libraries(stocksim_strategies PUBLIC stocksim_core)
 target_compile_options(stocksim_strategies PRIVATE ${STOCKSIM_CXX_FLAGS})
 

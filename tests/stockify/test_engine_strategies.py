@@ -238,7 +238,9 @@ class ReferenceStrategyTests(unittest.TestCase):
             b["strategy"] = {"kind": "cpp", "ref": "sma_cross_cpp", "params": params, "source_sha256": "0" * 64}
             engine_mod.run_bundle(b, [pack], folder / "cpp", report=False)
             assert_same_artifacts(self, folder / "oracle", folder / "cpp")
-        self.assertEqual(engine.load().strategies(), ["orb_cpp", "sma_cross_cpp"])
+        names = engine.load().strategies()
+        self.assertEqual(names, sorted(names))
+        self.assertLessEqual({"orb_cpp", "sma_cross_cpp"}, set(names))
 
 
 class _Boom(Strategy):
@@ -323,7 +325,7 @@ class FailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="strategies-fail-") as tmp:
             pack, b = _materialise(g, p, Path(tmp))
             b["strategy"] = {"kind": "cpp", "ref": "nope", "params": {}, "source_sha256": "0" * 64}
-            with self.assertRaisesRegex(RuntimeError, r"no C\+\+ strategy is registered as 'nope' \(known: orb_cpp"):
+            with self.assertRaisesRegex(RuntimeError, r"no C\+\+ strategy is registered as 'nope' \(known: .*orb_cpp, sma_cross_cpp"):
                 engine_mod.run_bundle(b, [pack], Path(tmp) / "run", report=False)
 
 

@@ -188,4 +188,4 @@ class CppConfigTests(RunsTestBase):
         with self.assertRaises(runs.RunFailed) as ctx:
             runs.launch(self.config({"kind": "cpp", "ref": "nope_cpp", "params": {}}), report=False)
         self.assertRegex(store.get_run(ctx.exception.run_id)["error"],
-                         r"^BundleError: strategy nope_cpp: no C\+\+ strategy is registered .*known: orb_cpp")
+                         r"^BundleError: strategy nope_cpp: no C\+\+ strategy is registered .*known: .*orb_cpp, sma_cross_cpp")

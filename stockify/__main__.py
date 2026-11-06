@@ -342,6 +342,12 @@ def _cmd_run(args) -> int:
     return 0
 
 
+def _cmd_bench(args) -> int:
+    from stockify.tools import bench
+    bench.run(args.pack, reps=args.reps)
+    return 0
+
+
 def _cmd_golden_run(args) -> int:
     from stockify import golden
 
@@ -517,6 +523,10 @@ def main(argv: list[str] | None = None) -> int:
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)
+    bn = tsub.add_parser("bench", help="engine speed on a recorded day's pack (M3.13); reads the lab, writes nothing there")
+    bn.add_argument("--pack", required=True, help="the pack's SHA-256 (a unique prefix is enough)")
+    bn.add_argument("--reps", type=int, default=3, help="runs per case; the median is reported (default 3)")
+    bn.set_defaults(func=_cmd_bench)
     cc = tsub.add_parser("capture-charges", help="save Kite's contract-note charges for imaginary orders (G08)")
     cc.add_argument("--cases", default="tests/golden/charges_cases.json")
     cc.set_defaults(func=_cmd_capture_charges)

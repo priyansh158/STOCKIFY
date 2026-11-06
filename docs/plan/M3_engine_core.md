@@ -116,7 +116,7 @@ Files: `stockify/runs.py`, `stockify/__main__.py` (`run`), `engine/tools/stocksi
 
 ## M3.13 Performance sanity (S)
 
-- [ ] Benchmark: replay one recorded day (~300 instruments) with (a) a no-op C++ strategy, (b) a no-op Python strategy subscribed to everything, (c) a Python strategy on 10 instruments. Record events/second in `RECON.md`. Soft targets: (a) well over 1M events/s; (c) a full day in under a minute. If (b) is slow, that is expected (one Python call per event); document it rather than optimise early.
+- [x] Benchmark: replay one recorded day (~300 instruments) with (a) a no-op C++ strategy, (b) a no-op Python strategy subscribed to everything, (c) a Python strategy on 10 instruments. Record events/second in `RECON.md`. Soft targets: (a) well over 1M events/s; (c) a full day in under a minute. If (b) is slow, that is expected (one Python call per event); document it rather than optimise early. (Measured on the only recording so far, six minutes of 2026-11-05; re-measure on the first full recorded day, D-48.)
 
 ## M3.14 Test-run API and UI (M)
 
