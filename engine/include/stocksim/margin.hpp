@@ -1,0 +1,66 @@
+// Dated rule rows and the T0 flat margin model (A4 §6.5, D-14; labelled approximate), the twins of
+// stockify.oracle.margin and the oracle's `_bp` / `_cnc_credit_ppb` row lookups.
+//
+// A dated row is in force on a date when its effective_from is on or before it; among those, the one with the
+// latest effective_from wins, the first in bundle order on a tie. Dates are ISO strings, compared as text.
+#pragma once
+
+#include <functional>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "stocksim/instruments.hpp"
+#include "stocksim/json_bundle.hpp"
+#include "stocksim/types.hpp"
+
+namespace stocksim {
+
+// The row in force on `date` among `rows` (a JSON list), or nullptr. With `applies`, a row must carry each of
+// those keys with that value in its own `applies` object (extra keys in the row are ignored).
+const Json* row_in_force(const Json& rows, const std::string& date,
+                         const std::vector<std::pair<std::string, std::string>>& applies = {});
+
+struct MarginLeg {
+    InstrumentId instrument = 0;
+    Product product = Product::CNC;
+    Qty units = 0;  // signed
+};
+
+// A margin model (A2 §2): flat (T0, here) | spanlite (T1, M4.8) | span (T2) | live_with_fallback.
+class MarginModel {
+ public:
+    virtual ~MarginModel() = default;
+    // The requirement of NRML legs (signed units); price(iid) gives a reference price or nullopt.
+    virtual Paise requirement(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
+                              const std::function<std::optional<Paise>(InstrumentId)>& price,
+                              const std::string& date) const = 0;
+    // The requirement of an MIS position or order.
+    virtual Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const = 0;
+    virtual std::string label() const = 0;  // drives the run's labels (I-14)
+};
+
+class FlatMargin final : public MarginModel {
+ public:
+    explicit FlatMargin(const Json& bundle_root);
+
+    Ppb mis_rate(std::string_view segment, const std::string& date) const;
+    // Σ over NRML futures and short NRML options of |units| × reference × flat rate, rounded up to the rupee:
+    // ceil_to(ceil_div(raw, 10⁹), 100). Reference: futures → their price; short options → the underlying's,
+    // else the strike.
+    Paise requirement(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
+                      const std::function<std::optional<Paise>(InstrumentId)>& price,
+                      const std::string& date) const override;
+    // MIS: round_half_up_div(|units| · price · mis_ppb, 10⁹).
+    Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const override;
+    std::string label() const override { return "margin:flat(approx)"; }
+
+ private:
+    Ppb rate(const Json& rows, std::string_view key, const std::string& date,
+             const std::vector<std::pair<std::string, std::string>>& applies) const;
+    Json flat_;
+    Json mis_rows_;
+};
+
+}  // namespace stocksim
