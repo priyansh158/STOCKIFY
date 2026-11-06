@@ -46,6 +46,7 @@ import hashlib
 import heapq
 import json
 import os
+import secrets
 import struct
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -547,7 +548,7 @@ def build(spec: dict) -> str:
     b = _Build(spec, basis)
     flags = FLAG_CLOCK if int(spec.get("clock_cadence_ms", 0)) > 0 else 0
     folder = paths.packs_dir()
-    tmp = folder / f".building-{os.getpid()}.evt"
+    tmp = folder / f".building-{os.getpid()}-{secrets.token_hex(6)}.evt"   # unique per builder, threads too
     count, t_min, t_max = 0, None, None
     sha = hashlib.sha256()
     try:
@@ -586,10 +587,7 @@ def build(spec: dict) -> str:
                 sha.update(chunk)
         digest = sha.hexdigest()
         target = pack_path(digest)
-        if target.exists():
-            tmp.unlink()
-        else:
-            tmp.replace(target)
+        _publish(tmp, target, digest)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -597,8 +595,50 @@ def build(spec: dict) -> str:
     manifest = {"sha256": digest, "format": "evt/1", "spec": spec, "price_basis": basis, "records": count,
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
                 "bytes": target.stat().st_size}
-    manifest_path(digest).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest
+
+
+def _sha_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _publish(tmp: Path, target: Path, digest: str) -> None:
+    """Move a finished pack into place. Packs are content-addressed, so a target that already exists holds the
+    same bytes: keep it. Two builders of one spec can race (both saw no target); the loser's replace fails on
+    Windows while the winner's file is open or memory-mapped by an engine. Then the existing target is accepted
+    only if its hash matches; anything else re-raises. A pack in use is never overwritten."""
+    if target.exists():
+        tmp.unlink()
+        return
+    try:
+        tmp.replace(target)
+    except (PermissionError, FileExistsError):
+        if target.exists() and _sha_file(target) == digest:
+            tmp.unlink(missing_ok=True)
+            return
+        raise
+
+
+def _publish_text(target: Path, text: str) -> None:
+    """Write a manifest atomically (unique tmp, then replace). A racing builder writes the same text; if the
+    replace is refused because someone has the file open, an identical existing manifest is accepted."""
+    tmp = target.with_name(f".{target.name}.{os.getpid()}-{secrets.token_hex(6)}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.replace(target)
+    except (PermissionError, FileExistsError):
+        try:
+            same = target.read_text(encoding="utf-8") == text
+        except OSError:
+            same = False
+        tmp.unlink(missing_ok=True)
+        if not same:
+            raise
 
 
 def _no_recording(day: date) -> bool:
