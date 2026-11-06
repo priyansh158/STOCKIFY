@@ -128,7 +128,7 @@ Server: `server/routers/tests.py`; DTOs in `server/schemas.py`, mirrored in `web
 
 ## M3.15 Strategy how-to (S)
 
-- [ ] `docs/plan/HOWTO_strategy.md`: a complete Python strategy example (an opening-range breakout with a stop and a time exit), how to run it from the CLI and the UI, how to read the labels, and how to port it to C++ when it is settled.
+- [x] `docs/plan/HOWTO_strategy.md`: a complete Python strategy example (an opening-range breakout with a stop and a time exit), how to run it from the CLI and the UI, how to read the labels, and how to port it to C++ when it is settled.
 
 ---
 
