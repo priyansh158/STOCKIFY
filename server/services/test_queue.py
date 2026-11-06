@@ -98,7 +98,15 @@ class TestQueue:
 
     def _watch(self, run_id: str, proc: Process) -> None:
         try:
-            proc.wait()
+            rc = proc.wait()
+            # A runner writes its own final status. One that died first (a crash, a kill, a bad environment)
+            # leaves the row queued or running for ever, so fail it here; a finished row is left as it is.
+            try:
+                from stockify import store, timeutil
+                store.update_run(run_id, status="failed", finished_ns=timeutil.now_ns(),
+                                 error=f"runner exited {rc}; see runner.log", only_if_status=("queued", "running"))
+            except Exception:  # noqa: BLE001 — one failed update must not stop the queue
+                log.exception("could not record the exit of run %s", run_id)
         finally:
             with self._lock:
                 self._running.pop(run_id, None)
