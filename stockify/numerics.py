@@ -44,10 +44,25 @@ def _decimal(text: str) -> Decimal:
 
 
 def _scaled(text: str, scale: int, unit: str) -> int:
-    scaled = _decimal(text) * scale
-    if scaled != scaled.to_integral_value():
-        raise NumericError(f"{text!r} is not a whole number of {unit}")
-    return check_int64(int(scaled))
+    # Exact integer arithmetic on the digits: Decimal multiplication would round to the context's 28 digits
+    # and could make a non-whole value look whole (A4 §0.1). `scale` is a power of ten.
+    sign, digits, exponent = _decimal(text).as_tuple()
+    coefficient = int("".join(map(str, digits)))
+    if coefficient == 0:
+        return 0
+    power = exponent + len(str(scale)) - 1
+    significant = len(str(coefficient))
+    if power >= 0:
+        if significant + power > 19:  # more digits than any int64 has
+            raise OverflowError(f"{text!r} does not fit in int64 {unit}")
+        value = coefficient * 10**power
+    else:
+        if -power > significant:  # every significant digit is below the unit
+            raise NumericError(f"{text!r} is not a whole number of {unit}")
+        value, rest = divmod(coefficient, 10**-power)
+        if rest:
+            raise NumericError(f"{text!r} is not a whole number of {unit}")
+    return check_int64(-value if sign else value)
 
 
 def to_ppb(fraction: str) -> int:

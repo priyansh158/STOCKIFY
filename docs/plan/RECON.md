@@ -236,3 +236,11 @@ Branch `stockify/m3-engine` from `stockify/m2-oracle` (pushed through XI 2.3, `c
 
 No header in A2 conflicts with code that exists; everything else in A2 §1–§2 is still to be written.
 
+## 2026-11-05 — M3.1 foundations (BPD 3.1)
+
+- Headers `types`, `errors`, `int128`, `decimal`, `pcg32`, `sha256`, `format` (float format + CSV), `json_out`, `json_bundle`; doctest 21 cases / 333 assertions. `stockify._engine.testing` exposes them so `tests/stockify/test_engine_foundations.py` checks C++ against the oracle's Python on seeded random inputs: 20,000 cases per integer helper and per decimal unit, P-01 (20 seeds × 2 streams × 10,000 draws, plus `below`, `random`, `next_u64`), U-11 (10⁶ doubles against `repr`), canonical JSON, CSV cells, SHA-256.
+- Floats: MSVC's `std::to_chars(…, scientific)` gives the shortest round-trip digits; laying them out with Python's rule (`-4 < decpt <= 16` → fixed) matched `repr` on all 10⁶.
+- Found and fixed in the oracle: `numerics._scaled` multiplied inside `Decimal`'s 28-digit context, so a value with more than 28 significant digits was rounded and could pass as whole (`"1.0000000000000000000000000001"` became exactly 10⁹ ppb). It now works on the exact digits (A4 §0.1 already required this; no D-entry). Real configs never come close to 28 digits, so no result changes.
+- Found in C++ while cross-checking: `floor_to(INT64_MIN, -1)` overflowed in its intermediate `floor_div`; `floor_to` / `ceil_to` are now `x ∓ remainder`, so only a final result outside int64 is an error, as in Python.
+- `json_bundle` reads the envelope (schema, seed, packs, strategy, labels) and keeps the document; pack paths stay as written (relative to `$LAB`), because C++ never resolves lab paths — Python passes absolute paths to `add_pack`.
+

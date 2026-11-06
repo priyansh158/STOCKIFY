@@ -64,7 +64,14 @@ configure_file(src/build_info.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/stoc
 message(STATUS "stocksim engine_build_id ${STOCKSIM_BUILD_ID} (git ${STOCKSIM_GIT_SHA}, dirty ${STOCKSIM_GIT_DIRTY})")
 
 # ── Targets ──────────────────────────────────────────────────────────────────
-add_library(stocksim_core STATIC src/build_info.cpp)
+add_library(stocksim_core STATIC
+  src/build_info.cpp
+  src/types.cpp
+  src/decimal.cpp
+  src/sha256.cpp
+  src/format.cpp
+  src/json_out.cpp
+  src/json_bundle.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -82,7 +89,13 @@ add_custom_command(TARGET _engine POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:_engine>" "${REPO_ROOT}/stockify/"
   COMMENT "Copying _engine into stockify/")
 
-add_executable(stocksim_tests tests/test_main.cpp tests/test_build_info.cpp)
+add_executable(stocksim_tests
+  tests/test_main.cpp
+  tests/test_build_info.cpp
+  tests/test_numbers.cpp
+  tests/test_pcg32.cpp
+  tests/test_output.cpp
+  tests/test_bundle.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_core)
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
 

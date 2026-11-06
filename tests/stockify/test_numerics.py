@@ -37,6 +37,18 @@ class RateConversionTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(n.NumericError):
                 n.to_ppb(bad)
 
+    def test_exact_beyond_the_decimal_context_precision(self):
+        # 29 significant digits: Decimal's 28-digit multiplication would round this to exactly 1e9 ppb.
+        with self.assertRaises(n.NumericError):
+            n.to_ppb("1.0000000000000000000000000001")
+        self.assertEqual(n.to_ppb("1.000000000000000000000000000"), 1_000_000_000)
+        self.assertEqual(n.to_paise("12345678901234567.89"), 1_234_567_890_123_456_789)
+        self.assertEqual(n.to_paise("0e999999999"), 0)
+        with self.assertRaises(OverflowError):
+            n.to_paise("1e999999999")  # fails fast instead of building a billion-digit integer
+        with self.assertRaises(n.NumericError):
+            n.to_paise("1e-999999999")
+
 
 class IntegerHelperTests(unittest.TestCase):
     def test_floor_and_ceil_follow_mathematics_for_negatives(self):

@@ -19,13 +19,13 @@ Concepts: C-3, C-8, C-9, C-10, C-11, C-16. Contract: `A4_engine_semantics.md`. I
 
 Files: `engine/include/stocksim/{types,int128,decimal,pcg32,sha256,format,json_out,json_bundle}.hpp`, matching `src/*.cpp`.
 
-- [ ] `types.hpp`: `Paise`, `Qty`, `TimeNs`, `Ppb`, `Ppm`, `Bp` (all integers), `InstrumentId`, `OrderId`, enums for side, product, order type, validity, status (incl. `Sliced`), reasons (A4 §3).
-- [ ] `int128.hpp`: the integer helpers of A4 §0.2 with 128-bit intermediates, for MSVC (D-26); tested against Python on random inputs.
-- [ ] `decimal.hpp`: exact decimal-string → ppb/ppm/bp/paise conversion; rejects non-integral results; **never via `double`** (A4 §0.1).
-- [ ] `pcg32.hpp`: PCG32 exactly as A4 §4.5 (seeding, `next_u32`, `below`, `next_u64`, `random`); golden sequence test shared with the oracle (A3 P-01).
-- [ ] `sha256.hpp`: wrapper over vendored picosha2.
-- [ ] `format.hpp` / `json_out.hpp`: CSV writer (fixed columns, `\n`, integers and enums only) and the canonical float format + JSON writer of A4 §9.2, tested against Python's `repr` (A3 U-11).
-- [ ] `json_bundle.hpp`: load `bundle.json` (A1 §6.2) with nlohmann/json; money and rates in the bundle are already integers (paise, ppb, ppm, bp).
+- [x] `types.hpp`: `Paise`, `Qty`, `TimeNs`, `Ppb`, `Ppm`, `Bp` (all integers), `InstrumentId`, `OrderId`, enums for side, product, order type, validity, status (incl. `Sliced`), reasons (A4 §3).
+- [x] `int128.hpp`: the integer helpers of A4 §0.2 with 128-bit intermediates, for MSVC (D-26); tested against Python on random inputs.
+- [x] `decimal.hpp`: exact decimal-string → ppb/ppm/bp/paise conversion; rejects non-integral results; **never via `double`** (A4 §0.1).
+- [x] `pcg32.hpp`: PCG32 exactly as A4 §4.5 (seeding, `next_u32`, `below`, `next_u64`, `random`); golden sequence test shared with the oracle (A3 P-01).
+- [x] `sha256.hpp`: wrapper over vendored picosha2.
+- [x] `format.hpp` / `json_out.hpp`: CSV writer (fixed columns, `\n`, integers and enums only) and the canonical float format + JSON writer of A4 §9.2, tested against Python's `repr` (A3 U-11).
+- [x] `json_bundle.hpp`: load `bundle.json` (A1 §6.2) with nlohmann/json; money and rates in the bundle are already integers (paise, ppb, ppm, bp).
 
 ## M3.2 Event packs and sources (S)
 
