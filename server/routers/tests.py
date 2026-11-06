@@ -91,19 +91,59 @@ def _symbols(row: dict) -> dict[int, str]:
     return {r["id"]: r["tradingsymbol"] for r in rows if isinstance(r, dict) and "id" in r and r.get("tradingsymbol")}
 
 
+_CHUNK = 1 << 20
+
+
+def _count_lines(path: Path) -> int:
+    """Lines as str.splitlines() counts them for a "\\n"-separated file, streaming (never the whole file)."""
+    n, last = 0, b""
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(_CHUNK), b""):
+            n += chunk.count(b"\n")
+            last = chunk[-1:]
+    return n + (1 if last not in (b"", b"\n") else 0)
+
+
+def _last_lines(path: Path, limit: int) -> list[str]:
+    """The last `limit` lines, read backwards in blocks from the end of the file."""
+    with path.open("rb") as f:
+        f.seek(0, 2)
+        end = pos = f.tell()
+        data = b""
+        while pos > 0 and data.count(b"\n") <= limit:
+            step = min(_CHUNK, pos)
+            pos -= step
+            f.seek(pos)
+            data = f.read(step) + data
+        lines = data.decode("utf-8", errors="replace").splitlines()
+        if pos > 0:
+            lines = lines[1:]            # the first line read may be cut off at the block boundary
+        return lines[-limit:] if end else []
+
+
 def _tail(path: Path | None, *, offset: int | None, limit: int) -> tuple[list[str], int]:
+    """(lines, total line count) of a log: its last `limit` lines, or `limit` lines from `offset`. Streams the
+    file (a run's log can be large), never reading it whole into memory."""
     if path is None or not path.exists():
         return [], 0
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    total = _count_lines(path)
     if offset is None:
-        return lines[-limit:] if limit else [], len(lines)
-    return lines[offset:offset + limit], len(lines)
+        return (_last_lines(path, limit) if limit else []), total
+    out: list[str] = []
+    if offset < total:
+        with path.open("rb") as f:
+            for i, line in enumerate(f):
+                if i >= offset + limit:
+                    break
+                if i >= offset:
+                    out.append(line.decode("utf-8", errors="replace").rstrip("\r\n"))
+    return out, total
 
 
 # ── catalogue ────────────────────────────────────────────────────────────────
 
 @router.get("/api/strategies", response_model=list[StrategyDTO])
-async def strategies() -> list[StrategyDTO]:
+def strategies() -> list[StrategyDTO]:
     from stockify.strategies import _catalogue
     return [StrategyDTO(**s) for s in _catalogue.catalogue()]
 
@@ -111,7 +151,7 @@ async def strategies() -> list[StrategyDTO]:
 # ── fixed /api/tests paths (before /{run_id}) ────────────────────────────────
 
 @router.get("/api/tests", response_model=list[TestRunDTO])
-async def list_tests(status: str | None = Query(None), family: str | None = Query(None),
+def list_tests(status: str | None = Query(None), family: str | None = Query(None),
                      offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500)) -> list[TestRunDTO]:
     from stockify import store
     if status is not None and status not in STATUSES:
@@ -120,7 +160,7 @@ async def list_tests(status: str | None = Query(None), family: str | None = Quer
 
 
 @router.post("/api/tests", response_model=TestCreatedDTO, status_code=201)
-async def create_test(config: dict = Body(...)) -> TestCreatedDTO:
+def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     from stockify import runconfig, runs
     from stockify.strategies import _catalogue
     from server.services.test_queue import get_queue
@@ -143,7 +183,7 @@ async def create_test(config: dict = Body(...)) -> TestCreatedDTO:
 
 
 @router.get("/api/tests/compare")
-async def compare_tests() -> None:
+def compare_tests() -> None:
     """Reserved for M6 (A2 §6): declared here so `compare` is never read as a run id."""
     raise HTTPException(status_code=501, detail="comparing tests arrives in M6")
 
@@ -151,7 +191,7 @@ async def compare_tests() -> None:
 # ── one run ──────────────────────────────────────────────────────────────────
 
 @router.get("/api/tests/{run_id}", response_model=TestRunDetailDTO)
-async def get_test(run_id: str) -> TestRunDetailDTO:
+def get_test(run_id: str) -> TestRunDetailDTO:
     row = _row_or_404(run_id)
     folder = _folder(row)
     manifest = None
@@ -162,14 +202,14 @@ async def get_test(run_id: str) -> TestRunDetailDTO:
 
 
 @router.get("/api/tests/{run_id}/orders", response_model=list[dict[str, Any]])
-async def test_orders(run_id: str, offset: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=5000)) -> list[dict]:
+def test_orders(run_id: str, offset: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=5000)) -> list[dict]:
     from stockify import store
     _row_or_404(run_id)
     return store.run_rows(run_id, "orders", offset=offset, limit=limit)
 
 
 @router.get("/api/tests/{run_id}/fills", response_model=list[TestFillDTO])
-async def test_fills(run_id: str, offset: int = Query(0, ge=0),
+def test_fills(run_id: str, offset: int = Query(0, ge=0),
                      limit: int = Query(500, ge=1, le=5000)) -> list[TestFillDTO]:
     from stockify import store
     symbols = _symbols(_row_or_404(run_id))
@@ -180,7 +220,7 @@ async def test_fills(run_id: str, offset: int = Query(0, ge=0),
 
 
 @router.get("/api/tests/{run_id}/equity", response_model=list[TestEquityDTO])
-async def test_equity(run_id: str, offset: int = Query(0, ge=0),
+def test_equity(run_id: str, offset: int = Query(0, ge=0),
                       limit: int = Query(5000, ge=1, le=20000)) -> list[TestEquityDTO]:
     from stockify import store
     _row_or_404(run_id)
@@ -190,7 +230,7 @@ async def test_equity(run_id: str, offset: int = Query(0, ge=0),
 
 
 @router.get("/api/tests/{run_id}/charges", response_model=list[TestChargeDTO])
-async def test_charges(run_id: str, offset: int = Query(0, ge=0),
+def test_charges(run_id: str, offset: int = Query(0, ge=0),
                        limit: int = Query(5000, ge=1, le=20000)) -> list[TestChargeDTO]:
     from stockify import store
     _row_or_404(run_id)
@@ -205,7 +245,7 @@ async def test_charges(run_id: str, offset: int = Query(0, ge=0),
 
 
 @router.get("/api/tests/{run_id}/logs", response_model=TestLogsDTO)
-async def test_logs(run_id: str, tail: int = Query(40, ge=0, le=5000), offset: int | None = Query(None, ge=0),
+def test_logs(run_id: str, tail: int = Query(40, ge=0, le=5000), offset: int | None = Query(None, ge=0),
                     limit: int = Query(200, ge=1, le=5000)) -> TestLogsDTO:
     """The end of events_log.txt (or a page of it with `offset`/`limit`), plus the end of runner.log."""
     row = _row_or_404(run_id)
@@ -218,7 +258,7 @@ async def test_logs(run_id: str, tail: int = Query(40, ge=0, le=5000), offset: i
 
 
 @router.post("/api/tests/{run_id}/cancel", response_model=TestRunDTO)
-async def cancel_test(run_id: str) -> TestRunDTO:
+def cancel_test(run_id: str) -> TestRunDTO:
     from stockify import store
     from server.services.test_queue import get_queue
     row = _row_or_404(run_id)

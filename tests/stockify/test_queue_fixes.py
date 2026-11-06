@@ -278,3 +278,34 @@ class LockedDatabaseTests(SandboxedDBTest):
             q.cancel("c")
         self.assertEqual(q.waiting(), ["c"])                          # still there to cancel again
         self.assertEqual(q.cancel("c"), "queued")
+
+
+class ApiBlockingTests(SandboxedDBTest):
+    """RD 4.6: the tests API never blocks the event loop with SQLite or file reads, and log tails read the end."""
+
+    db_modules = (store,)
+
+    def test_handlers_are_plain_functions(self):
+        import inspect
+        from server.routers import tests as router
+        endpoints = [r.endpoint for r in router.router.routes]
+        self.assertGreater(len(endpoints), 8)
+        self.assertEqual([e.__name__ for e in endpoints if inspect.iscoroutinefunction(e)], [])
+
+    def test_tail_matches_the_whole_file_reading(self):
+        from unittest import mock
+        from server.routers.tests import _tail
+        from stockify import paths
+        f = paths.lab_dir() / "log.txt"
+        cases = ["", "one", "one\n", "a\nb\nc", "a\nb\nc\n", "\n\n", "x\n" * 5000 + "last",
+                 "é and ₹\nsecond ₹ line\n" * 3000]
+        for text in cases:
+            f.write_bytes(text.encode("utf-8"))
+            whole = text.splitlines()
+            with self.subTest(size=len(text)), mock.patch("pathlib.Path.read_text", side_effect=AssertionError):
+                for limit in (0, 1, 3, 40, 10_000):
+                    self.assertEqual(_tail(f, offset=None, limit=limit), (whole[-limit:] if limit else [], len(whole)))
+                for offset, limit in ((0, 2), (1, 3), (4990, 50), (10**6, 5)):
+                    self.assertEqual(_tail(f, offset=offset, limit=limit),
+                                     (whole[offset:offset + limit], len(whole)))
+        self.assertEqual(_tail(None, offset=None, limit=5), ([], 0))
