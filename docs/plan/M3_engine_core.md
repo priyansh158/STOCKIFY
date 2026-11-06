@@ -105,9 +105,9 @@ Files: `strategy.hpp`, `context.hpp/.cpp`, `indicators.hpp`, `engine/strategies/
 
 Files: `stockify/runs.py`, `stockify/__main__.py` (`run`), `engine/tools/stocksim_run.cpp`.
 
-- [ ] `python -m stockify run --config run.json`: resolve the bundle (M2.1), build or locate packs (M1.8), run through `stockify._engine`, write the run folder (A1 §6.3), import summary rows into `lab.sqlite` (A1 §4). This is what the API launches as a subprocess (I-9).
-- [ ] `stocksim_run --bundle <run>/bundle.json --out <dir>`: C++-registered strategies only; for benchmarks and CI.
-- [ ] Re-run from a folder: `python -m stockify run --rerun <run_id>` uses the archived bundle and packs and must reproduce `determinism.json` (I-8).
+- [x] `python -m stockify run --config run.json`: resolve the bundle (M2.1), build or locate packs (M1.8), run through `stockify._engine`, write the run folder (A1 §6.3), import summary rows into `lab.sqlite` (A1 §4). This is what the API launches as a subprocess (I-9).
+- [x] `stocksim_run --bundle <run>/bundle.json --out <dir>`: C++-registered strategies only; for benchmarks and CI.
+- [x] Re-run from a folder: `python -m stockify run --rerun <run_id>` uses the archived bundle and packs and must reproduce `determinism.json` (I-8).
 
 ## M3.12 Parity with the oracle (M)
 
@@ -139,6 +139,8 @@ cmake --build --preset win-msvc-release && ctest --test-dir engine/build/win-msv
 .\.venv\Scripts\python.exe tests\run_tests.py
 python -m stockify golden run --impl oracle && python -m stockify golden run --impl engine
 python -m stockify run --config examples/runs/sma_reliance_daily.json        # twice: identical determinism.json
+python -m stockify run --rerun <run_id>                                      # DT-03: exit 0 = determinism.json reproduced
+engine\build\win-msvc-release\stocksim_run.exe --bundle <cpp_run>\bundle.json --out <dir>   # C++ strategies, no Python
 python -m stockify compare-artifacts <oracle_run> <engine_run> --tol-paise 0
 cd web; npm run lint; npm run build
 ```

@@ -101,7 +101,7 @@ add_library(stocksim_strategies OBJECT
 target_link_libraries(stocksim_strategies PUBLIC stocksim_core)
 target_compile_options(stocksim_strategies PRIVATE ${STOCKSIM_CXX_FLAGS})
 
-add_executable(stocksim_run src/run_main.cpp)
+add_executable(stocksim_run tools/stocksim_run.cpp)
 target_link_libraries(stocksim_run PRIVATE stocksim_strategies stocksim_core)
 target_compile_options(stocksim_run PRIVATE ${STOCKSIM_CXX_FLAGS})
 
