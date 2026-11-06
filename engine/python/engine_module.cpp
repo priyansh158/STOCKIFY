@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "stocksim/build_info.hpp"
+#include "stocksim/costs.hpp"
 #include "stocksim/decimal.hpp"
 #include "stocksim/format.hpp"
 #include "stocksim/int128.hpp"
@@ -145,6 +146,40 @@ void bind_testing(py::module_& t) {
     t.def("int128_cmp", [](const py::int_& a, const py::int_& b) {
         const auto c = to_i128(a) <=> to_i128(b);
         return c < 0 ? -1 : (c > 0 ? 1 : 0);
+    });
+
+    // The C++ cost engine on a bundle's charges object (rates already in ppb) and a run's costs config.
+    t.def("costs_eval", [](const std::string& charges_json, const std::string& cfg_json, const std::string& what,
+                           const std::string& kind, const std::string& product, const std::string& side,
+                           std::int64_t value, const std::string& date) -> py::object {
+        const stocksim::Costs c(stocksim::Json::parse(charges_json), stocksim::Json::parse(cfg_json));
+        std::optional<stocksim::ChargeParts> p;
+        if (what == "order") {
+            p = c.order(kind, stocksim::parse_product(product).value(), stocksim::parse_side(side).value(), value, date);
+        } else if (what == "dp") {
+            p = c.dp(date);
+        } else if (what == "sqoff_fee") {
+            p = c.sqoff_fee(date);
+        } else if (what == "exercise") {
+            p = c.exercise(kind, value, date);
+        } else {
+            throw py::value_error("what: order | dp | sqoff_fee | exercise");
+        }
+        if (!p) {
+            return py::none();
+        }
+        py::dict d;
+        d["turnover"] = p->turnover;
+        d["brokerage"] = p->brokerage;
+        d["stt"] = p->stt;
+        d["exchange"] = p->exchange;
+        d["sebi"] = p->sebi;
+        d["stamp"] = p->stamp;
+        d["gst"] = p->gst;
+        d["dp"] = p->dp;
+        d["other"] = p->other;
+        d["total"] = p->row_total();
+        return d;
     });
 
     py::class_<stocksim::Pcg32>(t, "Pcg32")

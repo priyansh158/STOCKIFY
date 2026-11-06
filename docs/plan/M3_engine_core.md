@@ -74,9 +74,9 @@ Files: `fills/bar.cpp`, `fills/snapshot_ltp.cpp`, `fills/snapshot_quote.cpp`, `f
 
 Files: `costs.hpp/.cpp`.
 
-- [ ] Charge rows from the bundle, selected by (segment, product, trade date). Per-order aggregation and component rounding per A4 §5. DP charge for CNC sell days; auto-square-off fee.
-- [ ] G08 (Kite virtual contract note fixtures) and G09 (STT switch on 2026-04-01) pass on both implementations.
-- [ ] `charges.csv`: one row per charged order with every component, so a contract note can be compared line by line.
+- [x] Charge rows from the bundle, selected by (segment, product, trade date). Per-order aggregation and component rounding per A4 §5. DP charge for CNC sell days; auto-square-off fee.
+- [x] G08 (Kite virtual contract note fixtures) and G09 (STT switch on 2026-04-01) pass on both implementations.
+- [x] `charges.csv`: one row per charged order with every component, so a contract note can be compared line by line.
 
 ## M3.8 Ledger, T0 margin, MIS, end of day (M)
 

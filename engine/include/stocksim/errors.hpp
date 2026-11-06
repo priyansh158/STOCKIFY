@@ -19,4 +19,10 @@ class FormatError : public std::runtime_error {
     explicit FormatError(const std::string& what) : std::runtime_error(what) {}
 };
 
+// A run cannot continue (the oracle's RunError, CostError and the like).
+class RunError : public std::runtime_error {
+ public:
+    explicit RunError(const std::string& what) : std::runtime_error(what) {}
+};
+
 }  // namespace stocksim

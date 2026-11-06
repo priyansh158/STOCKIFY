@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "stocksim/errors.hpp"
 #include "stocksim/event.hpp"
 #include "stocksim/instruments.hpp"
 #include "stocksim/int128.hpp"
@@ -35,11 +36,6 @@
 namespace stocksim {
 
 class Engine;
-
-class RunError : public std::runtime_error {
- public:
-    explicit RunError(const std::string& what) : std::runtime_error(what) {}
-};
 
 // ── Market state (A4 §2) ─────────────────────────────────────────────────────
 
