@@ -376,7 +376,8 @@ class CppFromTheFormTests(SandboxedDBTest):
         self.assertEqual((s["run"]["status"], s["run"]["strategy_ref"], s["run"]["error"]), ("done", "sma_cross_cpp", None))
         fills = self.client.get(f"/api/tests/{sma.json()['run_id']}/fills").json()
         self.assertEqual([(f["side"], f["tradingsymbol"]) for f in fills], [("BUY", "RELIANCE"), ("SELL", "RELIANCE")])
-        self.assertEqual(len(self.client.get(f"/api/tests/{sma.json()['run_id']}/equity").json()), 7)
+        # 7 trading days, plus the final close-out (D-52): the last daily candle is knowable the next midnight
+        self.assertEqual(len(self.client.get(f"/api/tests/{sma.json()['run_id']}/equity").json()), 8)
 
         o = self.client.get(f"/api/tests/{orb.json()['run_id']}").json()
         # daily bars only: the intraday strategy runs to the end and simply never trades
