@@ -12,10 +12,7 @@ namespace stocksim {
 
 namespace {
 
-std::int64_t int_or(const Json& obj, const char* key, std::int64_t fallback) {
-    const auto it = obj.find(key);
-    return it == obj.end() || it->is_null() ? fallback : it->get<std::int64_t>();
-}
+const Json& run_of(const Bundle& b) { return require(b.root, "run", "bundle"); }
 
 }  // namespace
 
@@ -25,13 +22,21 @@ Engine::Engine(Bundle bundle)
     : bundle_(std::move(bundle)),
       calendar_(require(bundle_.root, "days", "bundle")),
       instruments_(require(bundle_.root, "instruments", "bundle"), calendar_),
+      costs_(require(bundle_.root, "charges", "bundle"), require(run_of(bundle_), "costs", "run")),
+      margin_(bundle_.root),
       ctx_(*this),
       strategy_rng_(bundle_.seed, kStrategyStream),
+      book_(Ledger(require_int(run_of(bundle_), "capital_paise", "run"), require_int(run_of(bundle_), "capital_paise", "run")),
+            Pcg32(bundle_.seed, kSlippageStream)),
       labels_(bundle_.labels.begin(), bundle_.labels.end()) {
     const Json& pricing = require(bundle_.root, "pricing", "bundle");
     stale_after_ns_ = checked_mul(require_int(pricing, "stale_after_ms", "pricing"), 1'000'000);
-    const Json& run = require(bundle_.root, "run", "bundle");
-    fill_kind_ = require_string(require(run, "fill_model", "run"), "kind", "run.fill_model");
+    const Json& run = run_of(bundle_);
+    fill_cfg_ = require(run, "fill_model", "run");
+    fill_kind_ = require_string(fill_cfg_, "kind", "run.fill_model");
+    policies_ = require(run, "policies", "run");
+    mark_kind_ = require_string(run, "mark", "run");
+    latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
 }
 
@@ -171,10 +176,6 @@ void Engine::finish() {
     process_internal_before(std::nullopt);
 }
 
-void Engine::activate_due(TimeNs /*t*/) {
-    // M3.5: PENDING orders whose t_activate has come activate here, in (t_activate, order_id) order.
-}
-
 // ── Logging and callbacks ────────────────────────────────────────────────────
 
 void Engine::log(std::string_view level, std::string_view msg) {  // runner.log
@@ -186,12 +187,38 @@ void Engine::deliver() {  // runner._deliver
         return;
     }
     delivering_ = true;
-    // M3.5: pop and deliver the queued on_order_update / on_fill callbacks in the order generated.
+    try {
+        while (!book_.callbacks.empty()) {
+            const Callback cb = book_.callbacks.front();
+            book_.callbacks.pop_front();
+            if (!cb.is_fill) {
+                // The order as it is now (OrderView.of at delivery), not as it was when the callback was queued.
+                strategy_->on_order_update(ctx_, view_of(book_.orders.at(cb.order_id)));
+            } else {
+                const Fill& f = cb.fill;
+                strategy_->on_fill(ctx_, FillView{f.order_id, f.instrument, std::string(to_string(f.side)), f.qty,
+                                                  f.price, f.t_ns, f.evidence});
+            }
+        }
+    } catch (...) {
+        delivering_ = false;
+        throw;
+    }
     delivering_ = false;
 }
 
-void Engine::track_open() {
-    // M3.8: record (t, any position open) transitions for the exposure metric.
+void Engine::track_open() {  // runner._track_open: (t, any position open) transitions for the exposure metric
+    bool is_open = false;
+    for (const Position& p : book_.ledger.positions()) {
+        if (p.q != 0) {
+            is_open = true;
+            break;
+        }
+    }
+    const bool was_open = open_changes_.empty() ? false : open_changes_.back().second;
+    if (was_open != is_open) {
+        open_changes_.emplace_back(now_, is_open);
+    }
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -247,13 +274,24 @@ void Engine::on_market(const Event& e) {  // runner._on_market
         }
         m.bars[b.interval_s].push_back(BarRow{b.start_ns, b.open, b.high, b.low, b.close, b.volume, b.oi});
         if (b.interval_s == *m.min_interval) {
-            // M3.6: match the instrument's eligible orders against the bar (bar or eod_close model).
-            m.ltp = b.close;
-            m.t = e.t;
+            if (fill_kind_ == "bar") {
+                match_bar(iid, b, e.t);
+            } else if (fill_kind_ == "eod_close") {
+                match_eod(iid, b, e.t);
+            }
+            MarketState& mm = market_[iid];  // matching never adds instruments, but read it fresh
+            mm.ltp = b.close;
+            mm.t = e.t;
             underlying_last_[iid] = b.close;
-            // M3.5: DAY orders whose session's daily bar has now been used are cancelled (D-44).
+            const Date bar_day = date_of(b.start_ns);
+            for (const OrderId id : live_orders()) {  // D-44: the session's daily bar has now been used
+                Order& o = book_.orders.at(id);
+                if (o.instrument == iid && o.eod_after && *o.eod_after <= bar_day) {
+                    cancel_in(book_, o, Reason::Eod);
+                }
+            }
         }
-        // M3.5: IOC remainders are cancelled after their first eligible event (A4 §3.7).
+        after_market(iid);
         deliver();
         const auto sb = sub_bars_.find(iid);
         if (sb != sub_bars_.end() && sb->second.count(b.interval_s) != 0) {
@@ -298,7 +336,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
     underlying_last_[iid] = q.ltp;
     const std::optional<Qty> prev_vol = m.s0 ? std::optional<Qty>(m.s0->volume) : std::nullopt;
     build_bars(iid, e.t, q.ltp, q.volume, prev_vol);
-    // M3.5: IOC remainders are cancelled after their first eligible event (A4 §3.7).
+    after_market(iid);
     deliver();
     if (sub_ticks_.count(iid) != 0) {
         const MarketState& mm = market_[iid];
@@ -336,16 +374,6 @@ std::optional<Evidence> Engine::evidence(const MarketState& m) {  // runner._evi
     ev.t0 = s0.t;
     ev.t1 = s1.t;
     return ev;
-}
-
-void Engine::match_snapshot(InstrumentId iid, MarketState& m) {  // runner._match_snapshot
-    const Spec* spec = instruments_.spec_on(iid, date_of(now_));
-    if (spec == nullptr) {
-        throw RunError("instrument " + std::to_string(iid) + " has no spec on " + iso_date(date_of(now_)));
-    }
-    const std::optional<Evidence> ev = evidence(m);
-    // M3.6: trigger and fill the instrument's eligible orders (snapshot_ltp / snapshot_quote, A4 §4.2–§4.3).
-    (void)ev;
 }
 
 void Engine::build_bars(InstrumentId iid, TimeNs t, Paise price, std::optional<Qty> vol,
@@ -436,37 +464,139 @@ void Engine::on_refdata(const Event& e) {  // runner._on_refdata
 
 void Engine::on_settle(const Event& e) {  // runner._on_settle
     const SettleFields s = decode_settle(e);
-    if (s.subtype == 1) {
-        // M3.8: daily settlement price: variation-settle open futures positions in this contract.
+    if (s.subtype == 1) {  // the daily settlement price of a contract: variation-settle its open futures
+        for (Position& p : book_.ledger.positions()) {
+            if (p.instrument == e.instrument && p.q != 0 && p.style == CashStyle::Variation &&
+                instruments_.at(e.instrument).kind == "FUT") {
+                book_.ledger.settle_variation(p, s.price, "settle");
+            }
+        }
         return;
     }
     fsp_seen_[{e.instrument, s.date}] = s.price;
-    // M3.8: final settlement of expiring contracts at this FSP (A4 §7.2).
+    settle_final(e.instrument, s.date, s.price, "settle");
 }
 
 // ── Internal events ──────────────────────────────────────────────────────────
 
 void Engine::on_phase(const InternalEvent& ev) {  // runner._on_phase
-    // M3.5: at the CAS phase start with cas_policy none, open orders in CM_CAS stocks are cancelled (R_CAS).
+    if (ev.group == "CM_CAS" && ev.phase == "CAS" && policies_.at("cas").get<std::string>() == "none") {
+        const Date d = date_of(now_);
+        for (auto& [id, o] : book_.orders) {  // all orders, in id order
+            if (o.live() && group_of(o.instrument, d) == "CM_CAS") {
+                cancel_in(book_, o, Reason::Cas);
+            }
+        }
+    }
     strategy_->on_session_phase(ctx_, PhaseChange{ev.group, ev.phase, now_});
     deliver();
 }
 
-void Engine::seg_close(const InternalEvent& /*ev*/) {  // runner._seg_close
-    // M3.5: DAY orders of this group expire (EOD). M3.8: provisional marks of open futures.
+void Engine::seg_close(const InternalEvent& ev) {  // runner._seg_close
+    const Date d = ev.date;
+    for (const OrderId id : live_orders()) {
+        Order& o = book_.orders.at(id);
+        if (o.validity == Validity::Day && group_of(o.instrument, d) == ev.group && o.trade_date.value_or(d) <= d) {
+            if (o.status == OrderStatus::Pending && o.t_activate > now_) {
+                continue;  // queued for a later session
+            }
+            if (daily_bars(o.instrument)) {
+                o.eod_after = d;  // D-44: cancelled once today's daily bar is matched
+                continue;
+            }
+            cancel_in(book_, o, Reason::Eod);
+        }
+    }
+    if (ev.group == "FO_FUT" || ev.group == "FO_OPT") {  // provisional marks of open futures (A4 §6.4)
+        for (Position& p : book_.ledger.positions()) {
+            const Instrument& row = instruments_.at(p.instrument);
+            if (p.q != 0 && p.style == CashStyle::Variation && row.session_group == ev.group && row.kind == "FUT") {
+                if (const std::optional<Paise> m = mark_price(p.instrument)) {
+                    book_.ledger.settle_variation(p, *m, "ltp");
+                }
+            }
+        }
+    }
     deliver();
 }
 
-void Engine::mis_sqoff(const InternalEvent& /*ev*/) {  // runner._mis_sqoff
-    // M3.8: AUTO_SQOFF market orders for this segment's open MIS positions.
+void Engine::mis_sqoff(const InternalEvent& ev) {  // runner._mis_sqoff
+    std::vector<std::pair<std::pair<InstrumentId, std::string>, std::size_t>> keyed;  // sorted(positions.items())
+    const auto& ps = book_.ledger.positions();
+    for (std::size_t i = 0; i < ps.size(); ++i) {
+        keyed.push_back({{ps[i].instrument, std::string(to_string(ps[i].product))}, i});
+    }
+    std::sort(keyed.begin(), keyed.end());
+    for (const auto& [key, i] : keyed) {
+        const Position p = book_.ledger.positions()[i];  // a copy: place() may add positions
+        if (p.product != Product::MIS || p.q == 0) {
+            continue;
+        }
+        const std::string_view g = group_of(p.instrument, ev.date);
+        if ((g.substr(0, 2) == "FO" ? "FO" : "CM") != ev.segment) {
+            continue;
+        }
+        PlaceRequest r;
+        r.instrument = p.instrument;
+        r.side = p.d > 0 ? "SELL" : "BUY";
+        r.qty = p.q;
+        r.product = "MIS";
+        r.type = "MARKET";
+        r.tag = "AUTO_SQOFF";
+        place(r, 0, true);
+    }
     deliver();
 }
 
-void Engine::day_end(const InternalEvent& /*ev*/) {  // runner._day_end
-    // M3.8: expiry fallback, positions_eod rows, the day's NAV row.
+void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
+    const Date d = ev.date;
+    // Expiry fallback (A4 §7.2): no FSP by DAY_END.
+    for (std::size_t i = 0; i < book_.ledger.positions().size(); ++i) {
+        const Position& p = book_.ledger.positions()[i];
+        const Instrument& row = instruments_.at(p.instrument);
+        if (p.q != 0 && row.is_derivative() && row.last_day() == d) {
+            const std::optional<InstrumentId> uid = row.underlying_id;
+            std::optional<Paise> last;
+            if (uid && *uid != 0) {
+                const auto it = underlying_last_.find(*uid);
+                if (it != underlying_last_.end()) {
+                    last = it->second;
+                }
+            }
+            if (!last) {
+                throw RunError((row.tradingsymbol.empty() ? std::to_string(p.instrument) : row.tradingsymbol) +
+                               ": expired on " + iso_date(d) + " with no FSP and no underlying price");
+            }
+            labels_.insert("settlement_fallback");
+            settle_final(*uid, d, *last, "fallback");
+        }
+    }
+    Ledger& led = book_.ledger;
+    std::vector<std::pair<std::pair<InstrumentId, std::string>, std::size_t>> keyed;  // sorted(positions.items())
+    for (std::size_t i = 0; i < led.positions().size(); ++i) {
+        keyed.push_back({{led.positions()[i].instrument, std::string(to_string(led.positions()[i].product))}, i});
+    }
+    std::sort(keyed.begin(), keyed.end());
+    for (const auto& [key, i] : keyed) {
+        const Position& p = led.positions()[i];
+        if (p.q == 0) {
+            continue;
+        }
+        std::optional<Paise> m = mark_price(p.instrument);
+        const std::string src = m ? mark_kind_ : "last";
+        if (!m) {
+            m = p.last_mark ? *p.last_mark : p.avg_price();
+        }
+        const Paise unreal = p.d * checked_sub(checked_mul(p.q, *m), p.c);
+        positions_eod_.push_back(PositionEodRow{d, p.instrument, p.product, p.qty(), p.avg_price(), *m, src, unreal,
+                                                p.realised});
+    }
+    const Paise nav = led.nav([this](InstrumentId i) { return mark_price(i); });
+    const Paise blk = blocked(led, d);
+    equity_.push_back(EquityRow{d, nav, led.cash, blk, nav - led.capital + led.charges_total, led.charges_total});
     strategy_->on_session_end(ctx_);
     deliver();
-    // M3.8: CNC sale proceeds held back on earlier days become usable.
+    book_.ledger.release_day(next_date(d));
 }
 
 void Engine::on_timer(const InternalEvent& ev) {  // runner._on_timer
@@ -604,5 +734,47 @@ std::optional<InstrumentId> Context::resolve(std::string_view symbol) const {
 }
 
 const Spec* Context::spec(InstrumentId iid) const { return e_.instruments_.spec_on(iid, e_.date_of(e_.now_)); }
+
+const Json& Context::instrument_rows() const { return require(e_.bundle_.root, "instruments", "bundle"); }
+
+OrderId Context::place(const PlaceRequest& r) { return e_.place(r); }
+
+bool Context::modify(OrderId id, const ModifyRequest& m) { return e_.modify(id, m); }
+
+bool Context::cancel(OrderId id) { return e_.cancel(id, Reason::User); }
+
+std::optional<OrderView> Context::order(OrderId id) const {
+    const auto it = e_.book_.orders.find(id);
+    return it == e_.book_.orders.end() ? std::nullopt : std::optional<OrderView>(e_.view_of(it->second));
+}
+
+std::optional<PositionView> Context::position(InstrumentId iid, std::string_view product) const {
+    const std::optional<Product> p = parse_product(product);
+    if (!p) {
+        return std::nullopt;  // the oracle looks up (iid, product) as given, which finds nothing
+    }
+    const Position* pos = e_.book_.ledger.position(iid, *p);
+    if (pos == nullptr) {
+        return std::nullopt;
+    }
+    return PositionView{pos->instrument, std::string(to_string(pos->product)), pos->qty(), pos->avg_price(),
+                        pos->realised};
+}
+
+std::vector<PositionView> Context::positions() const {
+    std::vector<PositionView> out;
+    for (const Position& p : e_.book_.ledger.positions()) {
+        if (p.q != 0) {
+            out.push_back(PositionView{p.instrument, std::string(to_string(p.product)), p.qty(), p.avg_price(),
+                                       p.realised});
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const PositionView& a, const PositionView& b) {
+        return a.instrument != b.instrument ? a.instrument < b.instrument : a.product < b.product;
+    });
+    return out;
+}
+
+Funds Context::funds() const { return e_.funds(e_.book_.ledger); }
 
 }  // namespace stocksim

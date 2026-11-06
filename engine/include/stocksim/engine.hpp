@@ -1,12 +1,9 @@
-// The engine (A4 §1): one ordered stream of input records and internal events, processed one at a time.
+// The engine (A4): one ordered stream of input records and internal events, processed one at a time.
 //
 // It mirrors stockify.oracle.runner.Engine handler by handler, because the oracle is the reference
-// implementation of A4 and the two must produce identical artifacts. Section by section:
-//   M3.3  event loop, clock, phases, timers, bars built from snapshots   (this file, engine.cpp)
-//   M3.4  instruments and specs                                         (instruments.hpp)
-//   M3.5  orders · M3.6 fills · M3.7 costs · M3.8 ledger, margin, end of day
-// Until a section lands, its step inside a handler is a no-op, which is exactly the oracle's behaviour for a
-// strategy that places no orders.
+// implementation of A4 and the two must produce identical artifacts; each C++ function names the oracle
+// method it mirrors. engine.cpp holds the loop, market state and timers (M3.3); engine_trading.cpp the
+// orders (M3.5), fills (M3.6), costs (M3.7, costs.cpp) and the ledger and end of day (M3.8).
 #pragma once
 
 #include <array>
@@ -23,11 +20,15 @@
 #include <utility>
 #include <vector>
 
+#include "stocksim/costs.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/event.hpp"
 #include "stocksim/instruments.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/json_bundle.hpp"
+#include "stocksim/ledger.hpp"
+#include "stocksim/margin.hpp"
+#include "stocksim/orders.hpp"
 #include "stocksim/pcg32.hpp"
 #include "stocksim/session.hpp"
 #include "stocksim/source.hpp"
@@ -67,6 +68,14 @@ struct MarketState {
     Date day = 0;
 };
 
+// Trade evidence between the last two snapshots of a day (A4 §2.1).
+struct Evidence {
+    Qty dv = 0;
+    Paise lo = 0, hi = 0;
+    std::optional<Int128> value;  // atp₁·vol₁ − atp₀·vol₀ when valid (lo·ΔV ≤ value ≤ hi·ΔV, ΔV > 0)
+    TimeNs t0 = 0, t1 = 0;
+};
+
 // ── Internal events (A4 §1.2) ────────────────────────────────────────────────
 
 enum class InternalKind : std::uint8_t { Phase, SegClose, MisSqoff, DayEnd, Timer, BarBuilt };
@@ -84,19 +93,31 @@ struct InternalEvent {
     TimeNs start = 0;             // BarBuilt
 };
 
-// Trade evidence between the last two snapshots of a day (A4 §2.1).
-struct Evidence {
-    Qty dv = 0;
-    Paise lo = 0, hi = 0;
-    std::optional<Int128> value;  // atp₁·vol₁ − atp₀·vol₀ when valid (lo·ΔV ≤ value ≤ hi·ΔV, ΔV > 0)
-    TimeNs t0 = 0, t1 = 0;
-};
-
 struct LaterKey {
     bool operator()(const InternalEvent& a, const InternalEvent& b) const { return b.key < a.key; }
 };
 
 // ── Context (A2 §2, §4.2): what a strategy can see and do ───────────────────
+
+// An order as a strategy places it: strings as given (validated by the engine, A4 §3.2).
+struct PlaceRequest {
+    InstrumentId instrument = 0;
+    std::string side, product, type;
+    Qty qty = 0;
+    Paise price = 0;
+    Paise trigger = 0;
+    std::string validity = "DAY";
+    std::optional<Bp> protection;  // nullopt = AUTO
+    std::string tag;
+};
+
+struct ModifyRequest {
+    std::optional<Qty> qty;
+    std::optional<Paise> price;
+    std::optional<Paise> trigger;
+    std::optional<std::string> type;
+    std::string detail;  // ",".join(f"{k}={v}" for k, v in sorted(changes.items())), built by the caller
+};
 
 class Context {
  public:
@@ -113,6 +134,14 @@ class Context {
     bool stale(InstrumentId iid) const;
     std::vector<Bar> bars(InstrumentId iid, std::int32_t interval_s, std::int64_t n) const;
 
+    OrderId place(const PlaceRequest& r);
+    bool modify(OrderId id, const ModifyRequest& m);
+    bool cancel(OrderId id);
+    std::optional<OrderView> order(OrderId id) const;
+    std::optional<PositionView> position(InstrumentId iid, std::string_view product) const;
+    std::vector<PositionView> positions() const;
+    Funds funds() const;
+
     std::uint64_t schedule_at(TimeNs t);                        // std::invalid_argument unless t > now()
     std::uint64_t schedule_every(TimeNs period, TimeNs first);  // std::invalid_argument unless first > now(), period > 0
     void cancel_timer(std::uint64_t timer_id);
@@ -123,9 +152,35 @@ class Context {
 
     std::optional<InstrumentId> resolve(std::string_view exchange_symbol) const;  // "NSE:RELIANCE" or "RELIANCE"
     const Spec* spec(InstrumentId iid) const;
+    const Json& instrument_rows() const;  // the bundle's rows (the oracle's ctx._rows())
 
  private:
     Engine& e_;
+};
+
+// Rows of the deterministic CSVs other than orders, fills and charges.
+struct PositionEodRow {
+    Date trade_date = 0;
+    InstrumentId instrument = 0;
+    Product product = Product::CNC;
+    Qty qty = 0;
+    Paise avg_price = 0, mark = 0;
+    std::string mark_source;
+    Paise unrealised = 0, realised = 0;
+};
+
+struct EquityRow {
+    Date trade_date = 0;
+    Paise nav = 0, cash = 0, blocked = 0, gross_pnl = 0, charges = 0;
+};
+
+struct SettleClose {
+    TimeNs t = 0;
+    InstrumentId instrument = 0;
+    Product product = Product::CNC;
+    Side side = Side::Buy;
+    Qty units = 0;
+    Paise price = 0;
 };
 
 // ── The engine ───────────────────────────────────────────────────────────────
@@ -149,6 +204,16 @@ class Engine {
     Context& context() { return ctx_; }
     TimeNs now() const { return now_; }
 
+    // Results, for the artifacts (M3.9).
+    const Book& book() const { return book_; }
+    const InstrumentTable& instruments() const { return instruments_; }
+    const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
+    const std::vector<EquityRow>& equity() const { return equity_; }
+    const std::vector<SettleClose>& settle_closes() const { return settle_closes_; }
+    const std::map<std::string, std::int64_t>& rejects() const { return rejects_; }
+    Ppm participation_used() const { return participation_used_; }
+    std::optional<double> exposure() const;
+
  private:
     friend class Context;
 
@@ -156,6 +221,8 @@ class Engine {
     Date date_of(TimeNs t) const { return ist_date(t); }
     std::string_view group_of(InstrumentId iid, std::optional<Date> d = std::nullopt) const;
     std::string_view phase_at(std::string_view group, TimeNs t) const { return calendar_.phase_at(group, t); }
+    const Spec* spec(InstrumentId iid, Date d) const { return instruments_.spec_on(iid, d); }
+    const Spec& spec_or_throw(InstrumentId iid, Date d) const;
 
     // the loop
     void start(std::optional<EventKey> first_input);
@@ -163,11 +230,50 @@ class Engine {
     void process_input(const Event& e);
     void push_internal(InternalEvent ev);
     void schedule_days();
-    void activate_due(TimeNs t);  // M3.5
 
     void log(std::string_view level, std::string_view msg);
     void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9)
     void track_open();
+
+    // funds (A4 §6.5)
+    std::optional<Paise> mark_price(InstrumentId iid) const;
+    std::optional<Paise> ref_price(InstrumentId iid) const;
+    Paise blocked(const Ledger& ledger, Date d) const;
+    Funds funds(const Ledger& ledger) const;
+    bool reduces(InstrumentId iid, Product product, Side side, Qty qty) const;
+    Paise required(const Order& o, Paise px) const;
+
+    // orders (A4 §3)
+    Bp bp(const Order& o) const;
+    Order& reject(Order& o, Reason code);
+    OrderId place(const PlaceRequest& r, OrderId parent = 0, bool system = false);
+    std::optional<Reason> validate(Order& o, bool system, Reason start, Reason upto);
+    Paise order_px(const Order& o) const;
+    void accept(Order& o);
+    std::vector<OrderId> live_orders();
+    void activate_due(TimeNs t);
+    void activate(Order& o);
+    bool modify(OrderId id, const ModifyRequest& m);
+    bool cancel(OrderId id, Reason reason);
+    void cancel_in(Book& book, Order& o, Reason reason);
+    void event(Book& book, const Order& o, std::string_view event, std::string detail = "");
+    OrderView view_of(const Order& o) const;
+
+    // fills (A4 §4) and completion (§5.4)
+    CashStyle style(InstrumentId iid, Product product) const;
+    std::optional<Ppb> cnc_credit_ppb() const;
+    void fill(Book& book, Order& o, Qty qty, Paise price, const std::string& evidence, TimeNs t);
+    void charge_order(Book& book, Order& o);
+    void charge_row(Book& book, const std::string& kind, OrderId order_id, InstrumentId iid, Date d,
+                    const ChargeParts& parts);
+    std::vector<OrderId> eligible(InstrumentId iid, TimeNs t_start);
+    bool band_ok(InstrumentId iid, Paise price) const;
+    void simulate_bar(Book& book, InstrumentId iid, const BarFields& bar, TimeNs t, bool high_first,
+                      const std::vector<OrderId>& eligible_ids, Paise tick, Qty lot);
+    void match_bar(InstrumentId iid, const BarFields& bar, TimeNs t);
+    void adopt(Book& sim);
+    void match_eod(InstrumentId iid, const BarFields& bar, TimeNs t);
+    void after_market(InstrumentId iid);
 
     // handlers
     void dispatch_internal(const InternalEvent& ev);
@@ -178,7 +284,10 @@ class Engine {
     void on_gap(const Event& e);
     void on_refdata(const Event& e);
     void on_settle(const Event& e);
+    std::vector<std::size_t> expiring(InstrumentId underlying_id, Date d);
+    void settle_final(InstrumentId underlying_id, Date d, Paise fsp, const std::string& source);
     void on_phase(const InternalEvent& ev);
+    bool daily_bars(InstrumentId iid) const;
     void seg_close(const InternalEvent& ev);
     void mis_sqoff(const InternalEvent& ev);
     void day_end(const InternalEvent& ev);
@@ -190,9 +299,16 @@ class Engine {
     InstrumentTable instruments_;
     TimeNs stale_after_ns_ = 0;
     std::string fill_kind_;  // bar | snapshot_ltp | snapshot_quote | eod_close
+    Json fill_cfg_;
+    Json policies_;
+    std::string mark_kind_;  // ltp | mid
+    TimeNs latency_ns_ = 0;
+    Costs costs_;
+    FlatMargin margin_;
     std::shared_ptr<Strategy> strategy_;
     Context ctx_;
     Pcg32 strategy_rng_;
+    Book book_;
     PackSource packs_;
     LiveBatchSource live_;
 
@@ -203,6 +319,8 @@ class Engine {
     EventKey key_{0, 0, 0, 0};
     TimeNs last_day_end_ = 0;
 
+    OrderId next_order_ = 1;
+    OrderId min_live_ = 1;  // orders below this id are all final
     std::map<InstrumentId, MarketState> market_;
     std::set<InstrumentId> sub_ticks_;
     std::map<InstrumentId, std::set<std::int32_t>> sub_bars_;
@@ -213,6 +331,13 @@ class Engine {
     std::map<InstrumentId, Paise> underlying_last_;
     std::uint64_t event_no_ = 0;
     bool delivering_ = false;
+
+    std::vector<PositionEodRow> positions_eod_;
+    std::vector<EquityRow> equity_;
+    std::vector<SettleClose> settle_closes_;
+    std::map<std::string, std::int64_t> rejects_;
+    Ppm participation_used_ = 0;  // ppm of a bar's volume, the most over the run
+    std::vector<std::pair<TimeNs, bool>> open_changes_;  // (t, any position open) transitions
 
     std::vector<std::string> log_lines_;
     std::size_t log_drained_ = 0;

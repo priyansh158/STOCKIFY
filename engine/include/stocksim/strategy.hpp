@@ -42,17 +42,18 @@ struct PhaseChange {
     TimeNs t_ns = 0;
 };
 
+// Spellings as in orders.csv (side "BUY", type "SL-M", status "TRIGGER_PENDING", reason "R_TICK" or "").
 struct OrderView {
     OrderId order_id = 0;
     InstrumentId instrument = 0;
-    Side side = Side::Buy;
+    std::string side;
     Qty qty = 0;
-    Product product = Product::CNC;
-    OrderType type = OrderType::Market;
+    std::string product;
+    std::string type;
     Paise price = 0;
     Paise trigger = 0;
-    OrderStatus status = OrderStatus::Pending;
-    Reason reason = Reason::None;
+    std::string status;
+    std::string reason;
     Qty filled_qty = 0;
     Paise avg_price = 0;
     std::string tag;
@@ -61,7 +62,7 @@ struct OrderView {
 struct FillView {
     OrderId order_id = 0;
     InstrumentId instrument = 0;
-    Side side = Side::Buy;
+    std::string side;
     Qty qty = 0;
     Paise price = 0;
     TimeNs t_ns = 0;
@@ -70,7 +71,7 @@ struct FillView {
 
 struct PositionView {
     InstrumentId instrument = 0;
-    Product product = Product::CNC;
+    std::string product;
     Qty qty = 0;  // signed
     Paise avg_price = 0;
     Paise realised = 0;

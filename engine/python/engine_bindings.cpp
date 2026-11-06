@@ -6,6 +6,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,11 +23,14 @@ using stocksim::Engine;
 
 // Python classes the oracle hands to strategies, imported once per strategy.
 struct OracleTypes {
-    py::object bar, tick, phase_change, date, json_loads;
+    py::object bar, tick, phase_change, position_view, funds, order_view, fill_view, date, json_loads;
     static OracleTypes load() {
         py::module_ s = py::module_::import("stockify.strategy");
-        return OracleTypes{s.attr("Bar"), s.attr("Tick"), s.attr("PhaseChange"), py::module_::import("datetime").attr("date"),
-                       py::module_::import("json").attr("loads")};
+        py::module_ o = py::module_::import("stockify.oracle.orders");
+        return OracleTypes{s.attr("Bar"),          s.attr("Tick"),          s.attr("PhaseChange"),
+                           s.attr("PositionView"), s.attr("Funds"),         o.attr("OrderView"),
+                           o.attr("FillView"),     py::module_::import("datetime").attr("date"),
+                           py::module_::import("json").attr("loads")};
     }
 };
 
@@ -57,6 +61,17 @@ struct CtxProxy {
     py::object tick(const stocksim::Tick& t) const {
         return types.tick(t.instrument, t.t_ns, t.ltp, t.volume, t.atp, opt(t.bid), opt(t.ask), t.stale);
     }
+    py::object order(const stocksim::OrderView& v) const {
+        return types.order_view(v.order_id, v.instrument, v.side, v.qty, v.product, v.type, v.price, v.trigger, v.status,
+                                v.reason, v.filled_qty, v.avg_price, v.tag);
+    }
+    py::object fill(const stocksim::FillView& f) const {
+        return types.fill_view(f.order_id, f.instrument, f.side, f.qty, f.price, f.t_ns, f.evidence);
+    }
+    py::object position(const stocksim::PositionView& p) const {
+        return types.position_view(p.instrument, p.product, p.qty, p.avg_price, p.realised);
+    }
+    py::object rows;  // ctx._rows(), parsed once
 };
 
 struct RngProxy {
@@ -78,6 +93,12 @@ class StrategyTrampoline : public stocksim::Strategy {
         obj_.attr("on_session_phase")(ctx_obj_, ctx_->types.phase_change(p.group, p.phase, p.t_ns));
     }
     void on_session_end(stocksim::Context&) override { obj_.attr("on_session_end")(ctx_obj_); }
+    void on_order_update(stocksim::Context&, const stocksim::OrderView& v) override {
+        obj_.attr("on_order_update")(ctx_obj_, ctx_->order(v));
+    }
+    void on_fill(stocksim::Context&, const stocksim::FillView& f) override {
+        obj_.attr("on_fill")(ctx_obj_, ctx_->fill(f));
+    }
 
  private:
     py::object obj_;
@@ -146,6 +167,79 @@ void bind_engine(py::module_& m) {
         .def("spec", [](const CtxProxy& x, stocksim::InstrumentId iid) -> py::object {
             const stocksim::Spec* s = x.c().spec(iid);
             return s ? to_python(s->row, x.types) : py::object(py::none());
+        })
+        .def("place",
+             [](CtxProxy& x, const py::object& instrument, const py::object& side, const py::object& qty,
+                const py::object& product, const py::object& type, const py::object& price, const py::object& trigger,
+                const py::object& validity, const py::object& protection, const py::object& tag) {
+                 // The oracle's Context.place: int() of instrument, qty, price and trigger; the rest as given.
+                 stocksim::PlaceRequest r;
+                 r.instrument = py::int_(instrument).cast<stocksim::InstrumentId>();
+                 r.side = py::str(side);
+                 r.qty = py::int_(qty).cast<stocksim::Qty>();
+                 r.product = py::str(product);
+                 r.type = py::str(type);
+                 r.price = py::int_(price).cast<stocksim::Paise>();
+                 r.trigger = py::int_(trigger).cast<stocksim::Paise>();
+                 r.validity = py::str(validity);
+                 if (py::isinstance<py::int_>(protection)) {  // an int (bool included, as isinstance(…, int))
+                     r.protection = protection.cast<stocksim::Bp>();
+                 }
+                 r.tag = py::str(tag);
+                 return x.c().place(r);
+             },
+             py::arg("instrument"), py::arg("side"), py::arg("qty"), py::arg("product"), py::arg("type"),
+             py::arg("price") = 0, py::arg("trigger") = 0, py::arg("validity") = "DAY", py::arg("protection") = "AUTO",
+             py::arg("tag") = "")
+        .def("modify",
+             [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
+                 stocksim::ModifyRequest m;
+                 std::vector<std::pair<std::string, std::string>> parts;
+                 for (const auto& [k, h] : changes) {
+                     const py::object v = py::reinterpret_borrow<py::object>(h);
+                     const std::string key = py::str(k);
+                     parts.emplace_back(key, std::string(py::str(v)));
+                     if (key == "qty") {
+                         m.qty = py::int_(v).cast<stocksim::Qty>();
+                     } else if (key == "price") {
+                         m.price = py::int_(v).cast<stocksim::Paise>();
+                     } else if (key == "trigger") {
+                         m.trigger = py::int_(v).cast<stocksim::Paise>();
+                     } else if (key == "type") {
+                         m.type = std::string(py::str(v));
+                     }
+                 }
+                 std::sort(parts.begin(), parts.end());
+                 for (std::size_t i = 0; i < parts.size(); ++i) {
+                     m.detail += (i ? "," : "") + parts[i].first + "=" + parts[i].second;
+                 }
+                 return x.c().modify(order_id, m);
+             })
+        .def("cancel", [](CtxProxy& x, std::uint64_t order_id) { return x.c().cancel(order_id); })
+        .def("order", [](const CtxProxy& x, std::uint64_t order_id) -> py::object {
+            const auto v = x.c().order(order_id);
+            return v ? x.order(*v) : py::object(py::none());
+        })
+        .def("position", [](const CtxProxy& x, stocksim::InstrumentId iid, const py::object& product) -> py::object {
+            const auto p = x.c().position(iid, std::string(py::str(product)));
+            return p ? x.position(*p) : py::object(py::none());
+        })
+        .def("positions", [](const CtxProxy& x) {
+            py::list out;
+            for (const auto& p : x.c().positions()) {
+                out.append(x.position(p));
+            }
+            return out;
+        })
+        .def("funds", [](const CtxProxy& x) {
+            const stocksim::Funds f = x.c().funds();
+            return x.types.funds(f.available, f.cash, f.blocked, f.reserved);
+        })
+        .def("_rows", [](CtxProxy& x) {
+            if (!x.rows) {
+                x.rows = to_python(x.c().instrument_rows(), x.types);
+            }
+            return x.rows;
         })
         .def_property_readonly_static("rupees", [](const py::object&) {
             return py::module_::import("stockify.strategy").attr("rupees");
