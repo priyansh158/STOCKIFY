@@ -17,11 +17,10 @@ from __future__ import annotations
 import csv
 import json
 import secrets
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from stockify import numerics, paths, runconfig, store
+from stockify import numerics, paths, runconfig, store, timeutil
 
 IMPLS = ("engine", "oracle")
 
@@ -66,7 +65,8 @@ def bundle_run_id(name: str, bundle: dict) -> str:
 
 def queued_run_id(name: str, now_ns: int | None = None) -> str:
     """`<name>-<UTC YYYYmmddTHHMMSS>-<6 hex>`, made unique."""
-    t = datetime.fromtimestamp((time.time_ns() if now_ns is None else now_ns) / 1e9, tz=timezone.utc)
+    ns = timeutil.now_ns() if now_ns is None else now_ns
+    t = datetime.fromtimestamp(ns / 1e9, tz=timezone.utc)
     return unique_run_id(f"{name}-{t.strftime('%Y%m%dT%H%M%S')}-{secrets.token_hex(3)}")
 
 
@@ -96,7 +96,7 @@ def _error_text(e: BaseException) -> str:
 
 def _fail(run_id: str, e: BaseException) -> RunFailed:
     err = _error_text(e)
-    store.update_run(run_id, only_if_status="running", status="failed", finished_ns=time.time_ns(), error=err)
+    store.update_run(run_id, only_if_status="running", status="failed", finished_ns=timeutil.now_ns(), error=err)
     return RunFailed(run_id, err)
 
 
@@ -115,7 +115,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         if row is None or row["status"] != "queued":
             raise RunNotQueued(f"run {run_id} is {'unknown' if row is None else row['status']}, not queued")
         cfg = runconfig.load(json.loads(row["config_json"]))
-        if not store.update_run(run_id, only_if_status="queued", status="running", started_ns=time.time_ns(),
+        if not store.update_run(run_id, only_if_status="queued", status="running", started_ns=timeutil.now_ns(),
                                 impl=impl):
             raise RunNotQueued(f"run {run_id} stopped being queued before it started")
     else:
@@ -129,14 +129,14 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
             run_id = queued_run_id(cfg["name"])
             store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                               "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
-                              "started_ns": time.time_ns()})
+                              "started_ns": timeutil.now_ns()})
         raise _fail(run_id, e) from e
 
     if run_id is None:
         run_id = bundle_run_id(cfg["name"], b)
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                           "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
-                          "started_ns": time.time_ns()})
+                          "started_ns": timeutil.now_ns()})
     folder = paths.runs_dir() / run_id
     try:
         if impl == "engine":
@@ -160,7 +160,7 @@ def _finish(run_id: str, folder: Path) -> None:
     fields, children = _summarise(folder)
     for k in ("status", "started_ns", "finished_ns"):
         fields.pop(k, None)
-    if store.update_run(run_id, only_if_status="running", status="done", finished_ns=time.time_ns(), **fields):
+    if store.update_run(run_id, only_if_status="running", status="done", finished_ns=timeutil.now_ns(), **fields):
         store.replace_run_rows(run_id, **children)
 
 
@@ -250,7 +250,7 @@ def rerun(run_id: str) -> tuple[str, bool]:
     folder = paths.runs_dir() / new_id
     store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"),
                       "family_id": cfg.get("family_id"), "config_json": _config_json(cfg), "impl": impl,
-                      "folder": str(folder), "started_ns": time.time_ns()})
+                      "folder": str(folder), "started_ns": timeutil.now_ns()})
     try:
         if impl == "engine":
             from stockify import engine as runner

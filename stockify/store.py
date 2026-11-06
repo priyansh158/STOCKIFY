@@ -166,11 +166,11 @@ _RUN_TABLES = {  # table name in run_rows → (SQL table, primary-key order, col
 def create_run(row: dict) -> None:
     """Insert a `runs` row; keys are column names, missing ones NULL. status defaults to queued, created_ns to
     now. An unknown key is a ValueError."""
-    import time
+    from stockify import timeutil
     unknown = set(row) - set(RUN_FIELDS)
     if unknown:
         raise ValueError(f"not runs columns: {sorted(unknown)}")
-    full = {"status": "queued", "created_ns": time.time_ns(), **row}
+    full = {"status": "queued", "created_ns": timeutil.now_ns(), **row}
     conn = _connect()
     with _lock:
         conn.execute(f"INSERT INTO runs ({', '.join(RUN_FIELDS)}) VALUES ({', '.join('?' * len(RUN_FIELDS))})",
