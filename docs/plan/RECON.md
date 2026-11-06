@@ -344,8 +344,8 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   (`test_api_tests.CppFromTheFormTests`; screenshots `wp35_*.png`).
 - **Found: two runs that build the same pack at the same moment race in `packs.build`.** Both see no pack, both build it,
   and the second `tmp.replace(target)` fails with `PermissionError [WinError 5]` because the first run already has the
-  target open (memory-mapped by its engine). Seen with two tests submitted together. The C++ e2e test runs one test at
-  a time until `packs.build` treats "the target appeared meanwhile" as success (unlink its own temporary file).
+  target open (memory-mapped by its engine). Seen with two tests submitted together. Fixed by TM 3.7; the C++ e2e test
+  submits its two tests together again (WP 3.7): the runs overlap by about a second and share one pack.
 
 ## 2026-11-06 — P-06 accounting identity, the fuzz shrinker and the weekly job, the final close-out, the strategy how-to (RD 3.2–3.4, ENG 3.1)
 

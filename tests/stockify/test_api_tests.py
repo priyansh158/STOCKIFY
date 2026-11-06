@@ -350,9 +350,9 @@ class CppFromTheFormTests(SandboxedDBTest):
                              (prev, max(prev, c) + 10, min(prev, c) - 10, c, fixture.rel,
                               timeutil.ist_ns(date(2025, 12, d), "00:00")))
                 prev = c
-        # One run at a time: two runs that both have to build the same pack race in packs.build (the second's
-        # rename onto a pack the first already has open fails on Windows); reported to the supervisor, not ours.
-        self.queue = test_queue.TestQueue(launcher=test_queue.subprocess_launcher, cap=1)
+        # Two at once, as the API runs them: both runner subprocesses build the same pack at the same moment
+        # (the case that failed with WinError 5 before packs.build tolerated a pack appearing meanwhile, TM 3.7).
+        self.queue = test_queue.TestQueue(launcher=test_queue.subprocess_launcher, cap=2)
         test_queue.set_queue(self.queue)
         self.addCleanup(test_queue.set_queue, None)
         self.client = TestClient(app)
@@ -382,6 +382,9 @@ class CppFromTheFormTests(SandboxedDBTest):
         o = self.client.get(f"/api/tests/{orb.json()['run_id']}").json()
         # daily bars only: the intraday strategy runs to the end and simply never trades
         self.assertEqual((o["run"]["status"], o["run"]["strategy_ref"], o["run"]["trades"]), ("done", "orb_cpp", 0))
+        # both built (or found) one and the same pack, concurrently
+        packs = {self.client.get(f"/api/tests/{r.json()['run_id']}").json()["manifest"]["packs"][0] for r in (sma, orb)}
+        self.assertEqual(len(packs), 1)
 
 
 if __name__ == "__main__":
