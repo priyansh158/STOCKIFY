@@ -95,6 +95,6 @@ def run(config, *, run_id: str | None = None) -> RunResult:  # noqa: ANN001
     if run_id is None:
         digest = hashlib.sha256(bundle_mod.dumps(b).encode()).hexdigest()[:12]
         run_id = f"{cfg['name']}-{digest}"
-    folder = paths.runs_dir() / run_id
+    folder = paths.run_path(run_id)
     pack_paths = [paths.lab_dir() / p["path"] for p in b["packs"]]
     return run_bundle(b, pack_paths, folder)

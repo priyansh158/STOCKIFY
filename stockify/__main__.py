@@ -307,6 +307,11 @@ def _cmd_run(args) -> int:
 
     if args.rerun:
         try:
+            paths.run_path(args.rerun)
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 2
+        try:
             new_id, same = runs.rerun(args.rerun)
         except runs.RunFailed as e:
             print(e, file=sys.stderr)
@@ -314,7 +319,7 @@ def _cmd_run(args) -> int:
         except runs.RunNotQueued as e:
             print(e, file=sys.stderr)
             return 2
-        print(paths.runs_dir() / new_id)
+        print(paths.run_path(new_id))
         if same:
             print(f"determinism.json reproduced byte for byte ({args.rerun} -> {new_id})", file=sys.stderr)
             return 0
@@ -376,7 +381,7 @@ def _cmd_compare(args) -> int:
 
     def folder(x: str) -> Path:
         p = Path(x)
-        return p if p.exists() else paths.runs_dir() / x
+        return p if p.exists() else paths.run_path(x)  # a folder path, or a run id (checked)
 
     problems = compare.compare(folder(args.run_a), folder(args.run_b), tol_paise=args.tol_paise)
     for p in problems[:200]:

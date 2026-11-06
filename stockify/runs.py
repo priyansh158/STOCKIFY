@@ -41,7 +41,7 @@ class RunNotQueued(ValueError):
 # ── ids ──────────────────────────────────────────────────────────────────────
 
 def _taken(run_id: str) -> bool:
-    return (paths.runs_dir() / run_id).exists() or store.get_run(run_id) is not None
+    return paths.run_path(run_id).exists() or store.get_run(run_id) is not None
 
 
 def unique_run_id(base: str) -> str:
@@ -81,7 +81,7 @@ def queue(config) -> str:  # noqa: ANN001
     Starts nothing; returns the run id."""
     cfg = runconfig.load(config)
     run_id = queued_run_id(cfg["name"])
-    folder = paths.runs_dir() / run_id
+    folder = paths.run_path(run_id)
     folder.mkdir(parents=True)
     text = _config_json(cfg)
     (folder / "request.json").write_text(text + "\n", encoding="utf-8", newline="\n")
@@ -111,6 +111,10 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
     if impl not in IMPLS:
         raise ValueError(f"impl must be one of {IMPLS}, not {impl!r}")
     if run_id is not None:
+        try:
+            paths.run_path(run_id)
+        except ValueError as e:
+            raise RunNotQueued(str(e)) from e
         row = store.get_run(run_id)
         if row is None or row["status"] != "queued":
             raise RunNotQueued(f"run {run_id} is {'unknown' if row is None else row['status']}, not queued")
@@ -137,7 +141,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                           "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
                           "started_ns": timeutil.now_ns()})
-    folder = paths.runs_dir() / run_id
+    folder = paths.run_path(run_id)
     try:
         if impl == "engine":
             from stockify import engine as runner
@@ -213,6 +217,8 @@ def import_run(folder) -> str:  # noqa: ANN001
     A new row is `done`; an existing row keeps a `cancelled` status, any other becomes `done`."""
     folder = Path(folder)
     run_id = folder.name
+    if paths.run_path(run_id).resolve() != folder.resolve():
+        raise ValueError(f"{folder} is not a run folder in {paths.runs_dir()}")
     fields, children = _summarise(folder)
     cfg = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     fields.update(name=cfg.get("name"), family_id=cfg.get("family_id"), config_json=_config_json(cfg))
@@ -233,7 +239,10 @@ def rerun(run_id: str) -> tuple[str, bool]:
     """Run a finished run again from its folder: the archived bundle.json exactly (never re-resolved), the
     packs it names, the same impl. Returns (new run id, determinism.json reproduced byte for byte)."""
     import hashlib
-    src = paths.runs_dir() / run_id
+    try:
+        src = paths.run_path(run_id)
+    except ValueError as e:
+        raise RunFailed(run_id, str(e)) from e
     try:
         bundle_text = (src / "bundle.json").read_bytes()
         manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
@@ -247,7 +256,7 @@ def rerun(run_id: str) -> tuple[str, bool]:
         raise RunFailed(run_id, f"pack file missing: {', '.join(missing)}")
     impl = "oracle" if manifest.get("engine") == "oracle" else "engine"
     new_id = unique_run_id(f"{run_id}-rerun")
-    folder = paths.runs_dir() / new_id
+    folder = paths.run_path(new_id)
     store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"),
                       "family_id": cfg.get("family_id"), "config_json": _config_json(cfg), "impl": impl,
                       "folder": str(folder), "started_ns": timeutil.now_ns()})
@@ -270,6 +279,6 @@ def rerun(run_id: str) -> tuple[str, bool]:
 def determinism_diff(run_a: str, run_b: str) -> list[str]:
     """The deterministic files whose hashes differ between two run folders' determinism.json."""
     def hashes(run_id: str) -> dict:
-        return json.loads((paths.runs_dir() / run_id / "determinism.json").read_text(encoding="utf-8"))
+        return json.loads((paths.run_path(run_id) / "determinism.json").read_text(encoding="utf-8"))
     a, b = hashes(run_a), hashes(run_b)
     return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))

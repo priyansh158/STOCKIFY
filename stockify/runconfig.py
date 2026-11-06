@@ -13,7 +13,7 @@ import copy
 import json
 from pathlib import Path
 
-from stockify import numerics
+from stockify import numerics, paths
 
 SCHEMA = "stockify.run/1"
 FILL_KINDS = ("bar", "snapshot_ltp", "snapshot_quote", "eod_close")
@@ -118,6 +118,14 @@ def validate(raw: dict) -> dict:
     _need(isinstance(raw, dict), "run", "must be a JSON object")
     _need(raw.get("schema") == SCHEMA, "schema", f"must be {SCHEMA!r}")
     _need(isinstance(raw.get("name"), str) and raw["name"], "name", "required")
+    # The name becomes the run folder's name: one safe path segment (paths.safe_segment).
+    _need(paths.safe_segment(raw["name"], 64), "name",
+          "must be 1-64 letters, digits, '.', '_' or '-', start with a letter or digit, not end with '.', "
+          "and not be a Windows device name (CON, NUL, COM1 ...)")
+    fam = raw.get("family_id")
+    _need(fam is None or (isinstance(fam, str) and len(fam) <= 128
+                          and all(paths.safe_segment(part, 64) for part in fam.split("/"))), "family_id",
+          "must be up to 128 characters: segments like a name, separated by '/'")
     cfg = _merge(DEFAULTS, {k: v for k, v in raw.items()})
     cfg["strategy"] = _strategy(raw.get("strategy"))
     cfg["data"] = {**raw.get("data", {}), "packs": _packs(raw.get("data"))}

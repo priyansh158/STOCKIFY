@@ -38,7 +38,7 @@ def default_cap() -> int:
 def subprocess_launcher(run_id: str) -> Process:
     """`python -m stockify run --config <runs>/<id>/request.json --run-id <id>`, output to runner.log."""
     from stockify import paths
-    folder = paths.runs_dir() / run_id
+    folder = paths.run_path(run_id)
     out = (folder / "runner.log").open("ab")
     try:
         return subprocess.Popen(

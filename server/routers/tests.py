@@ -71,10 +71,13 @@ def _row_or_404(run_id: str) -> dict:
 
 
 def _folder(row: dict) -> Path | None:
+    """The run's folder, always derived from its checked id (never the stored path, which a row written before
+    the run-id check could have pointed anywhere)."""
     from stockify import paths
-    if row.get("folder"):
-        return Path(row["folder"])
-    p = paths.runs_dir() / row["run_id"]
+    try:
+        p = paths.run_path(row["run_id"])
+    except ValueError:
+        return None
     return p if p.exists() else None
 
 
