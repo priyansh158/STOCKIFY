@@ -3,7 +3,7 @@ import { growth, istWhen, pct, rupees, rupeesWhole } from "@/lib/format";
 import { listStrategies, listTests } from "@/lib/tests";
 import type { Strategy, TestRun } from "@/lib/types";
 import NewTestForm from "./NewTestForm";
-import { Card, LabelChips, Stat, StatusChip, strategyName } from "./ui";
+import { Card, LabelChips, Stat, StatusChip, runSummary } from "./ui";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +32,7 @@ function RunCard({ run }: { run: TestRun }) {
             {run.name ?? run.run_id}
           </div>
           <div className="text-sm" style={{ color: "var(--color-fg-muted)" }}>
-            {strategyName(run.strategy_ref)} · {run.start_date ?? "?"} to {run.end_date ?? "?"}
+            {runSummary(run)}
           </div>
           {run.status === "done" && (
             <div className="mt-3 grid grid-cols-2 gap-3">

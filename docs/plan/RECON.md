@@ -294,3 +294,45 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - DT-03: `run --rerun <id>` runs the archived `bundle.json` as it is (never re-resolved: the test changes the bar cache after the run and the re-run still reproduces), with the packs it names and the run's own impl, into `<id>-rerun`, `-rerun-2` …; the new `bundle.json` must hash the same. Exit 0 when `determinism.json` is byte-identical, otherwise 1 with one `differs: <file>` line per file. Passes on both impls.
 - `stocksim_run` (moved to `engine/tools/stocksim_run.cpp`): `--bundle <run>/bundle.json --out <dir> [--lab <dir>]`, `strategy.kind: cpp` only (exit 2 otherwise), packs relative to the lab (default: the bundle folder's grandparent). It writes the same nine deterministic files and `determinism.json` as `stockify.engine.run_bundle`, byte for byte (tested on three worlds), plus a manifest with `engine: "stocksim_run"` and a steady-clock `duration_ms`. A failure writes `events_log.txt` ending in `ERROR the run stops: …` and exits 1. No Python, SQLite or network.
 - Found on the way: the shared pre-commit hook ran `git init` for its blockwatch snapshot with a worktree's `GIT_DIR` still exported, which re-initialised the shared git dir (and set `core.bare`); fixed in the hook (not tracked).
+
+## 2026-11-06 — M3.14 test-run API and UI (WP 3.1–3.4)
+
+- Recon: no `/api/tests` or `/tests` existed; the app had `/portfolio`, `/alerts` and `/kite/callback`, server-rendered
+  pages styled inline with the `globals.css` tokens, and `api.ts` as the only fetch wrapper. `package.json` has no
+  charting library, so the charts are hand-drawn SVG (nothing added).
+- **Schema format** (WP 3.1): each reference strategy has a data-only `PARAMS` list of `{name, type, default, required,
+  help}`, `type` in `int | bool | str | decimal | symbol | hhmm | underlying`. A test checks that it lists exactly the
+  `ctx.params` keys the source reads. `stockify/strategies/_catalogue.py` discovers Python strategies through
+  `strategy.load` (A2 §4.4 check included) and lists the engine's C++ ones with the schema of the Python original they
+  port; `validate_params` reports unknown keys, missing required ones and values the strategy could not read
+  (`int()`, bool, `Decimal`, HH:MM, a symbol). `web/src/lib/params.ts` mirrors it with the same messages.
+- **Endpoints** (WP 3.3, `server/routers/tests.py`): `GET /api/strategies`; `GET /api/tests` (status, family, offset,
+  limit; newest first); `POST /api/tests` (runconfig.load, then the strategy's schema; 422 with every problem as a
+  list; then `runs.queue`; 201 `{run_id}`); `GET /api/tests/compare` is a 501 placeholder declared before `/{id}`, so
+  M6's path is never read as a run id; `GET /api/tests/{id}` (run card, config, metrics, manifest) and
+  `/orders`, `/fills`, `/equity`, `/charges`, `/logs` (the end of `events_log.txt`, or a page with offset/limit, and
+  the end of `runner.log`); `POST /api/tests/{id}/cancel`. Money is paise; times are ns plus an IST ISO string.
+- **Queue rules** (`server/services/test_queue.py`): each queued run is `python -m stockify run --config
+  <runs>/<id>/request.json --run-id <id>` (I-9), cwd the repo, no console window, output in `<id>/runner.log`; at most
+  `max(1, cpu_count − 1)` at once, the rest in arrival order. The runner owns its status from `running` on. Cancel
+  removes a waiting run or kills a running one, then writes `cancelled` only if the run is still queued or running
+  (a run that finished first keeps its status, and the API answers 409). On API start, `queued` rows are re-queued
+  oldest first and `running` ones left by a dead API become `failed` (`interrupted: the API restarted`). A launcher
+  that cannot start fails that run only. Tests use a fake launcher, plus one real runner subprocess in the sandbox.
+- **UI** (WP 3.2/3.4): `/tests` cards (status, strategy, dates, money start → end in ₹, gain or loss, worst fall from a
+  high, trades, costs) with the run labels as plain-word chips (`fill:approximate`, `eod_approx`, `margin:flat(approx)`,
+  `charges:unverified_rows`, `specs:equity_tick_assumed`, `settlement_fallback`; "adjusted prices" from the config's
+  `price_basis`); a New test form from the schema (`/tests?new=1` opens it). `/tests/[id]` polls every 2 s while
+  waiting or running, has cancel, shows the error and log tail when failed, and when done: the numbers, an SVG money
+  curve with the drawdown under it, fills as cards, costs by kind in plain names, and the reproduction details. The
+  yearly rate is shown only for runs of 240+ trading days ("too short to say" otherwise).
+- **End to end** (WP 3.4): own API (8791) and web (3791) with `LOCALAPPDATA` in the scratchpad, so no real lab and no
+  Kite token. Seeded with three engine runs built from golden worlds and imported with `runs.import_run`. From the
+  web origin: a submitted test queued and failed cleanly (`PackError: unknown symbol 'NSE:RELIANCE'`: the sandbox has
+  no market data), a second was cancelled, and bad params came back as a 422 list. Screenshots at 390 px and 1280 px:
+  `C:\Users\priya\AppData\Local\Temp\claude\ca98620bf8fa9330\1e0a9619-1c55-43b7-bb61-9f4914ae6a7c\scratchpad\shots\`
+  (`e2e_*.png` on real runs, `fx_*.png` on fixtures).
+- Found: `npm run build` fails inside a worktree because Turbopack refuses the `web/node_modules` junction ("points
+  out of the filesystem root"). Builds were checked with a temporary, uncommitted `turbopack.root` and pass; the
+  main checkout is unaffected. Imported golden runs have no pack specs or strategy ref, so their cards show no dates;
+  the detail page falls back to the equity rows' first and last day.

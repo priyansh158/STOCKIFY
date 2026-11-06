@@ -89,6 +89,15 @@ export const buttonStyle = {
   background: "rgba(0,255,65,0.06)",
 } as const;
 
+/** "sma_cross · 2024-01-01 to 2026-09-30", leaving out whatever the run does not say. */
+export function runSummary(run: Pick<TestRun, "strategy_ref" | "start_date" | "end_date">, from?: string | null,
+                           to?: string | null): string {
+  const a = run.start_date ?? from;
+  const b = run.end_date ?? to;
+  const parts = [run.strategy_ref ? strategyName(run.strategy_ref) : null, a && b ? `${a} to ${b}` : null];
+  return parts.filter(Boolean).join(" · ");
+}
+
 /** The strategy's short name from its ref ("pkg.sma_cross:SmaCross" → "sma_cross"). */
 export function strategyName(ref?: string | null): string {
   if (!ref) return "—";

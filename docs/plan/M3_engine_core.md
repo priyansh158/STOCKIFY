@@ -122,9 +122,9 @@ Files: `stockify/runs.py`, `stockify/__main__.py` (`run`), `engine/tools/stocksi
 
 Server: `server/routers/tests.py`; DTOs in `server/schemas.py`, mirrored in `web/src/lib/types.ts`. Endpoints: `A2_interfaces.md` §6.
 
-- [ ] `GET /api/strategies` (registered C++ strategies and discovered Python strategies with their parameter schemas, for the form). `POST /api/tests` validates and launches `python -m stockify run` as a subprocess (queue; at most `cpu_count − 1` concurrent runs); `GET /api/tests`, `GET /api/tests/{id}` (+ `/orders`, `/fills`, `/equity`, `/charges`, `/logs`), `POST /api/tests/{id}/cancel`. Declare fixed routes before `/{id}` routes (A2 §6).
-- [ ] `/tests`: run cards (status, strategy, range, headline metrics, **labels**: approximate fills, flat margin, unverified charges, adjusted basis) and a "New test" form (strategy, parameters, symbols or chain selector, range, fill model, price basis, capital, seed).
-- [ ] `/tests/[id]`: metrics, responsive equity curve, drawdown, fills list, cost breakdown, manifest (build id, hashes). Mobile-first: single column, tap targets ≥ 44 px, readable at 390 px width; ₹ via `Intl.NumberFormat("en-IN")`.
+- [x] `GET /api/strategies` (registered C++ strategies and discovered Python strategies with their parameter schemas, for the form). `POST /api/tests` validates and launches `python -m stockify run` as a subprocess (queue; at most `cpu_count − 1` concurrent runs); `GET /api/tests`, `GET /api/tests/{id}` (+ `/orders`, `/fills`, `/equity`, `/charges`, `/logs`), `POST /api/tests/{id}/cancel`. Declare fixed routes before `/{id}` routes (A2 §6).
+- [x] `/tests`: run cards (status, strategy, range, headline metrics, **labels**: approximate fills, flat margin, unverified charges, adjusted basis) and a "New test" form (strategy, parameters, symbols or chain selector, range, fill model, price basis, capital, seed).
+- [x] `/tests/[id]`: metrics, responsive equity curve, drawdown, fills list, cost breakdown, manifest (build id, hashes). Mobile-first: single column, tap targets ≥ 44 px, readable at 390 px width; ₹ via `Intl.NumberFormat("en-IN")`.
 
 ## M3.15 Strategy how-to (S)
 

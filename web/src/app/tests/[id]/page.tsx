@@ -5,10 +5,12 @@ import { use, useCallback, useEffect, useState } from "react";
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { cancelTest, getCharges, getEquity, getFills, getLogs, getTest } from "@/lib/tests";
 import type { TestCharge, TestEquity, TestFill, TestLogs, TestRunDetail } from "@/lib/types";
-import { buttonStyle, Card, LabelChips, Stat, StatusChip, strategyName } from "../ui";
+import { buttonStyle, Card, LabelChips, Stat, StatusChip, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
 const POLL_MS = 2000;
+// A yearly rate from a few weeks of results is noise: show it only for runs of about a trading year or more.
+const MIN_DAYS_FOR_YEARLY = 240;
 
 const COST_NAMES: Record<string, string> = {
   brokerage: "Brokerage",
@@ -113,8 +115,8 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
               {run.name ?? run.run_id}
             </h1>
             <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>
-              {strategyName(run.strategy_ref)} · {run.start_date ?? "?"} to {run.end_date ?? "?"} · started with{" "}
-              {rupeesWhole(run.capital_paise)}
+              {[runSummary(run, extra.equity[0]?.trade_date, extra.equity[extra.equity.length - 1]?.trade_date),
+                run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(" · ")}
             </p>
             <div className="mt-2"><LabelChips run={run} /></div>
           </div>
@@ -155,7 +157,8 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   <Stat label="Started with" value={rupeesWhole(run.nav_start_paise)} />
                   <Stat label="Ended with" value={rupeesWhole(run.nav_end_paise)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
                   <Stat label="Gain or loss" value={pct(g, true)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
-                  <Stat label="Per year, on average" value={pct(num(m.cagr), true)} />
+                  <Stat label="Per year, on average"
+                    value={(num(m.days) ?? 0) >= MIN_DAYS_FOR_YEARLY ? pct(num(m.cagr), true) : "too short to say"} />
                   <Stat label="Worst fall from a high" value={pct(run.max_drawdown)} />
                   <Stat label="Trades" value={String(run.trades ?? 0)} />
                   <Stat label="Trades that made money" value={pct(num(m.win_rate))} />
@@ -196,6 +199,9 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
 
               <Card>
                 <h2 className="stk-mono-tight mb-3" style={{ color: "var(--color-fg-muted)" }}>Where the costs went</h2>
+                {costTotal === 0 ? (
+                  <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>No costs were charged in this test.</p>
+                ) : (
                 <ul className="flex flex-col gap-1 text-sm">
                   {Object.entries(costTotals).filter(([, v]) => v !== 0).map(([k, v]) => (
                     <li key={k} className="flex justify-between gap-3"><span>{COST_NAMES[k] ?? k.replace(/_/g, " ")}</span><span className="stk-mono">{rupees(v)}</span></li>
@@ -204,6 +210,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                     <span>Total</span><span className="stk-mono">{rupees(costTotal)}</span>
                   </li>
                 </ul>
+                )}
               </Card>
             </>
           )}
