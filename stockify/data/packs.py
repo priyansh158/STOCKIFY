@@ -607,38 +607,89 @@ def _sha_file(path: Path) -> str:
     return h.hexdigest()
 
 
+# Windows refuses a replace, or an open, while another process has the file open or is replacing it at that
+# moment. Those refusals pass in milliseconds, so publishing retries a few times before it decides.
+_RETRIES = 8
+_BACKOFF_S = 0.02            # doubled each try, capped at 0.5 s: about 3 s in all
+
+
+def _pause(attempt: int) -> None:
+    import time
+    time.sleep(min(_BACKOFF_S * 2 ** attempt, 0.5))
+
+
 def _publish(tmp: Path, target: Path, digest: str) -> None:
     """Move a finished pack into place. Packs are content-addressed, so a target that already exists holds the
     same bytes: keep it. Two builders of one spec can race (both saw no target); the loser's replace fails on
     Windows while the winner's file is open or memory-mapped by an engine. Then the existing target is accepted
-    only if its hash matches; anything else re-raises. A pack in use is never overwritten."""
+    only if its hash matches; a different file re-raises at once. A pack in use is never overwritten."""
     if target.exists():
         tmp.unlink()
         return
-    try:
-        tmp.replace(target)
-    except (PermissionError, FileExistsError):
-        if target.exists() and _sha_file(target) == digest:
+    error: OSError | None = None
+    for attempt in range(_RETRIES):
+        try:
+            tmp.replace(target)
+            return
+        except (PermissionError, FileExistsError) as e:
+            error = e
+        try:
+            existing = _sha_file(target) if target.exists() else None
+        except (PermissionError, FileNotFoundError):
+            existing = None                              # mid-replace by another builder: look again
+        if existing == digest:
             tmp.unlink(missing_ok=True)
             return
-        raise
+        if existing is not None:
+            raise error                                  # someone else's bytes under this name: never replace
+        _pause(attempt)
+    raise error  # type: ignore[misc]
+
+
+# Manifest fields that depend on when or where a pack was built rather than on its content. There are none
+# today (every field is derived from the records), so racing builders write identical text; the comparison
+# still ignores such fields so that adding one later cannot turn a harmless race into a failure.
+_WALL_CLOCK_FIELDS = frozenset({"created_ns", "built_ns", "duration_ms", "pid", "host"})
+
+
+def _same_manifest(existing: str, ours: str) -> bool | None:
+    """True: same content; False: different content; None: not readable as a manifest yet (look again)."""
+    try:
+        a, b = json.loads(existing), json.loads(ours)
+    except json.JSONDecodeError:
+        return None
+    strip = lambda m: {k: v for k, v in m.items() if k not in _WALL_CLOCK_FIELDS}  # noqa: E731
+    return isinstance(a, dict) and strip(a) == strip(b)
 
 
 def _publish_text(target: Path, text: str) -> None:
-    """Write a manifest atomically (unique tmp, then replace). A racing builder writes the same text; if the
-    replace is refused because someone has the file open, an identical existing manifest is accepted."""
+    """Write a manifest atomically (unique tmp, then replace). A racing builder writes the same content; when
+    the replace is refused (someone has the file open, or is replacing it), an existing manifest with the same
+    content is accepted. One whose content differs re-raises at once: it is never overwritten."""
     tmp = target.with_name(f".{target.name}.{os.getpid()}-{secrets.token_hex(6)}.tmp")
     tmp.write_text(text, encoding="utf-8")
+    error: OSError | None = None
     try:
-        tmp.replace(target)
-    except (PermissionError, FileExistsError):
-        try:
-            same = target.read_text(encoding="utf-8") == text
-        except OSError:
-            same = False
+        for attempt in range(_RETRIES):
+            try:
+                tmp.replace(target)
+                return
+            except (PermissionError, FileExistsError) as e:
+                error = e
+            try:
+                existing = target.read_text(encoding="utf-8")
+            except (PermissionError, FileNotFoundError):
+                existing = None                          # mid-replace by another builder: look again
+            if existing is not None:
+                verdict = _same_manifest(existing, text)
+                if verdict:
+                    return
+                if verdict is False:                     # a complete manifest with other content: a conflict
+                    raise error
+            _pause(attempt)
+        raise error  # type: ignore[misc]
+    finally:
         tmp.unlink(missing_ok=True)
-        if not same:
-            raise
 
 
 def _no_recording(day: date) -> bool:

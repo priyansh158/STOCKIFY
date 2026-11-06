@@ -3,6 +3,7 @@ content-addressed, so the loser accepts the winner's file, even while an engine 
 different file under that name is never overwritten. Uses the M2.1 offline bars fixture."""
 from __future__ import annotations
 
+import json
 import mmap
 import shutil
 from pathlib import Path
@@ -93,6 +94,83 @@ class PackRaceTests(BundleTest):
         results = self._builders(2)
         self.assertEqual(len(set(results)), 1)
         self.assertEqual(self._leftovers(results[0]), [])
+
+
+    def test_many_builders_at_once_repeatedly(self):
+        """The API case, stressed: 5 processes build one spec at once (no pack yet), 20 rounds. The manifest
+        replace races too (TM 3.8); every round must give one sha and leave nothing behind."""
+        import threading
+        import time
+        stop, idle = threading.Event(), threading.Lock()   # idle: held by the cleanup between rounds
+
+        def reader():  # the API and engines read manifests while runs build: that is what refuses a replace
+            while not stop.is_set():
+                with idle:
+                    for m in paths.packs_dir().glob("*.json"):
+                        try:
+                            with m.open("rb") as f:
+                                f.read()
+                        except OSError:
+                            pass
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        self.addCleanup(stop.set)
+        started = time.perf_counter()
+        for n in range(20):
+            with idle:
+                for f in paths.packs_dir().iterdir():
+                    f.unlink()
+            with self.subTest(round=n):
+                results = self._builders(5)
+                self.assertEqual(len(set(results)), 1, results)
+                self.assertEqual(self._leftovers(results[0]), [])
+                self.assertEqual(packs.manifest(results[0])["sha256"], results[0])
+            if time.perf_counter() - started > 60:
+                break
+
+
+    def test_an_open_manifest_with_the_same_content_is_accepted(self):
+        sha = packs.build(self.spec)
+        target = packs.manifest_path(sha)
+        text = target.read_text(encoding="utf-8")
+        with target.open("rb"):                            # a reader has it open: the replace is refused
+            packs._publish_text(target, text)
+            reordered = json.dumps(json.loads(text), indent=1, sort_keys=False) + chr(10)
+            packs._publish_text(target, reordered)            # same content, other spelling: still accepted
+        self.assertEqual(target.read_text(encoding="utf-8"), text)
+        self.assertEqual(self._leftovers(sha), [])
+
+    def test_a_refused_read_mid_replace_is_retried(self):
+        """The TM 3.8 failure: our replace is refused, and so is our first read of the existing manifest,
+        because another builder is replacing it at that moment. Look again instead of failing."""
+        sha = packs.build(self.spec)
+        target = packs.manifest_path(sha)
+        text = target.read_text(encoding="utf-8")
+        real_read = Path.read_text
+        refused = []
+
+        def read_once_refused(p: Path, *a, **kw):  # noqa: ANN002, ANN003, ANN202
+            if p == target and not refused:
+                refused.append(p)
+                raise PermissionError(13, "Access is denied", str(p))
+            return real_read(p, *a, **kw)
+        with target.open("rb"), mock.patch.object(Path, "read_text", read_once_refused):
+            packs._publish_text(target, text)
+        self.assertEqual(refused, [target])
+        self.assertEqual(self._leftovers(sha), [])
+
+    def test_an_open_manifest_with_other_content_is_never_overwritten(self):
+        sha = packs.build(self.spec)
+        target = packs.manifest_path(sha)
+        text = target.read_text(encoding="utf-8")
+        other = json.loads(text)
+        other["records"] += 1
+        with target.open("rb"), self.assertRaises(PermissionError):
+            packs._publish_text(target, json.dumps(other))
+        self.assertEqual(target.read_text(encoding="utf-8"), text)
+        self.assertEqual(self._leftovers(sha), [])
+        self.assertTrue(packs._same_manifest(text, json.dumps({**json.loads(text), "created_ns": 5})))
+        self.assertIsNone(packs._same_manifest("{half", text))
 
 
 if __name__ == "__main__":
