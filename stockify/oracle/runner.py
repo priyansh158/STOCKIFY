@@ -1106,6 +1106,11 @@ class Engine:
                 self.now, self.key = key[0], key
                 self._activate_due(self.now)
                 self._dispatch_input(rec)
+        if self.now > last_day_end:                     # D-52: the final close-out (A4 §1.10)
+            self.internal_seq += 1
+            self.key = (self.now, DAY_END, 0, self.internal_seq)
+            self._activate_due(self.now)
+            self._dispatch_internal("DAY_END", self._date(self.now))
 
     def _track_open(self) -> None:
         is_open = False

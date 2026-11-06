@@ -66,7 +66,10 @@ class LaunchTests(RunsTestBase):
         self.assertEqual([(o["side"], o["status"], o["filled_qty"], o["reason"]) for o in orders],
                          [("BUY", "CANCELLED", 100, "EOD")])
         self.assertEqual(len(store.run_rows(folder.name, "fills")), 1)
-        self.assertEqual(len(store.run_rows(folder.name, "equity")), 7)
+        # 7 trading days, plus the final close-out (D-52): the 2025-12-31 daily candle is knowable at 2026-01-01 00:00
+        self.assertEqual([r["trade_date"] for r in store.run_rows(folder.name, "equity")][-2:],
+                         ["2025-12-31", "2026-01-01"])
+        self.assertEqual(len(store.run_rows(folder.name, "equity")), 8)
         self.assertFalse((folder / "report.md").exists())
         # the same config again: a new folder, the first one untouched
         before = (folder / "determinism.json").read_bytes()

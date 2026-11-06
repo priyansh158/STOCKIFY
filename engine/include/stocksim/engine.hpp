@@ -259,6 +259,7 @@ class Engine {
     void process_input(const Event& e);
     void push_internal(InternalEvent ev);
     void schedule_days();
+    void close_out();  // the final DAY_END after a last input past the last trading day (D-52)
 
     void log(std::string_view level, std::string_view msg);
     void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9)
@@ -344,6 +345,7 @@ class Engine {
     std::priority_queue<InternalEvent, std::vector<InternalEvent>, LaterKey> internal_;
     std::uint64_t internal_seq_ = 0;
     bool started_ = false;
+    bool closed_out_ = false;
     TimeNs now_ = 0;
     EventKey key_{0, 0, 0, 0};
     TimeNs last_day_end_ = 0;

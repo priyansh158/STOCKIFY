@@ -174,6 +174,7 @@ void Engine::run(EventSource& source) {
         activate_due(now_);
         process_input(*e);
     }
+    close_out();
 }
 
 void Engine::push(std::span<const std::byte> batch) {
@@ -192,6 +193,23 @@ void Engine::push(std::span<const std::byte> batch) {
 void Engine::finish() {
     start(std::nullopt);
     process_internal_before(std::nullopt);
+    close_out();
+}
+
+// The final close-out (A4 §1.10, D-52; the end of runner.run): when the last input came after the last trading
+// day's DAY_END, one more DAY_END at that moment, dated by its own IST date. Once per run.
+void Engine::close_out() {
+    if (closed_out_ || now_ <= last_day_end_) {
+        return;
+    }
+    closed_out_ = true;
+    InternalEvent ev;
+    ev.key = EventKey{now_, kRankDayEnd, 0, ++internal_seq_};
+    ev.kind = InternalKind::DayEnd;
+    ev.date = date_of(now_);
+    key_ = ev.key;
+    activate_due(now_);
+    dispatch_internal(ev);
 }
 
 // ── Logging and callbacks ────────────────────────────────────────────────────

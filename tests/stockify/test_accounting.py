@@ -64,10 +64,9 @@ def _apply(p: _Pos, sign: int, qty: int, price: int) -> None:
         p.c += remaining * price
 
 
-def accounting_problems(run_dir: Path, allow_late: bool = False) -> list[str]:
-    """Every way the run folder breaks P-06. `allow_late` skips fills after the last DAY_END: a fill on the last
-    day's daily bar, which is only knowable at the next midnight IST (A4 §1.1, D-44), is in no equity row on either
-    implementation (tracked in tests/test_known_defects.py)."""
+def accounting_problems(run_dir: Path) -> list[str]:
+    """Every way the run folder breaks P-06. A fill or settlement after the last equity row's DAY_END is one of them:
+    since D-52 the run's final close-out books a fill on the last day's daily bar like any other."""
     bundle = json.loads((run_dir / "bundle.json").read_text(encoding="utf-8"))
     capital = bundle["run"]["capital_paise"]
     inst = {r["id"]: r for r in bundle["instruments"]}
@@ -106,9 +105,13 @@ def accounting_problems(run_dir: Path, allow_late: bool = False) -> list[str]:
     for r in _rows(run_dir / "positions_eod.csv"):
         eod[r["trade_date"]][(int(r["instrument_id"]), r["product"])] = r
     i = 0
-    for row in _rows(run_dir / "equity.csv"):
+    equity = _rows(run_dir / "equity.csv")
+    for n, row in enumerate(equity):
         d = row["trade_date"]
-        while i < len(events) and events[i][0] <= day_end[d]:
+        if d not in day_end and n != len(equity) - 1:
+            problems.append(f"{run_dir.name}: equity row {d} is not a trading day and not the final close-out (D-52)")
+        end = day_end.get(d, 2**63)              # the final close-out (D-52) covers everything up to its moment
+        while i < len(events) and events[i][0] <= end:
             t, is_settle, _, iid, product, sign, qty, price = events[i]
             i += 1
             p = pos.setdefault((iid, product), _Pos(style(iid, product)))
@@ -153,7 +156,7 @@ def accounting_problems(run_dir: Path, allow_late: bool = False) -> list[str]:
             cash = capital - charged + flows + sum(p.realised for p in pos.values() if p.style == "variation")
             if int(row["cash_paise"]) != cash:
                 problems.append(f"{where}: cash {row['cash_paise']}, expected {cash}")
-    if i < len(events) and not allow_late:
+    if i < len(events):
         problems.append(f"{run_dir.name}: {len(events) - i} fills or settlements after the last trading day")
     return problems
 
@@ -162,7 +165,7 @@ def _both(test: unittest.TestCase, folder: Path, pack: Path, bundle: dict, strat
     """Run on both implementations (a fresh strategy each) and check each run folder. Returns the fill count."""
     for impl, runner in (("oracle", oracle_run), ("engine", engine.run_bundle)):
         runner(bundle, [pack], folder / impl, strategy=strategy(), report=False)
-        test.assertEqual(accounting_problems(folder / impl, allow_late=True), [], impl)
+        test.assertEqual(accounting_problems(folder / impl), [], impl)
     return len(_rows(folder / "oracle" / "fills.csv"))
 
 
@@ -189,7 +192,7 @@ class AccountingIdentityTests(unittest.TestCase):
                 if oracle_error or engine_error:
                     continue                       # both failed alike (P-04 checks that); nothing to reconcile
                 for impl in ("oracle", "engine"):
-                    self.assertEqual(accounting_problems(folder / impl, allow_late=True), [], f"seed {seed} {impl}")
+                    self.assertEqual(accounting_problems(folder / impl), [], f"seed {seed} {impl}")
                 checked += 1
         self.assertGreater(checked, 150)
 
@@ -206,6 +209,25 @@ class AccountingIdentityTests(unittest.TestCase):
                 pack, bundle = _materialise(g, params, folder)
                 fills += _both(self, folder, pack, bundle, lambda r=ref: _load(r))
         self.assertGreater(fills, 50)
+
+    def test_a_fill_on_the_last_days_daily_bar_is_booked(self):
+        """D-52 (was DEFECT 2): the last day's daily bar is knowable at the next midnight IST, after the last trading
+        day's DAY_END; the final close-out books its fill in a row dated that next day, on both implementations."""
+        from tests.stockify.test_engine_strategies import REFS, _load, _materialise, daily_world
+        g, params = daily_world(5211)
+        with tempfile.TemporaryDirectory(prefix="p06-last-") as tmp:
+            folder = Path(tmp)
+            pack, bundle = _materialise(g, params, folder)
+            _both(self, folder, pack, bundle, lambda: _load(REFS["sma_cross"]))
+            for impl in ("oracle", "engine"):
+                equity = _rows(folder / impl / "equity.csv")
+                fills = _rows(folder / impl / "fills.csv")
+                self.assertEqual(equity[-1]["trade_date"], "2026-03-19", impl)   # the close-out's own IST date
+                self.assertEqual(equity[-2]["trade_date"], g["bundle"]["dates"][-1], impl)
+                self.assertEqual(fills[-1]["side"], "SELL")
+                self.assertEqual(int(equity[-1]["cash_paise"]), int(equity[-1]["nav_paise"]))  # flat after the sell
+            log = (folder / "engine" / "events_log.txt").read_bytes()
+            self.assertEqual(log, (folder / "oracle" / "events_log.txt").read_bytes())
 
     def test_a_wrong_number_is_caught(self):
         """The check is not vacuous: one paisa off in a fill price, a NAV or a charge is reported."""
