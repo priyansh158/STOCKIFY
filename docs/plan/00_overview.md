@@ -178,9 +178,21 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | ANC | M2.5 golden scenarios | the anchor: the fixed reference point everything is checked against |
 | RW | M2.6 metrics and run report | the mirror of LW: takes results to the touchline |
 | TM | M2.7 CLI, notebook entry, compare-artifacts | the target man: everything is played into him |
+| HB | M3.0 recon | the half-back drops between the centre-backs to read the play |
+| BPD | M3.1 engine foundations (integers, decimals, RNG, hashing, formats) | the ball-playing defender builds everything from the back |
+| DLF | M3.2 pack reader and event sources | the deep-lying forward drops to receive CAM's final ball and bring it into the engine |
+| DLP | M3.3 event loop, clock, phases, timers | the deep-lying playmaker dictates the tempo |
+| BWM | M3.5 orders | the ball-winning midfielder wins or rejects every order at the gate |
+| POA | M3.6 fill models | the poacher turns chances into fills |
+| NCB | M3.7 costs | the no-nonsense centre-back: exact to the paisa |
+| VOL | M3.8 ledger, T0 margin, MIS, end of day | the volante holds the middle and keeps the books |
+| RD | M3.12 parity and differential fuzzing | the raumdeuter finds the gaps between the oracle and the engine |
+| PF | M3.13 performance | the pressing forward: all speed |
+| WP | M3.14 test-run API and UI | the wide playmaker works the flank the owner watches |
+| ENG | M3.15 strategy how-to | the enganche sets others up to score |
 | XI | team-wide (renames, plan bookkeeping) | the whole team |
 
-M2 positions chosen by the owner on 2026-11-05. Positions for M3 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
+M2 positions chosen by the owner on 2026-11-05; M3 positions on 2026-11-05 (M3.4 keeps CB, M3.9 RW, M3.10 B2B, M3.11 TM: same roles as M1.1, M2.6, M2.3, M2.7). Positions for M4 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
 
 ## 6. Corrections to earlier chat advice
 

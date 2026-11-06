@@ -215,3 +215,24 @@ Branch `stockify/m2-oracle` from `stockify/m1-data` (pushed through GK 1.3).
 - Golden status: G01–G07, G09, G10, G12, G14, G16, G19, G20 pass; G08 waits for the owner's charge capture (🛑).
 - The straddle's 44 cancelled entries are real: a leg whose next close fell more than 50 % below the protection floor never filled (mostly options one or two days before expiry).
 
+## 2026-11-05 — M3.0 recon
+
+Branch `stockify/m3-engine` from `stockify/m2-oracle` (pushed through XI 2.3, `cff7cde`).
+
+- M2 is complete: `golden run --impl oracle` passes all 15 goldens (G01–G10, G12, G14, G16, G19, G20; G08 against the owner's capture) in about 2 s. `oracle run --config examples/runs/sma_reliance_daily.json` resolves the bundle, builds the packs and runs in 4.6 s with the M2 result (₹10.00 L → ₹10.45 L).
+- The engine builds: `run.ps1 -BuildEngine` with MSVC 19.50.35727, C++20, Ninja, Release; ctest 2/2 (`stocksim_tests`, `stocksim_run --version`); build id `cc9f819fad50` (git `cff7cdeebbbe`, clean). Flags `/W4 /permissive- /utf-8 /fp:precise /EHsc /WX`. pybind11 comes from the venv (`find_package(pybind11 CONFIG)`).
+- What exists is the M0 skeleton only: `build_info.{hpp,cpp}`, `src/run_main.cpp` (`--version`), `python/engine_module.cpp` (`build_info()`), `tests/test_build_info.cpp`. Vendored: doctest 2.4.12, nlohmann/json 3.12.0, PicoSHA2 (pins and hashes in `third_party/VERSIONS.md`). `stockify/engine.py` has `load()`, `build_info()`, `available()`. `golden run --impl engine` raises "only the oracle exists before M3" (`golden._run_single`).
+
+### A2 §1–§5 against the repo
+
+| A2 says | Repo | Decision |
+|---|---|---|
+| `engine/bindings/module.cpp`, `engine/tools/stocksim_run.cpp` | `engine/python/engine_module.cpp`, `engine/src/run_main.cpp` | Move to the A2 paths (`git mv`) when M3.10 / M3.11 change them. |
+| §2 C++ types: `Date` is `int32` YYYYMMDD; enums for side, product, type, validity, status, reason | The oracle (M2.3) speaks strings: `"BUY"`, `"CNC"`, `"SL-M"`, `"TRIGGER_PENDING"`, `"R_TICK"`; `ctx.today()` returns `datetime.date`; `depth()` a list of levels; `spec()` a dict; `expiries()` ISO strings; `chain()` a list of dicts | Enums inside C++; the Python trampoline converts at the boundary so a strategy sees exactly the oracle's values (the oracle is the reference, M3 rule). |
+| §2 `Reason { …, Eod, Ioc, User, Rms }` | The oracle's cancel reasons are `"EOD"`, `"IOC"`, `"USER"`; system orders are tagged `AUTO_SQOFF` / `RMS_SQOFF` | Keep the enum; strings map one to one. |
+| §2 `Event.src` | Pack records carry no source index | `src` is the pack's position in the bundle's pack list, assigned by `PackSource` (A4 §1.3). |
+| §3 `stockify/engine.py` wraps the module with bundle/pack helpers and `run_folder(config)` | Only the loader and version check | Added in M3.11 with `stockify/runs.py`. |
+| §5 `stockify.runs` (`launch`, `import_run`, `rerun`) | Missing | Built in M3.11. |
+
+No header in A2 conflicts with code that exists; everything else in A2 §1–§2 is still to be written.
+

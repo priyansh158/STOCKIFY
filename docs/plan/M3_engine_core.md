@@ -12,8 +12,8 @@ Concepts: C-3, C-8, C-9, C-10, C-11, C-16. Contract: `A4_engine_semantics.md`. I
 
 ## M3.0 Recon (S)
 
-- [ ] Confirm M2 is complete: goldens pass on the oracle, bundles resolve, packs build. Confirm the engine still builds (`run.ps1 -BuildEngine`; Windows only, D-26).
-- [ ] Read `A2_interfaces.md` §1–§5 and list any header that conflicts with the repo; record decisions in `RECON.md`.
+- [x] Confirm M2 is complete: goldens pass on the oracle, bundles resolve, packs build. Confirm the engine still builds (`run.ps1 -BuildEngine`; Windows only, D-26).
+- [x] Read `A2_interfaces.md` §1–§5 and list any header that conflicts with the repo; record decisions in `RECON.md`.
 
 ## M3.1 Foundations (S)
 
