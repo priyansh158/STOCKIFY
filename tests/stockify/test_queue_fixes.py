@@ -89,6 +89,102 @@ class ExitCodeTests(SandboxedDBTest):
         self.assertEqual((q.waiting(), q.running()), ([], []))
 
 
+class RecoverTests(SandboxedDBTest):
+    """RD 4.3: an API restart fails only the runs whose runner is gone; live runners are adopted and watched."""
+
+    db_modules = (store,)
+
+    def _sleeper(self):  # noqa: ANN202
+        import subprocess
+        import sys
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p
+
+    def _running_row(self, run_id: str, pidfile: str | None) -> None:
+        from stockify import paths
+        folder = paths.run_dir(run_id)
+        if pidfile is not None:
+            (folder / "runner.pid").write_text(pidfile, encoding="utf-8")
+        store.create_run({"run_id": run_id, "status": "running", "name": "n", "folder": str(folder)})
+
+    def test_a_live_runner_is_adopted_not_failed(self):
+        from server.services.test_queue import INTERRUPTED
+        from stockify import proc as P
+        child = self._sleeper()
+        self._running_row("live", f"{child.pid} {P.creation_time(child.pid)}")
+        q = TestQueue(launcher=Launcher(), cap=4)
+        requeued, failed = q.recover()
+        self.assertEqual(failed, [])
+        self.assertEqual(q.running(), ["live"])
+        self.assertEqual(store.get_run("live")["status"], "running")
+        child.kill()
+        child.wait()
+        q.join(15)
+        row = store.get_run("live")
+        self.assertEqual(row["status"], "failed")
+        self.assertNotEqual(row["error"], INTERRUPTED)
+        self.assertIn("ended without finishing", row["error"])
+
+    def test_dead_reused_or_unknown_runners_are_failed(self):
+        import os
+        import subprocess
+        import sys
+        from server.services.test_queue import INTERRUPTED
+        from stockify import proc as P
+        done = subprocess.Popen([sys.executable, "-c", "pass"])
+        created = P.creation_time(done.pid)
+        done.wait()
+        self._running_row("dead", f"{done.pid} {created}")
+        self._running_row("reused", f"{os.getpid()} 12345")       # our pid, but not our creation time
+        self._running_row("nofile", None)
+        self._running_row("garbled", "not a pid")
+        q = TestQueue(launcher=Launcher(), cap=4)
+        _, failed = q.recover()
+        self.assertEqual(sorted(failed), ["dead", "garbled", "nofile", "reused"])
+        self.assertTrue(all(store.get_run(r)["error"] == INTERRUPTED for r in failed))
+        self.assertEqual(q.running(), [])
+
+    def test_cancel_kills_an_adopted_runner(self):
+        from stockify import proc as P
+        child = self._sleeper()
+        self._running_row("live", f"{child.pid} {P.creation_time(child.pid)}")
+        q = TestQueue(launcher=Launcher(), cap=4)
+        q.recover()
+        self.assertEqual(q.cancel("live"), "running")
+        child.wait(10)                                             # killed by the queue
+        q.join(15)
+        self.assertEqual(store.get_run("live")["status"], "cancelled")
+
+
+class PidFileTests(SandboxedDBTest):
+    db_modules = (store,)
+
+    def test_process_identity(self):
+        import os
+        from stockify import proc as P
+        me = P.creation_time(os.getpid())
+        self.assertTrue(P.is_alive(os.getpid(), me))
+        self.assertFalse(P.is_alive(os.getpid(), me + 1))
+        self.assertFalse(P.is_alive(2**31 - 7, me))
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+from tests.stockify.test_runs_launch import BUY, RunsTestBase  # noqa: E402
+
+
+class RunnerClaimTests(RunsTestBase):
+    def test_launch_records_its_process(self):
+        import os
+        from stockify import engine, paths, proc, runs
+        if not engine.available():
+            self.skipTest("stockify._engine is not built")
+        rid = runs.queue(self.config(BUY))
+        runs.launch(run_id=rid, report=False)
+        pid, created = proc.read_pidfile(paths.run_path(rid))
+        self.assertEqual(pid, os.getpid())
+        self.assertTrue(proc.is_alive(pid, created))

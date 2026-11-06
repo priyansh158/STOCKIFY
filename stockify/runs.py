@@ -90,6 +90,13 @@ def queue(config) -> str:  # noqa: ANN001
     return run_id
 
 
+def _claim(run_id: str) -> None:
+    """Record this process as the run's runner (`runner.pid`), so an API restart can tell a live run from a dead
+    one (stockify.proc)."""
+    from stockify import proc
+    proc.write_pidfile(paths.run_dir(run_id))
+
+
 def _error_text(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"
 
@@ -122,6 +129,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         if not store.update_run(run_id, only_if_status="queued", status="running", started_ns=timeutil.now_ns(),
                                 impl=impl):
             raise RunNotQueued(f"run {run_id} stopped being queued before it started")
+        _claim(run_id)
     else:
         cfg = runconfig.load(config)
     text = _config_json(cfg)
@@ -141,6 +149,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                           "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
                           "started_ns": timeutil.now_ns()})
+        _claim(run_id)
     folder = paths.run_path(run_id)
     try:
         if impl == "engine":
@@ -260,6 +269,7 @@ def rerun(run_id: str) -> tuple[str, bool]:
     store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"),
                       "family_id": cfg.get("family_id"), "config_json": _config_json(cfg), "impl": impl,
                       "folder": str(folder), "started_ns": timeutil.now_ns()})
+    _claim(new_id)
     try:
         if impl == "engine":
             from stockify import engine as runner

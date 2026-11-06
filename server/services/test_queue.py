@@ -2,8 +2,9 @@
 
 The API never runs the engine itself. At most `max(1, os.cpu_count() - 1)` runs go at once; the rest wait in
 arrival order. The subprocess owns the run's status from `running` on (stockify.runs.launch); the queue only
-writes `cancelled` (with `only_if_status`, so it never overwrites a finished run) and, on API start, `failed`
-for runs a previous API process left `running`.
+writes `cancelled` (with `only_if_status`, so it never overwrites a finished run), `failed` for a runner that
+exited without finishing, and, on API start, `failed` for `running` rows whose runner is gone. A runner that is
+still alive (it records itself in `runner.pid`, stockify.proc) is adopted and watched instead.
 """
 from __future__ import annotations
 
@@ -101,10 +102,12 @@ class TestQueue:
             rc = proc.wait()
             # A runner writes its own final status. One that died first (a crash, a kill, a bad environment)
             # leaves the row queued or running for ever, so fail it here; a finished row is left as it is.
+            error = (f"runner exited {rc}; see runner.log" if not getattr(proc, "adopted", False) else
+                     "runner ended without finishing (adopted after an API restart); see runner.log")
             try:
                 from stockify import store, timeutil
-                store.update_run(run_id, status="failed", finished_ns=timeutil.now_ns(),
-                                 error=f"runner exited {rc}; see runner.log", only_if_status=("queued", "running"))
+                store.update_run(run_id, status="failed", finished_ns=timeutil.now_ns(), error=error,
+                                 only_if_status=("queued", "running"))
             except Exception:  # noqa: BLE001 — one failed update must not stop the queue
                 log.exception("could not record the exit of run %s", run_id)
         finally:
@@ -145,18 +148,35 @@ class TestQueue:
         return "queued" if ok else None
 
     def recover(self) -> tuple[list[str], list[str]]:
-        """On API start: re-enqueue `queued` rows (oldest first) and fail `running` ones left by a dead API.
-        Returns (requeued, failed)."""
-        from stockify import store, timeutil
+        """On API start: re-enqueue `queued` rows (oldest first). A `running` row whose runner is still alive
+        (its `runner.pid` names a live process created at that moment) is adopted: watched, cancellable, and
+        counted against the cap. Any other `running` row is failed. Returns (requeued, failed)."""
+        from stockify import paths, proc, store, timeutil
         failed = []
         for row in store.list_runs(status="running", limit=10_000):
-            if store.update_run(row["run_id"], status="failed", finished_ns=timeutil.now_ns(), error=INTERRUPTED,
+            run_id = row["run_id"]
+            try:
+                who = proc.read_pidfile(paths.run_path(run_id))
+            except ValueError:
+                who = None
+            if who is not None and proc.is_alive(*who):
+                self._adopt(run_id, proc.Adopted(*who))
+                continue
+            if store.update_run(run_id, status="failed", finished_ns=timeutil.now_ns(), error=INTERRUPTED,
                                 only_if_status="running"):
-                failed.append(row["run_id"])
+                failed.append(run_id)
         queued = [r["run_id"] for r in reversed(store.list_runs(status="queued", limit=10_000))]
         for run_id in queued:
             self.submit(run_id)
         return queued, failed
+
+    def _adopt(self, run_id: str, process: Process) -> None:
+        process.adopted = True  # type: ignore[attr-defined]
+        with self._lock:
+            self._running[run_id] = process
+        t = threading.Thread(target=self._watch, args=(run_id, process), name=f"test-run-{run_id}", daemon=True)
+        self._watchers.append(t)
+        t.start()
 
     def join(self, timeout: float = 30.0) -> None:
         """Tests: wait until nothing is waiting or running (runs started while waiting included)."""
