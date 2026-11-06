@@ -4,7 +4,8 @@ Python strategies are discovered from this package (non-underscore modules) and 
 `strategy.load`, so the A2 §4.4 source check runs on each. C++ strategies are the names the engine module
 registers (STOCKSIM_STRATEGY); their params mirror the Python originals they port.
 
-A params schema is a list of `{"name", "type", "default", "required", "help"}`, with `type` one of
+A params schema is a list of `{"name", "label", "type", "default", "required", "help"}` (`label` is the
+form's plain name for it), with `type` one of
 PARAM_TYPES. Values are checked the way the strategies read them (`int(...)`, `bool(...)`, `Decimal(str(...))`).
 """
 from __future__ import annotations
@@ -53,13 +54,15 @@ def python_strategies() -> list[dict]:
 
 
 def cpp_strategies() -> list[dict]:
-    """The engine's registered C++ strategies; empty when the engine is not built."""
+    """The engine's registered C++ strategies that have a params schema here; empty when the engine is not built.
+    A registered strategy without a schema (e.g. the benchmark's noop_cpp) is a tool, not a user strategy, and is
+    left out."""
     from stockify import engine
     if not engine.available():
         return []
     known = _cpp_params()
-    return [{"kind": "cpp", "ref": name, "name": name, "doc": "C++ port" if name in known else "",
-             "params": list(known.get(name, []))} for name in engine.load().strategies()]
+    return [{"kind": "cpp", "ref": name, "name": name, "doc": "C++ port", "params": list(known[name])}
+            for name in engine.load().strategies() if name in known]
 
 
 def catalogue() -> list[dict]:

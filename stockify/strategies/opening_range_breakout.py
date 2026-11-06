@@ -17,11 +17,11 @@ from stockify.strategy import Strategy
 class OpeningRangeBreakout(Strategy):
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
-        {'name': 'symbol', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to trade intraday, e.g. NSE:RELIANCE'},
-        {'name': 'qty', 'type': 'int', 'default': None, 'required': True, 'help': 'shares per trade'},
-        {'name': 'range_minutes', 'type': 'int', 'default': 15, 'required': False, 'help': 'minutes after 09:15 that set the range'},
-        {'name': 'short', 'type': 'bool', 'default': False, 'required': False, 'help': 'also sell short when price breaks below the range'},
-        {'name': 'exit_hhmm', 'type': 'hhmm', 'default': '15:10', 'required': False, 'help': 'time to close the position, IST'},
+        {'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to trade intraday, e.g. NSE:RELIANCE'},
+        {'name': 'qty', 'label': 'Shares per trade', 'type': 'int', 'default': None, 'required': True, 'help': 'shares per trade'},
+        {'name': 'range_minutes', 'label': 'Opening range (minutes)', 'type': 'int', 'default': 15, 'required': False, 'help': 'minutes after 09:15 that set the range'},
+        {'name': 'short', 'label': 'Also sell short', 'type': 'bool', 'default': False, 'required': False, 'help': 'also sell short when price breaks below the range'},
+        {'name': 'exit_hhmm', 'label': 'Exit time (IST)', 'type': 'hhmm', 'default': '15:10', 'required': False, 'help': 'time to close the position, IST'},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001

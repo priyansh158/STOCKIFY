@@ -109,6 +109,7 @@ export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" |
 
 export interface StrategyParam {
   name: string;
+  label: string;
   type: ParamType;
   default?: unknown;
   required: boolean;
@@ -162,6 +163,7 @@ export interface TestFill {
   t_ns: number;
   t_ist: string;
   instrument_id: number;
+  tradingsymbol?: string | null;
   side: string;
   qty: number;
   price_paise: number;

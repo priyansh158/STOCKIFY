@@ -27,7 +27,7 @@ class CatalogueTests(unittest.TestCase):
             names = [p["name"] for p in s["params"]]
             self.assertEqual(len(names), len(set(names)), s["ref"])
             for p in s["params"]:
-                self.assertEqual(set(p), {"name", "type", "default", "required", "help"}, (s["ref"], p))
+                self.assertEqual(set(p), {"name", "label", "type", "default", "required", "help"}, (s["ref"], p))
                 self.assertIn(p["type"], C.PARAM_TYPES)
                 if p["required"]:
                     self.assertIsNone(p["default"])
@@ -58,6 +58,16 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(got["sma_cross_cpp"]["params"], SmaCross.PARAMS)
         self.assertEqual(C.schema_for("cpp", "orb_cpp")[0]["name"], "symbol")
         self.assertIsNone(C.schema_for("cpp", "nope"))
+
+    @unittest.skipUnless(engine.available(), "stockify._engine is not built")
+    def test_a_registered_strategy_without_a_schema_is_left_out(self):
+        from unittest import mock
+        real = engine.load()
+        fake = mock.Mock(wraps=real)
+        fake.strategies.return_value = ["noop_cpp", "orb_cpp", "sma_cross_cpp"]
+        with mock.patch.object(engine, "load", return_value=fake):
+            self.assertEqual([s["ref"] for s in C.cpp_strategies()], ["orb_cpp", "sma_cross_cpp"])
+            self.assertIsNone(C.schema_for("cpp", "noop_cpp"))
 
     def test_validate_params(self):
         from stockify.strategies.sma_cross import SmaCross

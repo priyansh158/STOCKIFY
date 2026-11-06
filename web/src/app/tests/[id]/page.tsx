@@ -89,6 +89,10 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   for (const c of extra.charges) {
     for (const [k, v] of Object.entries(c.components)) costTotals[k] = (costTotals[k] ?? 0) + v;
   }
+  const summaryLine = run
+    ? [runSummary(run, extra.equity[0]?.trade_date, extra.equity[extra.equity.length - 1]?.trade_date),
+      run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(" · ")
+    : "";
   const costTotal = extra.charges.reduce((s, c) => s + c.total_paise, 0);
 
   return (
@@ -114,10 +118,9 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
             <h1 className="stk-mono break-words text-xl font-bold sm:text-2xl" style={{ color: "var(--color-green)" }}>
               {run.name ?? run.run_id}
             </h1>
-            <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>
-              {[runSummary(run, extra.equity[0]?.trade_date, extra.equity[extra.equity.length - 1]?.trade_date),
-                run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(" · ")}
-            </p>
+            {summaryLine && (
+              <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>{summaryLine}</p>
+            )}
             <div className="mt-2"><LabelChips run={run} /></div>
           </div>
 
@@ -189,7 +192,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                           <span className="stk-mono text-sm">{rupees(f.price_paise)}</span>
                         </div>
                         <div className="text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                          {f.t_ist.slice(0, 16).replace("T", " ")} IST · instrument {f.instrument_id} · order {f.order_id}
+                          {f.tradingsymbol ?? `instrument ${f.instrument_id}`} · {f.t_ist.slice(0, 16).replace("T", " ")} IST · order {f.order_id}
                         </div>
                       </li>
                     ))}

@@ -102,7 +102,8 @@ class CatalogueAndRoutesTests(ApiTestBase):
         if engine.available():
             self.assertIn("sma_cross_cpp", refs)
         sma = next(s for s in r.json() if s["ref"] == "stockify.strategies.sma_cross:SmaCross")
-        self.assertEqual(sma["params"][0], {"name": "symbol", "type": "symbol", "default": None, "required": True,
+        self.assertEqual(sma["params"][0], {"name": "symbol", "label": "Stock or future", "type": "symbol",
+                                            "default": None, "required": True,
                                             "help": "what to trade, e.g. NSE:RELIANCE"})
 
     def test_fixed_paths_are_not_ids(self):
@@ -279,6 +280,7 @@ class ResultTests(ApiTestBase):
         fills = self.client.get(f"/api/tests/{run_id}/fills").json()
         self.assertTrue(fills)
         self.assertTrue(all(isinstance(f["price_paise"], int) and f["t_ist"].endswith("+05:30") for f in fills))
+        self.assertEqual({f["tradingsymbol"] for f in fills}, {"TEST"})  # from the run's bundle.json
         self.assertEqual([f["fill_id"] for f in fills], sorted(f["fill_id"] for f in fills))
         self.assertEqual(len(self.client.get(f"/api/tests/{run_id}/fills", params={"limit": 1}).json()), 1)
 

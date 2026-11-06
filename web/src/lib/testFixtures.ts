@@ -16,13 +16,13 @@ export const strategies: Strategy[] = [
     name: "sma_cross",
     doc: "SMA crossover (M2.4): long when the fast SMA is above the slow one.",
     params: [
-      { name: "symbol", type: "symbol", default: null, required: true, help: "what to trade, e.g. NSE:RELIANCE" },
-      { name: "fast", type: "int", default: null, required: true, help: "bars in the fast moving average" },
-      { name: "slow", type: "int", default: null, required: true, help: "bars in the slow moving average" },
-      { name: "interval_s", type: "int", default: 86400, required: false, help: "bar length in seconds: 86400 daily, 60 minute" },
-      { name: "long_short", type: "bool", default: false, required: false, help: "go short when fast < slow (needs a future traded NRML)" },
-      { name: "product", type: "str", default: "CNC", required: false, help: "CNC for stocks, NRML for futures" },
-      { name: "lots", type: "int", default: 1, required: false, help: "futures only: lots per position" },
+      { name: "symbol", label: "Stock", type: "symbol", default: null, required: true, help: "what to trade, e.g. NSE:RELIANCE" },
+      { name: "fast", label: "Fast average (bars)", type: "int", default: null, required: true, help: "bars in the fast moving average" },
+      { name: "slow", label: "Slow average (bars)", type: "int", default: null, required: true, help: "bars in the slow moving average" },
+      { name: "interval_s", label: "Bar length (seconds)", type: "int", default: 86400, required: false, help: "bar length in seconds: 86400 daily, 60 minute" },
+      { name: "long_short", label: "Also go short", type: "bool", default: false, required: false, help: "go short when fast < slow (needs a future traded NRML)" },
+      { name: "product", label: "Product (CNC or NRML)", type: "str", default: "CNC", required: false, help: "CNC for stocks, NRML for futures" },
+      { name: "lots", label: "Lots per position", type: "int", default: 1, required: false, help: "futures only: lots per position" },
     ],
   },
   {
@@ -31,11 +31,11 @@ export const strategies: Strategy[] = [
     name: "opening_range_breakout",
     doc: "Opening-range breakout on minute bars, MIS (M2.4).",
     params: [
-      { name: "symbol", type: "symbol", default: null, required: true, help: "the stock to trade intraday, e.g. NSE:RELIANCE" },
-      { name: "qty", type: "int", default: null, required: true, help: "shares per trade" },
-      { name: "range_minutes", type: "int", default: 15, required: false, help: "minutes after 09:15 that set the range" },
-      { name: "short", type: "bool", default: false, required: false, help: "also sell short when price breaks below the range" },
-      { name: "exit_hhmm", type: "hhmm", default: "15:10", required: false, help: "time to close the position, IST" },
+      { name: "symbol", label: "Stock", type: "symbol", default: null, required: true, help: "the stock to trade intraday, e.g. NSE:RELIANCE" },
+      { name: "qty", label: "Shares per trade", type: "int", default: null, required: true, help: "shares per trade" },
+      { name: "range_minutes", label: "Opening range (minutes)", type: "int", default: 15, required: false, help: "minutes after 09:15 that set the range" },
+      { name: "short", label: "Also sell short", type: "bool", default: false, required: false, help: "also sell short when price breaks below the range" },
+      { name: "exit_hhmm", label: "Exit time (IST)", type: "hhmm", default: "15:10", required: false, help: "time to close the position, IST" },
     ],
   },
   {
@@ -44,9 +44,9 @@ export const strategies: Strategy[] = [
     name: "eod_short_straddle",
     doc: "End-of-day NIFTY short straddle on NSE bhavcopy data (M2.4; label `eod_approx`).",
     params: [
-      { name: "underlying", type: "underlying", default: "NIFTY", required: false, help: "the index whose options are sold" },
-      { name: "lots", type: "int", default: 1, required: false, help: "lots of each option sold" },
-      { name: "stop_multiple", type: "decimal", default: "1.5", required: false, help: "buy back when the options cost this many times the premium" },
+      { name: "underlying", label: "Index for the options", type: "underlying", default: "NIFTY", required: false, help: "the index whose options are sold" },
+      { name: "lots", label: "Lots per position", type: "int", default: 1, required: false, help: "lots of each option sold" },
+      { name: "stop_multiple", label: "Stop at × premium", type: "decimal", default: "1.5", required: false, help: "buy back when the options cost this many times the premium" },
     ],
   },
 ];
@@ -107,9 +107,9 @@ export const equity: TestEquity[] = Array.from({ length: 60 }, (_, i) => {
 });
 
 export const fills: TestFill[] = [
-  { fill_id: 1, order_id: 1, t_ns: 1_662_000_000_000_000_000, t_ist: "2022-03-14T15:30:00+05:30", instrument_id: 738561,
+  { fill_id: 1, order_id: 1, t_ns: 1_662_000_000_000_000_000, t_ist: "2022-03-14T15:30:00+05:30", instrument_id: 738561, tradingsymbol: "RELIANCE",
     side: "BUY", qty: 410, price_paise: 239_105 },
-  { fill_id: 2, order_id: 2, t_ns: 1_668_000_000_000_000_000, t_ist: "2022-06-20T15:30:00+05:30", instrument_id: 738561,
+  { fill_id: 2, order_id: 2, t_ns: 1_668_000_000_000_000_000, t_ist: "2022-06-20T15:30:00+05:30", instrument_id: 738561, tradingsymbol: "RELIANCE",
     side: "SELL", qty: 410, price_paise: 251_870 },
 ];
 

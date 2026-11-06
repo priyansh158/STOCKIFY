@@ -30,12 +30,12 @@ from stockify.strategy import Strategy
 class EodShortStraddle(Strategy):
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
-        {'name': 'underlying', 'type': 'underlying', 'default': 'NIFTY', 'required': False, 'help': 'the index whose options are sold'},
-        {'name': 'index', 'type': 'symbol', 'default': 'NSE:NIFTY 50', 'required': False, 'help': 'the index itself, for the at-the-money strike'},
-        {'name': 'lots', 'type': 'int', 'default': 1, 'required': False, 'help': 'lots of each option sold'},
-        {'name': 'stop_multiple', 'type': 'decimal', 'default': '1.5', 'required': False, 'help': 'buy back when the options cost this many times the premium'},
-        {'name': 'min_days', 'type': 'int', 'default': 1, 'required': False, 'help': 'skip expiries fewer than this many days away'},
-        {'name': 'protection_bp', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market orders, in basis points (5000 = 50 %)'},
+        {'name': 'underlying', 'label': 'Index for the options', 'type': 'underlying', 'default': 'NIFTY', 'required': False, 'help': 'the index whose options are sold'},
+        {'name': 'index', 'label': 'Index symbol', 'type': 'symbol', 'default': 'NSE:NIFTY 50', 'required': False, 'help': 'the index itself, for the at-the-money strike'},
+        {'name': 'lots', 'label': 'Lots per option', 'type': 'int', 'default': 1, 'required': False, 'help': 'lots of each option sold'},
+        {'name': 'stop_multiple', 'label': 'Stop at × premium', 'type': 'decimal', 'default': '1.5', 'required': False, 'help': 'buy back when the options cost this many times the premium'},
+        {'name': 'min_days', 'label': 'Skip expiries closer than (days)', 'type': 'int', 'default': 1, 'required': False, 'help': 'skip expiries fewer than this many days away'},
+        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market orders, in basis points (5000 = 50 %)'},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001

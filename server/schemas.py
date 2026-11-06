@@ -119,6 +119,7 @@ class DataQualityResponse(BaseModel):
 class StrategyParamDTO(BaseModel):
     """One parameter of a strategy (stockify.strategies._catalogue)."""
     name: str
+    label: str = ""
     type: Literal["int", "bool", "str", "decimal", "symbol", "hhmm", "underlying"]
     default: Any = None
     required: bool = False
@@ -171,6 +172,7 @@ class TestFillDTO(BaseModel):
     t_ns: int
     t_ist: str
     instrument_id: int
+    tradingsymbol: str | None = None
     side: str
     qty: int
     price_paise: int

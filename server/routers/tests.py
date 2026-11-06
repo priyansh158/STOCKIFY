@@ -78,6 +78,16 @@ def _folder(row: dict) -> Path | None:
     return p if p.exists() else None
 
 
+def _symbols(row: dict) -> dict[int, str]:
+    """instrument id → tradingsymbol, from the run's archived bundle.json (empty when it is not there)."""
+    folder = _folder(row)
+    bundle = folder / "bundle.json" if folder else None
+    if bundle is None or not bundle.exists():
+        return {}
+    rows = _json(bundle.read_text(encoding="utf-8"), {}).get("instruments", [])
+    return {r["id"]: r["tradingsymbol"] for r in rows if isinstance(r, dict) and "id" in r and r.get("tradingsymbol")}
+
+
 def _tail(path: Path | None, *, offset: int | None, limit: int) -> tuple[list[str], int]:
     if path is None or not path.exists():
         return [], 0
@@ -159,9 +169,10 @@ async def test_orders(run_id: str, offset: int = Query(0, ge=0), limit: int = Qu
 async def test_fills(run_id: str, offset: int = Query(0, ge=0),
                      limit: int = Query(500, ge=1, le=5000)) -> list[TestFillDTO]:
     from stockify import store
-    _row_or_404(run_id)
+    symbols = _symbols(_row_or_404(run_id))
     return [TestFillDTO(fill_id=r["fill_id"], order_id=r["order_id"], t_ns=r["t_ns"], t_ist=_ist(r["t_ns"]) or "",
-                        instrument_id=r["instrument_id"], side=r["side"], qty=r["qty"], price_paise=r["price_paise"])
+                        instrument_id=r["instrument_id"], tradingsymbol=symbols.get(r["instrument_id"]),
+                        side=r["side"], qty=r["qty"], price_paise=r["price_paise"])
             for r in store.run_rows(run_id, "fills", offset=offset, limit=limit)]
 
 

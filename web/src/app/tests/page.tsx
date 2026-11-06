@@ -31,9 +31,11 @@ function RunCard({ run }: { run: TestRun }) {
           <div className="font-medium" style={{ color: "var(--color-fg)" }}>
             {run.name ?? run.run_id}
           </div>
-          <div className="text-sm" style={{ color: "var(--color-fg-muted)" }}>
-            {runSummary(run)}
-          </div>
+          {runSummary(run) && (
+            <div className="text-sm" style={{ color: "var(--color-fg-muted)" }}>
+              {runSummary(run)}
+            </div>
+          )}
           {run.status === "done" && (
             <div className="mt-3 grid grid-cols-2 gap-3">
               <div className="col-span-2">

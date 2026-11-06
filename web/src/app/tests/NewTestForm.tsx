@@ -170,7 +170,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
 
         {(strategy?.params ?? []).map((p) => {
           const v = values[p.name] ?? defaultText(p);
-          const label = `${p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
+          const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
           if (p.type === "bool") {
             return (
               <label key={p.name} className="flex min-h-11 items-center gap-3">
