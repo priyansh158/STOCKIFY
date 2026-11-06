@@ -89,7 +89,7 @@ Files: `ledger.hpp/.cpp`, `margin_flat.cpp`.
 ## M3.9 Metrics and artifacts (S)
 
 - [x] Metrics per A4 §8; artifact files and `determinism.json` per A4 §9 and A1 §6.3.
-- [ ] Determinism tests (A3 DT-01, DT-03): run twice and re-run from the folder, compare hashes; DT-02 compares oracle and engine with the tolerances of A4 §9.3.
+- [x] Determinism tests (A3 DT-01, DT-03): run twice and re-run from the folder, compare hashes; DT-02 compares oracle and engine with the tolerances of A4 §9.3.
 
 ## M3.10 Strategy API, registry and Python trampoline (L)
 
