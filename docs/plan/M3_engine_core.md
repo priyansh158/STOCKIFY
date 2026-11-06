@@ -112,7 +112,7 @@ Files: `stockify/runs.py`, `stockify/__main__.py` (`run`), `engine/tools/stocksi
 ## M3.12 Parity with the oracle (M)
 
 - [x] `python -m stockify golden run --impl engine` passes all goldens written so far.
-- [ ] Differential fuzzing (A3 P-04): generate random small event streams (seeded) plus a random-order strategy (seeded) and compare oracle vs engine artifacts with `compare-artifacts --tol-paise 0`. 200 seeds in the regular test run; 5,000 in a weekly job. Every failure is minimised (shrink the stream) and saved as a new golden.
+- [x] Differential fuzzing (A3 P-04): generate random small event streams (seeded) plus a random-order strategy (seeded) and compare oracle vs engine artifacts with `compare-artifacts --tol-paise 0`. 200 seeds in the regular test run; 5,000 in a weekly job. Every failure is minimised (shrink the stream) and saved as a new golden.
 
 ## M3.13 Performance sanity (S)
 

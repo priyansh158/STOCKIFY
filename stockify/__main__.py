@@ -395,6 +395,12 @@ def _cmd_capture_charges(args) -> int:
     return 0
 
 
+def _cmd_tools_fuzz(args) -> int:
+    from stockify.tools import fuzz
+
+    return fuzz.main(fuzz.parse_seeds(args.seeds), args.shrink, args.save)
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -514,6 +520,11 @@ def main(argv: list[str] | None = None) -> int:
     cc = tsub.add_parser("capture-charges", help="save Kite's contract-note charges for imaginary orders (G08)")
     cc.add_argument("--cases", default="tests/golden/charges_cases.json")
     cc.set_defaults(func=_cmd_capture_charges)
+    fz = tsub.add_parser("fuzz", help="oracle vs engine on random worlds (A3 P-04; the weekly job is 4000-8999)")
+    fz.add_argument("--seeds", default="4000-8999", help="e.g. 4000-8999 or 4000,4100-4110 (default 4000-8999)")
+    fz.add_argument("--shrink", action="store_true", help="shrink each disagreement to a small world")
+    fz.add_argument("--save", action="store_true", help="save each disagreement as tests/golden/F<seed>.yaml")
+    fz.set_defaults(func=_cmd_tools_fuzz)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)

@@ -73,7 +73,6 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - M0 verification: Python suite green (481 passed + 4 tracked defects), `import server.main`, web lint and build, no references to the removed modules.
 - Note for M3: `engine_build_id` embeds the git SHA at configure time; `-BuildEngine` always reconfigures, but a plain `cmake --build` after new commits keeps the old SHA.
 
-
 ## 2026-11-04 — M1.0 recon
 
 | Item | Finding | Consequence |
@@ -336,3 +335,11 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   out of the filesystem root"). Builds were checked with a temporary, uncommitted `turbopack.root` and pass; the
   main checkout is unaffected. Imported golden runs have no pack specs or strategy ref, so their cards show no dates;
   the detail page falls back to the equity rows' first and last day.
+
+## 2026-11-06 — P-06 accounting identity, the fuzz shrinker and the weekly job (RD 3.2, RD 3.3)
+
+- P-06 (`tests/stockify/test_accounting.py`) works from a run folder alone: it rebuilds every position from `fills.csv` plus the expiry settlements logged in `events_log.txt`, with A4 §6.1's average-cost rule, and checks each trade date: charges add up to `charges.csv`; `positions_eod` lists exactly the open positions with the same qty, average, realised and unrealised (at its own mark); NAV = capital − charges + Σ realised + Σ unrealised; gross P&L; and cash, on days with no futures or MIS position open (their marks move cash at prices no artifact records; NAV covers those days). It calls neither implementation. Clean on every golden world, the 200 P-04 seeds and the M3.10 strategy worlds, on both; a one-paisa change to a fill price, a NAV or a charge is reported.
+- Found by P-06, the same on both sides: a daily bar is knowable only at the next midnight IST (A4 §1.1), so a fill on the last bundle day's bar comes after the run's final DAY_END and is in no equity or positions row. Tracked as DEFECT 2 in `tests/test_known_defects.py`; the owner chose a fix (D-52, RD 3.4).
+- The fuzz world and the random trader moved from the test into `stockify/tools/fuzz.py` (one copy; `test_engine_fuzz` imports them). A saved failure has to fit the golden format, whose strategy is data, so the shrinker first records the trader: every context call it makes (place, modify, cancel, subscriptions, timers), tagged with the number of the callback it came from. `stockify/tools/replay.py:Replay` makes the same calls at the same callback numbers, which reproduces the run exactly (tested: the replayed CSVs equal the live trader's on both implementations). `golden.py` now also loads `F*.yaml` and a strategy given by `ref` + `params`.
+- `shrink` is greedy delta debugging in a fixed order: instruments (with their derivatives), days, events (chunks, then single ones), trader calls, run settings back to plain values (no charges, no square-off fee, zero latency, ltp mark, 200 bp), then events again; each step is kept only if oracle and engine still differ in the same file; at most 2,000 runs. `save_golden` writes `tests/golden/F<seed>.yaml` with the oracle's orders, fills, charges, equity and positions as the expected values (or the oracle's error) and a title naming the seed, the file and the first differing line. Tested with a planted disagreement (one paisa added to the engine's fills of one instrument, in the comparison only): a daily-bar world shrinks to a few events, one instrument and a couple of orders that still fail; the saved golden is found by `golden.goldens()`, passes on both implementations and fails when an expected price is changed.
+- **Weekly job (manual, D-26: no scheduler, no CI):** `.\.venv\Scripts\python.exe -m stockify tools fuzz --seeds 4000-8999 --shrink --save`. It prints each disagreement, shrinks it, saves it as a golden, and exits 1 if there was any. First run, 2026-11-06: **5,000 seeds, 0 disagreements, 15.5 minutes** on the owner's laptop.
