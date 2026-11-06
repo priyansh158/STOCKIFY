@@ -39,10 +39,10 @@ Files: `event.hpp`, `pack_reader.hpp/.cpp`, `source.hpp`.
 
 Files: `engine.hpp/.cpp`, `session.hpp/.cpp`, `timers.hpp`.
 
-- [ ] One priority queue keyed `(t, rank, src, seq)` merging input records (several packs by pack index) with internal events: `PHASE`, `BAR_BUILT`, `MIS_SQOFF`, `TIMER`, `SEG_CLOSE`, `DAY_END` (A4 §1.2–§1.3, §1.8–§1.10).
-- [ ] `Engine::run(EventSource&)`, `Engine::push(batch)`, `Engine::finish()` share one code path with the batch-boundary rule of A4 §1.4, so nothing depends on how input was chunked (property test A3 P-02, including boundaries at timer, phase and bar-end times).
-- [ ] Bars built from snapshots (A4 §2.2) for strategies that subscribe to bars on tick data.
-- [ ] CLOCK events only advance time (A4 §1.6; property test P-03).
+- [x] One priority queue keyed `(t, rank, src, seq)` merging input records (several packs by pack index) with internal events: `PHASE`, `BAR_BUILT`, `MIS_SQOFF`, `TIMER`, `SEG_CLOSE`, `DAY_END` (A4 §1.2–§1.3, §1.8–§1.10).
+- [x] `Engine::run(EventSource&)`, `Engine::push(batch)`, `Engine::finish()` share one code path with the batch-boundary rule of A4 §1.4, so nothing depends on how input was chunked (property test A3 P-02, including boundaries at timer, phase and bar-end times).
+- [x] Bars built from snapshots (A4 §2.2) for strategies that subscribe to bars on tick data.
+- [x] CLOCK events only advance time (A4 §1.6; property test P-03).
 - [ ] G14 (dated F&O close: 15:30 vs 15:40) passes on the engine.
 
 ## M3.4 Instruments and specs (S)

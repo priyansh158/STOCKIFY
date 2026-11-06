@@ -55,6 +55,9 @@ def run_bundle(bundle: dict, pack_paths: list, folder: Path, strategy=None, mani
     from stockify.oracle.runner import Engine, load_records
     folder.mkdir(parents=True, exist_ok=True)
     bundle_sha = bundle_mod.write(bundle, folder)
+    # Run from exactly what bundle.json holds (canonical: sorted keys), as the engine and a re-run do (I-8),
+    # so nothing a strategy can see (params, spec dicts) depends on how the dict was built in memory.
+    bundle = json.loads((folder / "bundle.json").read_text(encoding="utf-8"))
     run_cfg = bundle["run"]
     (folder / "run.json").write_text(json.dumps(run_cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8",
                                      newline="\n")

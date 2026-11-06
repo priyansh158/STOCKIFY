@@ -8,6 +8,8 @@
 
 #include <intrin.h>
 
+#include <cmath>
+#include <compare>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -193,5 +195,201 @@ inline std::int64_t mul_div_round_half_up(std::int64_t a, std::int64_t b, std::i
     }
     return detail::apply_sign(q, false, "mul_div_round_half_up");
 }
+
+// ── Int128: an exact signed 128-bit integer ──────────────────────────────────
+//
+// MSVC has no __int128. Where A4 forms values beyond int64 (interval VWAP value, charges in 10⁻¹⁸ paisa,
+// margin in paise × ppb) the engine uses this type; Python uses plain int. Every operation is exact: a result
+// outside the 128-bit range is std::overflow_error, never a wraparound.
+class Int128 {
+ public:
+    constexpr Int128() = default;
+    constexpr Int128(std::int64_t v)  // NOLINT: implicit, like an integer promotion
+        : lo_(static_cast<std::uint64_t>(v)), hi_(v < 0 ? -1 : 0) {}
+
+    static Int128 from_parts(std::int64_t hi, std::uint64_t lo) {
+        Int128 x;
+        x.hi_ = hi;
+        x.lo_ = lo;
+        return x;
+    }
+    static Int128 mul(std::int64_t a, std::int64_t b) {  // exact 64 × 64 → 128
+        Int128 x;
+        x.lo_ = static_cast<std::uint64_t>(_mul128(a, b, &x.hi_));
+        return x;
+    }
+
+    bool negative() const { return hi_ < 0; }
+    bool is_zero() const { return hi_ == 0 && lo_ == 0; }
+    bool fits_int64() const { return hi_ == (static_cast<std::int64_t>(lo_) < 0 ? -1 : 0); }
+    std::int64_t to_int64() const {
+        if (!fits_int64()) {
+            detail::overflow("Int128::to_int64");
+        }
+        return static_cast<std::int64_t>(lo_);
+    }
+
+    Int128 operator-() const {
+        if (hi_ == kInt64Min && lo_ == 0) {
+            detail::overflow("Int128 negate");
+        }
+        return from_parts(~hi_ + (lo_ == 0 ? 1 : 0), ~lo_ + 1);
+    }
+
+    friend Int128 operator+(const Int128& a, const Int128& b) {
+        const std::uint64_t lo = a.lo_ + b.lo_;
+        const std::uint64_t carry = lo < a.lo_ ? 1 : 0;
+        const std::int64_t hi = static_cast<std::int64_t>(static_cast<std::uint64_t>(a.hi_) +
+                                                          static_cast<std::uint64_t>(b.hi_) + carry);
+        // Signed overflow: both operands have the same sign and the result's sign differs.
+        if ((a.hi_ < 0) == (b.hi_ < 0) && (hi < 0) != (a.hi_ < 0)) {
+            detail::overflow("Int128 add");
+        }
+        return from_parts(hi, lo);
+    }
+    // Direct, not a + (−b): −INT128_MIN overflows although a − INT128_MIN often fits.
+    friend Int128 operator-(const Int128& a, const Int128& b) {
+        const std::uint64_t lo = a.lo_ - b.lo_;
+        const std::uint64_t borrow = a.lo_ < b.lo_ ? 1 : 0;
+        const std::int64_t hi = static_cast<std::int64_t>(static_cast<std::uint64_t>(a.hi_) -
+                                                          static_cast<std::uint64_t>(b.hi_) - borrow);
+        // Signed overflow: the operands have different signs and the result's sign differs from a's.
+        if ((a.hi_ < 0) != (b.hi_ < 0) && (hi < 0) != (a.hi_ < 0)) {
+            detail::overflow("Int128 subtract");
+        }
+        return from_parts(hi, lo);
+    }
+    Int128& operator+=(const Int128& b) { return *this = *this + b; }
+    Int128& operator-=(const Int128& b) { return *this = *this - b; }
+
+    // Exact product with an int64; overflow of the 128-bit result is an error.
+    friend Int128 operator*(const Int128& a, std::int64_t b) {
+        const bool neg = a.negative() != (b < 0);
+        std::uint64_t mh = 0, ml = 0;
+        a.magnitude(mh, ml);
+        const std::uint64_t mb = detail::magnitude(b);
+        std::uint64_t lo_hi = 0;
+        const std::uint64_t lo = _umul128(ml, mb, &lo_hi);
+        std::uint64_t hi_hi = 0;
+        const std::uint64_t hi_lo = _umul128(mh, mb, &hi_hi);
+        const std::uint64_t hi = hi_lo + lo_hi;
+        if (hi_hi != 0 || hi < hi_lo) {
+            detail::overflow("Int128 multiply");
+        }
+        return from_magnitude(hi, lo, neg, "Int128 multiply");
+    }
+
+    friend bool operator==(const Int128& a, const Int128& b) { return a.hi_ == b.hi_ && a.lo_ == b.lo_; }
+    friend std::strong_ordering operator<=>(const Int128& a, const Int128& b) {
+        if (a.hi_ != b.hi_) {
+            return a.hi_ <=> b.hi_;
+        }
+        return a.lo_ <=> b.lo_;
+    }
+
+    // Mathematical floor / ceiling of this / d for a non-zero int64 d of any sign.
+    Int128 floor_div(std::int64_t d) const { return divide(d, false); }
+    Int128 ceil_div(std::int64_t d) const { return divide(d, true); }
+
+    // The nearest double, ties to even: what Python's float(int) gives.
+    double to_double() const {
+        std::uint64_t mh = 0, ml = 0;
+        magnitude(mh, ml);
+        double mag = 0.0;
+        if (mh == 0) {
+            mag = u64_to_double(ml);
+        } else {
+            // Keep the top 64 significant bits, folding any lower bit into a sticky bit, then scale.
+            unsigned long top = 0;
+            _BitScanReverse64(&top, mh);
+            const int shift = static_cast<int>(top) + 1;  // bits of mh used, 1…64
+            const std::uint64_t window = shift == 64 ? mh : (mh << (64 - shift)) | (ml >> shift);
+            const bool sticky = shift == 64 ? ml != 0 : (ml << (64 - shift)) != 0;
+            mag = std::ldexp(u64_to_double(window | (sticky ? 1u : 0u)), shift);
+        }
+        return negative() ? -mag : mag;
+    }
+
+    std::string to_string() const {
+        if (fits_int64()) {
+            return std::to_string(static_cast<std::int64_t>(lo_));
+        }
+        std::uint64_t mh = 0, ml = 0;
+        magnitude(mh, ml);
+        std::string digits;
+        while (mh != 0 || ml != 0) {  // repeated division by 10^18
+            constexpr std::uint64_t base = 1'000'000'000'000'000'000ULL;
+            const std::uint64_t qh = mh / base;
+            std::uint64_t rem = 0;
+            const std::uint64_t ql = _udiv128(mh % base, ml, base, &rem);
+            std::string chunk = std::to_string(rem);
+            if (qh != 0 || ql != 0) {
+                chunk.insert(0, 18 - chunk.size(), '0');
+            }
+            digits.insert(0, chunk);
+            mh = qh;
+            ml = ql;
+        }
+        return (negative() ? "-" : "") + digits;
+    }
+
+ private:
+    void magnitude(std::uint64_t& hi, std::uint64_t& lo) const {
+        if (!negative()) {
+            hi = static_cast<std::uint64_t>(hi_);
+            lo = lo_;
+            return;
+        }
+        lo = ~lo_ + 1;
+        hi = ~static_cast<std::uint64_t>(hi_) + (lo == 0 ? 1 : 0);  // |INT128_MIN| = 2^127 still fits unsigned
+    }
+
+    static Int128 from_magnitude(std::uint64_t hi, std::uint64_t lo, bool negative, const char* what) {
+        constexpr std::uint64_t top = std::uint64_t{1} << 63;
+        if (!negative) {
+            if (hi >= top) {
+                detail::overflow(what);
+            }
+            return from_parts(static_cast<std::int64_t>(hi), lo);
+        }
+        if (hi > top || (hi == top && lo != 0)) {
+            detail::overflow(what);
+        }
+        const std::uint64_t nlo = ~lo + 1;
+        const std::uint64_t nhi = ~hi + (nlo == 0 ? 1 : 0);
+        return from_parts(static_cast<std::int64_t>(nhi), nlo);
+    }
+
+    Int128 divide(std::int64_t d, bool ceiling) const {
+        if (d == 0) {
+            detail::zero_divisor("Int128 divide");
+        }
+        const bool neg = negative() != (d < 0);
+        std::uint64_t mh = 0, ml = 0;
+        magnitude(mh, ml);
+        const std::uint64_t md = detail::magnitude(d);
+        std::uint64_t qh = mh / md;
+        std::uint64_t rem = 0;
+        std::uint64_t ql = _udiv128(mh % md, ml, md, &rem);
+        // Floor rounds a negative quotient away from zero; ceiling rounds a positive one away from zero.
+        if (rem != 0 && neg != ceiling) {
+            if (++ql == 0) {
+                ++qh;
+            }
+        }
+        return from_magnitude(qh, ql, neg, "Int128 divide");
+    }
+
+    static double u64_to_double(std::uint64_t v) {
+        if (static_cast<std::int64_t>(v) >= 0) {
+            return static_cast<double>(static_cast<std::int64_t>(v));  // exact or correctly rounded
+        }
+        // Halve with the dropped bit kept as a sticky bit, convert, double: correctly rounded.
+        return static_cast<double>(static_cast<std::int64_t>((v >> 1) | (v & 1))) * 2.0;
+    }
+
+    std::uint64_t lo_ = 0;
+    std::int64_t hi_ = 0;
+};
 
 }  // namespace stocksim

@@ -18,6 +18,7 @@
 namespace py = pybind11;
 
 void bind_testing_packs(py::module_& t);  // testing_packs.cpp
+void bind_engine(py::module_& m);         // engine_bindings.cpp
 
 namespace {
 
@@ -57,6 +58,17 @@ stocksim::JValue to_jvalue(const py::handle& obj) {
     }
     throw py::type_error("not JSON-serialisable: " + std::string(py::str(py::type::handle_of(obj).attr("__name__"))));
 }
+
+
+// Python int <-> Int128 for the cross-checks (pybind11 converts only up to 64 bits).
+stocksim::Int128 to_i128(const py::int_& x) {
+    const py::object mask = py::int_((py::int_(1).attr("__lshift__")(64))).attr("__sub__")(1);
+    const std::int64_t hi = x.attr("__rshift__")(64).cast<std::int64_t>();
+    const std::uint64_t lo = x.attr("__and__")(mask).cast<std::uint64_t>();
+    return stocksim::Int128::from_parts(hi, lo);
+}
+
+py::int_ from_i128(const stocksim::Int128& v) { return py::int_(py::str(v.to_string())); }
 
 void bind_testing(py::module_& t) {
     t.doc() = "Engine internals exposed for cross-checks against the Python oracle (tests only).";
@@ -123,6 +135,18 @@ void bind_testing(py::module_& t) {
         return d;
     });
 
+    t.def("int128_mul", [](std::int64_t a, std::int64_t b) { return from_i128(stocksim::Int128::mul(a, b)); });
+    t.def("int128_add", [](const py::int_& a, const py::int_& b) { return from_i128(to_i128(a) + to_i128(b)); });
+    t.def("int128_sub", [](const py::int_& a, const py::int_& b) { return from_i128(to_i128(a) - to_i128(b)); });
+    t.def("int128_mul64", [](const py::int_& a, std::int64_t b) { return from_i128(to_i128(a) * b); });
+    t.def("int128_floor_div", [](const py::int_& a, std::int64_t d) { return from_i128(to_i128(a).floor_div(d)); });
+    t.def("int128_ceil_div", [](const py::int_& a, std::int64_t d) { return from_i128(to_i128(a).ceil_div(d)); });
+    t.def("int128_to_double", [](const py::int_& a) { return to_i128(a).to_double(); });
+    t.def("int128_cmp", [](const py::int_& a, const py::int_& b) {
+        const auto c = to_i128(a) <=> to_i128(b);
+        return c < 0 ? -1 : (c > 0 ? 1 : 0);
+    });
+
     py::class_<stocksim::Pcg32>(t, "Pcg32")
         .def(py::init<std::uint64_t, std::uint64_t>(), py::arg("initstate"), py::arg("initseq"))
         .def("next_u32", &stocksim::Pcg32::next_u32)
@@ -153,6 +177,8 @@ PYBIND11_MODULE(_engine, m) {
         d["python_version"] = b.python_version;
         return d;
     }, "Engine build identity (invariant I-8).");
+
+    bind_engine(m);
 
     py::module_ testing = m.def_submodule("testing");
     bind_testing(testing);

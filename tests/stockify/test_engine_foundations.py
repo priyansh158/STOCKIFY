@@ -203,6 +203,58 @@ class OutputFormatParityTests(unittest.TestCase):
             self.assertEqual(t.sha256_hex(data), hashlib.sha256(data).hexdigest())
 
 
+INT128_MIN, INT128_MAX = -(2**127), 2**127 - 1
+
+
+def _int128(rng: random.Random) -> int:
+    pick = rng.random()
+    if pick < 0.2:
+        return rng.choice([INT128_MIN, INT128_MIN + 1, INT128_MAX, -1, 0, 1, 2**64, -(2**64), 2**63, -(2**63) - 1])
+    if pick < 0.5:
+        return _int64(rng)
+    v = rng.getrandbits(rng.randint(1, 127))
+    return -v - 1 if rng.random() < 0.5 else v
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class Int128ParityTests(unittest.TestCase):
+    """The engine's Int128 against Python int (interval VWAP, charges in 10⁻¹⁸ paisa, margin in paise × ppb)."""
+
+    def _same(self, cpp, py, *args):  # noqa: ANN001
+        try:
+            expected = ("ok", py(*args))
+            if not INT128_MIN <= expected[1] <= INT128_MAX:
+                expected = ("error", None)
+        except ZeroDivisionError:
+            expected = ("error", None)
+        self.assertEqual(_outcome(cpp, *args), expected, args)
+
+    def test_arithmetic(self):
+        t = _testing()
+        rng = random.Random(3108)
+        for _ in range(20_000):
+            a, b = _int128(rng), _int128(rng)
+            x, y = _int64(rng), _int64(rng)
+            d = rng.choice([_int64(rng), 1, -1, 7, 10**9, 10**18, -(10**18), 0])
+            self._same(t.int128_mul, lambda p, q: p * q, x, y)
+            self._same(t.int128_add, lambda p, q: p + q, a, b)
+            self._same(t.int128_sub, lambda p, q: p - q, a, b)
+            self._same(t.int128_mul64, lambda p, q: p * q, a, x)
+            self._same(t.int128_floor_div, lambda p, q: p // q, a, d)
+            self._same(t.int128_ceil_div, lambda p, q: -((-p) // q), a, d)
+            self.assertEqual(t.int128_cmp(a, b), (a > b) - (a < b))
+
+    def test_to_double_is_pythons_float(self):
+        t = _testing()
+        rng = random.Random(3109)
+        values = [_int128(rng) for _ in range(20_000)]
+        # Ties and sticky bits at several magnitudes, including a 64-bit top word with its highest bit set.
+        values += [2**53 + 1, 2**64 + 2**11, 2**64 + 2**11 + 1, (2**52 + 1) * 2**74, (2**52 + 1) * 2**74 + 1,
+                   2**127 - 2**74, INT128_MIN, INT128_MAX, -(2**126) - 2**72 - 1]
+        for v in values:
+            self.assertEqual(t.int128_to_double(v), float(v), v)
+
+
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class BundleEnvelopeTests(unittest.TestCase):
     BUNDLE = {
