@@ -78,11 +78,13 @@ add_library(stocksim_core STATIC
   src/session.cpp
   src/instruments.cpp
   src/engine.cpp
-  src/costs.cpp
+  src/engine_trading.cpp
   src/ledger.cpp
   src/margin_flat.cpp
+  src/costs.cpp
   src/matcher.cpp
-  src/engine_trading.cpp)
+  src/metrics.cpp
+  src/artifacts.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")

@@ -7,10 +7,12 @@
 #include <pybind11/stl.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "stocksim/artifacts.hpp"
 #include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/pack_reader.hpp"
@@ -279,6 +281,9 @@ void bind_engine(py::module_& m) {
             return out;
         })
         .def("events_log", [](const Engine& e) { return e.log_lines(); })
+        .def("write_artifacts", [](const Engine& e, const std::string& folder) {
+            return stocksim::write_artifacts(e, std::filesystem::path(folder));
+        })
         .def("labels", &Engine::labels);
 
     py::register_exception<stocksim::RunError>(m, "RunError", PyExc_RuntimeError);

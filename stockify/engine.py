@@ -48,3 +48,59 @@ def available() -> bool:
         return True
     except EngineUnavailable:
         return False
+
+
+def strategy_for(bundle: dict):  # noqa: ANN201
+    """The strategy object a bundle names, as the oracle builds it (a golden's script, or a loaded ref)."""
+    s = bundle["strategy"]
+    if s["kind"] == "script":
+        from stockify.strategies._script import Script
+        return Script(s["actions"])
+    from stockify import strategy as strategy_mod
+    return strategy_mod.load(s["ref"])
+
+
+def run_bundle(bundle: dict, pack_paths: list, folder, strategy=None, manifest: dict | None = None,  # noqa: ANN001, ANN201
+               report: bool = True):
+    """The engine's twin of `stockify.oracle.run_bundle`: write bundle.json and run.json, run the C++ engine
+    over the packs from that bundle.json, write the run folder. Returns an `oracle.RunResult`."""
+    import json
+    import platform
+    from pathlib import Path
+
+    from stockify import bundle as bundle_mod, timeutil
+    from stockify.oracle import RunResult
+
+    mod = load()
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    bundle_sha = bundle_mod.write(bundle, folder)
+    on_disk = json.loads((folder / "bundle.json").read_text(encoding="utf-8"))
+    (folder / "run.json").write_text(json.dumps(on_disk["run"], indent=2, sort_keys=True) + "\n", encoding="utf-8",
+                                     newline="\n")
+    e = mod.Engine(str(folder / "bundle.json"))
+    try:
+        for p in pack_paths:
+            e.add_pack(str(p))
+        e.set_strategy_py(strategy if strategy is not None else strategy_for(on_disk))
+        started = timeutil.now_ns()
+        e.run()
+        hashes = e.write_artifacts(str(folder))
+        labels = list(e.labels())
+    finally:
+        # Drop the engine now, even on an error: a traceback keeps this frame alive, and the engine keeps its
+        # packs memory-mapped (Windows will not delete a mapped file).
+        e = None
+    info = build_info()
+    out = {"run_id": folder.name, "bundle_sha256": bundle_sha, **(manifest or {}),
+           "packs": [p["sha256"] for p in on_disk["packs"]], "started_ns": started,
+           "duration_ms": (timeutil.now_ns() - started) // 1_000_000, "engine": "engine",
+           "engine_build_id": info["engine_build_id"], "python": sys.version.split()[0], "os": platform.platform(),
+           "labels": labels}
+    (folder / "manifest.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    metrics = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
+    del e
+    if report:
+        from stockify.oracle import report as report_mod
+        report_mod.write(folder)
+    return RunResult(folder, folder.name, metrics, labels, dict(hashes))

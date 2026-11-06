@@ -347,9 +347,12 @@ def run_one(g: dict, impl: str = "oracle") -> list[str]:
 
 
 def _run_single(g: dict, impl: str) -> list[str]:
-    if impl != "oracle":
-        raise GoldenError("only the oracle exists before M3")
-    from stockify.oracle import run_bundle
+    if impl == "oracle":
+        from stockify.oracle import run_bundle
+    elif impl == "engine":
+        from stockify.engine import run_bundle  # the C++ engine, same inputs and artifacts (M3.12)
+    else:
+        raise GoldenError(f"unknown implementation {impl!r}")
     with tempfile.TemporaryDirectory(prefix=f"golden-{g['id']}-") as tmp:
         folder = Path(tmp)
         pack = build_pack(g, folder)

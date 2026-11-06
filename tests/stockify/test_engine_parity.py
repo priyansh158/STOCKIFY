@@ -167,6 +167,56 @@ def _cases():
     return out
 
 
+CSV_AND_LOG = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
+               "margin_daily.csv", "events_log.txt")
+
+
+def assert_same_artifacts(test: unittest.TestCase, oracle_dir: Path, engine_dir: Path) -> None:
+    """DT-02 (A4 §9.3): CSVs and events_log byte-identical; metrics.json equal within a relative 1e-12."""
+    import json
+    import math
+    for name in CSV_AND_LOG:
+        a = (oracle_dir / name).read_bytes()
+        b = (engine_dir / name).read_bytes()
+        if a != b:
+            la, lb = a.decode().splitlines(), b.decode().splitlines()
+            for n, (x, y) in enumerate(zip(la, lb)):
+                if x != y:
+                    test.fail(f"{name} line {n + 1} differs\n oracle: {x}\n engine: {y}")
+            test.fail(f"{name}: {len(la)} lines vs {len(lb)} lines")
+    ma = json.loads((oracle_dir / "metrics.json").read_text())
+    mb = json.loads((engine_dir / "metrics.json").read_text())
+
+    def close(x, y, path: str) -> None:  # noqa: ANN001
+        if isinstance(x, dict):
+            test.assertEqual(sorted(x), sorted(y), path)
+            for k in x:
+                close(x[k], y[k], f"{path}.{k}")
+        elif isinstance(x, float) or isinstance(y, float):
+            test.assertTrue(type(x) is type(y) and math.isclose(x, y, rel_tol=1e-12, abs_tol=1e-300), f"{path}: {x!r} vs {y!r}")
+        else:
+            test.assertEqual(x, y, path)
+    close(ma, mb, "metrics")
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class GoldenArtifactParityTests(unittest.TestCase):
+    """Every golden world run by its own scripted strategy: the oracle's and the engine's run folders agree."""
+
+    def test_every_golden_world_gives_the_same_artifacts(self):
+        from stockify import engine as engine_mod
+        for name, g in _cases():
+            if g.get("expect", {}).get("error"):
+                continue  # covered by `golden run --impl engine`, which checks the error message
+            with self.subTest(golden=name), tempfile.TemporaryDirectory(prefix="parity-golden-") as tmp:
+                folder = Path(tmp)
+                pack = golden.build_pack(g, folder)
+                bundle = golden.build_bundle(g)
+                run_bundle(bundle, [pack], folder / "oracle", report=False)
+                engine_mod.run_bundle(bundle, [pack], folder / "engine", report=False)
+                assert_same_artifacts(self, folder / "oracle", folder / "engine")
+
+
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class RecorderParityTests(unittest.TestCase):
     def test_every_golden_world_logs_the_same(self):
