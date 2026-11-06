@@ -17,6 +17,8 @@
 
 namespace py = pybind11;
 
+void bind_testing_packs(py::module_& t);  // testing_packs.cpp
+
 namespace {
 
 // Python value → JValue, with the oracle's rules (bool before int, str keys only, int64 range).
@@ -154,4 +156,5 @@ PYBIND11_MODULE(_engine, m) {
 
     py::module_ testing = m.def_submodule("testing");
     bind_testing(testing);
+    bind_testing_packs(testing);
 }

@@ -31,9 +31,9 @@ Files: `engine/include/stocksim/{types,int128,decimal,pcg32,sha256,format,json_o
 
 Files: `event.hpp`, `pack_reader.hpp/.cpp`, `source.hpp`.
 
-- [ ] Memory-mapped reader for `.evt` (A1 §5) behind a tiny platform layer (`MapViewOfFile`; Windows only, D-26). Validate magic, version, record sizes and non-decreasing `(t_event, rank, seq)`; fail with the byte offset on any violation.
-- [ ] `EventSource` interface; `PackSource` (one or many packs merged by sort key), `VectorSource` (tests), `LiveBatchSource` (accepts encoded batches pushed from Python; used in M5).
-- [ ] Round-trip test: the Python builder (M1.8) writes a pack, the C++ reader decodes it, and a C++ re-encoder produces identical bytes.
+- [x] Memory-mapped reader for `.evt` (A1 §5) behind a tiny platform layer (`MapViewOfFile`; Windows only, D-26). Validate magic, version, record sizes and non-decreasing `(t_event, rank, seq)`; fail with the byte offset on any violation.
+- [x] `EventSource` interface; `PackSource` (one or many packs merged by sort key), `VectorSource` (tests), `LiveBatchSource` (accepts encoded batches pushed from Python; used in M5).
+- [x] Round-trip test: the Python builder (M1.8) writes a pack, the C++ reader decodes it, and a C++ re-encoder produces identical bytes.
 
 ## M3.3 Event loop, clock, phases, timers (M)
 

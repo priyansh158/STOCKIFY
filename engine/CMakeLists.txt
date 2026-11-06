@@ -71,7 +71,10 @@ add_library(stocksim_core STATIC
   src/sha256.cpp
   src/format.cpp
   src/json_out.cpp
-  src/json_bundle.cpp)
+  src/json_bundle.cpp
+  src/event.cpp
+  src/pack_reader.cpp
+  src/source.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -82,7 +85,7 @@ add_executable(stocksim_run src/run_main.cpp)
 target_link_libraries(stocksim_run PRIVATE stocksim_core)
 target_compile_options(stocksim_run PRIVATE ${STOCKSIM_CXX_FLAGS})
 
-pybind11_add_module(_engine python/engine_module.cpp)
+pybind11_add_module(_engine python/engine_module.cpp python/testing_packs.cpp)
 target_link_libraries(_engine PRIVATE stocksim_core)
 target_compile_options(_engine PRIVATE ${STOCKSIM_CXX_FLAGS})
 add_custom_command(TARGET _engine POST_BUILD
@@ -95,7 +98,8 @@ add_executable(stocksim_tests
   tests/test_numbers.cpp
   tests/test_pcg32.cpp
   tests/test_output.cpp
-  tests/test_bundle.cpp)
+  tests/test_bundle.cpp
+  tests/test_packs.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_core)
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
 

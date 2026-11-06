@@ -244,3 +244,10 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Found in C++ while cross-checking: `floor_to(INT64_MIN, -1)` overflowed in its intermediate `floor_div`; `floor_to` / `ceil_to` are now `x ∓ remainder`, so only a final result outside int64 is an error, as in Python.
 - `json_bundle` reads the envelope (schema, seed, packs, strategy, labels) and keeps the document; pack paths stay as written (relative to `$LAB`), because C++ never resolves lab paths — Python passes absolute paths to `add_pack`.
 
+## 2026-11-05 — M3.2 event packs and sources (DLF 3.1)
+
+- `event.hpp` (key, ranks, record view, decoders, `encode_record`), `pack_reader` (`MapViewOfFile`; the whole pack is validated on open with `packs.read`'s checks, every error naming its byte offset), `source` (`PackSource` merging by `(t, rank, pack index, seq)`, `VectorSource`, `LiveBatchSource`). An unknown GAP reason or REFDATA subtype is a malformed record, as it is for the oracle (`decode` raises there).
+- `test_engine_packs`: every golden's pack plus synthetic packs of all eight kinds (453 records) decode to exactly `packs.read`'s records and re-encode byte for byte; merges of 1–4 packs give `runner.load_records`' order; random batch splits through `LiveBatchSource` give the same stream; malformed packs fail on both readers.
+- A real pack from the lab (80,921 records: 37,159 BAR, 36,804 SETTLE, 6,958 REFDATA) also decodes identically and round-trips. Python `packs.read` 0.15 s; C++ reading it into the same Python dicts 0.08 s; re-encoding 0.02 s; merging the keys 0.01 s.
+- The GAP reasons, REFDATA subtypes and event ranks in `event.hpp` are a third copy of the A1/A4 lists, tied to them by blockwatch (`flat` name comparison for the ranks, whose C++ spelling is `kRankBarBuilt`).
+
