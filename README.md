@@ -145,4 +145,4 @@ geo_alerts.py · india_utils.py · stockify_paths.py
 
 All mutable state lives under `%LOCALAPPDATA%\STOCKIFY\` (resolved by `stockify_paths.py`). The simulation stores live under `…\STOCKIFY\kite\lab\`.
 
-Not investment advice. Simulation only.
+
