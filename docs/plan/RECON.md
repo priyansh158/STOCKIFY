@@ -377,3 +377,30 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   - the pre-commit hook re-initialised the shared git dir when run in a worktree (it set `core.bare`; restored, and the hook now unsets `GIT_DIR` / `GIT_INDEX_FILE` for its snapshot);
   - two runs building one pack at once (TM 3.7, TM 3.8).
 - Still open, for the owner: going live (no full trading day has been recorded yet; the benchmark is re-measured on the first one, D-48), and the backup target.
+
+## 2026-11-07 — M4.3 Black-76 and implied volatility (TQ 4.1, TQ 4.2)
+
+- Recon: nothing priced options yet; `stockify/fno/` did not exist. `pricing.json` has one dated `risk_free` row (6.5 %,
+  a placeholder until the owner sets it from T-bill yields) and the bundle carries it as `rate_ppb`, read the same way
+  as the metrics' risk-free rate.
+- Python (oracle) `stockify/fno/black76.py` and C++ `engine/include/stocksim/pricing/black76.hpp` / `src/pricing/
+  black76.cpp`, each written from the C-13 formulas (C-10): price, delta, gamma, vega (per 1.00 vol), theta (per year),
+  rho (= −t·V, since with F given only the discount factor depends on r); N from `erfc`.
+- Implied volatility: bounds first (`BELOW_INTRINSIC` with a 1e-10 allowance, since a model price can round a hair
+  under intrinsic; `ABOVE_FORWARD`; `ABOVE_STRIKE`), then `BELOW_TICK`, then Brent on σ ∈ [0.001, 5.0] to 1e-10 in
+  price with a bisection fallback. A price needing σ < 0.001 (no time value to read) is `LOW_VEGA`; one needing
+  σ > 5.0 is the new `ABOVE_MAX_VOL` (D-56). After solving, `LOW_VEGA` when half a tick of price error would move σ
+  by more than 1.00 (vega < tick/2). Time: ACT/365 to the last trading moment, floored at one second.
+- **G17/G18 are test vectors, not runner goldens**: they are pure maths with no engine world, so the golden runner
+  does not fit. G17 lives in `tests/fixtures/black76_vectors.json` (each vector cites its source: Hull's Black's-model
+  example and the A3 table), read by both `tests/stockify/test_black76.py` and `engine/tests/test_black76.cpp`.
+  Expected values are strings, so a check is "1e-6 absolute for prices / 1e-9 relative for Greeks, or half a unit in
+  the last printed digit, whichever is wider": the A3 table prints the row-3 put delta to 10 decimals, coarser than
+  1e-9 relative. Every value matches the plan's to all printed digits; Hull's put is 1.1166.
+- G18 over 3,366 grid points (K/F 0.8–1.2 in 17 steps, 11 maturities 1–90 days, 9 vols 5–80 %, calls and puts):
+  2,170 round-trip within 1e-8 relative (worst 9e-10); 668 out-of-the-money points under a tick are `BELOW_TICK`; 528
+  deep in-the-money points are `LOW_VEGA`, all with under ₹0.0005 of time value. G18's "model price below one tick" is
+  therefore read as the time value, which for an out-of-the-money option is its price (D-56).
+- C++ vs Python on 20,000 seeded random cases (A3 §3, ≤ 1e-12 relative): price, delta and rho bit-equal; gamma and
+  vega within ~5e-16 (the normal density is written e^{−x²/2}·(1/√2π) in one and e^{−x²/2}/√2π in the other); theta
+  within ~4e-14 (its two terms cancel); every implied volatility and every reason identical, all seven outcomes seen.

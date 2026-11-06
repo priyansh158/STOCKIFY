@@ -28,11 +28,11 @@ Concepts: C-2, C-7, C-12, C-13, C-15. Contract: `A4_engine_semantics.md` §6–�
 
 Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` (independent implementation, C-10).
 
-- [ ] Price, delta, gamma, vega, theta, rho per C-13; normal CDF via `erfc` (`std::erfc` / `math.erfc`).
-- [ ] IV: no-arbitrage bound check first (return NaN + reason: `BELOW_INTRINSIC`; `ABOVE_FORWARD` for calls above `D·F`; `ABOVE_STRIKE` for puts above `D·K`; `BELOW_TICK` when the price is under one tick), then Brent's method on σ ∈ [0.001, 5.0] to 1e-10 absolute in price, falling back to bisection; flag `LOW_VEGA` when vega is too small for a stable answer.
-- [ ] Time to expiry: ACT/365 from `now` to the contract's last trading moment (M4.1), floor at one second.
-- [ ] Rate from `pricing.json` (dated; a placeholder until the owner sets it from current T-bill yields).
-- [ ] Tests: A3 G17 (reference vectors, including Hull's textbook Black-76 example) and G18 (round trip over a grid, with sub-tick points flagged), using the single tolerance table in `A3_testing.md` §3.
+- [x] Price, delta, gamma, vega, theta, rho per C-13; normal CDF via `erfc` (`std::erfc` / `math.erfc`).
+- [x] IV: no-arbitrage bound check first (return NaN + reason: `BELOW_INTRINSIC`; `ABOVE_FORWARD` for calls above `D·F`; `ABOVE_STRIKE` for puts above `D·K`; `BELOW_TICK` when the price is under one tick), then Brent's method on σ ∈ [0.001, 5.0] to 1e-10 absolute in price, falling back to bisection; flag `LOW_VEGA` when vega is too small for a stable answer.
+- [x] Time to expiry: ACT/365 from `now` to the contract's last trading moment (M4.1), floor at one second.
+- [x] Rate from `pricing.json` (dated; a placeholder until the owner sets it from current T-bill yields).
+- [x] Tests: A3 G17 (reference vectors, including Hull's textbook Black-76 example) and G18 (round trip over a grid, with sub-tick points flagged), using the single tolerance table in `A3_testing.md` §3.
 
 ## M4.4 Option-chain view (M)
 
