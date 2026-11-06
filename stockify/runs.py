@@ -173,8 +173,7 @@ def _finish(run_id: str, folder: Path) -> None:
     fields, children = _summarise(folder)
     for k in ("status", "started_ns", "finished_ns"):
         fields.pop(k, None)
-    if store.update_run(run_id, only_if_status="running", status="done", finished_ns=timeutil.now_ns(), **fields):
-        store.replace_run_rows(run_id, **children)
+    store.finish_run(run_id, {**fields, "status": "done", "finished_ns": timeutil.now_ns()}, **children)
 
 
 # ── import ───────────────────────────────────────────────────────────────────

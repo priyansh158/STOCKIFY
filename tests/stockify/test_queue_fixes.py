@@ -188,3 +188,31 @@ class RunnerClaimTests(RunsTestBase):
         pid, created = proc.read_pidfile(paths.run_path(rid))
         self.assertEqual(pid, os.getpid())
         self.assertTrue(proc.is_alive(pid, created))
+
+
+class FinishRunTests(SandboxedDBTest):
+    """RD 4.4: `done` and the child rows land together, or not at all."""
+
+    db_modules = (store,)
+    ROWS = {"orders": [{"order_id": 1, "side": "BUY"}], "fills": [], "equity": [], "charges": []}
+
+    def test_done_and_rows_together(self):
+        store.create_run({"run_id": "a", "status": "running"})
+        self.assertTrue(store.finish_run("a", {"status": "done", "finished_ns": 7, "metrics_json": "{}"}, **self.ROWS))
+        row = store.get_run("a")
+        self.assertEqual((row["status"], row["finished_ns"], row["metrics_json"]), ("done", 7, "{}"))
+        self.assertEqual(store.run_rows("a", "orders"), [{"order_id": 1, "side": "BUY"}])
+
+    def test_a_failure_in_the_rows_leaves_the_run_running(self):
+        store.create_run({"run_id": "a", "status": "running"})
+        bad = dict(self.ROWS, orders=[{"order_id": 1}, {"no_id": 2}])
+        with self.assertRaises(KeyError):
+            store.finish_run("a", {"status": "done", "finished_ns": 7}, **bad)
+        self.assertEqual(store.get_run("a")["status"], "running")
+        self.assertEqual(store.run_rows("a", "orders"), [])
+
+    def test_a_cancelled_run_gets_neither(self):
+        store.create_run({"run_id": "a", "status": "cancelled"})
+        self.assertFalse(store.finish_run("a", {"status": "done", "finished_ns": 7}, **self.ROWS))
+        self.assertEqual(store.get_run("a")["status"], "cancelled")
+        self.assertEqual(store.run_rows("a", "orders"), [])

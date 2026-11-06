@@ -224,20 +224,49 @@ def replace_run_rows(run_id: str, *, orders: list[dict], fills: list[dict], equi
     """One transaction: delete the run's child rows, insert the new ones (re-import is idempotent). Derived
     rows only; tick tables are never touched. `orders` items are the order dicts (stored as row_json, keyed
     by order_id); the others carry their table's columns."""
-    import json
     conn = _connect()
     with _lock:
         try:
-            for table, _, _ in _RUN_TABLES.values():
-                conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
-            conn.executemany("INSERT INTO run_orders (run_id, order_id, row_json) VALUES (?, ?, ?)",
-                             [(run_id, o["order_id"], json.dumps(o, sort_keys=True)) for o in orders])
-            for key, rows in (("fills", fills), ("equity", equity), ("charges", charges)):
-                table, _, cols = _RUN_TABLES[key]
-                conn.executemany(f"INSERT INTO {table} (run_id, {', '.join(cols)}) "
-                                 f"VALUES (?, {', '.join('?' * len(cols))})",
-                                 [(run_id, *(r.get(c) for c in cols)) for r in rows])
+            _write_children(conn, run_id, orders, fills, equity, charges)
             conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def _write_children(conn, run_id: str, orders, fills, equity, charges) -> None:  # noqa: ANN001
+    """Inside the caller's transaction: replace the run's child rows."""
+    import json
+    for table, _, _ in _RUN_TABLES.values():
+        conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+    conn.executemany("INSERT INTO run_orders (run_id, order_id, row_json) VALUES (?, ?, ?)",
+                     [(run_id, o["order_id"], json.dumps(o, sort_keys=True)) for o in orders])
+    for key, rows in (("fills", fills), ("equity", equity), ("charges", charges)):
+        table, _, cols = _RUN_TABLES[key]
+        conn.executemany(f"INSERT INTO {table} (run_id, {', '.join(cols)}) "
+                         f"VALUES (?, {', '.join('?' * len(cols))})",
+                         [(run_id, *(r.get(c) for c in cols)) for r in rows])
+
+
+def finish_run(run_id: str, fields: dict, *, orders: list[dict], fills: list[dict], equity: list[dict],
+               charges: list[dict]) -> bool:
+    """A runner's last write, in one transaction: update the row (normally status done) and replace its child
+    rows, only while the row is still `running`. A cancelled row gets neither; if any insert fails, nothing
+    changes. Returns whether the run was finished."""
+    unknown = set(fields) - (set(RUN_FIELDS) - {"run_id"})
+    if unknown:
+        raise ValueError(f"not updatable runs columns: {sorted(unknown)}")
+    conn = _connect()
+    with _lock:
+        try:
+            cur = conn.execute(f"UPDATE runs SET {', '.join(f'{k} = ?' for k in fields)} "
+                               "WHERE run_id = ? AND status = 'running'", (*fields.values(), run_id))
+            if cur.rowcount == 0:
+                conn.rollback()
+                return False
+            _write_children(conn, run_id, orders, fills, equity, charges)
+            conn.commit()
+            return True
         except BaseException:
             conn.rollback()
             raise
