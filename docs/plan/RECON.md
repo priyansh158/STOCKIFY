@@ -428,3 +428,10 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - **X-12, X-13 confirmed as published.** NSE's public All Reports → Derivatives page lists the daily SPAN files and the F&O contract-wise ELM file. **S-7 stays 🛑**: exact file names and URLs need a browser check before M4.8.
 - **Z-3 partly confirmed.** The 2024-10-01 rates were 0.00297% equity, 0.00173% futures and 0.03503% options. `charges.json` lacks the 0.00297% CM row. Today's rates are proven in force by K-10a, but when they started could not be found. That stays ⚠.
 - **Z-5 confirmed.** Square-off is 15:25 equity and 15:26 F&O from 2025-12-26. Since CAS began, Zerodha's policy page gives **CAS stocks 15:12**, but `broker_policy.json` has no CM_CAS cut-off row, so CAS stocks are squared off at the general 15:25. That is broker-policy data outside M4, reported to the supervisor. The current MIS leverage figure was not found and stays ⚠.
+
+- C++ vs Python on 20,000 seeded random cases (A3 §3 allows 1e-12 relative): at first price, delta and rho were
+  bit-equal and the rest within 4e-14, because the normal density was written e^{−x²/2}·(1/√2π) in one and
+  e^{−x²/2}/√2π in the other. The chain view (M4.4) logs these numbers and the parity logs must match exactly, so
+  both now use the same operation order (TQ 4.3), and `year_fraction` divides the same two doubles on both sides
+  (Python's int / int rounds once, and differs from the engine's for spans over 2^53 ns ≈ 104 days). Now every
+  price, Greek and implied volatility is bit-equal, and every reason identical, all seven outcomes seen.

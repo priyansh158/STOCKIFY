@@ -118,7 +118,12 @@ double bisection(const G& g, double a, double b, double ga) {
 
 double norm_cdf(double x) { return 0.5 * std::erfc(-x / std::numbers::sqrt2); }
 
-double norm_pdf(double x) { return std::exp(-0.5 * x * x) / std::sqrt(2.0 * std::numbers::pi); }
+// The same operations as the oracle's (a constant 1/√(2π), then one product): the chain view logs these numbers,
+// and parity there needs them bit-equal (A3 §3 allows 1e-12, the logs allow nothing).
+double norm_pdf(double x) {
+    static const double inv_sqrt_2pi = 1.0 / std::sqrt(2.0 * std::numbers::pi);
+    return inv_sqrt_2pi * std::exp(-0.5 * x * x);
+}
 
 double price(bool is_call, double f, double k, double t, double r, double sigma) {
     require_inputs(f, k, t, sigma);
@@ -181,8 +186,8 @@ ImpliedVol implied_vol(bool is_call, double target, double f, double k, double t
 }
 
 double year_fraction(TimeNs now, TimeNs last_trading) {
-    const TimeNs left = last_trading > now + kMinTimeNs ? last_trading - now : kMinTimeNs;
-    return static_cast<double>(left) / static_cast<double>(kNsPerYear);
+    const TimeNs left = last_trading - now > kMinTimeNs ? last_trading - now : kMinTimeNs;
+    return static_cast<double>(left) / static_cast<double>(kNsPerYear);  // the oracle divides the same two doubles
 }
 
 }  // namespace stocksim::pricing

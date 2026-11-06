@@ -186,9 +186,9 @@ class U08Edges(unittest.TestCase):
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class EngineCrossTests(unittest.TestCase):
     """The C++ implementation (independent, C-10) against this one on a seeded random grid (A3 §3: ≤ 1e-12
-    relative). Measured: price, delta and rho bit-equal; gamma and vega within ~5e-16 (n(x) is computed as
-    e^{-x²/2}·(1/√2π) here and e^{-x²/2}/√2π there); theta within ~4e-14 (its two terms cancel); every implied
-    volatility and every reason identical."""
+    relative). They agree bit for bit: both use the same operation order (the normal density as the constant
+    1/√(2π) times e^{-x²/2}), because the chain view's parity logs these numbers. Every implied volatility and
+    every reason is identical too."""
 
     def test_random_grid(self):
         import random
@@ -205,22 +205,23 @@ class EngineCrossTests(unittest.TestCase):
             theirs = t_mod.b76_greeks(is_call, f, k, t, r, s)
             for name, a, b in zip(("price", "delta", "gamma", "vega", "theta", "rho"),
                                   (mine.price, mine.delta, mine.gamma, mine.vega, mine.theta, mine.rho), theirs):
-                self.assertLessEqual(abs(a - b), 1e-12 * max(abs(a), abs(b)), (name, is_call, f, k, t, r, s))
+                self.assertEqual(a, b, (name, is_call, f, k, t, r, s))  # bit-equal (the chain view logs them)
             self.assertEqual(t_mod.b76_price(is_call, f, k, t, r, s), mine.price)
             target = mine.price * rng.choice([1.0, 1.0, 1.001, 0.999, 1.5, 0.5])
             want = B.implied_vol(is_call, target, f, k, t, r)
             got = t_mod.b76_implied_vol(is_call, target, f, k, t, r)
             self.assertEqual(got[1], want[1], (is_call, target, f, k, t, r))
             if want[1] is None:
-                self.assertLessEqual(abs(got[0] - want[0]), 1e-12 * want[0])
+                self.assertEqual(got[0], want[0])
             outcomes.add(want[1])
         self.assertEqual(outcomes, {None, B.BELOW_INTRINSIC, B.ABOVE_FORWARD, B.ABOVE_STRIKE, B.BELOW_TICK,
                                     B.ABOVE_MAX_VOL, B.LOW_VEGA})
 
     def test_year_fraction(self):
         t_mod = engine.load().testing
-        for now, last in ((0, 86_400 * 10**9), (10, 10), (5 * 10**9, 0), (0, 7 * 86_400 * 10**9 + 123_456_789)):
-            self.assertAlmostEqual(t_mod.b76_year_fraction(now, last), B.year_fraction(now, last), delta=1e-18)
+        for now, last in ((0, 86_400 * 10**9), (10, 10), (5 * 10**9, 0), (0, 7 * 86_400 * 10**9 + 123_456_789),
+                          (1_793_000_000_123_456_789, 1_793_000_000_123_456_789 + 300 * 86_400 * 10**9 + 7)):
+            self.assertEqual(t_mod.b76_year_fraction(now, last), B.year_fraction(now, last))
 
     def test_bad_inputs_raise_value_error(self):
         t_mod = engine.load().testing
