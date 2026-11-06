@@ -193,9 +193,15 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | PF | M3.13 performance | the pressing forward: all speed |
 | WP | M3.14 test-run API and UI | the wide playmaker works the flank the owner watches |
 | ENG | M3.15 strategy how-to | the enganche sets others up to score |
+| SK | M4.0 recon and fact check | the sweeper-keeper reads every threat before play starts |
+| WB | M4.2 expiries and roll helpers | the wing-back runs the whole flank, from this contract to the next |
+| TQ | M4.3 Black-76 and implied volatility | the trequartista: the creative engine every option play runs through |
+| AP | M4.4 option-chain view | the advanced playmaker sees the whole field at once |
+| MEZ | M4.8 / M4.10 SPAN-lite and exact SPAN | the mezzala works the half-spaces where risk hides |
+| IWB | M4.9 margin calibration against Kite | the inverted wing-back tucks in to check the shape against the real thing |
 | XI | team-wide (renames, plan bookkeeping) | the whole team |
 
-M2 positions chosen by the owner on 2026-11-05; M3 positions on 2026-11-05 (M3.4 keeps CB, M3.9 RW, M3.10 B2B, M3.11 TM: same roles as M1.1, M2.6, M2.3, M2.7). Positions for M4 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
+M2 positions chosen by the owner on 2026-11-05; M3 positions on 2026-11-05 (M3.4 keeps CB, M3.9 RW, M3.10 B2B, M3.11 TM: same roles as M1.1, M2.6, M2.3, M2.7). M4 positions on 2026-11-07 (M4.1/M4.11 keep CB, M4.5–M4.7 VOL, M4.12 CAM, M4.13 IF, M4.14 WP, parity RD). Positions for M5 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
 
 ## 6. Corrections to earlier chat advice
 
