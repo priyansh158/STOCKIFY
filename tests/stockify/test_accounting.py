@@ -168,16 +168,22 @@ def accounting_problems(run_dir: Path) -> list[str]:
     return problems
 
 
-def _both(test: unittest.TestCase, folder: Path, pack: Path, bundle: dict, strategy) -> int:  # noqa: ANN001
-    """Run on both implementations (a fresh strategy each) and check each run folder. Returns the fill count."""
-    for impl, runner in (("oracle", oracle_run), ("engine", engine.run_bundle)):
-        runner(bundle, [pack], folder / impl, strategy=strategy(), report=False)
-        test.assertEqual(accounting_problems(folder / impl), [], impl)
-    return len(_rows(folder / "oracle" / "fills.csv"))
+RUNNERS = {"oracle": oracle_run, "engine": lambda *a, **k: engine.run_bundle(*a, **k)}
 
 
-@unittest.skipUnless(engine.available(), "stockify._engine is not built")
-class AccountingIdentityTests(unittest.TestCase):
+class _Accounting:
+    """P-06 checks over the implementations in `impls`. The oracle's run folders must reconcile by themselves (the
+    oracle is the reference), so OracleAccountingTests runs everywhere; the engine's need the built module."""
+
+    impls: tuple[str, ...] = ()
+
+    def _run(self, folder: Path, pack: Path, bundle: dict, strategy) -> int:  # noqa: ANN001
+        """Run on each implementation (a fresh strategy each) and check each run folder. Returns the fill count."""
+        for impl in self.impls:
+            RUNNERS[impl](bundle, [pack], folder / impl, strategy=strategy(), report=False)
+            self.assertEqual(accounting_problems(folder / impl), [], impl)
+        return len(_rows(folder / self.impls[0] / "fills.csv"))
+
     def test_golden_worlds(self):
         from stockify.engine import strategy_for
         from tests.stockify.test_engine_parity import _cases
@@ -186,22 +192,8 @@ class AccountingIdentityTests(unittest.TestCase):
             with self.subTest(golden=name), tempfile.TemporaryDirectory(prefix="p06-") as tmp:
                 folder = Path(tmp)
                 pack, bundle = golden.build_pack(g, folder), golden.build_bundle(g)
-                fills += _both(self, folder, pack, bundle, lambda b=bundle: strategy_for(b))
+                fills += self._run(folder, pack, bundle, lambda b=bundle: strategy_for(b))
         self.assertGreater(fills, 30)
-
-    def test_fuzz_seeds(self):
-        from tests.stockify.test_engine_fuzz import SEEDS, run_both
-        checked = 0
-        for seed in SEEDS:
-            with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="p06-fuzz-") as tmp:
-                folder = Path(tmp)
-                oracle_error, engine_error = run_both(seed, folder)
-                if oracle_error or engine_error:
-                    continue                       # both failed alike (P-04 checks that); nothing to reconcile
-                for impl in ("oracle", "engine"):
-                    self.assertEqual(accounting_problems(folder / impl), [], f"seed {seed} {impl}")
-                checked += 1
-        self.assertGreater(checked, 150)
 
     def test_strategy_worlds(self):
         from tests.stockify.test_engine_strategies import (REFS, _load, _materialise, daily_world, minute_world,
@@ -214,27 +206,51 @@ class AccountingIdentityTests(unittest.TestCase):
             with self.subTest(case=n), tempfile.TemporaryDirectory(prefix="p06-strat-") as tmp:
                 folder = Path(tmp)
                 pack, bundle = _materialise(g, params, folder)
-                fills += _both(self, folder, pack, bundle, lambda r=ref: _load(r))
+                fills += self._run(folder, pack, bundle, lambda r=ref: _load(r))
         self.assertGreater(fills, 50)
 
     def test_a_fill_on_the_last_days_daily_bar_is_booked(self):
         """D-52 (was DEFECT 2): the last day's daily bar is knowable at the next midnight IST, after the last trading
-        day's DAY_END; the final close-out books its fill in a row dated that next day, on both implementations."""
+        day's DAY_END; the final close-out books its fill in a row dated that next day."""
         from tests.stockify.test_engine_strategies import REFS, _load, _materialise, daily_world
         g, params = daily_world(5211)
         with tempfile.TemporaryDirectory(prefix="p06-last-") as tmp:
             folder = Path(tmp)
             pack, bundle = _materialise(g, params, folder)
-            _both(self, folder, pack, bundle, lambda: _load(REFS["sma_cross"]))
-            for impl in ("oracle", "engine"):
+            self._run(folder, pack, bundle, lambda: _load(REFS["sma_cross"]))
+            for impl in self.impls:
                 equity = _rows(folder / impl / "equity.csv")
                 fills = _rows(folder / impl / "fills.csv")
                 self.assertEqual(equity[-1]["trade_date"], "2026-03-19", impl)   # the close-out's own IST date
                 self.assertEqual(equity[-2]["trade_date"], g["bundle"]["dates"][-1], impl)
                 self.assertEqual(fills[-1]["side"], "SELL")
                 self.assertEqual(int(equity[-1]["cash_paise"]), int(equity[-1]["nav_paise"]))  # flat after the sell
-            log = (folder / "engine" / "events_log.txt").read_bytes()
-            self.assertEqual(log, (folder / "oracle" / "events_log.txt").read_bytes())
+            if len(self.impls) == 2:
+                self.assertEqual((folder / "engine" / "events_log.txt").read_bytes(),
+                                 (folder / "oracle" / "events_log.txt").read_bytes())
+
+
+class OracleAccountingTests(_Accounting, unittest.TestCase):
+    """P-06 on the oracle alone: no engine needed."""
+
+    impls = ("oracle",)
+
+    def test_fuzz_seeds(self):
+        from stockify.tools.fuzz import _strategy, fuzz_world
+        from tests.stockify.test_engine_fuzz import SEEDS
+        checked = 0
+        for seed in SEEDS:
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="p06-fuzz-") as tmp:
+                folder = Path(tmp)
+                world = fuzz_world(seed)
+                pack, bundle = golden.build_pack(world, folder), golden.build_bundle(world)
+                try:
+                    oracle_run(bundle, [pack], folder / "oracle", strategy=_strategy(world), report=False)
+                except Exception:  # noqa: BLE001 — a world the runner refuses has nothing to reconcile (P-04)
+                    continue
+                self.assertEqual(accounting_problems(folder / "oracle"), [], f"seed {seed}")
+                checked += 1
+        self.assertGreater(checked, 150)
 
     def test_a_wrong_number_is_caught(self):
         """The check is not vacuous: one paisa off in a fill price, a NAV or a charge is reported."""
@@ -257,6 +273,27 @@ class AccountingIdentityTests(unittest.TestCase):
                     w.writerows(rows)
                 self.assertNotEqual(accounting_problems(run), [], f"{name} {col}")
                 (run / name).write_bytes(original)
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class EngineAccountingTests(_Accounting, unittest.TestCase):
+    """P-06 on the engine too, on the same worlds, and the fuzz seeds through both (P-04's runner)."""
+
+    impls = ("oracle", "engine")
+
+    def test_fuzz_seeds(self):
+        from tests.stockify.test_engine_fuzz import SEEDS, run_both
+        checked = 0
+        for seed in SEEDS:
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="p06-fuzz-") as tmp:
+                folder = Path(tmp)
+                oracle_error, engine_error = run_both(seed, folder)
+                if oracle_error or engine_error:
+                    continue                       # both failed alike (P-04 checks that); nothing to reconcile
+                for impl in self.impls:
+                    self.assertEqual(accounting_problems(folder / impl), [], f"seed {seed} {impl}")
+                checked += 1
+        self.assertGreater(checked, 150)
 
 
 if __name__ == "__main__":
