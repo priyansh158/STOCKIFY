@@ -89,7 +89,7 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 
 ## M4.12 Replaying recorded chains (S)
 
-- [ ] Chain selectors in pack specs (M1.8) and `REFDATA` events for strikes subscribed mid-day; strategies see staleness and missing strikes and never get fabricated quotes (I-7).
+- [x] Chain selectors in pack specs (M1.8) and `REFDATA` events for strikes subscribed mid-day; strategies see staleness and missing strikes and never get fabricated quotes (I-7).
 
 ## M4.13 Reference option strategies (M)
 

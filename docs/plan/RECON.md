@@ -470,3 +470,11 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   forward sources seen, plus a hand-built `_forward` table (future wins; synthetic needs two fresh two-sided strikes;
   index; none). Parity: on 5 chain worlds the engine's log equals the oracle's byte for byte, IVs and Greeks
   included (about 1,900 mid IVs and 2,100 bid IVs per 3 worlds); Black-76 is bit-equal on both sides (TQ 4.3).
+
+## 2026-11-07 — M4.12 replaying recorded chains (CAM 4.1)
+
+- **Recon.** Chain selectors already existed from M1.8 (`{"chain": {underlying, expiry: nearest|next|date, strikes, kinds, futures}}`, centred on the previous close). Neither runner acts on REFDATA `instrument_add`; what a strategy sees comes from the bundle and the ticks. A strike with no data yet has no `last_tick`, and one whose ticks stop goes stale after `stale_after_ms`. So I-7 already held. The gap: every `instrument_add` was stamped at 00:00 IST, even for a strike the recorder only subscribed when it centred or re-centred a chain.
+- **Change.** In a ticks pack, `instrument_add` is now at the instrument's first subscription when that subscription's reason is not `start…` (a chain centre or re-centre). That is when the daemon learned of the strike (A4 §1.1). Instruments of the start batch keep 00:00. Same bytes from landing and archive (P-05).
+- **On the real recording** (the 5-minute 2026-11-05 test, read-only; one derived pack built): a NIFTY nearest-expiry chain selector (3 strikes each side, with the future) gives 14 options added at 10:03:29, when the recorder centred the chain, and the future at 00:00. A strategy watching the chain sees the strikes without quotes (stale) before 10:03. Afterwards it sees only recorded prices, stale once the recording stops. Oracle and engine logs are identical (2,879 lines).
+- **Tests** (`test_chain_replay`, a synthetic day with one strike subscribed by a re-centre at 09:15:10 and dropped at 09:15:15): its add time and order, the start batch at 00:00, landing = archive bytes, and the strategy's view on both engines (no quote before its first tick, only recorded prices, stale after the drop).
+- **Waits for going live:** a full recorded day with real mid-session re-centres (chains moving with the index) has never been recorded. Validating replay on one is part of the first live days.

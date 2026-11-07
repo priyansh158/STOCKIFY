@@ -28,7 +28,9 @@ Records and `t_event` (A4 §1.1): ticks → receive time; Kite bars → bar star
 interval; bhav_eod bars → `pricing.json` `eod_publication_ist` on the trade
 date; SETTLE daily → the same EOD time, final → `fsp_publication_ist` on the
 expiry; REFDATA `instrument_add` → 00:00 IST of the first day an instrument
-appears; `spec_change` → 00:00 IST of its effective date; `price_band` → the
+appears, except an instrument the recorder first subscribed later in the day
+(a chain re-centre, any reason but `start…`): then the moment it was
+subscribed, when the daemon learned it (A4 §1.1, M4.12); `spec_change` → 00:00 IST of its effective date; `price_band` → the
 snapshot time; GAP → its start / end.
 
 Order: `(t_event, rank, source seq, instrument_id)` with A4 §1.3 ranks, then
@@ -334,17 +336,20 @@ def _ist(day: date | str, hhmm: str) -> int:
     return timeutil.ist_ns(d, hhmm)
 
 
-def _refdata_events(b: _Build, ids: set[int], day: date) -> None:
-    """instrument_add on first appearance, spec changes, price bands."""
+def _refdata_events(b: _Build, ids: set[int], day: date, learned: dict[int, int] | None = None) -> None:
+    """instrument_add on first appearance (at 00:00, or at `learned[iid]` for an instrument subscribed mid-day),
+    spec changes, price bands."""
     from stockify.data import instruments, refdata
     conn = refdata._connect()
     t0 = _ist(day, "00:00")
+    learned = learned or {}
     for iid in sorted(ids - b.added):
         info = instruments.get(iid)
         if info is None:
             raise PackError(f"instrument {iid} is not in refdata")
         spec = instruments.spec_at(iid, day) or {}
-        b.add(t0, 2, iid, enc_refdata(iid, t0, "instrument_add", {
+        t_add = learned.get(iid, t0)
+        b.add(t_add, 2, iid, enc_refdata(iid, t_add, "instrument_add", {
             "instrument_id": iid, "exchange": info["exchange"], "kind": info["kind"],
             "tradingsymbol": info["tradingsymbol"], "underlying": info["underlying"],
             "underlying_id": info["underlying_id"], "expiry": info["expiry"],
@@ -437,9 +442,21 @@ def _ticks_day(b: _Build, day: date):  # noqa: ANN202
         return _ticks_day_read(b, day, tick_day)
 
 
+def _learned_mid_day(subs: list[dict]) -> dict[int, int]:
+    """instrument → receive time of its first subscription, for instruments whose first subscription that day was
+    not part of the session's start batch (reason `start…`), i.e. strikes a chain re-centre added (M4.12)."""
+    first: dict[int, dict] = {}
+    for s in sorted((s for s in subs if s["action"] == "subscribe" and s["instrument_id"] is not None),
+                    key=lambda s: (s["recv_ns"], s["instrument_id"])):
+        first.setdefault(s["instrument_id"], s)
+    return {iid: s["recv_ns"] for iid, s in first.items() if not str(s.get("reason") or "").startswith("start")}
+
+
 def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
     from stockify.data import ticks
-    recorded = {s["instrument_id"] for s in tick_day.subscriptions() if s["instrument_id"] is not None}
+    subs = tick_day.subscriptions()
+    recorded = {s["instrument_id"] for s in subs if s["instrument_id"] is not None}
+    learned = _learned_mid_day(subs)
     ids = resolve(b.spec.get("instruments"), day, recorded or None)
     tiers = tuple(b.spec.get("tiers", ticks.KINDS))
     digest = hashlib.sha256()
@@ -462,7 +479,7 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
         t_hi = t if t_hi is None else max(t_hi, t)
         out.append(((t, 4, p["seq"], p["instrument_id"]), rec))
     b.events = []
-    _refdata_events(b, ids, day)
+    _refdata_events(b, ids, day, learned)
     _settle_events(b, ids, day)
     if b.spec.get("include_gaps", True):
         _gap_events(b, tick_day, ids)
