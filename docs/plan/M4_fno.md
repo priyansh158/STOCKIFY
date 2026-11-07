@@ -16,8 +16,8 @@ Concepts: C-2, C-7, C-12, C-13, C-15. Contract: `A4_engine_semantics.md` §6–�
 
 ## M4.1 Derivative contract model (S)
 
-- [ ] Bundle and engine carry, per derivative: kind (`FUT`, `CE`, `PE`), underlying and underlying class (`INDEX` / `STOCK`), expiry date, strike, settlement type (cash for index, physical for stock, dated in `contract_rules.json`), last trading moment (the FO close on the expiry date from `sessions.json`: 15:30 IST before 2026-08-03, 15:40 IST after, X-7).
-- [ ] Freeze limits per underlying, dated: from NSE circulars (X-5) entered into `freeze_limits` (A1 §1.2), with `qtyfreeze.csv` (S-6) only as a cross-check because it lags. Slices use `floor(freeze / lot) × lot` units, since an order above the freeze quantity is rejected and every order must be a whole number of lots (A3 G16).
+- [x] Bundle and engine carry, per derivative: kind (`FUT`, `CE`, `PE`), underlying and underlying class (`INDEX` / `STOCK`), expiry date, strike, settlement type (cash for index, physical for stock, dated in `contract_rules.json`), last trading moment (the FO close on the expiry date from `sessions.json`: 15:30 IST before 2026-08-03, 15:40 IST after, X-7).
+- [x] Freeze limits per underlying, dated: from NSE circulars (X-5) entered into `freeze_limits` (A1 §1.2), with `qtyfreeze.csv` (S-6) only as a cross-check because it lags. Slices use `floor(freeze / lot) × lot` units, since an order above the freeze quantity is rejected and every order must be a whole number of lots (A3 G16).
 
 ## M4.2 Expiries and rollover helpers (S)
 

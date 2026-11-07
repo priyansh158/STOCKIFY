@@ -438,6 +438,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 
 **Follow-ups (2026-11-07):**
 - **CB 4.1 (D-53):** `charges.json` now has three dated CM exchange rows: 0.00322% from 2015 (unverified, labelled), 0.00297% from 2024-10-01 and 0.00307% from 2026-10-29 (VERIFY). Every golden is unchanged.
+- **CB 4.2 (M4.1):** the contract fields were already in place (recon above; the FO last-trading moment is 15:30 before 2026-08-03 and 15:40 from then on, now tested). Index freeze limits are dated from the circulars in `freeze_limits.json` (D-54): 2026-03-02, 09-01, 10-05 (NSE/FAOP/76693) and 11-02 (NSE/FAOP/77189). Before 2026-03-02 no index limit is known, so no slicing. `bundle.freeze_cross_check` lists the `qtyfreeze.csv` snapshots that disagree; the real lab's 2026-11-05 snapshot agrees.
 - **Open: a CAS-group MIS cut-off per session group** (A4 §6.3). Zerodha squares off CAS stocks at 15:12 (Z-5), but the bundle's `CM_CAS` cut-off is filled from the CM rows, and both runners schedule `MIS_SQOFF` and the `R_SESSION` cut-off per segment. It needs a per-group `MIS_SQOFF` and `R_SESSION`, oracle first, and is scheduled after the engine-hardening work.
 - **Open: FO exchange rows start on 2024-10-01.** There is no FO exchange-transaction row before that date, so an F&O run before it fails with a CostError. No verified earlier rate was found.
 

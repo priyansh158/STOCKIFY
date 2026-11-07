@@ -143,12 +143,44 @@ def group_close_ns(day: dict, group: str) -> int | None:
 
 # ── Instruments ──────────────────────────────────────────────────────────────
 
+def _circular_limits() -> dict[str, list[dict]]:
+    """freeze_limits.json rows by underlying, oldest first (X-5)."""
+    from stockify.config import loader
+    out: dict[str, list[dict]] = {}
+    for r in loader.load_json("freeze_limits.json")["limits"]:
+        out.setdefault(r["underlying"], []).append(r)
+    for rows in out.values():
+        rows.sort(key=lambda r: r["effective_from"])
+    return out
+
+
 def _freeze(conn, underlying: str | None, on: str) -> int | None:  # noqa: ANN001
+    """The quantity-freeze limit in force on `on`. An underlying with circular rows (freeze_limits.json, X-5) is
+    decided by them alone (None before the first one); any other uses the refdata snapshots (qtyfreeze.csv)."""
     if not underlying:
         return None
+    circular = _circular_limits().get(underlying)
+    if circular is not None:
+        rows = [r for r in circular if r["effective_from"] <= on]
+        return rows[-1]["freeze_qty"] if rows else None
     row = conn.execute("SELECT freeze_qty FROM freeze_limits WHERE underlying=? AND effective_from<=? "
                        "ORDER BY effective_from DESC LIMIT 1", (underlying, on)).fetchone()
     return row[0] if row else None
+
+
+def freeze_cross_check(conn) -> list[dict]:  # noqa: ANN001
+    """qtyfreeze.csv snapshots that disagree with the circular limit in force on their date (S-6 lags X-5)."""
+    out = []
+    circular = _circular_limits()
+    for und, day, qty in conn.execute("SELECT underlying, effective_from, freeze_qty FROM freeze_limits "
+                                      "ORDER BY underlying, effective_from").fetchall():
+        if und not in circular:
+            continue
+        rows = [r for r in circular[und] if r["effective_from"] <= day]
+        expected = rows[-1]["freeze_qty"] if rows else None
+        if expected is not None and qty != expected:
+            out.append({"underlying": und, "date": day, "snapshot": qty, "circular": expected})
+    return out
 
 
 EQUITY_TICK_ASSUMED = 1          # paise (D-43)
