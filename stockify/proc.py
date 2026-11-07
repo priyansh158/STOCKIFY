@@ -53,6 +53,19 @@ def creation_time(pid: int) -> int | None:
         _k32.CloseHandle(h)
 
 
+def is_running(pid: int) -> bool:
+    """Whether some process with this pid is still running (an exited process that a handle keeps openable
+    does not count). Use is_alive to also rule out a reused pid."""
+    h = _open(pid)
+    if h is None:
+        return False
+    try:
+        code = wintypes.DWORD()
+        return bool(_k32.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == _STILL_ACTIVE
+    finally:
+        _k32.CloseHandle(h)
+
+
 def is_alive(pid: int, created: int) -> bool:
     """Whether process `pid` is still running and is the one created at `created` (not a reused pid)."""
     h = _open(pid)

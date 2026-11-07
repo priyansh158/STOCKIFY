@@ -46,6 +46,7 @@ import hashlib
 import heapq
 import json
 import os
+import re
 import secrets
 import struct
 from dataclasses import dataclass, field
@@ -540,8 +541,38 @@ def _normalise(spec: dict) -> dict:
     return spec
 
 
+# Temporary files a builder writes (pid and a random part in the name): a builder that died leaves them.
+_TMP_NAMES = (re.compile(r"\.building-(\d+)-[0-9a-f]{12}\.evt"),
+              re.compile(r"\.[0-9a-f]{64}\.json\.(\d+)-[0-9a-f]{12}\.tmp"))
+STALE_AFTER_S = 86_400
+
+
+def clean_stale_tmp(max_age_s: int = STALE_AFTER_S) -> list[str]:
+    """Remove builder temp files older than `max_age_s` whose process no longer exists; returns their names.
+    A temp file whose pid is alive is kept (even if the pid was reused): it may belong to a running build."""
+    from stockify import proc, timeutil
+    now_s = timeutil.now_ns() / 1e9
+    removed = []
+    for f in paths.packs_dir().iterdir():
+        m = next((r.fullmatch(f.name) for r in _TMP_NAMES if r.fullmatch(f.name)), None)
+        if m is None:
+            continue
+        try:
+            if now_s - f.stat().st_mtime < max_age_s or proc.is_running(int(m.group(1))):
+                continue
+            f.unlink()
+            removed.append(f.name)
+        except OSError:
+            continue                     # gone already, or in use: leave it
+    return removed
+
+
 def build(spec: dict) -> str:
     """Write the pack and its manifest; return the pack's SHA-256."""
+    try:
+        clean_stale_tmp()
+    except OSError:
+        pass
     spec = _normalise(spec)
     start, end = date.fromisoformat(spec["from"]), date.fromisoformat(spec["to"])
     basis = "adjusted" if spec["dataset"] == "bars" else "raw"

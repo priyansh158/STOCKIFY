@@ -262,8 +262,13 @@ def cancel_test(run_id: str) -> TestRunDTO:
     from stockify import store
     from server.services.test_queue import get_queue
     row = _row_or_404(run_id)
-    if row["status"] not in ("queued", "running") or get_queue().cancel(run_id) is None:
+    queue = get_queue()
+    if row["status"] not in ("queued", "running") or queue.cancel(run_id) is None:
         latest = store.get_run(run_id) or row
+        if latest["status"] == "running" and run_id not in queue.running():
+            raise HTTPException(status_code=409, detail=(
+                f"test run {run_id} is running but was not started by this API (for example by "
+                "`python -m stockify run` in a terminal); stop it where it was started"))
         raise HTTPException(status_code=409, detail=f"test run {run_id} is {latest['status']}; only waiting or "
                                                     "running tests can be cancelled")
     return run_dto(store.get_run(run_id) or row)

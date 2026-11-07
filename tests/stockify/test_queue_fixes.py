@@ -309,3 +309,69 @@ class ApiBlockingTests(SandboxedDBTest):
                     self.assertEqual(_tail(f, offset=offset, limit=limit),
                                      (whole[offset:offset + limit], len(whole)))
         self.assertEqual(_tail(None, offset=None, limit=5), ([], 0))
+
+
+class CancelOutsideTheApiTests(SandboxedDBTest):
+    """RD 4.7: cancelling a run the API did not start (e.g. `python -m stockify run` from a terminal) gets a 409
+    that says so, instead of 'is running; only waiting or running tests can be cancelled'."""
+
+    db_modules = (store,)
+
+    def setUp(self):
+        super().setUp()
+        from fastapi.testclient import TestClient
+        from server.main import app
+        from server.services import test_queue
+        test_queue.set_queue(TestQueue(launcher=Launcher(), cap=1))
+        self.addCleanup(test_queue.set_queue, None)
+        self.client = TestClient(app)
+
+    def test_a_cli_started_running_run(self):
+        store.create_run({"run_id": "cli-run", "status": "running", "name": "n"})
+        r = self.client.post("/api/tests/cli-run/cancel")
+        self.assertEqual(r.status_code, 409)
+        detail = r.json()["detail"]
+        self.assertIn("not started by this API", detail)
+        self.assertNotIn("only waiting or running", detail)
+        self.assertEqual(store.get_run("cli-run")["status"], "running")
+
+    def test_a_finished_run_keeps_the_old_message(self):
+        store.create_run({"run_id": "d", "status": "done", "name": "n"})
+        r = self.client.post("/api/tests/d/cancel")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("is done; only waiting or running tests can be cancelled", r.json()["detail"])
+
+
+class StaleBuildFileTests(SandboxedDBTest):
+    """RD 4.7: a builder that died leaves `.building-<pid>-<hex>.evt` (or a manifest tmp) behind; the next build
+    removes those older than a day whose process is gone, and nothing else."""
+
+    db_modules = (store,)
+
+    def test_only_old_orphans_are_removed(self):
+        import os
+        import subprocess
+        import sys
+        import time
+        from stockify import paths
+        from stockify.data import packs
+        done = subprocess.Popen([sys.executable, "-c", "pass"])
+        done.wait()
+        dead, me = done.pid, os.getpid()
+        d = paths.packs_dir()
+        old = time.time() - 2 * 86400
+        files = {
+            f".building-{dead}-aaaaaaaaaaaa.evt": (old, False),      # old, owner gone: removed
+            f".{'f' * 64}.json.{dead}-bbbbbbbbbbbb.tmp": (old, False),
+            f".building-{me}-cccccccccccc.evt": (old, True),          # old, owner alive: kept
+            f".building-{dead}-dddddddddddd.evt": (time.time(), True),  # owner gone, but fresh: kept
+            "notes.evt": (old, True),                                 # not ours: kept
+            f"{'e' * 64}.evt": (old, True),                           # a real pack: kept
+        }
+        for name, (mtime, _) in files.items():
+            (d / name).write_bytes(b"x")
+            os.utime(d / name, (mtime, mtime))
+        removed = packs.clean_stale_tmp()
+        self.assertEqual(sorted(removed), sorted(n for n, (_, keep) in files.items() if not keep))
+        for name, (_, keep) in files.items():
+            self.assertEqual((d / name).exists(), keep, name)
