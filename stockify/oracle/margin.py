@@ -5,8 +5,9 @@ of |units| × reference price × flat rate (`margin_params.json` → `flat`:
 `index_pct` for index underlyings, `stock_pct` for stocks). MIS uses its own
 rule (`mis`, A4 §6.5: `round_half_up_div(units·price·mis_ppb, 10⁹)`). Reference price: futures → their mark;
 short options → the underlying's last price, else the strike. Long options
-need no margin (their premium is paid). The total is rounded up to the next
-whole rupee: `ceil_to(ceil_div(x, 10⁹), 100)` (A4 §0.3, §6.5).
+need no margin (their premium is paid, X-10). On its expiry day a short index option adds the
+expiry-day ELM (X-9, M4.7): |units| × the same reference × `expiry_day_short_index_option_addon`.
+The total is rounded up to the next whole rupee: `ceil_to(ceil_div(x, 10⁹), 100)` (A4 §0.3, §6.5).
 
 SPAN-lite replaces this in M4.8.
 """
@@ -31,7 +32,16 @@ def _in_force(rows: list[dict], key: str, date: str, applies: dict | None = None
 class FlatMargin:
     def __init__(self, bundle: dict):
         self.flat = bundle["margin_params"].get("flat", [])
+        self.addon = bundle["margin_params"].get("expiry_day_short_index_option_addon", [])
         self.mis_rows = bundle["broker_policy"].get("mis_margin_pct", [])
+
+    def _addon(self, date: str) -> int:
+        """The expiry-day ELM rate in force, or 0 before its first row (2024-11-20, X-9)."""
+        best = None
+        for r in self.addon:
+            if r["effective_from"] <= date and (best is None or r["effective_from"] > best["effective_from"]):
+                best = r
+        return best["pct_ppb"] if best else 0
 
     def mis_rate(self, segment: str, date: str) -> int:
         return _in_force(self.mis_rows, "pct", date, {"segment": segment})
@@ -54,6 +64,9 @@ class FlatMargin:
                 continue
             pct = _in_force(self.flat, "index_pct" if row.get("underlying_class") == "INDEX" else "stock_pct", date)
             raw += abs(units) * ref * pct
+            if kind in ("CE", "PE") and row.get("underlying_class") == "INDEX" and \
+                    (row.get("actual_expiry") or row["expiry"]) == date:
+                raw += abs(units) * ref * self._addon(date)     # expiry-day ELM, underlying price × qty
         return numerics.ceil_to(numerics.ceil_div(raw, PPB), 100)
 
     def mis(self, kind: str, units: int, price: int, date: str) -> int:

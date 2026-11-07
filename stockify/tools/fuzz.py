@@ -111,6 +111,8 @@ def fuzz_world(seed: int) -> dict:
                                                        ["CAS", "15:15", "15:35"], ["POSTCLOSE", "15:50", "16:00"]]}}}
     if rng.random() < 0.8:
         bundle["charges"] = _real_charges()
+    if alt.random() < 0.5:                       # M4.7: the expiry-day ELM on short index options (X-9)
+        bundle["expiry_addon"] = "0.02"
     if delivery and "charges" not in bundle:
         bundle["physical_delivery"] = {"brokerage_pct": "0.0025", "netted_brokerage_pct": "0.001",
                                        "stt_each_side_pct_of_value": "0.001"}

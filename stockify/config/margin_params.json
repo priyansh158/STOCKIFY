@@ -14,10 +14,10 @@
   "expiry_day_short_index_option_addon": [
     {
       "applies": {},
-      "effective_from": "2015-01-01",
+      "effective_from": "2024-11-20",
       "pct": "0.02",
-      "basis": "notional",
-      "source": "X-9 (basis ⚠)",
+      "basis": "underlying_price_x_qty",
+      "source": "X-9 (rule and scope confirmed 2026-11-07; notional = underlying price x quantity, Zerodha's formula)",
       "verified": false
     }
   ]

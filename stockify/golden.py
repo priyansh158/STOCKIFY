@@ -168,6 +168,9 @@ def build_bundle(g: dict) -> dict:
     margin = {"flat": [{"applies": {}, "effective_from": "2015-01-01",
                         "index_pct_ppb": numerics.to_ppb(b.get("margin_index", "0.12")),
                         "stock_pct_ppb": numerics.to_ppb(b.get("margin_stock", "0.20"))}]}
+    if "expiry_addon" in b:                          # the expiry-day ELM on short index options (X-9)
+        margin["expiry_day_short_index_option_addon"] = [{"applies": {}, "effective_from": "2015-01-01",
+                                                          "pct_ppb": numerics.to_ppb(b["expiry_addon"])}]
     sqoff = b.get("sqoff_fee_paise")
     charges = _charges(b.get("charges", "zero"))
     if "gst_rate" in b:                              # a GST row on brokerage, exchange and SEBI (zero charges)

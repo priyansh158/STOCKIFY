@@ -2,6 +2,7 @@
 
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
+#include "stocksim/session.hpp"
 
 namespace stocksim {
 
@@ -48,7 +49,13 @@ const Json& list_or_empty(const Json& obj, const char* key) {
 
 FlatMargin::FlatMargin(const Json& root)
     : flat_(list_or_empty(require(root, "margin_params", "bundle"), "flat")),
-      mis_rows_(list_or_empty(require(root, "broker_policy", "bundle"), "mis_margin_pct")) {}
+      mis_rows_(list_or_empty(require(root, "broker_policy", "bundle"), "mis_margin_pct")),
+      addon_(list_or_empty(require(root, "margin_params", "bundle"), "expiry_day_short_index_option_addon")) {}
+
+Ppb FlatMargin::addon(const std::string& date) const {  // margin.FlatMargin._addon
+    const Json* r = row_in_force(addon_, date, {});
+    return r == nullptr ? 0 : r->at("pct_ppb").get<Ppb>();
+}
 
 Ppb FlatMargin::rate(const Json& rows, std::string_view key, const std::string& date,
                      const std::vector<std::pair<std::string, std::string>>& applies) const {
@@ -92,6 +99,10 @@ Paise FlatMargin::requirement(const std::vector<MarginLeg>& legs, const Instrume
                              date, {});
         const Qty units = leg.units < 0 ? -leg.units : leg.units;
         raw += Int128::mul(checked_mul(units, ref), pct);
+        if (row.is_option() && row.underlying_class == std::optional<std::string>("INDEX") && row.last_day() &&
+            iso_date(*row.last_day()) == date) {
+            raw += Int128::mul(checked_mul(units, ref), addon(date));  // expiry-day ELM, underlying price × qty
+        }
     }
     return ceil_to(raw.ceil_div(kPpb).to_int64(), 100);
 }

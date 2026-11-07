@@ -48,7 +48,7 @@ class FlatMargin final : public MarginModel {
     Ppb mis_rate(std::string_view segment, const std::string& date) const;
     // Σ over NRML futures and short NRML options of |units| × reference × flat rate, rounded up to the rupee:
     // ceil_to(ceil_div(raw, 10⁹), 100). Reference: futures → their price; short options → the underlying's,
-    // else the strike.
+    // else the strike. A short index option on its expiry day adds the expiry-day ELM (X-9).
     Paise requirement(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
                       const std::function<std::optional<Paise>(InstrumentId)>& price,
                       const std::string& date) const override;
@@ -59,8 +59,10 @@ class FlatMargin final : public MarginModel {
  private:
     Ppb rate(const Json& rows, std::string_view key, const std::string& date,
              const std::vector<std::pair<std::string, std::string>>& applies) const;
+    Ppb addon(const std::string& date) const;  // the expiry-day ELM rate in force, else 0 (X-9)
     Json flat_;
     Json mis_rows_;
+    Json addon_;
 };
 
 }  // namespace stocksim
