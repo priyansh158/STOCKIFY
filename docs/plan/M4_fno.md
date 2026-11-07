@@ -21,8 +21,8 @@ Concepts: C-2, C-7, C-12, C-13, C-15. Contract: `A4_engine_semantics.md` §6–�
 
 ## M4.2 Expiries and rollover helpers (S)
 
-- [ ] `ctx.expiries(underlying, kind)` and `ctx.futures_chain(underlying)` (sorted by expiry) from the bundle.
-- [ ] Python helpers (not engine rules) in `stockify/fno/roll.py`: `days_to_expiry`, `roll_due(contract, trading_days_before)`, `next_contract(contract)`.
+- [x] `ctx.expiries(underlying, kind)` and `ctx.futures_chain(underlying)` (sorted by expiry) from the bundle.
+- [x] Python helpers (not engine rules) in `stockify/fno/roll.py`: `days_to_expiry`, `roll_due(contract, trading_days_before)`, `next_contract(contract)`.
 
 ## M4.3 Black-76 and implied volatility (M)
 
