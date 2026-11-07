@@ -62,6 +62,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
   const [allowUnverified, setAllowUnverified] = useState(true);
   const [problems, setProblems] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const bad = useMemo(() => new Set(problems.map((p) => p.split(": ")[0].replace(/^strategy\.params\./, ""))), [problems]);
 
   const params = useMemo(() => {
     const out: Record<string, unknown> = {};
@@ -88,12 +89,15 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
       found.push("dates: the first day must be on or before the last");
     }
     if (!/^\d+$/.test(seed)) found.push("seed: a whole number, 0 or more");
+    if (chainUnderlying.trim() && !/^\s*[1-9]\d{0,2}\s*$/.test(chainStrikes)) {
+      found.push("strikes: a whole number of strikes each side, 1 to 999");
+    }
     if ((fill === "eod_close") !== (source === "bhav")) found.push("fills: next-day-close fills go with NSE end-of-day files only");
     if (fill === "eod_close" && basis !== "raw") found.push("prices: end-of-day files need actual (raw) prices");
     const instruments: unknown[] = symbols.split(",").map((s) => s.trim()).filter(Boolean);
     if (chainUnderlying.trim()) {
       for (const expiry of ["nearest", "next"]) {
-        instruments.push({ chain: { underlying: chainUnderlying.trim().toUpperCase(), expiry, strikes: Number(chainStrikes) || 10 } });
+        instruments.push({ chain: { underlying: chainUnderlying.trim().toUpperCase(), expiry, strikes: Number(chainStrikes.trim()) } });
       }
     }
     if (instruments.length === 0 && source !== "ticks") found.push("instruments: name at least one symbol or option chain");
@@ -174,7 +178,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
           if (p.type === "bool") {
             return (
               <label key={p.name} className="flex min-h-11 items-center gap-3">
-                <input type="checkbox" className="h-5 w-5" checked={Boolean(v)}
+                <input type="checkbox" className="h-5 w-5" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
                   onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
                 <span className="text-sm">{label}<span className="block text-xs" style={{ color: "var(--color-fg-muted)" }}>{p.help}</span></span>
               </label>
@@ -182,7 +186,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
           }
           return (
             <Field key={p.name} label={label} help={p.help}>
-              <input className={inputClass} style={inputStyle} value={String(v)}
+              <input className={inputClass} style={inputStyle} value={String(v)} aria-invalid={bad.has(p.name)}
                 inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
                 placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
                 onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
@@ -196,41 +200,41 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
           </select>
         </Field>
         <Field label="Symbols" help="comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
-          <input className={inputClass} style={inputStyle} value={symbols} onChange={(e) => setSymbols(e.target.value)} />
+          <input className={inputClass} style={inputStyle} value={symbols} aria-invalid={bad.has("instruments")} onChange={(e) => setSymbols(e.target.value)} />
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Option chain of" help="e.g. NIFTY (optional)">
             <input className={inputClass} style={inputStyle} value={chainUnderlying} onChange={(e) => setChainUnderlying(e.target.value)} />
           </Field>
           <Field label="Strikes each side">
-            <input className={inputClass} style={inputStyle} inputMode="numeric" value={chainStrikes} onChange={(e) => setChainStrikes(e.target.value)} />
+            <input className={inputClass} style={inputStyle} inputMode="numeric" value={chainStrikes} aria-invalid={bad.has("strikes")} onChange={(e) => setChainStrikes(e.target.value)} />
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="First day">
-            <input type="date" className={inputClass} style={inputStyle} value={from} onChange={(e) => setFrom(e.target.value)} />
+            <input type="date" className={inputClass} style={inputStyle} value={from} aria-invalid={bad.has("dates")} onChange={(e) => setFrom(e.target.value)} />
           </Field>
           <Field label="Last day">
-            <input type="date" className={inputClass} style={inputStyle} value={to} onChange={(e) => setTo(e.target.value)} />
+            <input type="date" className={inputClass} style={inputStyle} value={to} aria-invalid={bad.has("dates")} onChange={(e) => setTo(e.target.value)} />
           </Field>
         </div>
         <Field label="How orders fill">
-          <select className={inputClass} style={inputStyle} value={fill} onChange={(e) => setFill(e.target.value)}>
+          <select className={inputClass} style={inputStyle} value={fill} aria-invalid={bad.has("fills")} onChange={(e) => setFill(e.target.value)}>
             {FILLS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
           </select>
         </Field>
         <Field label="Prices" help="adjusted: corrected for splits and bonuses; actual: as traded">
-          <select className={inputClass} style={inputStyle} value={basis} onChange={(e) => setBasis(e.target.value as "raw" | "adjusted")}>
+          <select className={inputClass} style={inputStyle} value={basis} aria-invalid={bad.has("prices")} onChange={(e) => setBasis(e.target.value as "raw" | "adjusted")}>
             <option value="adjusted">Adjusted</option>
             <option value="raw">Actual (raw)</option>
           </select>
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Starting money (₹)">
-            <input className={inputClass} style={inputStyle} inputMode="decimal" value={capital} onChange={(e) => setCapital(e.target.value)} />
+            <input className={inputClass} style={inputStyle} inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
           </Field>
           <Field label="Seed" help="same seed, same result">
-            <input className={inputClass} style={inputStyle} inputMode="numeric" value={seed} onChange={(e) => setSeed(e.target.value)} />
+            <input className={inputClass} style={inputStyle} inputMode="numeric" value={seed} aria-invalid={bad.has("seed")} onChange={(e) => setSeed(e.target.value)} />
           </Field>
         </div>
         <label className="flex min-h-11 items-center gap-3">
@@ -239,7 +243,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
         </label>
 
         {problems.length > 0 && (
-          <ul className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)" }}>
+          <ul role="alert" className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)" }}>
             {problems.map((p) => <li key={p}>{p}</li>)}
           </ul>
         )}
