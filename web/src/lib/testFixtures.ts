@@ -153,5 +153,7 @@ export function detail(id: string): TestRunDetail {
     manifest: run.status === "done"
       ? { engine_build_id: "2c5ed577b5ab", bundle_sha256: "9f2c…", packs: ["41ab…"], duration_ms: 812 }
       : null,
+    fill_count: run.status === "done" ? fills.length : null,
+    cost_totals: run.status === "done" ? { stt: 98_033, exchange: 3_111, sebi: 98, stamp: 14_700, gst: 3_242, dp: 1_480 } : {},
   };
 }

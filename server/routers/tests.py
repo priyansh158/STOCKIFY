@@ -81,6 +81,26 @@ def _folder(row: dict) -> Path | None:
     return p if p.exists() else None
 
 
+def _folder_totals(folder: Path | None) -> tuple[int | None, dict[str, int]]:
+    """The whole run's fill count and paise per charge component, from the run folder's CSVs (the /fills and
+    /charges lists are paged, so the UI must not count or add them up itself)."""
+    import csv
+    fills = folder / "fills.csv" if folder else None
+    charges = folder / "charges.csv" if folder else None
+    count = None
+    if fills is not None and fills.exists():
+        with fills.open(encoding="utf-8", newline="") as f:
+            count = sum(1 for _ in csv.DictReader(f))
+    totals: dict[str, int] = {}
+    if charges is not None and charges.exists():
+        with charges.open(encoding="utf-8", newline="") as f:
+            for r in csv.DictReader(f):
+                for k in CHARGE_PARTS:
+                    if r.get(k):
+                        totals[k] = totals.get(k, 0) + int(r[k])
+    return count, {k: totals[k] for k in CHARGE_PARTS if k in totals}
+
+
 def _symbols(row: dict) -> dict[int, str]:
     """instrument id → tradingsymbol, from the run's archived bundle.json (empty when it is not there)."""
     folder = _folder(row)
@@ -197,8 +217,10 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     manifest = None
     if folder is not None and (folder / "manifest.json").exists():
         manifest = _json((folder / "manifest.json").read_text(encoding="utf-8"), None)
+    fill_count, cost_totals = _folder_totals(folder)
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
-                            metrics=_json(row.get("metrics_json"), {}), manifest=manifest)
+                            metrics=_json(row.get("metrics_json"), {}), manifest=manifest,
+                            fill_count=fill_count, cost_totals=cost_totals)
 
 
 @router.get("/api/tests/{run_id}/orders", response_model=list[dict[str, Any]])

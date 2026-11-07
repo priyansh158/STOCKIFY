@@ -155,6 +155,8 @@ export interface TestRunDetail {
   config: Record<string, unknown>;
   metrics: Record<string, unknown>;
   manifest?: Record<string, unknown> | null;
+  fill_count?: number | null;
+  cost_totals: Record<string, number>;
 }
 
 export interface TestFill {

@@ -30,8 +30,9 @@ export function getTest(id: string): Promise<TestRunDetail> {
   return api<TestRunDetail>(`/api/tests/${encodeURIComponent(id)}`);
 }
 
-export function getFills(id: string): Promise<TestFill[]> {
-  return FIXTURES ? Promise.resolve(F.fills) : api<TestFill[]>(`/api/tests/${encodeURIComponent(id)}/fills`);
+export function getFills(id: string, offset = 0, limit = 200): Promise<TestFill[]> {
+  if (FIXTURES) return Promise.resolve(F.fills.slice(offset, offset + limit));
+  return api<TestFill[]>(`/api/tests/${encodeURIComponent(id)}/fills?offset=${offset}&limit=${limit}`);
 }
 
 export function getEquity(id: string): Promise<TestEquity[]> {

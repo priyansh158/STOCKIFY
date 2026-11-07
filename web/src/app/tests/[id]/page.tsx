@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
-import { cancelTest, getCharges, getEquity, getFills, getLogs, getTest } from "@/lib/tests";
-import type { TestCharge, TestEquity, TestFill, TestLogs, TestRunDetail } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { cancelTest, getEquity, getFills, getLogs, getTest } from "@/lib/tests";
+import type { TestEquity, TestFill, TestLogs, TestRunDetail } from "@/lib/types";
 import { buttonStyle, Card, LabelChips, Stat, StatusChip, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
 const POLL_MS = 2000;
+const MAX_BACKOFF_MS = 30_000;  // after errors the poll waits longer each time, up to this
+const FILL_PAGE = 200;
 // A yearly rate from a few weeks of results is noise: show it only for runs of about a trading year or more.
 const MIN_DAYS_FOR_YEARLY = 240;
 
@@ -23,7 +26,9 @@ const COST_NAMES: Record<string, string> = {
   other: "Other",
 };
 
-type Extra = { fills: TestFill[]; equity: TestEquity[]; charges: TestCharge[]; logs: TestLogs | null };
+type Extra = { fills: TestFill[]; equity: TestEquity[]; logs: TestLogs | null };
+// pending: poll again soon; terminal: the run finished (stop); missing: 404 (stop); error: retry with back-off
+type Outcome = "pending" | "terminal" | "missing" | "error";
 
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -32,36 +37,42 @@ function num(v: unknown): number | null {
 export default function TestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [detail, setDetail] = useState<TestRunDetail | null>(null);
-  const [extra, setExtra] = useState<Extra>({ fills: [], equity: [], charges: [], logs: null });
+  const [extra, setExtra] = useState<Extra>({ fills: [], equity: [], logs: null });
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<Outcome> => {
     try {
       const d = await getTest(id);
       setDetail(d);
       setError(null);
       if (d.run.status === "done") {
-        const [fills, equity, charges] = await Promise.all([getFills(id), getEquity(id), getCharges(id)]);
-        setExtra({ fills, equity, charges, logs: null });
+        const [fills, equity] = await Promise.all([getFills(id, 0, FILL_PAGE), getEquity(id)]);
+        setExtra({ fills, equity, logs: null });
       } else if (d.run.status === "failed" || d.run.status === "cancelled") {
-        setExtra({ fills: [], equity: [], charges: [], logs: await getLogs(id).catch(() => null) });
+        setExtra({ fills: [], equity: [], logs: await getLogs(id).catch(() => null) });
       }
-      return d.run.status;
+      return d.run.status === "queued" || d.run.status === "running" ? "pending" : "terminal";
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      return null;
+      if (e instanceof ApiError && e.status === 404) {
+        setError(`There is no test run called ${id}.`);
+        return "missing";
+      }
+      setError(`${e instanceof Error ? e.message : String(e)} (retrying)`);
+      return "error";
     }
   }, [id]);
 
   useEffect(() => {
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = POLL_MS;
     const tick = async () => {
-      const status = await refresh();
-      if (!stop && (status === "queued" || status === "running" || status === null)) {
-        timer = setTimeout(tick, POLL_MS);
-      }
+      const outcome = await refresh();
+      if (stop || outcome === "terminal" || outcome === "missing") return;
+      delay = outcome === "error" ? Math.min(delay * 2, MAX_BACKOFF_MS) : POLL_MS;
+      timer = setTimeout(tick, delay);
     };
     tick();
     return () => {
@@ -69,6 +80,18 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
       if (timer) clearTimeout(timer);
     };
   }, [refresh]);
+
+  async function moreFills() {
+    setLoadingMore(true);
+    try {
+      const next = await getFills(id, extra.fills.length, FILL_PAGE);
+      setExtra((x) => ({ ...x, fills: [...x.fills, ...next] }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function cancel() {
     setCancelling(true);
@@ -85,15 +108,13 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   const run = detail?.run;
   const m = detail?.metrics ?? {};
   const g = growth(run?.nav_start_paise, run?.nav_end_paise);
-  const costTotals: Record<string, number> = {};
-  for (const c of extra.charges) {
-    for (const [k, v] of Object.entries(c.components)) costTotals[k] = (costTotals[k] ?? 0) + v;
-  }
+  const costTotals = detail?.cost_totals ?? {};      // the whole run, summed by the server (/charges is paged)
+  const fillCount = detail?.fill_count ?? extra.fills.length;
   const summaryLine = run
     ? [runSummary(run, extra.equity[0]?.trade_date, extra.equity[extra.equity.length - 1]?.trade_date),
       run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(" · ")
     : "";
-  const costTotal = extra.charges.reduce((s, c) => s + c.total_paise, 0);
+  const costTotal = run?.costs_total_paise ?? Object.values(costTotals).reduce((a, b) => a + b, 0);
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
@@ -176,13 +197,13 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
 
               <Card>
                 <h2 className="stk-mono-tight mb-3" style={{ color: "var(--color-fg-muted)" }}>
-                  Fills ({extra.fills.length})
+                  Fills ({fillCount.toLocaleString("en-IN")})
                 </h2>
                 {extra.fills.length === 0 ? (
                   <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>No orders filled.</p>
                 ) : (
                   <ul className="flex flex-col gap-2">
-                    {extra.fills.slice(0, 200).map((f) => (
+                    {extra.fills.map((f) => (
                       <li key={f.fill_id} className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(0,255,65,0.15)" }}>
                         <div className="flex items-center justify-between gap-2">
                           <span className="stk-mono text-sm font-semibold"
@@ -198,6 +219,12 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                     ))}
                   </ul>
                 )}
+                {extra.fills.length < fillCount && (
+                  <button type="button" onClick={moreFills} disabled={loadingMore}
+                    className="stk-mono-tight mt-3 min-h-11 w-full rounded-md border px-4 py-2" style={buttonStyle}>
+                    {loadingMore ? "Loading…" : `Show more (${extra.fills.length.toLocaleString("en-IN")} of ${fillCount.toLocaleString("en-IN")} shown)`}
+                  </button>
+                )}
               </Card>
 
               <Card>
@@ -211,6 +238,9 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   ))}
                   <li className="mt-1 flex justify-between border-t pt-1 font-semibold" style={{ borderColor: "rgba(0,255,65,0.15)" }}>
                     <span>Total</span><span className="stk-mono">{rupees(costTotal)}</span>
+                  </li>
+                  <li className="text-xs" style={{ color: "var(--color-fg-muted)" }}>
+                    Each part is rounded to the paisa; the total is exact, so the parts can differ from it by a few paise.
                   </li>
                 </ul>
                 )}
