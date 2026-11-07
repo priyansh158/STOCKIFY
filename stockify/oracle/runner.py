@@ -984,9 +984,11 @@ class Engine:
                 self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, intrinsic))
                 led.cash += p.qty * intrinsic
                 p.realised += p.d * (p.q * intrinsic - p.c)
-                if p.d > 0 and intrinsic > 0:
-                    parts = self.costs.exercise(row["kind"], p.q * intrinsic, d)
-                    self._charge_row(self.book, "settlement", 0, p.instrument_id, d, parts)
+                # D-59: brokerage on every option open at expiry (exercised, assigned or expired);
+                # exercise STT only on the intrinsic value of a long ITM one
+                exercised = p.q * intrinsic if p.d > 0 else 0
+                parts = self.costs.exercise(row["kind"], exercised, d)
+                self._charge_row(self.book, "settlement", 0, p.instrument_id, d, parts)
                 p.q, p.c = 0, 0
                 p.last_mark, p.mark_source = intrinsic, source
             self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
@@ -1018,6 +1020,9 @@ class Engine:
                     take = (row["kind"] == "CE") == (p.d > 0)
                     exercised = units * abs(fsp - k) if p.d > 0 else 0
                     legs.append((take, units, k, p.instrument_id, row["kind"], exercised))
+                else:                                # D-59: an expiring OTM option pays the expiry brokerage
+                    self._charge_row(self.book, "settlement", 0, p.instrument_id, d,
+                                     self.costs.exercise(row["kind"], 0, d))
             p.q, p.c = 0, 0
             self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
         netted = {True: min(sum(u for t, u, *_ in legs if t), sum(u for t, u, *_ in legs if not t))}

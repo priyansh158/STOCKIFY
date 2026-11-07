@@ -974,10 +974,9 @@ void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const s
             settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, intrinsic});
             led.cash = checked_add(led.cash, checked_mul(p.qty(), intrinsic));
             p.realised = checked_add(p.realised, p.d * checked_sub(checked_mul(p.q, intrinsic), p.c));
-            if (p.d > 0 && intrinsic > 0) {
-                const ChargeParts parts = costs_.exercise(row.kind, checked_mul(p.q, intrinsic), iso(d));
-                charge_row(book_, "settlement", 0, p.instrument, d, parts);
-            }
+            // D-59: brokerage on every option open at expiry; exercise STT only on a long ITM one's intrinsic value
+            const Paise exercised = p.d > 0 ? checked_mul(p.q, intrinsic) : 0;
+            charge_row(book_, "settlement", 0, p.instrument, d, costs_.exercise(row.kind, exercised, iso(d)));
             p.q = 0;
             p.c = 0;
             p.last_mark = intrinsic;
@@ -1032,6 +1031,8 @@ void Engine::settle_physical(InstrumentId stock, Date d, Paise fsp, const std::s
                 const bool take = (row.kind == "CE") == (p.d > 0);
                 const Paise exercised = p.d > 0 ? checked_mul(units, fsp > k ? fsp - k : k - fsp) : 0;
                 legs.push_back(Leg{take, units, k, p.instrument, row.kind, exercised});
+            } else {  // D-59: an expiring OTM option pays the expiry brokerage
+                charge_row(book_, "settlement", 0, p.instrument, d, costs_.exercise(row.kind, 0, iso(d)));
             }
         }
         p.q = 0;

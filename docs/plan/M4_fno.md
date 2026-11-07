@@ -42,8 +42,8 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 
 ## M4.5 Index derivatives at expiry (S)
 
-- [ ] Extend M3.8's cash settlement: exercise STT on long ITM options (0.15% of intrinsic from 2026-04-01, 0.125% before; dated in `charges.json`), brokerage on exercised/expired contracts per policy, `settlement_fallback` label (A4 §7.2).
-- [ ] A3 G10 passes on both implementations.
+- [x] Extend M3.8's cash settlement: exercise STT on long ITM options (0.15% of intrinsic from 2026-04-01, 0.125% before; dated in `charges.json`), brokerage on exercised/expired contracts per policy, `settlement_fallback` label (A4 §7.2).
+- [x] A3 G10 passes on both implementations.
 
 ## M4.6 Stock F&O physical settlement (M)
 

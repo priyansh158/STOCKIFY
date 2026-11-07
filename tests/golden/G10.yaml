@@ -41,18 +41,23 @@ variants:
         - { kind: order, order_id: 2, total: 0 }
         - { kind: order, order_id: 3, total: 0 }
         - { kind: settlement, order_id: 0, instrument_id: 2, turnover_paise: 3250000, stt: 4063, brokerage: 2000, gst: 360, total: 6423 }
-      charges_count: 4
-      equity: [ { trade_date: "2026-03-03", cash_paise: 102561077, nav_paise: 102561077 } ]
+        - { kind: settlement, order_id: 0, instrument_id: 3, turnover_paise: 0, stt: 0, brokerage: 2000, gst: 360, total: 2360 }
+        - { kind: settlement, order_id: 0, instrument_id: 4, turnover_paise: 0, stt: 0, brokerage: 2000, gst: 360, total: 2360 }
+      charges_count: 6
+      equity: [ { trade_date: "2026-03-03", cash_paise: 102556357, nav_paise: 102556357 } ]
   - name: fallback
     drop_events: [8]
     expect:
-      equity: [ { trade_date: "2026-03-03", cash_paise: 102561077, nav_paise: 102561077 } ]
+      equity: [ { trade_date: "2026-03-03", cash_paise: 102556357, nav_paise: 102556357 } ]
       labels: [ settlement_fallback ]
 notes: |
   FSP 24,500.00. Long 65 x 24000 CE: intrinsic 500.00 per unit -> receives 65 x 50,000 = 3,250,000;
   exercise STT 0.125 % of 3,250,000 = 4062.5 -> 4063, exercise brokerage 20.00 plus 18 % GST 3.60:
   6,423. Long 65 x 25000 CE: out of the money, settles at 0. Short 65 x 25000 PE: intrinsic 500.00 ->
-  pays 3,250,000. Premiums: -650,000 (CE 24000), -32,500 (CE 25000), +3,250,000 (PE sold).
-  Cash 100,000,000 - 650,000 - 32,500 + 3,250,000 + 3,250,000 - 3,250,000 - 6,423 = 102,561,077; every
+  pays 3,250,000. Both still pay the expiry brokerage (D-59: brokerage on every option open at expiry,
+  exercised, assigned or expired), 20.00 + 3.60 GST = 2,360 each, with no exercise STT (only a long ITM
+  option pays that). Premiums: -650,000 (CE 24000), -32,500 (CE 25000), +3,250,000 (PE sold).
+  Cash 100,000,000 - 650,000 - 32,500 + 3,250,000 + 3,250,000 - 3,250,000 - 6,423 - 2,360 - 2,360
+  = 102,556,357; every
   position is settled, so NAV = cash. Without the SETTLE record the engine settles at DAY_END at the last
   index value seen (24,500.00, the 09:15:30 tick), with the same cash, and labels the run.

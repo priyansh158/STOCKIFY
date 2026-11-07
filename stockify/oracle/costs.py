@@ -143,7 +143,8 @@ class Costs:
                 "dp": 0, "other": fee}
 
     def exercise(self, kind: str, intrinsic_value: int, trade_date: str) -> dict:
-        """Long ITM index option at expiry: exercise STT on intrinsic value and exercise brokerage (A4 §7.2)."""
+        """An option leaving the books at expiry (A4 §7.2, D-59): the expiry brokerage, and exercise STT on the
+        intrinsic value of a long ITM one (0 for an assigned or expired one)."""
         attrs = {"segment": "FO", "kind": kind}
         stt_row = row_for(self.rows.get("exercise_stt", []), attrs, trade_date, "exercise_stt")
         brk_row = row_for(self.rows.get("exercise_brokerage", []), attrs, trade_date, "exercise_brokerage",

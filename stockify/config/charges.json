@@ -230,7 +230,7 @@
         "effective_from": "2015-01-01",
         "kind": "flat",
         "flat_paise": 2000,
-        "source": "Z-1 (charged on exercised/assigned contracts; basis unconfirmed)",
+        "source": "Z-1 (D-59: on every option leaving the books at expiry without a delivery leg - exercised, assigned or expired; conservative reading of Zerodha's charges page; confirm from a real contract note)",
         "verified": false
       }
     ],
