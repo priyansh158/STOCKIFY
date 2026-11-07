@@ -291,6 +291,25 @@
         "applies": {
           "segment": "CM"
         },
+        "effective_from": "2015-01-01",
+        "pct": "0.0000322",
+        "source": "Z-3 (an older Zerodha capture; D-53)",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "CM"
+        },
+        "effective_from": "2024-10-01",
+        "pct": "0.0000297",
+        "source": "Z-3",
+        "verified": true,
+        "verified_on": "2026-11-07"
+      },
+      {
+        "applies": {
+          "segment": "CM"
+        },
         "effective_from": "VERIFY",
         "observed_on": "2026-10-29",
         "pct": "0.0000307",

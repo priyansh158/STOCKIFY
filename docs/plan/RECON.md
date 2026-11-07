@@ -436,6 +436,11 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   (Python's int / int rounds once, and differs from the engine's for spans over 2^53 ns ≈ 104 days). Now every
   price, Greek and implied volatility is bit-equal, and every reason identical, all seven outcomes seen.
 
+**Follow-ups (2026-11-07):**
+- **CB 4.1 (D-53):** `charges.json` now has three dated CM exchange rows: 0.00322% from 2015 (unverified, labelled), 0.00297% from 2024-10-01 and 0.00307% from 2026-10-29 (VERIFY). Every golden is unchanged.
+- **Open: a CAS-group MIS cut-off per session group** (A4 §6.3). Zerodha squares off CAS stocks at 15:12 (Z-5), but the bundle's `CM_CAS` cut-off is filled from the CM rows, and both runners schedule `MIS_SQOFF` and the `R_SESSION` cut-off per segment. It needs a per-group `MIS_SQOFF` and `R_SESSION`, oracle first, and is scheduled after the engine-hardening work.
+- **Open: FO exchange rows start on 2024-10-01.** There is no FO exchange-transaction row before that date, so an F&O run before it fails with a CostError. No verified earlier rate was found.
+
 ## 2026-11-07 — M4.4 option-chain view (AP 4.1, AP 4.2)
 
 - Recon: `ctx.chain(underlying, expiry)` returned `{instrument_id, kind, strike_paise}` rows, used by EodShortStraddle and
