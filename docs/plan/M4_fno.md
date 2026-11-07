@@ -84,8 +84,8 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 
 ## M4.11 Futures pre-open and freeze slicing (S)
 
-- [ ] The not-continuous policy (A4 §3.10) covers futures in the FO pre-open phase from 2025-12-08 (X-6) and options before their open; G20 already tests the rule with its own bundle, so here re-run it against the real `sessions.json`.
-- [ ] Freeze slicing (A4 §3.8) with the real dated limits from M4.1; re-run G16 against them (the golden itself carries its own limits and passes from M2/M3).
+- [x] The not-continuous policy (A4 §3.10) covers futures in the FO pre-open phase from 2025-12-08 (X-6) and options before their open; G20 already tests the rule with its own bundle, so here re-run it against the real `sessions.json`.
+- [x] Freeze slicing (A4 §3.8) with the real dated limits from M4.1; re-run G16 against them (the golden itself carries its own limits and passes from M2/M3).
 
 ## M4.12 Replaying recorded chains (S)
 
