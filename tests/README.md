@@ -8,8 +8,13 @@ rest of the repo as read-only.
 .\.venv\Scripts\python.exe tests\run_tests.py
 .\.venv\Scripts\python.exe tests\run_tests.py -v
 .\.venv\Scripts\python.exe tests\run_tests.py tick_buffer
+.\.venv\Scripts\python.exe tests\run_tests.py --python-only
 .\.venv\Scripts\python.exe tests\watch.py
 ```
+
+The engine tests need the C++ module (`.\run.ps1 -BuildEngine`). If it is missing, or was built for another Python,
+those tests skip and the run **exits 3** with an "ENGINE NOT LOADABLE" banner, so a skipped engine never looks green.
+Pass `--python-only` (or set `STOCKIFY_TESTS_PYTHON_ONLY=1`) when a Python-only run is what you want.
 
 The suite is credential-free and redirects local application state into a
 temporary Windows sandbox.

@@ -3,12 +3,16 @@ r"""Run the STOCKIFY test suite.
     .\.venv\Scripts\python.exe tests\run_tests.py              # everything
     .\.venv\Scripts\python.exe tests\run_tests.py -v           # per-test names
     .\.venv\Scripts\python.exe tests\run_tests.py tick_buffer  # filtered
+    .\.venv\Scripts\python.exe tests\run_tests.py --python-only  # without the C++ engine, on purpose
 
 Exit codes:
     0  all green (tracked defects in test_known_defects.py count as green)
     1  a real failure or error
     2  an "unexpected success" — a tracked defect started passing, so its
        @unittest.expectedFailure should be removed and the test promoted
+    3  the C++ engine (stockify._engine) is not loadable, so every engine test
+       skipped: build it (.\run.ps1 -BuildEngine), or pass --python-only (or set
+       STOCKIFY_TESTS_PYTHON_ONLY=1) to accept a Python-only run
 
 Nothing here writes to the repo: all on-disk state goes to a temp sandbox that
 is removed on exit (see tests/support/__init__.py).
@@ -18,6 +22,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import logging
+import os
 import sys
 import time
 import unittest
@@ -28,6 +33,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import tests.support as support  # noqa: E402
+
+PYTHON_ONLY_ENV = "STOCKIFY_TESTS_PYTHON_ONLY"
+EXIT_NO_ENGINE = 3
+
+
+def engine_problem() -> str | None:
+    """Why stockify._engine cannot be used (missing, or built for another Python), or None when it loads."""
+    from stockify import engine
+    try:
+        engine.load()
+    except engine.EngineUnavailable as e:
+        return str(e)
+    return None
 
 
 def build_suite(pattern: str = "") -> unittest.TestSuite:
@@ -67,7 +85,11 @@ def main() -> int:
     parser.add_argument("-q", "--quiet", action="store_true")
     parser.add_argument("--keep-sandbox", action="store_true",
                         help="do not delete the temp state dir on exit")
+    parser.add_argument("--python-only", action="store_true",
+                        help=f"accept a run without the C++ engine (its tests skip); same as {PYTHON_ONLY_ENV}=1")
     args = parser.parse_args()
+    python_only = args.python_only or os.environ.get(PYTHON_ONLY_ENV, "").strip() == "1"
+    no_engine = engine_problem()
 
     # The modules under test log warnings on their error paths; those paths are
     # deliberately exercised, so silence them to keep the report readable.
@@ -115,8 +137,25 @@ def main() -> int:
             print(f"    - {test.id()}")
         return 2
 
+    if no_engine is not None:
+        engine_skips = sum(1 for _, why in result.skipped if "_engine" in why)
+        print()
+        if python_only:
+            print(f"  PYTHON-ONLY RUN: the C++ engine is not loadable; {engine_skips} engine tests skipped.")
+            print(f"  ({no_engine})")
+        else:
+            print("  " + "!" * 60)
+            print("  ENGINE NOT LOADABLE: every engine test skipped, so this run proves")
+            print(f"  nothing about the engine ({engine_skips} tests skipped).")
+            print(f"  {no_engine}")
+            print(f"  Or rerun with --python-only (or {PYTHON_ONLY_ENV}=1) if a Python-only run")
+            print("  is what you want.")
+            print("  " + "!" * 60)
+
     if failures or errors:
         return 1
+    if no_engine is not None and not python_only:
+        return EXIT_NO_ENGINE
     return 0
 
 
