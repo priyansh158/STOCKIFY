@@ -68,7 +68,9 @@ class EngineCostTests(unittest.TestCase):
         rng = random.Random(3701)
         cases = [("EQ", "CNC"), ("EQ", "MIS"), ("FUT", "NRML"), ("FUT", "MIS"), ("CE", "NRML"), ("PE", "MIS"),
                  ("ETF", "CNC")]
+        ok_per_date: dict[str, int] = {}
         for d in ("2026-03-31", "2026-04-01", "2025-06-02", "2026-10-30", "2026-11-05"):
+            ok_per_date[d] = 0
             rows = _rows_on(d)
             for cfg in ({}, {"dp_charges": False, "auto_square_off_fee": False}):
                 c = costs.Costs(rows, cfg)
@@ -90,6 +92,11 @@ class EngineCostTests(unittest.TestCase):
                         except RuntimeError:
                             got = ("error", None)
                         self.assertEqual(got, expected)
+                        ok_per_date[d] += got[0] == "ok"
+        # Both sides refusing a case agree too, so a floor of real answers keeps the comparison from passing on
+        # errors alone (all 1,200 per date are answers today).
+        for d, ok in ok_per_date.items():
+            self.assertGreaterEqual(ok, 1_000, f"{d}: only {ok} of 1,200 evaluations returned charges")
 
 
 if __name__ == "__main__":
