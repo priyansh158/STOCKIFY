@@ -38,6 +38,7 @@ class FakeEngine:
         self.bundle = {"margin_params": {"spanlite": spanlite_rows(**span_over), "flat": [],
                                          "expiry_day_short_index_option_addon": ADDON},
                        "broker_policy": {"mis_margin_pct": []},
+                       "days": [],          # FlatMargin reads the trading days (D-60 delivery schedule)
                        "pricing": {"risk_free": [{"effective_from": "2015-01-01", "rate_ppb": 65_000_000}]}}
         self.now, self.labels, self._rows = NOW, set(), {r["id"]: r for r in rows}
         engine = self

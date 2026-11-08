@@ -92,7 +92,7 @@ Outputs Engine::drain_outputs() {
 
 std::vector<std::string> Engine::labels() const {  // the run's labels and the margin model's (D-60), sorted
     std::set<std::string> all = labels_;
-    all.insert(margin_.used_labels().begin(), margin_.used_labels().end());
+    all.insert(margin_->used_labels().begin(), margin_->used_labels().end());
     return {all.begin(), all.end()};
 }
 

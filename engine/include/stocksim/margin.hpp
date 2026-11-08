@@ -57,6 +57,11 @@ class MarginModel {
         return {};
     }
     virtual std::string_view daily_model() const { return {}; }  // the `model` column; empty: no rows
+    // Labels the model used while running (D-60: delivery_margin_approx), merged into the run's; none by default.
+    virtual const std::set<std::string>& used_labels() const {
+        static const std::set<std::string> none;
+        return none;
+    }
 };
 
 class FlatMargin final : public MarginModel {
@@ -74,7 +79,7 @@ class FlatMargin final : public MarginModel {
     Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const override;
     std::string label() const override { return "margin:flat(approx)"; }
     // Labels the model used (D-60: delivery_margin_approx), merged into the run's.
-    const std::set<std::string>& used_labels() const { return used_labels_; }
+    const std::set<std::string>& used_labels() const override { return used_labels_; }
 
  private:
     Ppb rate(const Json& rows, std::string_view key, const std::string& date,

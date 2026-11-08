@@ -68,6 +68,7 @@ class SpanLiteMargin:
         self._flat = FlatMargin(bundle)               # MIS is the same rule under every model (A4 §6.5)
         self._e = engine
         self._last_iv: dict[int, tuple[str, float]] = {}   # iid → (date, last valid mid IV that day)
+        self.labels: set[str] = set()                 # labels this model used, merged into the run's (as FlatMargin)
 
     # MIS and the label are the flat model's / the bundle's.
     def mis_rate(self, segment: str, date: str) -> int:
