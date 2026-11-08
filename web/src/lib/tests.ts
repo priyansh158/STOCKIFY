@@ -10,6 +10,7 @@ import type {
   TestCreated,
   TestEquity,
   TestFill,
+  TestGreek,
   TestLogs,
   TestMargin,
   TestRun,
@@ -53,6 +54,11 @@ export function getMargin(id: string): Promise<TestMargin[]> {
 export function getSettlements(id: string): Promise<TestSettlement[]> {
   if (FIXTURES) return Promise.resolve(F.settlements(id));
   return api<TestSettlement[]>(`/api/tests/${encodeURIComponent(id)}/settlements`);
+}
+
+export function getGreeks(id: string): Promise<TestGreek[]> {
+  if (FIXTURES) return Promise.resolve(F.greeks(id));
+  return api<TestGreek[]>(`/api/tests/${encodeURIComponent(id)}/greeks`);
 }
 
 export function getLogs(id: string, limit = 40): Promise<TestLogs> {

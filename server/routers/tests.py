@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from server.schemas import (StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
-                            TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
+                            TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 
 router = APIRouter(tags=["tests"])
 
@@ -323,6 +323,82 @@ def test_settlements(run_id: str) -> list[TestSettlementDTO]:
                                              instrument_id=iid, tradingsymbol=symbols.get(iid), product=m[3],
                                              side=m[4], qty=int(m[5]), price_paise=int(m[6]), source=m[7]))
     return out
+
+
+@router.get("/api/tests/{run_id}/greeks", response_model=list[TestGreekDTO])
+def test_greeks(run_id: str) -> list[TestGreekDTO]:
+    """The Greeks of every open F&O position at each day end (M4.14). From positions_eod.csv: the option's mark and
+    its underlying's mark at day end (D-55), taken as the forward (as the chain view does without a future or a
+    synthetic forward); strike, expiry and last trading moment from bundle.json; time from that day's end; the
+    run's dated risk-free rate. Black-76 (stockify.fno.black76). No IV → the reason, no numbers."""
+    from stockify import runs
+    from stockify.fno import black76 as B
+    row = _row_or_404(run_id)
+    folder = _folder(row)
+    if folder is None or not (folder / "positions_eod.csv").exists() or not (folder / "bundle.json").exists():
+        return []
+    bundle = _json((folder / "bundle.json").read_text(encoding="utf-8"), {})
+    inst = {r["id"]: r for r in bundle.get("instruments", []) if isinstance(r, dict) and "id" in r}
+    days = {d["date"]: d for d in bundle.get("days", []) if isinstance(d, dict)}
+    rates = bundle.get("pricing", {}).get("risk_free", [])
+    out = []
+    for p in runs.read_csv(folder / "positions_eod.csv"):
+        r = inst.get(int(p["instrument_id"]))
+        if r is None or r.get("kind") not in ("FUT", "CE", "PE") or not p["qty"]:
+            continue
+        qty = int(p["qty"])
+        under = p.get("underlying_mark_paise")
+        under = int(under) if under not in (None, "") else None
+        item = TestGreekDTO(trade_date=p["trade_date"], instrument_id=r["id"], tradingsymbol=r.get("tradingsymbol"),
+                            underlying=r.get("underlying"), kind=r["kind"], strike_paise=r.get("strike_paise"), expiry=r.get("expiry"), qty=qty,
+                            mark_paise=int(p["mark_paise"]), underlying_paise=under)
+        if r["kind"] == "FUT":
+            item.delta_units = float(qty)
+            out.append(item)
+            continue
+        day = days.get(p["trade_date"])
+        end, last = (day or {}).get("day_end_ns"), r.get("last_trading_ns")
+        if last is None and day is not None:
+            last = _expiry_close_estimate(r, day, p["trade_date"])
+            item.expiry_close_estimated = last is not None
+        if under is None or not under > 0:
+            item.iv_reason = "NO_UNDERLYING_PRICE"
+        elif end is None or last is None or B.year_fraction(end, last) <= 0:
+            item.iv_reason = "EXPIRED"
+        elif not int(p["mark_paise"]) > 0:
+            item.iv_reason = "NO_PRICE"
+        else:
+            t = B.year_fraction(end, last)
+            rate = B.rate_on(rates, p["trade_date"])
+            is_call, f, k = r["kind"] == "CE", under / 100.0, r["strike_paise"] / 100.0
+            sigma, why = B.implied_vol(is_call, int(p["mark_paise"]) / 100.0, f, k, t, rate)
+            if why is not None:
+                item.iv_reason = why
+            else:
+                g = B.greeks(is_call, f, k, t, rate, sigma)
+                item.iv = sigma
+                item.delta_units = g.delta * qty
+                item.gamma_units_per_rupee = g.gamma * qty
+                item.vega_rupees_per_point = g.vega * qty / 100
+                item.theta_rupees_per_day = g.theta * qty / 365
+        out.append(item)
+    return out
+
+
+def _expiry_close_estimate(inst: dict, day: dict, trade_date: str) -> int | None:
+    """An expiry after the run's last day has no session in the bundle, so no last_trading_ns. Estimate it as the
+    expiry date at the IST time of day this trade date's group closes (IST has no daylight saving, so that is the
+    close plus whole days). Comes from the bundle's own sessions, not a hard-coded time."""
+    from datetime import date
+    from stockify.bundle import group_close_ns
+    expiry = inst.get("actual_expiry") or inst.get("expiry")
+    group = inst.get("session_group")
+    if not expiry or group not in day.get("groups", {}):
+        return None
+    close = group_close_ns(day, group)
+    if close is None:
+        return None
+    return close + (date.fromisoformat(expiry) - date.fromisoformat(trade_date)).days * 86_400 * 10**9
 
 
 def _ist_date(t_ns: int) -> str:

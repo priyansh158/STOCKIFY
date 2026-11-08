@@ -225,6 +225,30 @@ class TestSettlementDTO(BaseModel):
     charges_paise: int | None = None
 
 
+class TestGreekDTO(BaseModel):
+    """One open F&O position at a day end with its Greeks (M4.14), derived from positions_eod.csv: the option's mark,
+    its underlying's mark (D-55, used as the forward) and Black-76. Position figures: delta in underlying units, gamma
+    in units per rupee, vega in rupees per volatility point, theta in rupees per day. When no IV can be found,
+    `iv_reason` says why and the Greeks are empty. A future has delta = its quantity."""
+    trade_date: str
+    instrument_id: int
+    tradingsymbol: str | None = None
+    underlying: str | None = None
+    kind: str
+    strike_paise: int | None = None
+    expiry: str | None = None
+    qty: int
+    mark_paise: int
+    underlying_paise: int | None = None
+    iv: float | None = None
+    iv_reason: str | None = None
+    delta_units: float | None = None
+    gamma_units_per_rupee: float | None = None
+    vega_rupees_per_point: float | None = None
+    theta_rupees_per_day: float | None = None
+    expiry_close_estimated: bool = False   # the expiry is after the run's last day: its close time is estimated
+
+
 class TestLogsDTO(BaseModel):
     events_log: list[str] = Field(default_factory=list)
     runner_log: list[str] = Field(default_factory=list)

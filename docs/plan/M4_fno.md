@@ -99,7 +99,7 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 
 ## M4.14 UI additions (S)
 
-- [ ] `/tests/[id]`: margin breakdown per day, Greeks of open positions at end of day, settlement events, labels.
+- [x] `/tests/[id]`: margin breakdown per day, Greeks of open positions at end of day, settlement events, labels.
 
 ---
 

@@ -4,8 +4,8 @@ import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { cancelTest, getEquity, getFills, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
-import type { TestEquity, TestFill, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
+import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
+import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
 import { buttonStyle, Card, LabelChips, Stat, StatusChip, labelMeaning, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
@@ -31,9 +31,10 @@ type Extra = {
   equity: TestEquity[];
   margin: TestMargin[];
   settlements: TestSettlement[];
+  greeks: TestGreek[];
   logs: TestLogs | null;
 };
-const NO_EXTRA: Extra = { fills: [], equity: [], margin: [], settlements: [], logs: null };
+const NO_EXTRA: Extra = { fills: [], equity: [], margin: [], settlements: [], greeks: [], logs: null };
 // pending: poll again soon; terminal: the run finished (stop); missing: 404 (stop); error: retry with back-off
 type Outcome = "pending" | "terminal" | "missing" | "error";
 
@@ -55,10 +56,11 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
       setDetail(d);
       setError(null);
       if (d.run.status === "done") {
-        const [fills, equity, margin, settlements] = await Promise.all([
+        const [fills, equity, margin, settlements, greeks] = await Promise.all([
           getFills(id, 0, FILL_PAGE), getEquity(id), getMargin(id).catch(() => []), getSettlements(id).catch(() => []),
+          getGreeks(id).catch(() => []),
         ]);
-        setExtra({ fills, equity, margin, settlements, logs: null });
+        setExtra({ fills, equity, margin, settlements, greeks, logs: null });
       } else if (d.run.status === "failed" || d.run.status === "cancelled") {
         setExtra({ ...NO_EXTRA, logs: await getLogs(id).catch(() => null) });
       }
@@ -256,6 +258,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
               </Card>
 
               <MarginByDay rows={extra.margin} equity={extra.equity} />
+              <GreeksAtDayEnd rows={extra.greeks} />
               <Settlements rows={extra.settlements} />
               <LabelMeanings labels={run.labels} />
             </>
@@ -337,6 +340,113 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
           })}
         </ul>
       )}
+    </Card>
+  );
+}
+
+const IV_REASONS: Record<string, string> = {
+  BELOW_INTRINSIC: "its price is below what exercising it now would pay, so no volatility fits",
+  ABOVE_FORWARD: "a call priced above the forward itself, so no volatility fits",
+  ABOVE_STRIKE: "a put priced above its discounted strike, so no volatility fits",
+  BELOW_TICK: "its price is under one tick, too small to read a volatility from",
+  ABOVE_MAX_VOL: "its price needs a volatility above the highest one searched",
+  LOW_VEGA: "its price barely moves with volatility, so the volatility can't be read reliably",
+  NO_UNDERLYING_PRICE: "there was no price for the underlying at day end",
+  NO_PRICE: "it had no price at day end",
+  EXPIRED: "it had expired",
+};
+
+function signed(v: number, digits: number): string {
+  return `${v > 0 ? "+" : ""}${v.toLocaleString("en-IN", { maximumFractionDigits: digits, minimumFractionDigits: digits })}`;
+}
+
+function signedRupees(v: number): string {
+  return `${v > 0 ? "+" : ""}${rupees(Math.round(v * 100))}`;
+}
+
+/** Delta, gamma, vega and theta of each open F&O position at a day end, and their totals per underlying. Computed by
+ * the API with Black-76 from the day-end marks; an option with no implied volatility shows why, never a number. */
+function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
+  const days = Array.from(new Set(rows.map((r) => r.trade_date))).sort();
+  const [picked, setPicked] = useState<string | null>(null);
+  if (days.length === 0) return null;
+  const day = picked && days.includes(picked) ? picked : days[days.length - 1];
+  const today = rows.filter((r) => r.trade_date === day);
+  const unders = Array.from(new Set(today.map((r) => r.underlying ?? "")));
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="stk-mono-tight" style={muted}>Greeks at day end</h2>
+        {days.length > 1 && (
+          <select aria-label="Day" value={day} onChange={(e) => setPicked(e.target.value)}
+                  className="stk-mono rounded-md border px-2 text-sm"
+                  style={{ ...rowBorder, minHeight: 44, background: "transparent", color: "var(--color-fg)" }}>
+            {days.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        )}
+      </div>
+      <p className="mb-2 text-xs" style={muted}>
+        Delta: units of the underlying the positions behave like. Gamma: how much delta changes per ₹1 move. Vega: ₹
+        gained or lost per volatility point. Theta: ₹ gained or lost per day from time passing. Positive means long.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {unders.map((u) => {
+          const legs = today.filter((r) => (r.underlying ?? "") === u);
+          const priced = legs.filter((r) => r.delta_units != null);
+          const sum = (f: (r: TestGreek) => number | null | undefined) => priced.reduce((a, r) => a + (f(r) ?? 0), 0);
+          const missing = legs.length - priced.length;
+          const spot = legs.find((r) => r.underlying_paise != null)?.underlying_paise ?? null;
+          return (
+            <li key={u} className="rounded-md border px-3 py-2" style={rowBorder}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold">{u || "Unknown underlying"}</span>
+                {spot != null && <span className="stk-mono text-xs" style={muted}>at {rupees(spot)}</span>}
+              </div>
+              <dl className="mt-1 grid grid-cols-2 gap-x-3 text-xs">
+                <dt style={muted}>Delta</dt><dd className="stk-mono text-right">{signed(sum((r) => r.delta_units), 1)} units</dd>
+                {spot != null && (<>
+                  <dt style={muted}>Delta in ₹</dt>
+                  <dd className="stk-mono text-right">{signedRupees(sum((r) => r.delta_units) * spot / 100)}</dd>
+                </>)}
+                <dt style={muted}>Gamma, per ₹1</dt><dd className="stk-mono text-right">{signed(sum((r) => r.gamma_units_per_rupee), 4)}</dd>
+                <dt style={muted}>Vega, per point</dt><dd className="stk-mono text-right">{signedRupees(sum((r) => r.vega_rupees_per_point))}</dd>
+                <dt style={muted}>Theta, per day</dt><dd className="stk-mono text-right">{signedRupees(sum((r) => r.theta_rupees_per_day))}</dd>
+              </dl>
+              {missing > 0 && (
+                <p className="mt-1 text-xs" style={{ color: "var(--color-amber)" }}>
+                  {missing === 1 ? "One position is" : `${missing} positions are`} left out of these totals: no volatility could be found (below).
+                </p>
+              )}
+              <ul className="mt-2 flex flex-col gap-1">
+                {legs.map((r) => (
+                  <li key={r.instrument_id} className="border-t pt-1 text-xs" style={rowBorder}>
+                    <div className="flex justify-between gap-2">
+                      <span className="break-all">
+                        {r.qty > 0 ? "Long" : "Short"} {Math.abs(r.qty).toLocaleString("en-IN")} {r.tradingsymbol ?? `instrument ${r.instrument_id}`}
+                      </span>
+                      <span className="stk-mono">{rupees(r.mark_paise)}</span>
+                    </div>
+                    {r.kind === "FUT" ? (
+                      <div style={muted}>Future: delta {signed(r.delta_units ?? 0, 1)} units</div>
+                    ) : r.iv_reason ? (
+                      <div style={{ color: "var(--color-amber)" }}>
+                        No Greeks: {IV_REASONS[r.iv_reason] ?? r.iv_reason}.
+                      </div>
+                    ) : (
+                      <div className="stk-mono" style={muted}>
+                        IV {pct(r.iv ?? 0)} · Δ {signed(r.delta_units ?? 0, 1)} · vega {signedRupees(r.vega_rupees_per_point ?? 0)} · θ {signedRupees(r.theta_rupees_per_day ?? 0)}/day
+                      </div>
+                    )}
+                    {r.expiry_close_estimated && r.kind !== "FUT" && (
+                      <div style={muted}>Expiry after the test ends: its closing time is estimated.</div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </li>
+          );
+        })}
+      </ul>
     </Card>
   );
 }

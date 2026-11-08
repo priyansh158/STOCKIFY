@@ -4,6 +4,7 @@ import type {
   TestCharge,
   TestEquity,
   TestFill,
+  TestGreek,
   TestLogs,
   TestMargin,
   TestRun,
@@ -129,6 +130,25 @@ export function settlements(id: string): TestSettlement[] {
     { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "delivery", instrument_id: 1,
       tradingsymbol: "RELIANCE", product: "CNC", side: "BUY", qty: 500, price_paise: 141_230, source: "settle",
       charges_paise: null },
+  ];
+}
+
+/** Greeks at the two day ends of the sample iron fly: four legs, one of them with no implied volatility. */
+export function greeks(id: string): TestGreek[] {
+  if (id !== FLY) return [];
+  const leg = (d: string, iid: number, sym: string, kind: string, strike: number, qty: number, mark: number,
+               iv: number | null, delta: number | null, gamma: number | null, vega: number | null,
+               theta: number | null, reason: string | null = null): TestGreek => ({
+    trade_date: d, instrument_id: iid, tradingsymbol: sym, underlying: "NIFTY", kind, strike_paise: strike,
+    expiry: "2026-11-04", qty, mark_paise: mark, underlying_paise: 2_401_250, iv, iv_reason: reason,
+    delta_units: delta, gamma_units_per_rupee: gamma, vega_rupees_per_point: vega, theta_rupees_per_day: theta,
+    expiry_close_estimated: false,
+  });
+  return [
+    leg("2026-11-03", 668, "NIFTY26N0424000CE", "CE", 2_400_000, -75, 9_215, 0.1342, -40.1, -0.0412, -611.2, 3_904.5),
+    leg("2026-11-03", 669, "NIFTY26N0424000PE", "PE", 2_400_000, -75, 8_840, 0.1355, 34.7, -0.0409, -612.0, 3_861.0),
+    leg("2026-11-03", 670, "NIFTY26N0424200CE", "CE", 2_420_000, 75, 2_310, 0.1288, 15.2, 0.0302, 455.7, -2_610.3),
+    leg("2026-11-03", 671, "NIFTY26N0423800PE", "PE", 2_380_000, 75, 5, null, null, null, null, null, "BELOW_TICK"),
   ];
 }
 
