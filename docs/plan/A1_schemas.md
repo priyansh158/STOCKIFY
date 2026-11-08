@@ -345,7 +345,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 | `order_events.csv` | ✔ | `t_ns,order_id,event,detail` |
 | `fills.csv` | ✔ | `fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence` (evidence: `bar_open`, `bar_path`, `vwap_int`, `ltp`, `book_lvl_<k>`, `book_cross`, `trade_through`, `eod_close`) |
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
-| `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise` |
+| `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,underlying_mark_paise` (the last: a derivative's underlying mark at DAY_END, empty otherwise; D-55) |
 | `equity.csv` | ✔ | `trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise` |
 | `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,scan,somc,elm,addons,total` (M4) |
 | `metrics.json` | ✔ (floats; A4 §9.3) | A4 §8 |

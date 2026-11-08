@@ -14,7 +14,10 @@ namespace {
 
 // Column headers of the other files, as stockify.oracle.artifacts writes them (A1 §6.3).
 constexpr const char* kPositions =
-    "trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise";
+    // <block name="positions-eod-columns" same-as="stockify/oracle/artifacts.py:positions-eod-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
+    "trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,"
+    "underlying_mark_paise";
+// </block>
 constexpr const char* kEquity = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise";
 constexpr const char* kMargin = "trade_date,underlying_id,model,scan,somc,elm,addons,total";
 
@@ -67,7 +70,8 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
     for (const PositionEodRow& r : e.positions_eod()) {
         const std::string d = iso_date(r.trade_date);
         positions.add_row({std::string_view(d), std::int64_t{r.instrument}, to_string(r.product), r.qty, r.avg_price,
-                           r.mark, std::string_view(r.mark_source), r.unrealised, r.realised});
+                           r.mark, std::string_view(r.mark_source), r.unrealised, r.realised,
+                           r.underlying_mark ? CsvCell(*r.underlying_mark) : CsvCell(CsvNull{})});
     }
     positions.write(folder / "positions_eod.csv");
 

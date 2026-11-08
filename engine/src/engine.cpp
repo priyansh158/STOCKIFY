@@ -685,8 +685,11 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
             m = p.last_mark ? *p.last_mark : p.avg_price();
         }
         const Paise unreal = p.d * checked_sub(checked_mul(p.q, *m), p.c);
+        const Instrument& ins = instruments_.at(p.instrument);  // D-55: the underlying's mark, for derivatives
+        const std::optional<Paise> under =
+            ins.is_derivative() && ins.underlying_id ? mark_price(*ins.underlying_id) : std::nullopt;
         positions_eod_.push_back(PositionEodRow{d, p.instrument, p.product, p.qty(), p.avg_price(), *m, src, unreal,
-                                                p.realised});
+                                                p.realised, under});
     }
     const Paise nav = led.nav([this](InstrumentId i) { return mark_price(i); });
     const Paise blk = blocked(led, d);

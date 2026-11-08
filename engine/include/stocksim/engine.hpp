@@ -210,6 +210,7 @@ struct PositionEodRow {
     Paise avg_price = 0, mark = 0;
     std::string mark_source;
     Paise unrealised = 0, realised = 0;
+    std::optional<Paise> underlying_mark;  // D-55: a derivative's underlying mark at day end, else none
 };
 
 struct MarginDailyRow {  // margin_daily.csv (M4.8)

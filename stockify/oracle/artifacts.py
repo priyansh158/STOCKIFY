@@ -22,8 +22,11 @@ ORDER_EVENTS = "t_ns,order_id,event,detail"
 FILLS = "fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence"
 CHARGES = ("row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,"
            "other,total")
+# The positions_eod.csv columns, also written by the C++ engine (artifacts.cpp kPositions; checked by blockwatch).
+# <block name="positions-eod-columns" same-as="engine/src/artifacts.cpp:positions-eod-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
 POSITIONS = ("trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,"
-             "realised_paise")
+             "realised_paise,underlying_mark_paise")
+# </block>
 EQUITY = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise"
 MARGIN = "trade_date,underlying_id,model,scan,somc,elm,addons,total"
 # The ✔ rows of A1 §6.3, in order (checked by blockwatch).

@@ -1128,7 +1128,11 @@ class Engine:
             if m is None:
                 m = p.last_mark if p.last_mark is not None else p.avg_price
             unreal = p.d * (p.q * m - p.c)
-            self.positions_eod.append((d, iid, prod, p.qty, p.avg_price, m, src, unreal, p.realised))
+            row = self.inst[iid]
+            # D-55: a derivative's underlying mark at day end (the run's mark rule), for Greeks in the API
+            uid = row.get("underlying_id") if row["kind"] in ("FUT", "CE", "PE") else None
+            under = self.mark_price(uid) if uid is not None else None
+            self.positions_eod.append((d, iid, prod, p.qty, p.avg_price, m, src, unreal, p.realised, under))
         nav = led.nav(self.mark_price)
         blocked = self.blocked(led, d)
         self.equity.append((d, nav, led.cash, blocked, nav - led.capital + led.charges_total, led.charges_total))
