@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "margin": ("M4", "margin calibration tools"),
     "parity": ("M5", "nightly journal parity"),
     "compare": ("M6", "compare runs"),
     "export": ("M6", "export a run"),
@@ -347,6 +346,28 @@ def _cmd_run(args) -> int:
     return 0
 
 
+def _cmd_margin_calibrate(args) -> int:
+    import kite_client
+    from stockify.fno import calibrate
+    if not kite_client.is_enabled():
+        print("Kite is not set up here (no API key, or kiteconnect is not installed).", file=sys.stderr)
+        return 2
+    try:
+        client = kite_client.get_client()
+    except kite_client.KiteAuthError:
+        print("Log in to Kite first (the token is missing or from before today's 06:00 IST).", file=sys.stderr)
+        return 2
+    try:
+        report, params = calibrate.calibrate(client, args.underlying, args.samples, seed=args.seed)
+    except calibrate.CalibrationError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(report)
+    print(f"fitted row added to {params} under spanlite_pending (not used until you move it into spanlite)",
+          file=sys.stderr)
+    return 0
+
+
 def _cmd_compare_strategies(args) -> int:
     from stockify import runs
     from stockify.tools import compare_strategies as cs
@@ -540,6 +561,15 @@ def main(argv: list[str] | None = None) -> int:
     ca.add_argument("run_b")
     ca.add_argument("--tol-paise", type=int, default=0, help="allowed difference in money columns (default 0)")
     ca.set_defaults(func=_cmd_compare)
+
+    mg = sub.add_parser("margin", help="margin model tools (M4)")
+    mgsub = mg.add_subparsers(dest="margin_command", required=True)
+    mc = mgsub.add_parser("calibrate", help="fit SPAN-lite to Kite's basket margins during market hours (M4.9; needs a "
+                                           "fresh Kite login; read-only, no orders; the fit waits for your review)")
+    mc.add_argument("--underlying", default="NIFTY")
+    mc.add_argument("--samples", type=int, default=200, help="portfolios to price (default 200)")
+    mc.add_argument("--seed", type=int, default=0, help="which portfolios are drawn (default 0)")
+    mc.set_defaults(func=_cmd_margin_calibrate)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)

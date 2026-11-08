@@ -124,6 +124,31 @@ RECORDER_STATUS_FIELDS = ("wall_ns", "connected", "subs_full", "subs_quote", "pa
                           "queue_depth", "writer_lag_ms", "last_packet_age_ms_json", "bytes_today")
 
 
+MARGIN_CALIBRATION_FIELDS = ("wall_ns", "underlying", "portfolio_json", "market_json", "kite_json", "t0_paise",
+                             "t1_paise", "t1_breakdown_json")
+
+
+def add_margin_calibration(row: dict) -> int:
+    """One M4.9 calibration sample (A1 §4: margin_calibration); keys are column names. Returns its sample_id.
+    Never holds credentials: the calibration tool stores only the portfolio, the quotes and Kite's margin answer."""
+    conn = _connect()
+    with _lock:
+        cur = conn.execute(
+            f"INSERT INTO margin_calibration ({', '.join(MARGIN_CALIBRATION_FIELDS)}) "
+            f"VALUES ({', '.join('?' * len(MARGIN_CALIBRATION_FIELDS))})",
+            tuple(row.get(k) for k in MARGIN_CALIBRATION_FIELDS))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def margin_calibrations(underlying: str | None = None) -> list[dict]:
+    """Calibration samples in insertion order, optionally for one underlying (the history is kept: M4.9)."""
+    sql, args = "SELECT * FROM margin_calibration", ()
+    if underlying is not None:
+        sql, args = sql + " WHERE underlying = ?", (underlying,)
+    return [dict(r) for r in _connect().execute(sql + " ORDER BY sample_id", args).fetchall()]
+
+
 def write_recorder_status(row: dict) -> None:
     conn = _connect()
     with _lock:

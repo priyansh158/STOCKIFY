@@ -71,11 +71,13 @@ Files: `engine/src/margin/spanlite.cpp`, `stockify/fno/spanlite.py`. Parameters:
 
 Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Table: `margin_calibration` (A1 §4).
 
-- [ ] Sample portfolios from the current chain: single legs across moneyness and expiries, straddles, strangles, verticals, iron flies and condors, futures, futures hedged with options.
-- [ ] For each, call `POST /margins/basket?consider_positions=false` (K-10; ≤ 10 requests/s, K-8) and store Kite's `initial`, `final` and per-order components with the market snapshot used; compute T0 and T1 for the same snapshot.
-- [ ] Fit PSR and VSR (and `somc_per_lot`) per underlying by minimising relative error on `final`. Report median and 90th-percentile absolute relative error by portfolio type.
-- [ ] Write the fitted values as a **new dated row** in `margin_params.json` with `source: "calibration <date>"`. 🛑 The owner reviews the error report before the row is adopted.
+- [x] Sample portfolios from the current chain: single legs across moneyness and expiries, straddles, strangles, verticals, iron flies and condors, futures, futures hedged with options.
+- [x] For each, call `POST /margins/basket?consider_positions=false` (K-10; ≤ 10 requests/s, K-8) and store Kite's `initial`, `final` and per-order components with the market snapshot used; compute T0 and T1 for the same snapshot.
+- [x] Fit PSR and VSR (and `somc_per_lot`) per underlying by minimising relative error on `final`. Report median and 90th-percentile absolute relative error by portfolio type.
+- [x] Write the fitted values as a **new dated row** in `margin_params.json` with `source: "calibration <date>"`. 🛑 The owner reviews the error report before the row is adopted.
 - [ ] Re-run monthly and after any NSE margin circular (e.g. X-11), keeping history.
+
+*(The tool is built and tested against a fake Kite client (IWB 4.1); its first real run is the owner's, during market hours. The fit goes to `margin_params.json` → `spanlite_pending` and is adopted only by moving it into `spanlite` after review.)*
 
 ## M4.10 Margin T2: exact SPAN (stretch, L)
 

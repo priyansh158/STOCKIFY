@@ -563,3 +563,36 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - **Greeks of open positions at day end (WP 4.3, WP 4.4; D-55, option C).** `positions_eod.csv` gained `underlying_mark_paise` in both engines (byte-identical; goldens unchanged apart from the column). `GET /api/tests/{id}/greeks` takes the option's mark and its underlying's mark as the forward, strike/expiry/last trading moment and the dated risk-free rate from bundle.json, and Black-76 (`stockify.fno.black76`). Position Greeks: delta in units, gamma per ₹1, vega in ₹ per volatility point, theta in ₹ per day; a future has delta = its quantity. No IV → `iv_reason` and no numbers (the card says why in words). The "Greeks at day end" card totals per underlying and leaves out, with a note, positions without an IV.
 - **Expiry after the run's last day.** Such an option has `last_trading_ns = null` in the bundle (both `bundle.py` and `golden.py` only fill it when the expiry date is a run day). The API then estimates the close as the expiry date at the IST time of day the instrument's group closes on that trade date (IST has no daylight saving: close + whole days) and marks the row `expiry_close_estimated`.
 - **Finding, not fixed here (reported to the supervisor):** the strategy chain view (`oracle/context.py` `_compute_chain`) and SPAN-lite (`fno/spanlite.py`) fall back to `t = now` when `last_trading_ns` is null, i.e. they value every option expiring after the run's last day as if it expired this instant (`MIN_T_NS`). That bends IVs, Greeks and SPAN-lite scans for such runs, in both engines alike (so parity does not catch it).
+
+## 2026-11-08 — M4.9 SPAN-lite calibration tool (IWB 4.1)
+
+- Recon: `margin` was a CLI stub; `margin_calibration` existed in lab.sqlite (A1 §4) with no writer; Kite is reached
+  only through `kite_client.get_client()` (token store in `%LOCALAPPDATA%\STOCKIFY\kite`), as the G08 charge
+  capture does; kiteconnect is absent in tests.
+- `python -m stockify margin calibrate --underlying NIFTY --samples 200 [--seed N]` (`stockify/fno/calibrate.py`).
+  Refuses (exit 2) when Kite is not set up or the login is stale, before any call. During market hours it:
+  reads the index, nearest future and the two nearest expiries' chains (ATM ± 8 strikes) from refdata and prices
+  them with `quote` (≤ 1 request/s); samples seeded portfolios of 8 types (single legs, straddles, strangles,
+  verticals, iron flies, iron condors, futures, hedged futures); asks `basket_order_margins(…,
+  consider_positions=False)` for each (≤ 10 requests/s); stores each sample (portfolio, the legs' quotes, Kite's
+  answer, our T0 and T1) via `store.add_margin_calibration`; fits PSR, VSR and somc_per_lot (golden-section
+  coordinate search, 3 rounds, on the mean relative error against Kite's `final`); writes a plain-words report
+  to `$LAB/margin_calibration/<underlying>-<date>.md` (median and 90th-percentile error per portfolio type, for
+  the flat model, SPAN-lite now and SPAN-lite fitted).
+- 🛑 **Never adopted automatically**: the fit is appended to `margin_params.json` → `spanlite_pending` (dated,
+  `source: "calibration <date>"`, `calibration_id: calibration-<date>`, `pending_review: true`, `verified: false`,
+  with the sample count and mean error). No margin model reads that key; the owner adopts a row by moving it
+  into `spanlite`. History is kept: samples append to lab.sqlite, pending rows append to the list.
+- Only read-only endpoints are used (quotes, basket margins); no order method exists in the tool. Nothing about
+  the login is logged or stored (a test plants a fake access token and checks the database, the report and the
+  config file).
+- Our margins on the snapshot reuse the oracle's own code: a small snapshot engine feeds the real Context (chain
+  view, forwards and mid IVs) and the real FlatMargin / SpanLiteMargin, so calibration fits the model the runs use.
+- Tests (`test_calibrate.py`): a fake Kite answers quotes with Black-76 prices on a smile and basket margins with
+  SPAN-lite under known settings (PSR 8 %, VSR 30 %, ₹3,000 per lot); from the placeholders, the fit lands within
+  0.01 of the true PSR and within 3 % mean error. Also: the snapshot (strikes, quotes in paise, rate limits),
+  every portfolio type, NRML/MARKET orders, pending rows never read, and the CLI refusing without Kite.
+- Found: 10 and 24 November 2026 are NSE holidays in the calendar, so a contract dated on a holiday has no last
+  trading moment from the calendar; real contracts carry refdata's `actual_expiry`, which the snapshot uses first.
+- Pending: the first real calibration (owner, market hours, from Monday 9 November IST), then the owner's review
+  of the report and adoption of the pending row.
