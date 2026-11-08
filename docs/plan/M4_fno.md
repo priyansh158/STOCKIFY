@@ -93,8 +93,8 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 
 ## M4.13 Reference option strategies (M)
 
-- [ ] `short_straddle_stop`: at a configured time, sell the ATM call and put (ATM from the chain view's forward); per-leg stop at `x%` above entry premium (SL orders); time exit; quote-based fills; SPAN-lite margin.
-- [ ] `iron_fly`: the same plus long wings `w` strikes away, to show the margin and risk difference.
+- [x] `short_straddle_stop`: at a configured time, sell the ATM call and put (ATM from the chain view's forward); per-leg stop at `x%` above entry premium (SL orders); time exit; quote-based fills; SPAN-lite margin. (Margin is the run's `margin.model`; flat T0 until M4.8 lands.)
+- [x] `iron_fly`: the same plus long wings `w` strikes away, to show the margin and risk difference.
 - [ ] A comparison report: the same days run as `eod_short_straddle` (M2.4, bhavcopy) and as the intraday version on recorded chains, side by side, with their labels. The gap between them is a direct measure of how much end-of-day approximations distort option results.
 
 ## M4.14 UI additions (S)

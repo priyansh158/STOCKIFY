@@ -10,11 +10,12 @@ from stockify.strategies import _catalogue as C
 
 REFS = {"stockify.strategies.buy_and_hold:BuyAndHold", "stockify.strategies.sma_cross:SmaCross",
         "stockify.strategies.opening_range_breakout:OpeningRangeBreakout",
-        "stockify.strategies.eod_short_straddle:EodShortStraddle"}
+        "stockify.strategies.eod_short_straddle:EodShortStraddle",
+        "stockify.strategies.short_straddle_stop:ShortStraddleStop", "stockify.strategies.iron_fly:IronFly"}
 
 
 class CatalogueTests(unittest.TestCase):
-    def test_python_strategies_are_the_reference_four(self):
+    def test_python_strategies_are_the_reference_ones(self):
         got = C.python_strategies()
         self.assertEqual({s["ref"] for s in got}, REFS)
         for s in got:

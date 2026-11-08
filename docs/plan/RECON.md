@@ -510,3 +510,14 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   label and rows); `test_spanlite_parity.py`: on 5 two-day chain worlds traded by a seeded option trader that
   logs funds after every order, the engine's run folder, margin_daily.csv and labels equal the oracle's byte for
   byte; the oracle run sees the add-on charged on expiry day and never before.
+
+## 2026-11-08 — M4.13 reference option strategies (IF 4.1)
+
+- `stockify/strategies/short_straddle_stop.py` and `iron_fly.py`, sharing `_option_legs.py`, a private module the catalogue does not list. Each strategy reads its own params, so the catalogue's schema check sees exactly what it reads.
+  - **Entry.** From `entry_hhmm`, take the nearest expiry at least `min_days` away and read the chain view (M4.4). Take the ATM strike nearest its forward. At the first moment every leg has a fresh two-sided quote (checked at the entry time, then on each tick), buy the wings first (iron fly: `wing_strikes` out), then sell the ATM call and put.
+  - **Stops.** When a sell completes, a BUY SL-M is placed for the filled quantity, its trigger at the average fill × (1 + `stop_pct`), rounded up to the tick.
+  - **Exit.** At `exit_hhmm`, working stops are cancelled and every leg still open is closed. If no fresh quotes come before the exit time, the day is skipped, with one logged reason.
+- **Waiting for fresh quotes.** Entering only at an exact moment skipped every day on the test chains, whose quotes arrive in bursts. A strategy should not lose its day to one stale moment, so it now waits for the first moment with fresh quotes.
+- **Margin and fills.** Margin is the run's `margin.model` (flat T0 for now; SPAN-lite, M4.8, is landing separately and nothing here depends on it). Fills are the run's fill model (`snapshot_quote` in the tests).
+- **Tests** (`test_option_strategies`, on test_chain_view's chain worlds). On 30 seeds × 2 strategies with random params, oracle and engine give identical run folders (DT-02). The worlds reach every path: entries, stops that fire and stops cancelled at the exit, time exits, wings, skipped days. The mechanics are also unit-tested: the stop trigger arithmetic, wings before the short legs, no entry without fresh two-sided quotes, and bad params refused. The catalogue's reference set (Y's test) now lists the two new strategies.
+- **Left for later**, as agreed: the comparison report against `eod_short_straddle` (M4.13 box 3) and the 5-recorded-day demo. They need SPAN-lite and real recorded days.
