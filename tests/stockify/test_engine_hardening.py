@@ -113,6 +113,43 @@ class StocksimRunFailureTests(unittest.TestCase):
             self.assertIn("ERROR the run stops", log)
             self.assertIn("orders.csv", log)
 
+    def _with_pack(self, folder: Path, tamper: bool) -> Path:
+        """A noop_cpp bundle naming its pack by SHA-256, as Python's resolver writes it; `tamper` then changes one
+        byte of the pack (still well-formed)."""
+        import hashlib
+        from stockify import bundle as bundle_mod, golden
+        g = _world()
+        pack = golden.build_pack(g, folder)
+        sha = hashlib.sha256(pack.read_bytes()).hexdigest()
+        b = golden.build_bundle(g)
+        b["strategy"] = {"kind": "cpp", "ref": "noop_cpp", "params": {}, "source_sha256": "0" * 64}
+        b["packs"] = [{"sha256": sha, "path": pack.name, "price_basis": "raw", "spec": {}}]
+        bundle_mod.write(b, folder)
+        if tamper:
+            data = bytearray(pack.read_bytes())
+            data[-1] ^= 1                                  # the last record's last byte
+            pack.write_bytes(bytes(data))
+        return folder / "bundle.json"
+
+    def test_a_pack_that_does_not_match_its_hash_is_refused(self):
+        with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+            folder = Path(tmp)
+            p = subprocess.run([str(STOCKSIM_RUN), "--bundle", str(self._with_pack(folder, True)), "--out",
+                                str(folder / "out"), "--lab", str(folder)], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertIn("hash mismatch", p.stderr)
+            self.assertIn("hash mismatch", (folder / "out" / "events_log.txt").read_text(encoding="utf-8"))
+            self.assertFalse((folder / "out" / "orders.csv").exists())
+
+    def test_a_pack_that_matches_its_hash_runs(self):
+        with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+            folder = Path(tmp)
+            p = subprocess.run([str(STOCKSIM_RUN), "--bundle", str(self._with_pack(folder, False)), "--out",
+                                str(folder / "out"), "--lab", str(folder)], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr)
+
     def test_a_good_run_still_exits_0(self):
         with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
             folder = Path(tmp)
