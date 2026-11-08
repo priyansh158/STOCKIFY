@@ -84,5 +84,43 @@ class BadSpecTests(unittest.TestCase):
             self.assertEqual(_run(impl, _world()).stdout.strip(), "OK", impl)
 
 
+STOCKSIM_RUN = REPO / "engine" / "build" / "win-msvc-release" / "stocksim_run.exe"
+
+
+@unittest.skipUnless(STOCKSIM_RUN.is_file(), "stocksim_run is not built")
+class StocksimRunFailureTests(unittest.TestCase):
+    """Every failure after the arguments are read exits 1 with events_log.txt written, never an abort."""
+
+    def _bundle(self, folder: Path) -> Path:
+        from stockify import bundle as bundle_mod, golden
+        g = _world()
+        b = golden.build_bundle(g)
+        b["strategy"] = {"kind": "cpp", "ref": "noop_cpp", "params": {}, "source_sha256": "0" * 64}
+        bundle_mod.write(b, folder)
+        return folder / "bundle.json"
+
+    def test_an_artifact_that_cannot_be_written_exits_1_with_the_log(self):
+        with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+            folder = Path(tmp)
+            out = folder / "out"
+            (out / "orders.csv").mkdir(parents=True)     # a directory where the file must go
+            p = subprocess.run([str(STOCKSIM_RUN), "--bundle", str(self._bundle(folder)), "--out", str(out),
+                                "--lab", str(folder)], capture_output=True, text=True, timeout=120)
+            self.assertEqual(p.returncode, 1, f"exit {p.returncode} (an abort?): {p.stderr[-400:]}")
+            self.assertIn("the run stops", p.stderr)
+            log = (out / "events_log.txt").read_text(encoding="utf-8")
+            self.assertIn("ERROR the run stops", log)
+            self.assertIn("orders.csv", log)
+
+    def test_a_good_run_still_exits_0(self):
+        with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+            folder = Path(tmp)
+            p = subprocess.run([str(STOCKSIM_RUN), "--bundle", str(self._bundle(folder)), "--out",
+                                str(folder / "out"), "--lab", str(folder)], capture_output=True, text=True,
+                               timeout=120)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertTrue((folder / "out" / "determinism.json").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
