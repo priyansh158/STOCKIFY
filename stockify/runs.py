@@ -185,6 +185,7 @@ _INT_COLUMNS = {
     "equity.csv": {"nav_paise", "cash_paise", "margin_blocked_paise", "gross_pnl_paise", "charges_paise"},
     "charges.csv": {"row_no", "order_id", "instrument_id", "turnover_paise", "brokerage", "stt", "exchange", "sebi",
                     "stamp", "gst", "dp", "other", "total"},
+    "margin_daily.csv": {"underlying_id", "scan", "somc", "elm", "addons", "total"},
 }
 CHARGE_COMPONENTS = ("turnover_paise", "brokerage", "stt", "exchange", "sebi", "stamp", "gst", "dp", "other")
 

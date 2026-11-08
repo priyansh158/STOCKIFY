@@ -187,6 +187,33 @@ export interface TestCharge {
   total_paise: number;
 }
 
+export interface TestMargin {
+  trade_date: string;
+  underlying_id: number;
+  underlying?: string | null;
+  model: string;
+  scan_paise: number;
+  somc_paise: number;
+  elm_paise: number;
+  addons_paise: number;
+  total_paise: number;
+}
+
+export interface TestSettlement {
+  t_ns: number;
+  t_ist: string;
+  trade_date: string;
+  kind: "cash" | "delivery";
+  instrument_id: number;
+  tradingsymbol?: string | null;
+  product: string;
+  side?: string | null;
+  qty?: number | null;
+  price_paise: number;
+  source: string;
+  charges_paise?: number | null;
+}
+
 export interface TestLogs {
   events_log: string[];
   runner_log: string[];

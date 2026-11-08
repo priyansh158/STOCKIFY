@@ -7,13 +7,14 @@ Fixed paths (`/api/tests/compare`, …) are declared before `/api/tests/{run_id}
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from server.schemas import (StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
-                            TestRunDetailDTO, TestRunDTO)
+                            TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 
 router = APIRouter(tags=["tests"])
 
@@ -264,6 +265,69 @@ def test_charges(run_id: str, offset: int = Query(0, ge=0),
                                  components={k: int(parts[k]) for k in CHARGE_PARTS if parts.get(k) is not None},
                                  total_paise=r["total_paise"]))
     return out
+
+
+# Expiry settlements and deliveries, as the engines log them (identical lines on both, A4 §7):
+#   "<t_ns> INFO settled <instrument> <product> at FSP <price> (<source>)"
+#   "<t_ns> INFO delivered <stock> CNC <BUY|SELL> <units> at <price> (<source>)"
+_SETTLED = re.compile(r"^(\d+) INFO settled (\d+) (\w+) at FSP (-?\d+) \((\w+)\)$")
+_DELIVERED = re.compile(r"^(\d+) INFO delivered (\d+) (\w+) (BUY|SELL) (\d+) at (-?\d+) \((\w+)\)$")
+
+
+@router.get("/api/tests/{run_id}/margin", response_model=list[TestMarginDTO])
+def test_margin(run_id: str) -> list[TestMarginDTO]:
+    """margin_daily.csv: one row per day and underlying (SPAN-lite runs; a flat-margin run writes none)."""
+    from stockify import runs
+    row = _row_or_404(run_id)
+    folder = _folder(row)
+    if folder is None or not (folder / "margin_daily.csv").exists():
+        return []
+    symbols = _symbols(row)
+    return [TestMarginDTO(trade_date=r["trade_date"], underlying_id=r["underlying_id"],
+                          underlying=symbols.get(r["underlying_id"]), model=r["model"] or "", scan_paise=r["scan"] or 0,
+                          somc_paise=r["somc"] or 0, elm_paise=r["elm"] or 0, addons_paise=r["addons"] or 0,
+                          total_paise=r["total"] or 0)
+            for r in runs.read_csv(folder / "margin_daily.csv")]
+
+
+@router.get("/api/tests/{run_id}/settlements", response_model=list[TestSettlementDTO])
+def test_settlements(run_id: str) -> list[TestSettlementDTO]:
+    """Every expiry settlement in cash and every physical delivery of the run, in time order, with the settlement
+    charges of each cash-settled contract. `source` is "settle" (NSE's settlement price) or "fallback" (estimated,
+    A4 §7.2)."""
+    from stockify import runs
+    row = _row_or_404(run_id)
+    folder = _folder(row)
+    if folder is None or not (folder / "events_log.txt").exists():
+        return []
+    symbols = _symbols(row)
+    charges: dict[tuple[int, str], int] = {}
+    if (folder / "charges.csv").exists():
+        for c in runs.read_csv(folder / "charges.csv"):
+            if c["kind"] == "settlement":
+                key = (c["instrument_id"], c["trade_date"])
+                charges[key] = charges.get(key, 0) + (c["total"] or 0)
+    out = []
+    with (folder / "events_log.txt").open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if m := _SETTLED.match(line):
+                t, iid, product, price, source = int(m[1]), int(m[2]), m[3], int(m[4]), m[5]
+                day = _ist_date(t)
+                out.append(TestSettlementDTO(t_ns=t, t_ist=_ist(t) or "", trade_date=day, kind="cash", instrument_id=iid,
+                                             tradingsymbol=symbols.get(iid), product=product, price_paise=price,
+                                             source=source, charges_paise=charges.get((iid, day))))
+            elif m := _DELIVERED.match(line):
+                t, iid = int(m[1]), int(m[2])
+                out.append(TestSettlementDTO(t_ns=t, t_ist=_ist(t) or "", trade_date=_ist_date(t), kind="delivery",
+                                             instrument_id=iid, tradingsymbol=symbols.get(iid), product=m[3],
+                                             side=m[4], qty=int(m[5]), price_paise=int(m[6]), source=m[7]))
+    return out
+
+
+def _ist_date(t_ns: int) -> str:
+    from stockify import timeutil
+    return timeutil.ns_to_ist(t_ns).date().isoformat()
 
 
 @router.get("/api/tests/{run_id}/logs", response_model=TestLogsDTO)

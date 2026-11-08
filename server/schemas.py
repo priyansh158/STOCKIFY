@@ -196,6 +196,35 @@ class TestChargeDTO(BaseModel):
     total_paise: int
 
 
+class TestMarginDTO(BaseModel):
+    """One underlying's margin on one day (margin_daily.csv, M4): SPAN-lite parts in paise; empty for flat runs."""
+    trade_date: str
+    underlying_id: int
+    underlying: str | None = None
+    model: str
+    scan_paise: int
+    somc_paise: int
+    elm_paise: int
+    addons_paise: int
+    total_paise: int
+
+
+class TestSettlementDTO(BaseModel):
+    """An expiry settlement (cash, at the final settlement price) or a physical delivery, from the run's log."""
+    t_ns: int
+    t_ist: str
+    trade_date: str
+    kind: Literal["cash", "delivery"]
+    instrument_id: int
+    tradingsymbol: str | None = None
+    product: str
+    side: str | None = None
+    qty: int | None = None
+    price_paise: int
+    source: str
+    charges_paise: int | None = None
+
+
 class TestLogsDTO(BaseModel):
     events_log: list[str] = Field(default_factory=list)
     runner_log: list[str] = Field(default_factory=list)
