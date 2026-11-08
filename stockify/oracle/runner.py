@@ -418,7 +418,8 @@ class Engine:
             elif code == "R_MARGIN" and not system:
                 px = self._order_px(o)
                 need = self._required(o, px)
-                if need > self.funds().available:
+                # A4 §6.5: only risk-increasing orders are refused, so a shortfall can be traded out of
+                if need > self.funds().available and not self._reduces(o.instrument_id, o.product, o.side, o.qty):
                     return code
                 o.reserved = need
                 self.book.ledger.reserved += need
@@ -1168,6 +1169,7 @@ class Engine:
             self.key = (self.now, DAY_END, 0, self.internal_seq)
             self._activate_due(self.now)
             self._dispatch_internal("DAY_END", self._date(self.now))
+        self.labels |= self.margin.labels                # e.g. delivery_margin_approx (D-60)
 
     def _track_open(self) -> None:
         is_open = False

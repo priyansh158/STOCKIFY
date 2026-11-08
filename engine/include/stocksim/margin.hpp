@@ -7,11 +7,13 @@
 
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "stocksim/instruments.hpp"
+#include "stocksim/int128.hpp"
 #include "stocksim/json_bundle.hpp"
 #include "stocksim/types.hpp"
 
@@ -55,14 +57,26 @@ class FlatMargin final : public MarginModel {
     // MIS: round_half_up_div(|units| · price · mis_ppb, 10⁹).
     Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const override;
     std::string label() const override { return "margin:flat(approx)"; }
+    // Labels the model used (D-60: delivery_margin_approx), merged into the run's.
+    const std::set<std::string>& used_labels() const { return used_labels_; }
 
  private:
     Ppb rate(const Json& rows, std::string_view key, const std::string& date,
              const std::vector<std::pair<std::string, std::string>>& applies) const;
     Ppb addon(const std::string& date) const;  // the expiry-day ELM rate in force, else 0 (X-9)
+    // The stock F&O delivery-margin schedule (Z-4, D-60); amounts in paise × 10¹⁸.
+    std::optional<int> offset(const Instrument& row, const std::string& date) const;
+    const Json* schedule_row(const std::string& date, int offset, std::string_view applies_to) const;
+    Int128 short_delivery(const Instrument& row, Qty units, const std::optional<Paise>& spot, const std::string& date,
+                          const Int128& normal) const;
+    Int128 long_option_delivery(const Instrument& row, Qty units, const std::optional<Paise>& spot,
+                                const std::string& date) const;
     Json flat_;
     Json mis_rows_;
     Json addon_;
+    Json schedule_;
+    std::vector<std::string> days_;
+    mutable std::set<std::string> used_labels_;
 };
 
 }  // namespace stocksim

@@ -362,7 +362,8 @@ std::optional<Reason> Engine::validate(Order& o, bool system, Reason start, Reas
             case Reason::Margin:
                 if (!system) {
                     const Paise need = required(o, order_px(o));
-                    if (need > funds(book_.ledger).available) {
+                    // A4 §6.5: only risk-increasing orders are refused, so a shortfall can be traded out of
+                    if (need > funds(book_.ledger).available && !reduces(o.instrument, o.product, o.side, o.qty)) {
                         return code;
                     }
                     o.reserved = need;

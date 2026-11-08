@@ -53,8 +53,8 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 
 ## M4.7 Margin T0 completed (S)
 
-- [ ] Flat model additions: long options = premium only (X-10); +2% expiry-day ELM on short index options expiring that day (X-9: notional = underlying price × quantity, Zerodha's formula, decided 2026-11-07; confirm once with Kite basket margins on an expiry day); the stock F&O delivery-margin schedule of Z-4 from `broker_policy.json` (holiday shift included).
-- [ ] RMS behaviour on shortfall (A4 §6.5): reject risk-increasing orders; optional `RMS_SQOFF` at a policy time.
+- [x] Flat model additions: long options = premium only (X-10); +2% expiry-day ELM on short index options expiring that day (X-9: notional = underlying price × quantity, Zerodha's formula, decided 2026-11-07; confirm once with Kite basket margins on an expiry day); the stock F&O delivery-margin schedule of Z-4 from `broker_policy.json` (holiday shift included).
+- [x] RMS behaviour on shortfall (A4 §6.5): reject risk-increasing orders; optional `RMS_SQOFF` at a policy time.
 
 ## M4.8 Margin T1: SPAN-lite (L)
 

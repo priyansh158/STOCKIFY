@@ -74,7 +74,11 @@ Outputs Engine::drain_outputs() {
     return out;
 }
 
-std::vector<std::string> Engine::labels() const { return {labels_.begin(), labels_.end()}; }
+std::vector<std::string> Engine::labels() const {  // the run's labels and the margin model's (D-60), sorted
+    std::set<std::string> all = labels_;
+    all.insert(margin_.used_labels().begin(), margin_.used_labels().end());
+    return {all.begin(), all.end()};
+}
 
 // ── Time and phases ──────────────────────────────────────────────────────────
 

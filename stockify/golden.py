@@ -165,6 +165,9 @@ def build_bundle(g: dict) -> dict:
                             "pct_ppb": numerics.to_ppb(b.get("mis_margin_fo", "1"))}],
         "cnc_sell_credit_same_day": [],
     }
+    if b.get("delivery_schedule"):                   # the shipped Z-4 delivery-margin schedule (D-60)
+        from stockify.config import loader
+        policy["delivery_margin_schedule"] = loader.load_json("broker_policy.json")["delivery_margin_schedule"]
     margin = {"flat": [{"applies": {}, "effective_from": "2015-01-01",
                         "index_pct_ppb": numerics.to_ppb(b.get("margin_index", "0.12")),
                         "stock_pct_ppb": numerics.to_ppb(b.get("margin_stock", "0.20"))}]}

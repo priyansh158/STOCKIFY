@@ -230,7 +230,7 @@ Amended by D-46 (Kite's contract note, captured 2026-11-06): components are **ex
 | NRML option buy | `qty·px` (premium, X-10) |
 | NRML option sell (opening or increasing) | incremental margin-model requirement |
 
-Margin-model results are converted with `ceil_to(ceil(x), 100)` (§0.3). Charges are not reserved; if they push `available` below zero, risk-increasing orders are rejected `R_MARGIN` until it recovers. A margin model whose requirement grows over time (e.g. the expiry-week schedule, M4.7) can do the same; with `rms_square_off` enabled, positions are reduced at the policy time (`RMS_SQOFF`).
+Margin-model results are converted with `ceil_to(ceil(x), 100)` (§0.3). Charges are not reserved; if they push `available` below zero, risk-increasing orders are rejected `R_MARGIN` until it recovers. A margin model whose requirement grows over time (e.g. the expiry-week schedule, M4.7, D-60) can do the same. An order that only reduces an existing position is never rejected `R_MARGIN`, even in a shortfall, so a short account can always trade out of it. With `rms_square_off` enabled, positions are reduced at the policy time (`RMS_SQOFF`; not modelled while the shipped policy has no time).
 
 **6.6 NAV** = cash + market value of CNC holdings + market value of option positions (long +, short −) + unrealised futures P&L since the last mark. Mark: `mark = ltp | mid` (run config); the last known value is used when no new data arrived.
 
