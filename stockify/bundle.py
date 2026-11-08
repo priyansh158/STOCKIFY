@@ -357,10 +357,14 @@ def resolve_bundle(cfg: dict) -> dict:
         raise BundleError(f"no trading days between {start} and {end}")
     charges = _dated_section(loader.load_json("charges.json"), start, end)
     margin = _dated_section(loader.load_json("margin_params.json"), start, end)
-    _ppb_fields(margin, ("index_pct", "stock_pct", "pct"))
+    _ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "vsr_pct", "extreme_weight", "elm_pct",
+                         "default_iv"))
     pricing = _dated_section(loader.load_json("pricing.json"), start, end)
     _ppb_fields(pricing, ("rate",))
     labels = [f"fill:{cfg['fill_model']['kind']}", f"margin:{cfg['margin']['model']}(approx)"]
+    if cfg["margin"]["model"] == "spanlite":     # M4.8: the parameters' calibration, e.g. "placeholder" (I-14)
+        calibrations = sorted({r.get("calibration_id", "?") for r in margin.get("spanlite", [])}) or ["none"]
+        labels.append("margin_spanlite:" + "+".join(calibrations))
     instruments_rows = resolve_instruments(ids, start, end, days, traded, labels)
     if cfg["fill_model"]["kind"] == "eod_close":
         labels.append("eod_approx")

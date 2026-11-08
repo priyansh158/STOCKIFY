@@ -99,7 +99,12 @@ class Engine:
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
-        self.margin = FlatMargin(bundle)
+        if self.run_cfg["margin"]["model"] == "spanlite":
+            from stockify.fno.spanlite import SpanLiteMargin
+            self.margin = SpanLiteMargin(bundle, self)
+        else:
+            self.margin = FlatMargin(bundle)
+        self.margin_daily: list[tuple] = []   # (date, underlying_id, model, scan, somc, elm, addons, total), M4.8
         self.market: dict[int, Market] = {}
         capital = self.run_cfg["capital_paise"]
         self.book = Book(Ledger(capital, capital), {}, Pcg32(bundle["seed"], SLIPPAGE_STREAM))
@@ -1109,6 +1114,10 @@ class Engine:
         nav = led.nav(self.mark_price)
         blocked = self.blocked(led, d)
         self.equity.append((d, nav, led.cash, blocked, nav - led.capital + led.charges_total, led.charges_total))
+        if hasattr(self.margin, "breakdown"):       # SPAN-lite's per-underlying day rows (M4.8)
+            legs = [(p.instrument_id, p.product, p.qty) for p in led.positions.values() if p.q and p.product == "NRML"]
+            for b in self.margin.breakdown(legs, self.inst.__getitem__, self._ref_price, d):
+                self.margin_daily.append((d, b.underlying_id, "spanlite", b.scan, b.somc, b.elm, b.addons, b.total))
         self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))

@@ -134,7 +134,7 @@ def validate(raw: dict) -> dict:
     cfg["fill_model"] = _fill(raw.get("fill_model"))
     _int(cfg["latency_ms"], "latency_ms", 0)
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
-    _choice(cfg["margin"]["model"], ("flat",), "margin.model")
+    _choice(cfg["margin"]["model"], ("flat", "spanlite"), "margin.model")
     pol = cfg["policies"]
     _choice(pol["preopen"], ("queue", "reject"), "policies.preopen")
     _choice(pol["cas"], ("none", "close_price"), "policies.cas")

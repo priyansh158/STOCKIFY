@@ -67,7 +67,7 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
         for n, c in enumerate(b.charges, start=1)])
     _csv(folder / "positions_eod.csv", POSITIONS, engine.positions_eod)
     _csv(folder / "equity.csv", EQUITY, engine.equity)
-    _csv(folder / "margin_daily.csv", MARGIN, [])
+    _csv(folder / "margin_daily.csv", MARGIN, getattr(engine, "margin_daily", []))
     (folder / "metrics.json").write_bytes((numerics.dumps_canonical(metrics) + "\n").encode("utf-8"))
     (folder / "events_log.txt").write_bytes(("\n".join(engine.log_lines) + ("\n" if engine.log_lines else "")).encode())
     hashes = {}

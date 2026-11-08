@@ -10,7 +10,40 @@
       "verified": false
     }
   ],
-  "spanlite": {},
+  "spanlite": [
+    {
+      "applies": {
+        "underlying_class": "INDEX"
+      },
+      "effective_from": "2015-01-01",
+      "psr_pct": "0.06",
+      "vsr_pct": "0.25",
+      "extreme_multiple": 3,
+      "extreme_weight": "0.35",
+      "somc_per_lot_paise": 200000,
+      "elm_pct": "0.02",
+      "default_iv": "0.15",
+      "calibration_id": "placeholder",
+      "source": "placeholder until M4.9 calibration against Kite (owner, market hours); not NSE's risk parameters",
+      "verified": false
+    },
+    {
+      "applies": {
+        "underlying_class": "STOCK"
+      },
+      "effective_from": "2015-01-01",
+      "psr_pct": "0.12",
+      "vsr_pct": "0.25",
+      "extreme_multiple": 3,
+      "extreme_weight": "0.35",
+      "somc_per_lot_paise": 300000,
+      "elm_pct": "0.035",
+      "default_iv": "0.30",
+      "calibration_id": "placeholder",
+      "source": "placeholder until M4.9 calibration against Kite (owner, market hours); not NSE's risk parameters",
+      "verified": false
+    }
+  ],
   "expiry_day_short_index_option_addon": [
     {
       "applies": {},
