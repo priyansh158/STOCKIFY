@@ -279,7 +279,7 @@ def resolve_packs(cfg: dict) -> list[dict]:
         path = packs.pack_path(sha)
         if not path.exists():
             raise BundleError(f"data.packs[{i}]: pack {sha} not found in {paths.packs_dir()}")
-        actual = _file_sha(path)
+        actual = packs.sha_file(path)   # refused-open retry (pack-race form 3)
         if actual != sha:
             raise BundleError(f"data.packs[{i}]: pack hash mismatch: file {path.name} hashes to {actual}")
         m = packs.manifest(sha)

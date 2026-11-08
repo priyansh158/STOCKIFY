@@ -204,7 +204,7 @@ def decode(data: bytes, offset: int) -> tuple[dict, int]:
 
 def read(path) -> tuple[dict, list[dict]]:  # noqa: ANN001
     """(header, records) of a pack; checks size, order and the record count."""
-    data = Path(path).read_bytes()
+    data = read_bytes(path)
     header = read_header(data)
     out, off, last = [], 64, None
     while off < len(data):
@@ -642,7 +642,7 @@ def build(spec: dict) -> str:
     counts = dict(sorted(b.counts.items()))
     manifest = {"sha256": digest, "format": "evt/1", "spec": spec, "price_basis": basis, "records": count,
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
-                "bytes": target.stat().st_size}
+                "bytes": _refused_retry(lambda p: p.stat().st_size, target)}
     _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest
 
@@ -715,7 +715,7 @@ def _publish_text(target: Path, text: str) -> None:
     the replace is refused (someone has the file open, or is replacing it), an existing manifest with the same
     content is accepted. One whose content differs re-raises at once: it is never overwritten."""
     tmp = target.with_name(f".{target.name}.{os.getpid()}-{secrets.token_hex(6)}.tmp")
-    tmp.write_text(text, encoding="utf-8")
+    _refused_retry(lambda p: p.write_text(text, encoding="utf-8"), tmp)
     error: OSError | None = None
     try:
         for attempt in range(_RETRIES):
@@ -745,5 +745,30 @@ def _no_recording(day: date) -> bool:
     return not ticks.has_day(day)
 
 
+def _refused_retry(op, path: Path):  # noqa: ANN001, ANN202
+    """Run `op(path)`, retrying a refused open (PermissionError) with the publishing back-off. A pack or manifest
+    can be refused for a moment while another process replaces it (pack-race form 3); a refusal that outlasts
+    the retries re-raises. A missing file is not retried: it is simply not built."""
+    for attempt in range(_RETRIES):
+        try:
+            return op(path)
+        except PermissionError:
+            if attempt == _RETRIES - 1:
+                raise
+            _pause(attempt)
+    raise AssertionError("unreachable")
+
+
+def read_bytes(path) -> bytes:  # noqa: ANN001
+    """A pack's bytes, through the refused-open retry."""
+    return _refused_retry(lambda p: p.read_bytes(), Path(path))
+
+
+def sha_file(path) -> str:  # noqa: ANN001
+    """A pack's SHA-256, through the refused-open retry."""
+    return _refused_retry(_sha_file, Path(path))
+
+
 def manifest(sha: str) -> dict:
-    return json.loads(manifest_path(sha).read_text(encoding="utf-8"))
+    """A pack's manifest, through the refused-open retry."""
+    return json.loads(_refused_retry(lambda p: p.read_text(encoding="utf-8"), manifest_path(sha)))

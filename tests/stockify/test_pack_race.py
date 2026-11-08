@@ -129,6 +129,39 @@ class PackRaceTests(BundleTest):
                 break
 
 
+    def test_readers_never_see_a_refused_open_while_builders_replace(self):
+        """Pack-race form 3: `PermissionError: [Errno 13] ... packs/<sha>.json` (a Windows path). A reader opened the manifest
+        (or the pack) in the instant another process was replacing it. Every manifest and pack read in packs.py
+        goes through the same refused-open retry as publishing. 5 builders replace the manifest of an existing
+        pack, over and over, while a reader loops packs.manifest() and packs.read_bytes()."""
+        import threading
+        import time
+        sha = packs.build(self.spec)
+        stop, errors, reads = threading.Event(), [], [0]
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    self.assertEqual(packs.manifest(sha)["sha256"], sha)
+                    packs.read_bytes(packs.pack_path(sha))
+                    reads[0] += 1
+                except Exception as e:  # noqa: BLE001 — any failure is the finding
+                    errors.append(repr(e))
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        started = time.perf_counter()
+        try:
+            for _ in range(10):
+                self.assertEqual(self._builders(5), [sha] * 5)
+                if time.perf_counter() - started > 60:
+                    break
+        finally:
+            stop.set()
+            t.join(timeout=30)
+        self.assertEqual(errors[:3], [])
+        self.assertGreater(reads[0], 0)
+        self.assertEqual(self._leftovers(sha), [])
+
     def test_an_open_manifest_with_the_same_content_is_accepted(self):
         sha = packs.build(self.spec)
         target = packs.manifest_path(sha)
