@@ -84,24 +84,31 @@ std::optional<EventKey> VectorSource::peek_key() const {
 // ── LiveBatchSource ──────────────────────────────────────────────────────────
 
 void LiveBatchSource::push(std::span<const std::byte> batch) {
-    // Drop batches already read (the caller has finished with any event returned from them).
-    while (batches_.size() > 1 || (!batches_.empty() && offset_ >= batches_.front().size())) {
-        batches_.pop_front();
-        offset_ = 0;
-    }
+    // Check the whole batch first, against a local copy of the ordering mark: a batch that fails part-way is
+    // refused whole and leaves the mark where it was (M3 review).
     std::string copy(reinterpret_cast<const char*>(batch.data()), batch.size());
+    bool have = have_last_;
+    EventKey last = last_;
     std::size_t off = 0;
     while (off < copy.size()) {
         const Event e = read_record(reinterpret_cast<const std::byte*>(copy.data()), copy.size(), off, 0);
         const EventKey key = e.key();
-        if (have_last_ && key < last_) {
+        if (have && key < last) {
             throw FormatError("pushed record out of order at batch byte " + std::to_string(off) + " (seq " +
                               std::to_string(e.seq) + ")");
         }
-        last_ = key;
-        have_last_ = true;
+        last = key;
+        have = true;
         off += e.size;
     }
+    // Drop only batches that have been read to the end (the caller has finished with any event returned from
+    // them); a batch not yet read, or read half-way, stays.
+    while (!batches_.empty() && offset_ >= batches_.front().size()) {
+        batches_.pop_front();
+        offset_ = 0;
+    }
+    last_ = last;
+    have_last_ = have;
     if (!copy.empty()) {
         batches_.push_back(std::move(copy));
     }

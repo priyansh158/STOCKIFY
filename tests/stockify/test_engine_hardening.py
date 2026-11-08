@@ -227,5 +227,42 @@ class OneCallAtATimeTests(unittest.TestCase):
                 self.assertRegex(got, r"^(RunError|RuntimeError): .*failed")
             self.assertFalse((Path(tmp) / "out" / "orders.csv").exists())
 
+
+# ── live batches (review fix #5) ──────────────────────────────────────────────────────────────────────────
+
+def _records(n: int, t0: int = 1_000) -> list[bytes]:
+    """n encoded CLOCK records at t0, t0 + 1, … (whole records, no header, as a live journal pushes them)."""
+    from stockify.data import packs as P
+    return [P.enc_clock(t0 + k) for k in range(n)]
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class LiveBatchTests(unittest.TestCase):
+    def setUp(self):
+        self.t = engine.load().testing
+
+    def test_pushes_before_a_read_lose_nothing(self):
+        r = _records(6)
+        got = self.t.live_steps([("push", r[0] + r[1]), ("push", r[2] + r[3]), ("push", r[4] + r[5]), ("read", -1)])
+        self.assertEqual(got[:3], ["ok", "ok", "ok"])
+        self.assertEqual([k[0] for k in got[3]], [1000, 1001, 1002, 1003, 1004, 1005])
+
+    def test_a_half_read_batch_is_kept_until_it_is_read(self):
+        r = _records(6)
+        got = self.t.live_steps([("push", r[0] + r[1] + r[2]), ("read", 1), ("push", r[3]), ("push", r[4] + r[5]),
+                                 ("read", -1)])
+        self.assertEqual([k[0] for k in got[1]], [1000])
+        self.assertEqual([k[0] for k in got[4]], [1001, 1002, 1003, 1004, 1005])
+
+    def test_a_rejected_batch_does_not_move_the_ordering_mark(self):
+        r = _records(4)
+        bad = r[2] + _records(1, t0=500)[0]               # in order, then a record earlier than everything
+        got = self.t.live_steps([("push", r[0]), ("read", -1), ("push", bad), ("push", r[1] + r[2] + r[3]),
+                                 ("read", -1)])
+        self.assertEqual(got[0], "ok")
+        self.assertTrue(got[2].startswith("error: pushed record out of order"), got[2])
+        self.assertEqual(got[3], "ok", "a valid batch after a rejected one was refused")
+        self.assertEqual([k[0] for k in got[4]], [1001, 1002, 1003])  # nothing of the rejected batch was kept
+
 if __name__ == "__main__":
     unittest.main()
