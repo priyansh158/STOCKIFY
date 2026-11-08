@@ -5,8 +5,10 @@ import type {
   TestEquity,
   TestFill,
   TestLogs,
+  TestMargin,
   TestRun,
   TestRunDetail,
+  TestSettlement,
 } from "./types";
 
 export const strategies: Strategy[] = [
@@ -93,7 +95,42 @@ export const runs: TestRun[] = [
     strategy_ref: "stockify.strategies.eod_short_straddle:EodShortStraddle", price_basis: "raw",
     nav_end_paise: 96_120_000, max_drawdown: 0.0712, trades: 31, costs_total_paise: 3_420_118,
     labels: ["fill:eod_close", "margin:flat(approx)", "eod_approx", "settlement_fallback"] },
+  { ...base, run_id: "iron_fly_nifty-20261108T040000-a1b2c3", name: "iron_fly_nifty",
+    strategy_ref: "stockify.strategies.iron_fly:IronFly", price_basis: "raw",
+    nav_end_paise: 101_840_000, max_drawdown: 0.0231, trades: 12, costs_total_paise: 412_660,
+    labels: ["fill:snapshot_quote", "margin:spanlite(approx)", "margin_spanlite:placeholder", "settlement_fallback",
+             "delivery_margin_approx", "short_delivery"] },
 ];
+
+const FLY = "iron_fly_nifty-20261108T040000-a1b2c3";
+
+/** Margin by day for the sample iron fly (SPAN-lite); other sample runs use the flat model and have none. */
+export function margin(id: string): TestMargin[] {
+  if (id !== FLY) return [];
+  return [
+    { trade_date: "2026-11-03", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", scan_paise: 9_412_300,
+      somc_paise: 0, elm_paise: 3_120_000, addons_paise: 0, total_paise: 12_532_300 },
+    { trade_date: "2026-11-04", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", scan_paise: 8_905_100,
+      somc_paise: 0, elm_paise: 3_098_000, addons_paise: 3_098_000, total_paise: 15_101_100 },
+  ];
+}
+
+/** Settlements for the sample iron fly: two legs at an estimated price, one stock delivery. */
+export function settlements(id: string): TestSettlement[] {
+  if (id !== FLY) return [];
+  const t = 1_794_045_000_000_000_000;
+  return [
+    { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "cash", instrument_id: 668,
+      tradingsymbol: "NIFTY26N0424000CE", product: "NRML", side: null, qty: null, price_paise: 2_398_550,
+      source: "fallback", charges_paise: 2_360 },
+    { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "cash", instrument_id: 669,
+      tradingsymbol: "NIFTY26N0424000PE", product: "NRML", side: null, qty: null, price_paise: 2_398_550,
+      source: "fallback", charges_paise: 8_861 },
+    { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "delivery", instrument_id: 1,
+      tradingsymbol: "RELIANCE", product: "CNC", side: "BUY", qty: 500, price_paise: 141_230, source: "settle",
+      charges_paise: null },
+  ];
+}
 
 export const equity: TestEquity[] = Array.from({ length: 60 }, (_, i) => {
   const wave = Math.sin(i / 6) * 4_000_000 + i * 520_000 - (i > 30 && i < 40 ? (i - 30) * 900_000 : 0);

@@ -11,8 +11,10 @@ import type {
   TestEquity,
   TestFill,
   TestLogs,
+  TestMargin,
   TestRun,
   TestRunDetail,
+  TestSettlement,
 } from "./types";
 
 const FIXTURES = process.env.NEXT_PUBLIC_STOCKIFY_FIXTURES === "1";
@@ -41,6 +43,16 @@ export function getEquity(id: string): Promise<TestEquity[]> {
 
 export function getCharges(id: string): Promise<TestCharge[]> {
   return FIXTURES ? Promise.resolve(F.charges) : api<TestCharge[]>(`/api/tests/${encodeURIComponent(id)}/charges`);
+}
+
+export function getMargin(id: string): Promise<TestMargin[]> {
+  if (FIXTURES) return Promise.resolve(F.margin(id));
+  return api<TestMargin[]>(`/api/tests/${encodeURIComponent(id)}/margin`);
+}
+
+export function getSettlements(id: string): Promise<TestSettlement[]> {
+  if (FIXTURES) return Promise.resolve(F.settlements(id));
+  return api<TestSettlement[]>(`/api/tests/${encodeURIComponent(id)}/settlements`);
 }
 
 export function getLogs(id: string, limit = 40): Promise<TestLogs> {

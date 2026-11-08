@@ -4,9 +4,9 @@ import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { cancelTest, getEquity, getFills, getLogs, getTest } from "@/lib/tests";
-import type { TestEquity, TestFill, TestLogs, TestRunDetail } from "@/lib/types";
-import { buttonStyle, Card, LabelChips, Stat, StatusChip, runSummary } from "../ui";
+import { cancelTest, getEquity, getFills, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
+import type { TestEquity, TestFill, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
+import { buttonStyle, Card, LabelChips, Stat, StatusChip, labelMeaning, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
 const POLL_MS = 2000;
@@ -26,7 +26,14 @@ const COST_NAMES: Record<string, string> = {
   other: "Other",
 };
 
-type Extra = { fills: TestFill[]; equity: TestEquity[]; logs: TestLogs | null };
+type Extra = {
+  fills: TestFill[];
+  equity: TestEquity[];
+  margin: TestMargin[];
+  settlements: TestSettlement[];
+  logs: TestLogs | null;
+};
+const NO_EXTRA: Extra = { fills: [], equity: [], margin: [], settlements: [], logs: null };
 // pending: poll again soon; terminal: the run finished (stop); missing: 404 (stop); error: retry with back-off
 type Outcome = "pending" | "terminal" | "missing" | "error";
 
@@ -37,7 +44,7 @@ function num(v: unknown): number | null {
 export default function TestDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [detail, setDetail] = useState<TestRunDetail | null>(null);
-  const [extra, setExtra] = useState<Extra>({ fills: [], equity: [], logs: null });
+  const [extra, setExtra] = useState<Extra>(NO_EXTRA);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -48,10 +55,12 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
       setDetail(d);
       setError(null);
       if (d.run.status === "done") {
-        const [fills, equity] = await Promise.all([getFills(id, 0, FILL_PAGE), getEquity(id)]);
-        setExtra({ fills, equity, logs: null });
+        const [fills, equity, margin, settlements] = await Promise.all([
+          getFills(id, 0, FILL_PAGE), getEquity(id), getMargin(id).catch(() => []), getSettlements(id).catch(() => []),
+        ]);
+        setExtra({ fills, equity, margin, settlements, logs: null });
       } else if (d.run.status === "failed" || d.run.status === "cancelled") {
-        setExtra({ fills: [], equity: [], logs: await getLogs(id).catch(() => null) });
+        setExtra({ ...NO_EXTRA, logs: await getLogs(id).catch(() => null) });
       }
       return d.run.status === "queued" || d.run.status === "running" ? "pending" : "terminal";
     } catch (e) {
@@ -245,6 +254,10 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                 </ul>
                 )}
               </Card>
+
+              <MarginByDay rows={extra.margin} equity={extra.equity} />
+              <Settlements rows={extra.settlements} />
+              <LabelMeanings labels={run.labels} />
             </>
           )}
 
@@ -267,5 +280,106 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
         </div>
       )}
     </div>
+  );
+}
+
+const muted = { color: "var(--color-fg-muted)" };
+const rowBorder = { borderColor: "rgba(0,255,65,0.15)" };
+
+/** Margin held by day: the SPAN-lite breakdown when the run has one (margin_daily.csv), else the flat model's
+ * day-end amount from the equity rows. */
+function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[] }) {
+  const days = Array.from(new Set(rows.map((r) => r.trade_date)));
+  const held = equity.filter((e) => (e.margin_paise ?? 0) > 0);
+  if (days.length === 0 && held.length === 0) return null;
+  return (
+    <Card>
+      <h2 className="stk-mono-tight mb-3" style={muted}>Margin by day</h2>
+      {days.length === 0 ? (
+        <>
+          <p className="mb-2 text-sm" style={muted}>
+            This test used the flat margin: a set percentage of each position&apos;s value. Margin held at the end of
+            each day:
+          </p>
+          <ul className="flex flex-col gap-1 text-sm">
+            {held.slice(-30).map((e) => (
+              <li key={e.trade_date} className="flex justify-between gap-3">
+                <span>{e.trade_date}</span><span className="stk-mono">{rupees(e.margin_paise)}</span>
+              </li>
+            ))}
+          </ul>
+          {held.length > 30 && <p className="mt-1 text-xs" style={muted}>The last 30 days with margin held are shown.</p>}
+        </>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {days.map((d) => {
+            const today = rows.filter((r) => r.trade_date === d);
+            const total = today.reduce((a, r) => a + r.total_paise, 0);
+            return (
+              <li key={d} className="rounded-md border px-3 py-2" style={rowBorder}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="stk-mono text-sm font-semibold">{d}</span>
+                  <span className="stk-mono text-sm">{rupees(total)}</span>
+                </div>
+                {today.map((r) => (
+                  <dl key={r.underlying_id} className="mt-1 grid grid-cols-2 gap-x-3 text-xs" style={muted}>
+                    <dt className="col-span-2" style={{ color: "var(--color-fg)" }}>
+                      {r.underlying ?? `underlying ${r.underlying_id}`}
+                    </dt>
+                    <dt>Price and volatility risk</dt><dd className="stk-mono text-right">{rupees(r.scan_paise)}</dd>
+                    <dt>Short-option minimum</dt><dd className="stk-mono text-right">{rupees(r.somc_paise)}</dd>
+                    <dt>Extreme-loss margin</dt><dd className="stk-mono text-right">{rupees(r.elm_paise)}</dd>
+                    <dt>Expiry-day and other add-ons</dt><dd className="stk-mono text-right">{rupees(r.addons_paise)}</dd>
+                  </dl>
+                ))}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+/** Expiry settlements in cash and physical deliveries, with whether NSE's price or an estimate was used. */
+function Settlements({ rows }: { rows: TestSettlement[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <Card>
+      <h2 className="stk-mono-tight mb-3" style={muted}>Expiry settlements</h2>
+      <ul className="flex flex-col gap-2">
+        {rows.map((s, i) => {
+          const name = s.tradingsymbol ?? `instrument ${s.instrument_id}`;
+          const what = s.kind === "cash"
+            ? `${name} settled in cash`
+            : `${s.side === "BUY" ? "Took" : "Gave"} delivery of ${(s.qty ?? 0).toLocaleString("en-IN")} ${name}`;
+          return (
+            <li key={`${s.t_ns}-${s.instrument_id}-${i}`} className="rounded-md border px-3 py-2" style={rowBorder}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold">{what}</span>
+                <span className="stk-mono text-sm">{rupees(s.price_paise)}</span>
+              </div>
+              <div className="text-xs" style={s.source === "fallback" ? { color: "var(--color-amber)" } : muted}>
+                {s.trade_date} · {s.source === "fallback" ? "estimated price (NSE had published none)" : "NSE's settlement price"}
+                {s.charges_paise ? ` · charges ${rupees(s.charges_paise)}` : ""}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
+
+/** Each of the run's labels as a sentence: what it means for how far the results can be trusted. */
+function LabelMeanings({ labels }: { labels: string[] }) {
+  if (labels.length === 0) return null;
+  return (
+    <Card>
+      <h2 className="stk-mono-tight mb-2" style={muted}>What the labels mean</h2>
+      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+        {labels.map((l) => <li key={l}>{labelMeaning(l)}</li>)}
+      </ul>
+    </Card>
   );
 }

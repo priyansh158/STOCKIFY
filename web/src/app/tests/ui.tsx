@@ -31,10 +31,43 @@ function labelText(label: string): { text: string; warn: boolean } {
     "charges:unverified_rows": { text: "unverified charges", warn: true },
     "specs:equity_tick_assumed": { text: "tick size assumed", warn: true },
     settlement_fallback: { text: "settlement price estimated", warn: true },
+    "margin:spanlite(approx)": { text: "SPAN-like margin, approximate", warn: true },
+    "margin_spanlite:iv_fallback": { text: "margin used an assumed volatility", warn: true },
+    delivery_margin_approx: { text: "delivery margin approximate", warn: true },
+    short_delivery: { text: "short stock delivered", warn: true },
   };
   if (fixed[label]) return fixed[label];
+  if (label.startsWith("margin_spanlite:")) {
+    const calib = label.slice("margin_spanlite:".length);
+    return { text: calib.includes("placeholder") ? "margin settings not yet calibrated" : `margin settings ${calib}`,
+             warn: calib.includes("placeholder") };
+  }
   if (label.startsWith("fill:")) return { text: `fills from ${label.slice(5).replace("_", " ")}`, warn: false };
   return { text: label, warn: false };
+}
+
+/** One plain sentence per run label, for the detail page (what the label says about the results). */
+export function labelMeaning(label: string): string {
+  const fixed: Record<string, string> = {
+    "fill:approximate": "Fills are estimated from the last traded price only, so they may be better than a real order would get.",
+    eod_approx: "Orders fill at the next day's closing price from NSE's end-of-day files, so intraday moves are not seen.",
+    "margin:flat(approx)": "Margin is a fixed percentage of each position's value, not the exchange's SPAN calculation.",
+    "margin:spanlite(approx)": "Margin is a SPAN-like estimate (price and volatility scenarios plus extreme-loss margin), not the exchange's own file.",
+    "margin_spanlite:iv_fallback": "For at least one option, the margin used an assumed volatility because no implied volatility could be read from the quotes.",
+    "charges:unverified_rows": "Some of the charge rates used have not been checked against the broker's latest published rates.",
+    "specs:equity_tick_assumed": "A stock's tick size was not recorded for these dates, so a 1 paisa tick was assumed.",
+    settlement_fallback: "NSE had not published a final settlement price for an expiry, so the price was estimated from the last market data.",
+    delivery_margin_approx: "The extra margin brokers block before stock F&O delivery was applied approximately.",
+    short_delivery: "A short stock F&O position ended in delivering shares that were not held; a real account would face an auction penalty.",
+  };
+  if (fixed[label]) return fixed[label];
+  if (label.startsWith("margin_spanlite:")) {
+    return label.includes("placeholder")
+      ? "The SPAN-like margin's risk settings are placeholders until they are calibrated against Kite, so margin amounts are rough."
+      : `The SPAN-like margin used calibration ${label.slice("margin_spanlite:".length)}.`;
+  }
+  if (label.startsWith("fill:")) return `Orders filled by the ${label.slice(5).replace(/_/g, " ")} model.`;
+  return label;
 }
 
 export function LabelChips({ run }: { run: Pick<TestRun, "labels" | "price_basis"> }) {

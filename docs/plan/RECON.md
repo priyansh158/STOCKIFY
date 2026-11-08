@@ -549,3 +549,14 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - **Pending going live**: `examples/runs/straddle_vs_ironfly_recorded.json` is ready (bhav_eod for the end-of-day
   run; recorded ticks with the nearest NIFTY chain for the two intraday runs; SPAN-lite everywhere). Its dates,
   2026-11-09 to 2026-11-13, are placeholders: set them to five or more recorded days, then run the tool.
+
+## 2026-11-08 — M4.14 UI additions (WP 4.1, WP 4.2)
+
+- **API (WP 4.1).** `GET /api/tests/{id}/margin` returns `margin_daily.csv` (SPAN-lite runs only; a flat-margin run writes no rows). `GET /api/tests/{id}/settlements` returns the expiry settlements in cash and the physical deliveries. They are read from the engines' own log lines, which are identical on both engines: "settled … at FSP … (source)" and "delivered …". Each comes with its source (NSE's settlement price, or the A4 §7.2 fallback) and each contract's settlement charges. DTOs are mirrored in `types.ts` (`dto-fields`).
+- **Page (WP 4.2), `/tests/[id]`.**
+  - **Margin by day:** per day and underlying, the price-and-volatility risk, short-option minimum, extreme-loss margin, expiry-day and other add-ons, and the total. For a flat-margin run, a plain explanation plus the margin held at each day's end, from `equity.csv`.
+  - **Expiry settlements:** what settled or was delivered, at what price, and whether that price was NSE's or estimated.
+  - **What the labels mean:** one plain sentence per label, including the M4 ones (SPAN-like margin, placeholder calibration, assumed volatility, delivery margin approximate, short stock delivered, settlement price estimated).
+  - **Fixtures:** a sample iron-fly run lets the page render without the API.
+- **Checks.** Lint and `tsc` are clean. At an emulated 390 px width the page measures exactly 390 px wide, with no element past the edge; desktop was checked too. `next build` cannot run inside a worktree, because Turbopack rejects the `node_modules` junction; it has to run in the main checkout.
+- **Open: Greeks of open positions at day end.** The artifacts don't carry them: `positions_eod.csv` has the option's mark, but neither the underlying's price nor a volatility. A proposal is with the supervisor (status/X.md); the M4.14 box stays unticked until that is decided.
