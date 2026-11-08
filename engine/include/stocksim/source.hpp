@@ -53,6 +53,9 @@ class VectorSource : public EventSource {
  public:
     // Each string is one encoded record (prefix included). Events are served in key order.
     explicit VectorSource(std::vector<std::string> records, std::uint32_t src = 0);
+    // Its events point into its own strings, so a copy would point into the original's (M3 review).
+    VectorSource(const VectorSource&) = delete;
+    VectorSource& operator=(const VectorSource&) = delete;
     const Event* next() override;
     std::optional<EventKey> peek_key() const override;
 

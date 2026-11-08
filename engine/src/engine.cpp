@@ -783,7 +783,9 @@ std::vector<Bar> Context::bars(InstrumentId iid, std::int32_t interval_s, std::i
     const auto& rows = rows_it->second;
     const auto size = static_cast<std::int64_t>(rows.size());
     // Python rows[-n:]: the last n for n > 0, all for n == 0, rows[|n|:] for n < 0.
-    const std::int64_t first = n > 0 ? std::max<std::int64_t>(0, size - n) : (n == 0 ? 0 : std::min(size, -n));
+    // n < 0: start at |n|, but -n overflows for INT64_MIN; any |n| at or past the end is the end (M3 review).
+    const std::int64_t first =
+        n > 0 ? std::max<std::int64_t>(0, size - n) : (n == 0 ? 0 : (n < -size ? size : -n));
     for (std::int64_t i = first; i < size; ++i) {
         const BarRow& r = rows[static_cast<std::size_t>(i)];
         out.push_back(Bar{iid, interval_s, r.start, r.start + static_cast<TimeNs>(interval_s) * kNsPerSecond, r.open,

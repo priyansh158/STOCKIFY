@@ -301,5 +301,40 @@ class LiveBatchTests(unittest.TestCase):
         self.assertEqual(got[3], "ok", "a valid batch after a rejected one was refused")
         self.assertEqual([k[0] for k in got[4]], [1001, 1002, 1003])  # nothing of the rejected batch was kept
 
+
+# ── checked arithmetic (review fix #7) ───────────────────────────────────────────────────────────────────
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class CheckedArithmeticTests(unittest.TestCase):
+    def test_bars_with_the_most_negative_n_is_python_slicing_not_an_overflow(self):
+        """rows[-n:] with n = -2**63 is rows[2**63:], an empty list. The engine negated n in int64 (overflow, then
+        a negative start index). It runs in a subprocess, since a bad index can crash the process."""
+        code = textwrap.dedent("""
+            import tempfile, tests.support
+            from pathlib import Path
+            from stockify import golden, engine as E, bundle as bundle_mod
+            from stockify.strategy import Strategy
+            from tests.stockify.test_engine_hardening import _world
+            class Probe(Strategy):
+                def on_start(self, ctx):
+                    ctx.subscribe_bars(1, 60)
+                def on_bar(self, ctx, bar):
+                    ctx.log("info", f"bars {len(ctx.bars(1, 60, -2**63))} {len(ctx.bars(1, 60, -1))}")
+            with tempfile.TemporaryDirectory() as tmp:
+                f = Path(tmp); g = _world(); g["strategy"] = {"actions": []}
+                pack, b = golden.build_pack(g, f), golden.build_bundle(g)
+                from stockify.oracle import run_bundle
+                run_bundle(b, [pack], f / "o", strategy=Probe(), report=False)
+                E.run_bundle(b, [pack], f / "e", strategy=Probe(), report=False)
+                for impl in ("o", "e"):
+                    print(impl, [x.split(" INFO ")[1] for x in (f / impl / "events_log.txt").read_text().splitlines()
+                                 if " INFO bars " in x])
+        """)
+        p = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, timeout=120)
+        self.assertEqual(p.returncode, 0, f"exit {p.returncode}: {p.stderr[-600:]}")
+        lines = dict(x.split(" ", 1) for x in p.stdout.strip().splitlines())
+        self.assertEqual(lines["o"], lines["e"])
+        self.assertIn("bars 0 ", lines["o"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -62,7 +62,7 @@ std::optional<Paise> Engine::mark_price(InstrumentId iid) const {  // runner.mar
     }
     const MarketState& m = it->second;
     if (mark_kind_ == "mid" && m.bid && *m.bid != 0 && m.ask && *m.ask != 0) {
-        return floor_div(*m.bid + *m.ask, 2);
+        return floor_div(checked_add(*m.bid, *m.ask), 2);
     }
     return m.ltp;
 }
