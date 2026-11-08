@@ -409,6 +409,7 @@ void bind_engine(py::module_& m) {
         .def("finish", [](Engine& e) { guarded(e, [&] { e.finish(); }); })
         .def("drain_outputs", [](Engine& e) {
             // Rows exactly as the CSVs spell them (artifacts.hpp), as dicts keyed by column name.
+            e.ensure_idle("drain_outputs");
             const stocksim::Outputs o = e.drain_outputs();
             const stocksim::Book& b = e.book();
             DictRows orders(stocksim::kOrdersHeader), events(stocksim::kOrderEventsHeader),
@@ -433,7 +434,10 @@ void bind_engine(py::module_& m) {
             out["log"] = o.log;
             return out;
         })
-        .def("events_log", [](const Engine& e) { return e.log_lines(); })
+        .def("events_log", [](const Engine& e) {
+            e.ensure_idle("events_log", true);  // readable after a failure: it holds the traceback
+            return e.log_lines();
+        })
         .def("write_artifacts", [](const Engine& e, const std::string& folder) {
             return stocksim::write_artifacts(e, std::filesystem::path(folder));
         })

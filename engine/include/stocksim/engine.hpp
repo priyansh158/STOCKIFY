@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -257,6 +258,13 @@ class Engine {
     void push(std::span<const std::byte> batch);   // live: encoded records, processed up to the batch end (A4 §1.4)
     void finish();                                 // the internal events left after the last input
 
+    // One call at a time, and nothing after a failure (M3 review): run / push / finish refuse while another is in
+    // progress (another thread, the GIL released for a C++ strategy, or a strategy calling back in), and once an
+    // exception has left one of them the engine refuses them all. Readers check with ensure_idle; the log stays
+    // readable after a failure (allow_failed), so the traceback can be written out.
+    bool failed() const { return failed_; }
+    void ensure_idle(const char* what, bool allow_failed = false) const;  // RunError if busy (or failed)
+
     const Bundle& bundle() const { return bundle_; }
     const std::vector<std::string>& log_lines() const { return log_lines_; }
     std::vector<std::string> drain_log();          // log lines since the last call
@@ -380,6 +388,9 @@ class Engine {
     std::priority_queue<InternalEvent, std::vector<InternalEvent>, LaterKey> internal_;
     std::uint64_t internal_seq_ = 0;
     bool started_ = false;
+    std::atomic<bool> busy_{false};
+    bool failed_ = false;
+    class Running;  // the guard around run / push / finish
     bool closed_out_ = false;
     TimeNs now_ = 0;
     EventKey key_{0, 0, 0, 0};

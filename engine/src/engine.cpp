@@ -179,9 +179,42 @@ void Engine::process_internal_before(const std::optional<EventKey>& next_input) 
     }
 }
 
+class Engine::Running {
+ public:
+    Running(Engine& e, const char* what) : e_(e) {
+        e.ensure_idle(what);
+        if (e.busy_.exchange(true)) {  // another thread got in between
+            throw RunError(std::string(what) + ": the engine is busy (a run, push or finish is in progress)");
+        }
+    }
+    ~Running() {
+        if (!done_) {
+            e_.failed_ = true;  // an exception is leaving: the engine's state is no longer trustworthy
+        }
+        e_.busy_ = false;
+    }
+    Running(const Running&) = delete;
+    Running& operator=(const Running&) = delete;
+    void done() { done_ = true; }
+
+ private:
+    Engine& e_;
+    bool done_ = false;
+};
+
+void Engine::ensure_idle(const char* what, bool allow_failed) const {
+    if (busy_.load()) {
+        throw RunError(std::string(what) + ": the engine is busy (a run, push or finish is in progress)");
+    }
+    if (failed_ && !allow_failed) {
+        throw RunError(std::string(what) + ": this engine's run failed earlier; start a new engine");
+    }
+}
+
 void Engine::run() { run(packs_); }
 
 void Engine::run(EventSource& source) {
+    Running guard(*this, "run");
     start(source.peek_key());
     for (;;) {
         const std::optional<EventKey> next = source.peek_key();
@@ -196,9 +229,11 @@ void Engine::run(EventSource& source) {
         process_input(*e);
     }
     close_out();
+    guard.done();
 }
 
 void Engine::push(std::span<const std::byte> batch) {
+    Running guard(*this, "push");
     live_.push(batch);
     start(live_.peek_key());
     while (const std::optional<EventKey> next = live_.peek_key()) {
@@ -209,12 +244,15 @@ void Engine::push(std::span<const std::byte> batch) {
         activate_due(now_);
         process_input(*e);
     }
+    guard.done();
 }
 
 void Engine::finish() {
+    Running guard(*this, "finish");
     start(std::nullopt);
     process_internal_before(std::nullopt);
     close_out();
+    guard.done();
 }
 
 // The final close-out (A4 §1.10, D-52; the end of runner.run): when the last input came after the last trading

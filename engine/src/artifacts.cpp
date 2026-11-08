@@ -32,6 +32,7 @@ std::string read_all(const std::filesystem::path& p) {
 }  // namespace
 
 std::map<std::string, std::string> write_artifacts(const Engine& e, const std::filesystem::path& folder) {
+    e.ensure_idle("write_artifacts");  // never the half-done state of a failed run (M3 review)
     std::filesystem::create_directories(folder);
     const Book& b = e.book();
 

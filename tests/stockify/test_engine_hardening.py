@@ -16,6 +16,7 @@ from pathlib import Path
 import tests.support  # noqa: F401  — must precede project imports
 
 from stockify import engine
+from stockify.strategy import Strategy
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -121,6 +122,110 @@ class StocksimRunFailureTests(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertTrue((folder / "out" / "determinism.json").is_file())
 
+
+
+# ── one call at a time, and nothing after a failure (review fixes #3, #4) ──────────────────────────────────
+
+def _engine_for(world: dict, folder: Path, strategy):  # noqa: ANN001, ANN202
+    from stockify import bundle as bundle_mod, golden
+    pack, b = golden.build_pack(world, folder), golden.build_bundle(world)
+    bundle_mod.write(b, folder)
+    e = engine.load().Engine(str(folder / "bundle.json"))
+    e.add_pack(str(pack))
+    if isinstance(strategy, str):
+        e.set_strategy_cpp(strategy)
+    else:
+        e.set_strategy_py(strategy)
+    return e
+
+
+def _many_ticks(n: int) -> dict:
+    """One equity with n quote ticks over a day (a run long enough to overlap with another thread)."""
+    from stockify import golden
+    start = golden.ts("2026-03-02T09:15:00+05:30")
+    step = (6 * 3600 * 1_000_000_000) // n
+    ev = [{"kind": "TICK_QUOTE", "instrument": 1, "t": start + k * step, "ltp": 10000 + (k % 7) * 5,
+           "volume": k} for k in range(n)]
+    w = _world()
+    w["events"], w["strategy"] = ev, {"actions": []}
+    return w
+
+
+def _outcome(fn) -> str:  # noqa: ANN001
+    """'ok' or 'Type: message'. The exception is dropped here, so no traceback keeps the engine (and its mapped
+    pack) alive."""
+    try:
+        fn()
+        return "ok"
+    except Exception as err:  # noqa: BLE001
+        return f"{type(err).__name__}: {err}"
+
+
+class _CallsBack(Strategy):
+    """Calls back into its own engine from a hook."""
+
+    def __init__(self, call: str):
+        self.call, self.engine = call, None
+
+    def on_start(self, ctx):  # noqa: ANN001
+        ctx.subscribe_bars(1, 60)
+
+    def on_bar(self, ctx, bar):  # noqa: ANN001
+        getattr(self.engine, self.call)()
+
+
+class _Raises(Strategy):
+    def on_start(self, ctx):  # noqa: ANN001
+        ctx.subscribe_bars(1, 60)
+
+    def on_bar(self, ctx, bar):  # noqa: ANN001
+        raise ZeroDivisionError("planted")
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class OneCallAtATimeTests(unittest.TestCase):
+    def test_a_strategy_calling_back_into_its_engine_is_refused(self):
+        for call in ("drain_outputs", "finish"):
+            with self.subTest(call=call), tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+                s = _CallsBack(call)
+                e = _engine_for(_world(), Path(tmp), s)
+                s.engine = e
+                got = _outcome(e.run)
+                s.engine = None
+                del e
+                self.assertRegex(got, r"^(RunError|RuntimeError): .*busy")
+
+    def test_another_thread_is_refused_while_a_cpp_run_has_the_gil_released(self):
+        import threading
+        with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+            e = _engine_for(_many_ticks(300_000), Path(tmp), "noop_cpp")
+            t = threading.Thread(target=e.run)
+            seen = []
+            t.start()
+            while t.is_alive():
+                got = _outcome(e.events_log)
+                if got != "ok":
+                    seen.append(got)
+            t.join()
+            after = _outcome(e.events_log)
+            del e
+            self.assertTrue(seen, "the second thread was never refused")
+            self.assertTrue(all("busy" in x for x in seen), seen[:3])
+            self.assertEqual(after, "ok")                         # fine once the run is over
+
+    def test_after_a_failed_run_the_engine_refuses_everything_but_its_log(self):
+        with tempfile.TemporaryDirectory(prefix="hardening-") as tmp:
+            e = _engine_for(_world(), Path(tmp), _Raises())
+            first = _outcome(e.run)
+            log = list(e.events_log())
+            later = [_outcome(lambda: e.finish()), _outcome(lambda: e.push(b"")), _outcome(e.drain_outputs),
+                     _outcome(lambda: e.write_artifacts(str(Path(tmp) / "out")))]
+            del e
+            self.assertTrue(first.startswith("ZeroDivisionError"), first)
+            self.assertTrue(any("planted" in x for x in log))    # the traceback is still readable
+            for got in later:
+                self.assertRegex(got, r"^(RunError|RuntimeError): .*failed")
+            self.assertFalse((Path(tmp) / "out" / "orders.csv").exists())
 
 if __name__ == "__main__":
     unittest.main()

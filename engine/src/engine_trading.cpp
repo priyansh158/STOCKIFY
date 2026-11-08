@@ -555,10 +555,13 @@ std::optional<Ppb> Engine::cnc_credit_ppb() const {  // runner._cnc_credit_ppb
 
 void Engine::fill(Book& book, Order& o, Qty qty, Paise price, const std::string& evidence, TimeNs t) {  // runner._fill
     const Date d = date_of(t);
+    // The checked arithmetic first: an overflow leaves no half-recorded fill behind (M3 review).
+    const Paise fill_value = checked_add(o.fill_value, checked_mul(qty, price));
+    const Qty filled_qty = checked_add(o.filled_qty, qty);
     Fill f{book.next_fill++, o.order_id, t, o.instrument, o.side, qty, price, evidence};
     book.fills.push_back(f);
-    o.filled_qty += qty;
-    o.fill_value = checked_add(o.fill_value, checked_mul(qty, price));
+    o.filled_qty = filled_qty;
+    o.fill_value = fill_value;
     o.trade_date = d;
     if (o.reserved != 0) {  // release the reserve pro rata (A4 §6.5)
         const Paise keep = mul_div_floor(o.reserved, o.remaining(), o.remaining() + qty);
