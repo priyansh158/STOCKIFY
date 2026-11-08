@@ -479,3 +479,34 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - **On the real recording** (the 5-minute 2026-11-05 test, read-only; one derived pack built): a NIFTY nearest-expiry chain selector (3 strikes each side, with the future) gives 14 options added at 10:03:29, when the recorder centred the chain, and the future at 00:00. A strategy watching the chain sees the strikes without quotes (stale) before 10:03. Afterwards it sees only recorded prices, stale once the recording stops. Oracle and engine logs are identical (2,879 lines).
 - **Tests** (`test_chain_replay`, a synthetic day with one strike subscribed by a re-centre at 09:15:10 and dropped at 09:15:15): its add time and order, the start batch at 00:00, landing = archive bytes, and the strategy's view on both engines (no quote before its first tick, only recorded prices, stale after the drop).
 - **Waits for going live:** a full recorded day with real mid-session re-centres (chains moving with the index) has never been recorded. Validating replay on one is part of the first live days.
+
+## 2026-11-08 — M4.8 SPAN-lite margin (MEZ 4.1, MEZ 4.2)
+
+- Recon: the oracle and the engine had only the T0 flat model (with Z's X-9 expiry-day ELM since VOL 4.3);
+  `margin_params.json` had an empty `spanlite: {}`; `margin_daily.csv` was written as a header only; the engine
+  held `FlatMargin` by value behind an abstract `MarginModel` with `requirement` and `mis`.
+- `margin.model: spanlite` (run config) selects `stockify/fno/spanlite.py` in the oracle and
+  `engine/src/margin/spanlite.cpp` in the engine (behind `MarginModel`; the engine now holds a
+  `std::unique_ptr<MarginModel>`, and engine_trading.cpp only changed `margin_.` to `margin_->`). MIS keeps the
+  flat rule. The definitions are D-57: 14 scenarios plus 2 weighted extremes, relative VSR, per-leg forwards,
+  ELM on futures and short options, each part rounded up to the rupee per underlying; total =
+  max(scan, SOMC) + ELM + add-on, summed over underlyings.
+- Each leg's IV: its chain mid IV (M4.4); else its last valid IV today; else the ATM IV of its expiry; else
+  `default_iv`; either fallback adds `margin_spanlite:iv_fallback`. The bundle adds
+  `margin_spanlite:<calibration_id>` (today `margin_spanlite:placeholder`) beside `margin:spanlite(approx)`.
+- **Placeholders, explicit and labelled** (`margin_params.json` → `spanlite`, effective 2015-01-01, `verified:
+  false`, `calibration_id: placeholder`, source "placeholder until M4.9 calibration against Kite … not NSE's risk
+  parameters"): INDEX PSR 6 %, VSR 25 % (relative), extremes 3 × PSR at 0.35, SOMC ₹2,000 per short lot, ELM 2 %,
+  default IV 15 %; STOCK PSR 12 %, VSR 25 %, SOMC ₹3,000 per lot, ELM 3.5 %, default IV 30 %. A row naming an
+  underlying wins over its class's row. The expiry-day add-on reuses Z's `expiry_day_short_index_option_addon` rows
+  (2 % of underlying × quantity, from 2024-11-20).
+- `margin_daily.csv`: one row per underlying with NRML F&O positions at DAY_END (`model` = spanlite); flat runs
+  still write none. Expiring options settle before DAY_END, so the expiry day's add-on shows in that day's funds
+  (blocked margin), not in its rows.
+- Found and fixed before merging: the label code first reused the name `ids` in `resolve_bundle`, replacing the
+  run's instrument ids with the calibration ids (`instrument placeholder is in a pack but not in refdata`).
+- Tests: `test_spanlite.py` (hand-computed short future and short option scans, SOMC floor, the X-9 add-on on
+  expiry day only, the IV fallbacks and label, grouping by underlying, U-07 iron fly < naked straddle, the bundle
+  label and rows); `test_spanlite_parity.py`: on 5 two-day chain worlds traded by a seeded option trader that
+  logs funds after every order, the engine's run folder, margin_daily.csv and labels equal the oracle's byte for
+  byte; the oracle run sees the add-on charged on expiry day and never before.

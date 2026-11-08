@@ -86,13 +86,13 @@ Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked
         }
         if (p.product == Product::MIS) {
             const std::optional<Paise> m = mark_price(p.instrument);
-            mis = checked_add(mis, margin_.mis(instruments_.at(p.instrument).kind, p.q,
+            mis = checked_add(mis, margin_->mis(instruments_.at(p.instrument).kind, p.q,
                                                m && *m != 0 ? *m : p.avg_price(), date));
         } else {
             legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
         }
     }
-    return checked_add(margin_.requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
+    return checked_add(margin_->requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
                        mis);
 }
 
@@ -120,7 +120,7 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
         return o.side == Side::Buy ? checked_mul(o.qty, px) : 0;
     }
     if (o.product == Product::MIS) {
-        return margin_.mis(row.kind, o.qty, px, date);
+        return margin_->mis(row.kind, o.qty, px, date);
     }
     if (row.is_option() && o.side == Side::Buy) {
         return checked_mul(o.qty, px);
@@ -132,7 +132,7 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
         }
     }
     const Paise before =
-        margin_.requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date);
+        margin_->requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date);
     // after_legs = legs + [(o, NRML, signed qty)], combined per (instrument, product) in first-seen order
     std::vector<MarginLeg> combined;
     auto add = [&](const MarginLeg& leg) {
@@ -148,7 +148,7 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
         add(leg);
     }
     add(MarginLeg{o.instrument, Product::NRML, o.qty * o.sign()});
-    const Paise after = margin_.requirement(
+    const Paise after = margin_->requirement(
         combined, instruments_,
         [&](InstrumentId i) { return i == o.instrument ? std::optional<Paise>(px) : ref_price(i); }, date);
     return std::max<Paise>(0, after - before);

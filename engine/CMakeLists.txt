@@ -87,7 +87,8 @@ add_library(stocksim_core STATIC
   src/matcher.cpp
   src/metrics.cpp
   src/artifacts.cpp
-  src/pricing/black76.cpp)
+  src/pricing/black76.cpp
+  src/margin/spanlite.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")

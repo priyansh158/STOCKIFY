@@ -60,12 +60,12 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 
 Files: `engine/src/margin/spanlite.cpp`, `stockify/fno/spanlite.py`. Parameters: `margin_params.json` (A1 §7).
 
-- [ ] Each leg's IV: from its current mid quote; if it has no usable quote, its last valid IV today; otherwise the ATM IV of the same expiry; otherwise `default_iv` from `margin_params.json` (the run is labelled when either fallback is used).
-- [ ] Per underlying, revalue the whole position (futures linearly, options with Black-76 at each leg's IV) under 16 scenarios (C-12): price moves {0, ±⅓, ±⅔, ±1} × PSR, each with volatility up/down by VSR; plus two extreme moves ±`extreme_multiple` × PSR counted at `extreme_weight` (defaults 3 and 0.35 from the classic SPAN definition, ⚠ verify against NSE's risk-parameter file when available).
-- [ ] Scanning risk = worst scenario loss (≥ 0). Short-option minimum = `somc_per_lot × short lots`. SPAN-lite = max(scanning risk, short-option minimum).
-- [ ] Exposure/ELM: `elm_pct × notional` for futures and short options (index and stock defaults, dated; the per-contract ELM file replaces them when S-7 is verified); +2% expiry-day add-on (X-9).
-- [ ] Total = Σ underlyings (no inter-commodity credit in v1), converted to paise by rounding **up** to the next whole rupee (A4 §0.3). The breakdown (scan, SOMC, ELM, add-ons) is recorded per day in `margin_daily.csv`. Within one platform the oracle and the engine call the same C math library and must agree exactly; across Windows and Linux the totals may differ by up to 100 paise (A4 §9.3), so parity scenarios avoid margin totals sitting exactly at a funds threshold.
-- [ ] Label: `margin_spanlite` (approximate, I-14), with the calibration id used.
+- [x] Each leg's IV: from its current mid quote; if it has no usable quote, its last valid IV today; otherwise the ATM IV of the same expiry; otherwise `default_iv` from `margin_params.json` (the run is labelled when either fallback is used).
+- [x] Per underlying, revalue the whole position (futures linearly, options with Black-76 at each leg's IV) under 16 scenarios (C-12): price moves {0, ±⅓, ±⅔, ±1} × PSR, each with volatility up/down by VSR; plus two extreme moves ±`extreme_multiple` × PSR counted at `extreme_weight` (defaults 3 and 0.35 from the classic SPAN definition, ⚠ verify against NSE's risk-parameter file when available).
+- [x] Scanning risk = worst scenario loss (≥ 0). Short-option minimum = `somc_per_lot × short lots`. SPAN-lite = max(scanning risk, short-option minimum).
+- [x] Exposure/ELM: `elm_pct × notional` for futures and short options (index and stock defaults, dated; the per-contract ELM file replaces them when S-7 is verified); +2% expiry-day add-on (X-9).
+- [x] Total = Σ underlyings (no inter-commodity credit in v1), converted to paise by rounding **up** to the next whole rupee (A4 §0.3). The breakdown (scan, SOMC, ELM, add-ons) is recorded per day in `margin_daily.csv`. Within one platform the oracle and the engine call the same C math library and must agree exactly; across Windows and Linux the totals may differ by up to 100 paise (A4 §9.3), so parity scenarios avoid margin totals sitting exactly at a funds threshold.
+- [x] Label: `margin_spanlite` (approximate, I-14), with the calibration id used.
 
 ## M4.9 Calibration against Kite (M)
 

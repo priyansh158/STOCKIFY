@@ -5,6 +5,7 @@
 // latest effective_from wins, the first in bundle order on a tie. Dates are ISO strings, compared as text.
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <optional>
 #include <set>
@@ -30,6 +31,13 @@ struct MarginLeg {
     Qty units = 0;  // signed
 };
 
+// One underlying's margin breakdown in paise, each part rounded up to the rupee (a margin_daily.csv row, M4.8).
+struct UnderlyingMargin {
+    InstrumentId underlying = 0;
+    Paise scan = 0, somc = 0, elm = 0, addons = 0;
+    Paise total() const { return std::max(scan, somc) + elm + addons; }
+};
+
 // A margin model (A2 §2): flat (T0, here) | spanlite (T1, M4.8) | span (T2) | live_with_fallback.
 class MarginModel {
  public:
@@ -41,6 +49,14 @@ class MarginModel {
     // The requirement of an MIS position or order.
     virtual Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const = 0;
     virtual std::string label() const = 0;  // drives the run's labels (I-14)
+    // Per-underlying rows for margin_daily.csv at DAY_END; models without a breakdown (flat) write none.
+    virtual std::vector<UnderlyingMargin> breakdown(const std::vector<MarginLeg>& /*legs*/,
+                                                    const InstrumentTable& /*instruments*/,
+                                                    const std::function<std::optional<Paise>(InstrumentId)>& /*price*/,
+                                                    const std::string& /*date*/) const {
+        return {};
+    }
+    virtual std::string_view daily_model() const { return {}; }  // the `model` column; empty: no rows
 };
 
 class FlatMargin final : public MarginModel {

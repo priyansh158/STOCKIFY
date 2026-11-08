@@ -77,7 +77,13 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
     }
     equity.write(folder / "equity.csv");
 
-    CsvWriter(kMargin).write(folder / "margin_daily.csv");  // M4
+    CsvWriter margin(kMargin);
+    for (const MarginDailyRow& r : e.margin_daily()) {
+        const std::string d = iso_date(r.trade_date);
+        margin.add_row({std::string_view(d), std::int64_t{r.underlying}, std::string_view(r.model), r.scan, r.somc,
+                        r.elm, r.addons, r.total});
+    }
+    margin.write(folder / "margin_daily.csv");
 
     write_file_bytes(folder / "metrics.json", dumps_canonical(compute_metrics(e)) + "\n");
 

@@ -9,6 +9,7 @@
 #include "stocksim/errors.hpp"
 #include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
+#include "stocksim/margin/spanlite.hpp"
 #include "stocksim/pricing/black76.hpp"
 
 namespace stocksim {
@@ -19,6 +20,10 @@ const Json& run_of(const Bundle& b) { return require(b.root, "run", "bundle"); }
 
 }  // namespace
 
+namespace {
+double rate_on(const Json& bundle_root, const std::string& iso_day);  // defined with the chain view below
+}  // namespace
+
 // ── Construction ─────────────────────────────────────────────────────────────
 
 Engine::Engine(Bundle bundle)
@@ -26,7 +31,6 @@ Engine::Engine(Bundle bundle)
       calendar_(require(bundle_.root, "days", "bundle")),
       instruments_(require(bundle_.root, "instruments", "bundle"), calendar_),
       costs_(require(bundle_.root, "charges", "bundle"), require(run_of(bundle_), "costs", "run")),
-      margin_(bundle_.root),
       ctx_(*this),
       strategy_rng_(bundle_.seed, kStrategyStream),
       book_(Ledger(require_int(run_of(bundle_), "capital_paise", "run"), require_int(run_of(bundle_), "capital_paise", "run")),
@@ -41,6 +45,18 @@ Engine::Engine(Bundle bundle)
     mark_kind_ = require_string(run, "mark", "run");
     latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
+    const Json& margin_cfg = require(run, "margin", "run");
+    if (require_string(margin_cfg, "model", "run.margin") == "spanlite") {
+        margin_ = std::make_unique<SpanLiteMargin>(
+            bundle_.root,
+            SpanLiteHost{[this] { return now_; },
+                         [this](const std::string& und, const std::string& expiry) { return ctx_.chain(und, expiry); },
+                         [this](InstrumentId iid, Date d) { return spec(iid, d); },
+                         [this](const std::string& label) { labels_.insert(label); },
+                         [this](const std::string& d) { return rate_on(bundle_.root, d); }});
+    } else {
+        margin_ = std::make_unique<FlatMargin>(bundle_.root);
+    }
 }
 
 void Engine::set_strategy(std::shared_ptr<Strategy> strategy) { strategy_ = std::move(strategy); }
@@ -637,6 +653,19 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
     const Paise nav = led.nav([this](InstrumentId i) { return mark_price(i); });
     const Paise blk = blocked(led, d);
     equity_.push_back(EquityRow{d, nav, led.cash, blk, nav - led.capital + led.charges_total, led.charges_total});
+    if (!margin_->daily_model().empty()) {  // SPAN-lite's per-underlying day rows (M4.8)
+        std::vector<MarginLeg> legs;
+        for (const Position& p : led.positions()) {
+            if (p.q != 0 && p.product == Product::NRML) {
+                legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
+            }
+        }
+        for (const UnderlyingMargin& b :
+             margin_->breakdown(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, iso_date(d))) {
+            margin_daily_.push_back(MarginDailyRow{d, b.underlying, std::string(margin_->daily_model()), b.scan,
+                                                   b.somc, b.elm, b.addons, b.total()});
+        }
+    }
     strategy_->on_session_end(ctx_);
     deliver();
     book_.ledger.release_day(next_date(d));

@@ -211,6 +211,13 @@ struct PositionEodRow {
     Paise unrealised = 0, realised = 0;
 };
 
+struct MarginDailyRow {  // margin_daily.csv (M4.8)
+    Date trade_date = 0;
+    InstrumentId underlying = 0;
+    std::string model;
+    Paise scan = 0, somc = 0, elm = 0, addons = 0, total = 0;
+};
+
 struct EquityRow {
     Date trade_date = 0;
     Paise nav = 0, cash = 0, blocked = 0, gross_pnl = 0, charges = 0;
@@ -263,6 +270,7 @@ class Engine {
     const InstrumentTable& instruments() const { return instruments_; }
     const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
     const std::vector<EquityRow>& equity() const { return equity_; }
+    const std::vector<MarginDailyRow>& margin_daily() const { return margin_daily_; }
     const std::vector<SettleClose>& settle_closes() const { return settle_closes_; }
     const std::map<std::string, std::int64_t>& rejects() const { return rejects_; }
     Ppm participation_used() const { return participation_used_; }
@@ -361,7 +369,7 @@ class Engine {
     std::string mark_kind_;  // ltp | mid
     TimeNs latency_ns_ = 0;
     Costs costs_;
-    FlatMargin margin_;
+    std::unique_ptr<MarginModel> margin_;  // flat (T0) or spanlite (T1, M4.8), per run.margin.model
     std::shared_ptr<Strategy> strategy_;
     Context ctx_;
     Pcg32 strategy_rng_;
@@ -392,6 +400,7 @@ class Engine {
 
     std::vector<PositionEodRow> positions_eod_;
     std::vector<EquityRow> equity_;
+    std::vector<MarginDailyRow> margin_daily_;
     std::vector<SettleClose> settle_closes_;
     std::map<std::string, std::int64_t> rejects_;
     Ppm participation_used_ = 0;  // ppm of a bar's volume, the most over the run
