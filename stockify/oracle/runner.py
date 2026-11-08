@@ -94,6 +94,7 @@ class Engine:
         self.policies = self.run_cfg["policies"]
         self.latency_ns = self.run_cfg["latency_ms"] * 1_000_000
         self.inst = {i["id"]: i for i in bundle["instruments"]}
+        self._check_instruments(bundle["instruments"])
         self.days = bundle["days"]
         self.day_by_date = {d["date"]: d for d in self.days}
         self.records = records                         # [(key, record)] sorted
@@ -172,6 +173,23 @@ class Engine:
                 if p["phase"] == "CONTINUOUS" and p["start_ns"] >= t:
                     return p["start_ns"]
         return None
+
+    @staticmethod
+    def _check_instruments(rows: list[dict]) -> None:
+        """Ids within uint32 and positive lots and ticks, checked once (as the engine's InstrumentTable does), so
+        no later division meets a zero."""
+        for n, r in enumerate(rows):
+            where = f"instruments[{n}]"
+            for field in ("id", "underlying_id"):
+                v = r.get(field)
+                if v is not None and not 0 <= v <= 4294967295:
+                    raise RunError(f"bundle: {where}: {field} must be between 0 and 4294967295, got {v}")
+            for s in r.get("specs") or []:
+                at = f"bundle: {where}.specs (from {s['from']}): "
+                if s["lot"] <= 0:
+                    raise RunError(at + f"lot must be positive, got {s['lot']}")
+                if s["tick_paise"] <= 0:
+                    raise RunError(at + f"tick_paise must be positive, got {s['tick_paise']}")
 
     def spec(self, iid: int, d: str) -> dict | None:
         best = None
