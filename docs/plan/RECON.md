@@ -521,3 +521,30 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - **Margin and fills.** Margin is the run's `margin.model` (flat T0 for now; SPAN-lite, M4.8, is landing separately and nothing here depends on it). Fills are the run's fill model (`snapshot_quote` in the tests).
 - **Tests** (`test_option_strategies`, on test_chain_view's chain worlds). On 30 seeds × 2 strategies with random params, oracle and engine give identical run folders (DT-02). The worlds reach every path: entries, stops that fire and stops cancelled at the exit, time exits, wings, skipped days. The mechanics are also unit-tested: the stop trigger arithmetic, wings before the short legs, no entry without fresh two-sided quotes, and bad params refused. The catalogue's reference set (Y's test) now lists the two new strategies.
 - **Left for later**, as agreed: the comparison report against `eod_short_straddle` (M4.13 box 3) and the 5-recorded-day demo. They need SPAN-lite and real recorded days.
+
+## 2026-11-08 — M4.13 comparison report (RW 4.1)
+
+- Recon: X's `short_straddle_stop` and `iron_fly` (IF 4.1) and M2's `eod_short_straddle` existed; the run report
+  (`stockify/oracle/report.py`) covers one run; `equity.csv` records margin only at each day's close, when an
+  intraday option strategy is already flat, so no artifact held the intraday margin.
+- **Tool, not a report-module extension**: `python -m stockify tools compare-strategies --config FILE`
+  (`stockify/tools/compare_strategies.py`). Config `stockify.compare/1`: a name and two or more runs, each a title,
+  an optional role (`eod` | `straddle` | `iron_fly`) and a normal run.json. Each run goes through `runs.launch`
+  (ordinary run folders and lab.sqlite rows); the report goes to `runs/compare-<name>/compare.md`. Exit 0 done,
+  1 a run failed, 2 a bad config. `compare()` works on finished run folders, so tests need no lab data.
+- **Intraday margin**: the tool wraps each Python strategy in `stockify/strategies/_margin_watch.py`, which
+  forwards every hook unchanged and logs `margin_watch blocked=<paise>` after each fill and at each day's end; the
+  report takes the peak over those lines and the day-close margins. Wrapping changes only the log (a test compares
+  orders, fills, charges, equity and positions with the unwrapped run). One caveat: SPAN-lite remembers each
+  option's last valid IV of the day when margin is computed, so asking for funds more often can, in a fallback
+  case, give a slightly more recent IV. C++ strategies are not wrapped (their peak is the day-close margin).
+- The report, in rupees and plain words: per run, the strategy, money start → end ("made ₹… / lost ₹…"),
+  charges, trades, the most margin tied up at any moment, the worst fall, and the caveats (labels in words); a
+  day-by-day table; and closing sentences: end-of-day vs intraday on the same days (the distortion M4.13 asks
+  for) and iron fly vs straddle margin and result.
+- Tested on the two-day chain worlds of the SPAN-lite tests, with an end-of-day world built from the same
+  quotes (each option's close = its last mid that day, published at 19:00, next-day-close fills). There, the iron
+  fly tied up about 28 % less margin than the straddle.
+- **Pending going live**: `examples/runs/straddle_vs_ironfly_recorded.json` is ready (bhav_eod for the end-of-day
+  run; recorded ticks with the nearest NIFTY chain for the two intraday runs; SPAN-lite everywhere). Its dates,
+  2026-11-09 to 2026-11-13, are placeholders: set them to five or more recorded days, then run the tool.

@@ -347,6 +347,21 @@ def _cmd_run(args) -> int:
     return 0
 
 
+def _cmd_compare_strategies(args) -> int:
+    from stockify import runs
+    from stockify.tools import compare_strategies as cs
+    try:
+        report = cs.run(args.config, impl=args.impl)
+    except cs.CompareError as e:
+        print(e, file=sys.stderr)
+        return 2
+    except runs.RunFailed as e:
+        print(f"a run failed: {e.error}", file=sys.stderr)
+        return 1
+    print(report)
+    return 0
+
+
 def _cmd_bench(args) -> int:
     from stockify.tools import bench
     bench.run(args.pack, reps=args.reps)
@@ -540,6 +555,11 @@ def main(argv: list[str] | None = None) -> int:
     fz.add_argument("--shrink", action="store_true", help="shrink each disagreement to a small world")
     fz.add_argument("--save", action="store_true", help="save each disagreement as tests/golden/F<seed>.yaml")
     fz.set_defaults(func=_cmd_tools_fuzz)
+    cs = tsub.add_parser("compare-strategies",
+                         help="run several strategies on the same days and write them side by side (M4.13)")
+    cs.add_argument("--config", required=True, help="a stockify.compare/1 JSON file")
+    cs.add_argument("--impl", default="engine", choices=["engine", "oracle"])
+    cs.set_defaults(func=_cmd_compare_strategies)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)

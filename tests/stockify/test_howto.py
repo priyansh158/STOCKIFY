@@ -19,7 +19,13 @@ class HowtoTests(unittest.TestCase):
         self.assertGreaterEqual(len(found), 4)
         for path in found:
             with self.subTest(config=path.name):
-                runconfig.load(path)
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                if doc.get("schema") == "stockify.compare/1":     # a comparison of runs (M4.13): each one checked
+                    from stockify.tools import compare_strategies
+                    for run in compare_strategies.load_config(doc)["runs"]:
+                        runconfig.load(run["config"])
+                else:
+                    runconfig.load(path)
 
     def test_the_cpp_example_is_the_python_one_with_another_strategy(self):
         py = json.loads((REPO / "examples" / "runs" / "orb_reliance_minute.json").read_text(encoding="utf-8"))
