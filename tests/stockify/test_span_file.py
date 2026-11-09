@@ -44,13 +44,15 @@ class SpanFileTests(unittest.TestCase):
 
     def test_risk_array_has_16_values_in_file_order(self):
         ce = self.span.commodities["NIFTY"].contracts[("CE", "2026-11-17", 2495000)]
-        self.assertEqual(len(ce.risk_array), 16)
-        self.assertTrue(all(isinstance(a, str) for a in ce.risk_array))
-        self.assertEqual(ce.risk_array[:4], ("-19.03", "90.38", "-586.18", "-547.42"))
-        self.assertEqual(ce.risk_array[-2:], ("-1545.40", "105.81"))
+        self.assertEqual(ce.risk_array, (
+            "-19.03", "90.38", "-586.18", "-547.42", "243.98", "293.09", "-1320.70", "-1317.13",
+            "298.28", "302.27", "-2091.82", "-2091.69", "302.22", "302.30", "-1545.40", "105.81"))
+        self.assertEqual(ce.composite_delta, "0.5249")
         fut = self.span.commodities["NIFTY"].contracts[("FUT", "2026-11-23", None)]
-        self.assertEqual(fut.risk_array[0], "9.72")
-        self.assertEqual(fut.risk_array[14:], ("-1627.32", "1634.12"))
+        self.assertEqual(fut.risk_array, (
+            "9.72", "9.72", "-766.81", "-766.81", "786.25", "786.25", "-1543.35", "-1543.35",
+            "1562.79", "1562.79", "-2319.88", "-2319.88", "2339.32", "2339.32", "-1627.32", "1634.12"))
+        self.assertEqual(fut.composite_delta, "1.00000")
 
     def test_underlying_filter_skips_others(self):
         only = parse_span(FIXTURE, {"BANKNIFTY"})
@@ -101,6 +103,81 @@ class SpanFileTests(unittest.TestCase):
             p.write_text("<spanFile><fileFormat>4.00", encoding="utf-8")
             with self.assertRaises(SpanFileError):
                 parse_span(p)
+
+
+_A16 = "<a>1.00</a>" * 16
+
+
+def _ra(values: str = _A16) -> str:
+    return f"<ra><r>1</r>{values}<d>0.5</d></ra>"
+
+
+def _fut(pe: str = "<pe>20261123</pe>", ra: str | None = None) -> str:
+    return f"<fut><cId>1</cId>{pe}<p>25029.00</p><d>1.0</d><v>0.17</v>{ra or _ra()}</fut>"
+
+
+def _opt(side: str = "C", ra: str | None = None, k: str = "24950.00") -> str:
+    return f"<opt><cId>1</cId><o>{side}</o><k>{k}</k><p>1.00</p><d>0.5</d><v>0.16</v>{ra or _ra()}</opt>"
+
+
+def _doc(portfolios: str, fmt: str = "<fileFormat>4.00</fileFormat>") -> str:
+    return (f"<spanFile>{fmt}<created>202611082026</created><pointInTime><date>20261109</date>"
+            f"<isSetl>0</isSetl><clearingOrg><exchange>{portfolios}</exchange>"
+            "<ccDef><cc>NIFTY</cc><somMeth>GROSS</somMeth><pfLink><pfId>9</pfId><pfType>FUT</pfType></pfLink>"
+            "</ccDef></clearingOrg></pointInTime></spanFile>")
+
+
+def _fut_pf(*futs: str) -> str:
+    return f"<futPf><pfId>9</pfId><pfCode>NIFTY</pfCode><cvf>1.00</cvf>{''.join(futs)}</futPf>"
+
+
+def _oop_pf(*opts: str) -> str:
+    return ("<oopPf><pfId>9</pfId><pfCode>NIFTY</pfCode><cvf>1.00</cvf><series><pe>20261117</pe>"
+            f"{''.join(opts)}</series></oopPf>")
+
+
+class SpanFileErrorPathTests(unittest.TestCase):
+    def _fails(self, xml: str, *words: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "x.spn"
+            p.write_text(xml, encoding="utf-8")
+            with self.assertRaises(SpanFileError) as ctx:
+                parse_span(p)
+        for word in words:
+            self.assertIn(word, str(ctx.exception))
+
+    def _parses(self, xml: str) -> SpanFile:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "x.spn"
+            p.write_text(xml, encoding="utf-8")
+            return parse_span(p)
+
+    def test_helper_documents_are_valid(self):
+        """The error cases below differ from these by exactly one defect."""
+        span = self._parses(_doc(_fut_pf(_fut())))
+        self.assertIn(("FUT", "2026-11-23", None), span.commodities["NIFTY"].contracts)
+        span = self._parses(_doc(_oop_pf(_opt("C"), _opt("P"))))
+        self.assertEqual(len(span.commodities["NIFTY"].contracts), 2)
+
+    def test_risk_array_with_fewer_than_16_values(self):
+        self._fails(_doc(_fut_pf(_fut(ra=_ra("<a>1.00</a>" * 15)))), "risk array", "15", "16")
+
+    def test_future_without_expiry(self):
+        self._fails(_doc(_fut_pf(_fut(pe=""))), "lacks <pe>")
+
+    def test_series_without_expiry(self):
+        xml = _doc(_oop_pf(_opt()).replace("<pe>20261117</pe>", ""))
+        self._fails(xml, "lacks <pe>")
+
+    def test_duplicate_contract(self):
+        self._fails(_doc(_fut_pf(_fut(), _fut())), "duplicate contract", "FUT")
+        self._fails(_doc(_oop_pf(_opt("C"), _opt("C"))), "duplicate contract", "CE")
+
+    def test_option_side_other_than_c_or_p(self):
+        self._fails(_doc(_oop_pf(_opt("X"))), "neither C nor P")
+
+    def test_missing_file_format(self):
+        self._fails(_doc(_fut_pf(_fut()), fmt=""), "fileFormat")
 
 
 if __name__ == "__main__":
