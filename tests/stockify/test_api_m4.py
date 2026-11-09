@@ -87,6 +87,18 @@ class FnoApiTests(SandboxedDBTest):
         self.assertEqual([r["step"] for r in rows], ["B1_span_nse_elm", "B4_spanlite_placeholder"])
         self.assertTrue(rows[0]["underlying"])
 
+    def test_margin_rows_from_an_old_header_without_step(self):
+        folder = self._run("g10-old", "G10", "fsp")
+        (folder / "margin_daily.csv").write_text(
+            "trade_date,underlying_id,model,scan,somc,elm,addons,total\n"
+            "2026-03-02,1,spanlite,1200000,0,300000,0,1500000\n", encoding="utf-8", newline="")
+        r = self.client.get("/api/tests/g10-old/margin")
+        self.assertEqual(r.status_code, 200)
+        rows = r.json()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["total_paise"], 1500000)
+        self.assertIn(rows[0].get("step"), (None, ""))
+
     def test_unknown_runs_404(self):
         for path in ("margin", "settlements"):
             self.assertEqual(self.client.get(f"/api/tests/nope/{path}").status_code, 404)

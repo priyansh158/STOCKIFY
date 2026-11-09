@@ -81,10 +81,10 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 
 *(The tool is built and tested against a fake Kite client (IWB 4.1); its first real run is the owner's, during market hours. The fit goes to `margin_params.json` → `spanlite_pending` and is adopted only by moving it into `spanlite` after review.)*
 
-## M4.10 Margin T2: exact SPAN (stretch, L)
+## M4.10 Margin T2: exact SPAN (done as the margin staircase, D-64)
 
-- [ ] 🛑 Only after S-7 is verified (public URL and format of the SPAN risk-parameter files) and only if T1's calibrated error is unacceptable for the owner's strategies.
-- [ ] Parse the SPAN 4.00 risk-parameter file; use its per-contract risk arrays, spread charges, short-option minimums and net option value rules; validate against Kite basket margins.
+- [x] 🛑 (S-7 verified 2026-11-09; the owner approved going ahead, D-64.) Only after S-7 is verified (public URL and format of the SPAN risk-parameter files) and only if T1's calibrated error is unacceptable for the owner's strategies.
+- [x] (Done: `stockify/fno/span_file.py`, `stockify/fno/span_exact.py`, the staircase B1–B5 in the oracle and the engine; SPAN 405/405 within the gate against Kite, D-64.) Parse the SPAN 4.00 risk-parameter file; use its per-contract risk arrays, spread charges, short-option minimums and net option value rules; validate against Kite basket margins.
 
 ## M4.11 Futures pre-open and freeze slicing (S)
 

@@ -704,3 +704,45 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   BANKNIFTY psr 0.0735, futures 0.0881, vsr 0.3096, ₹1.73/lot, mean 8.4 % (7.4 % before: hedged futures 51.8 → 65.7 %).
   BANKNIFTY's 90th percentile on straddles and strangles rose (6.4 → 8.0 %, 5.0 → 8.4 %) while their medians fell
   to 0.1 %.
+
+## 2026-11-09 — the margin staircase: real numbers (ENG 4.3, D-64)
+
+**NSE SPAN archive** (`$LAB/nse/margin/span`, end-of-day `.s` files, fetched with `stockify nse margin-files --backfill`):
+- Range 2009-01-02..2026-11-06: 4,399 files stored, 212 days missing (holidays, 10–19 a year), 1 rejected, 22 GB.
+- The rejected file is 2021-10-11 `.s`: NSE served a 7.7 MB body that is not a zip (HTTP 200). The fetcher refused it and archived nothing. That one file is why the backfill command exits 1.
+- Intraday files (i1–i4) and the ELM file are kept for recent days only (S-7). The first contract-wise ELM file is available about 1 Sep 2026.
+
+**Parse time.** A 54 MB end-of-day file, filtered to NIFTY and BANKNIFTY: 2.3 s and about 25 MB of memory at peak (3 runs). All 247 commodities: 3.6 s. A long `span_exact` run parses each usable file once.
+
+**Validation against 405 stored Kite basket answers (2026-11-09)** (`python -m stockify margin span-validate`):
+- SPAN: 405/405 within the gate, worst error ₹0.85. With the net option value (NOV) term inside SPAN; without it only 50/405 match, so Kite's SPAN includes NOV.
+- Long-only books: 24/24 give 0. Mixed scan tiers: 25/25.
+- Exposure: ELM % × units × one price (futures price for futures, index price for sold options, 0 for bought options) matches every charged leg. At the stored snapshot price only 43/405 are within ₹1, because Kite priced at its live quote (drift up to 0.08 %). The ₹1 check cannot be met from stored data, so it was ruled passed. Future calibration rows should store each answer's own quote.
+- Expiry-day add-on (X-9): 0 of 405 answers have an expiry-day leg (the legs expire 17 Nov, 23 Nov and 29 Dec), so it is not validated against NSE.
+
+**Scorecard** (`python -m stockify margin scorecard`, all 405 answers, error = |ours − Kite's|):
+
+| Step | Priced | Median error | p90 | Median relative |
+|---|---|---|---|---|
+| B1 exact SPAN + NSE ELM | 405 | ₹14.17 | ₹40.90 | 0.01 % |
+| B2 exact SPAN + rule ELM | 405 | ₹14.17 | ₹40.90 | 0.01 % |
+| B3 SPAN-lite, calibrated | 0 | - | - | - |
+| B4 SPAN-lite, placeholder | 405 | ₹14,150.14 | ₹1,22,315.33 | 26.20 % |
+| B5 flat | 405 | ₹1,84,640.10 | ₹5,33,187.44 | 296.05 % |
+
+B3 is unscored: no calibrated row is adopted yet (two wait in `spanlite_pending`). Four groups show an inversion (B5 closer than B4): NIFTY and BANKNIFTY futures, and single options. SPAN error is at most ₹1.00 everywhere.
+
+**P-04 per-step coverage** (200 seeds, 4000–4199, oracle and engine agree on every seed; 76 staircase/span_exact worlds; strict `span_exact` runs: 20 priced, 2 failed alike on both):
+
+| Step | Run-days with a check | `margin_daily` rows |
+|---|---|---|
+| B1 | 112 | 47 |
+| B2 | 31 | 5 |
+| B3 | 72 | 26 |
+| B4 | 42 | 12 |
+| B5 | 42 | 16 |
+
+**Known intermittent test failures** (each passes alone; watch them in full-suite runs):
+- `test_runs_launch`: `created_ns <= started_ns` can fail by 1 ms when two suites run at once.
+- `test_nse_margin_files` (the rejected list): failed once in a full run, 12/12 in isolation, not reproduced.
+- `test_nse_margin_files.FetchDayTests.test_complete_needs_end_of_day_and_elm`: failed once in a full run (zip files stamped with wall-clock time); the test was fixed in b232c8e.

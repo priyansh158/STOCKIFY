@@ -4,7 +4,7 @@ This follows on from [HOWTO_strategy.md](HOWTO_strategy.md), which covers the ba
 in paise, the load check, run folders, re-runs and C++ ports. This page covers what is different for options:
 
 - reading the option chain;
-- the two margin models;
+- the margin models (the staircase, flat and SPAN-lite);
 - what happens at expiry;
 - comparing strategies side by side;
 - calibrating the margin model against Kite.
@@ -108,10 +108,70 @@ It needs recorded ticks for 11 Nov 2026, so it can only run once the recorder ha
 
 To try another day, change `from` and `to` to a recorded trading day.
 
-## 2. Margin: flat or SPAN-lite
+## 2. Margin: the staircase, flat or SPAN-lite
 
 Margin is the money the broker blocks while a position is open. A run picks its model with `"margin": {"model":
-"flat"}` or `"spanlite"`. Both are estimates, not NSE's own calculation, and both are labelled as such.
+"staircase"}` (the default), `"span_exact"`, `"spanlite"` or `"flat"`:
+
+- **staircase** uses the best margin it can work out each day, per underlying, and says which one it used (below).
+- **span_exact** uses NSE's own SPAN file and nothing else. If a contract is missing from the file, the run stops
+  with an error instead of guessing.
+- **spanlite** and **flat** are estimates, not NSE's own calculation, and are labelled as such.
+
+### The staircase
+
+SPAN is the exchange's margin method, and NSE publishes its risk file every day. The staircase tries the steps from
+the top and takes the first one it can price. If a contract is missing, the whole underlying drops one step. It never
+charges ₹0 for a missing contract. Each day's step is saved in the `step` column of `margin_daily.csv` and shown in
+the UI with these words:
+
+| Step | UI words | What it used |
+|---|---|---|
+| B1 | exact NSE margin | NSE's SPAN file and NSE's own exposure-margin (ELM) file for that contract |
+| B2 | NSE margin, exposure from rules | NSE's SPAN file, with the exposure part from the dated rule, plus the expiry-day extra (X-9) |
+| B3 | estimate (calibrated) | SPAN-lite with settings fitted to Kite's margins |
+| B4 | estimate (not calibrated) | SPAN-lite with the placeholder settings |
+| B5 | simple estimate | a fixed share of position value (flat) |
+
+A run never looks ahead. A SPAN file counts only from the time NSE created it; during a day the run uses the previous
+trading day's end-of-day file and then that day's intraday files as they appear, never that day's own end-of-day file.
+A file older than one trading day is not used. The pre-trade margin check compares "before" and "after" at one common
+step, so a change of step cannot make an order look free.
+
+Against 405 stored Kite answers, B1 is off by a median of ₹14.17; B4 by ₹14,150 and B5 by ₹1,84,640.
+
+### Checking a basket: `margin check`
+
+`margin check` prices a basket offline from the archived NSE files. It writes nothing.
+
+```
+python -m stockify margin check --leg "SELL 65 NIFTY26N1724950CE" --leg "SELL 65 NIFTY26N1724950PE" --date 2026-11-09 --at 10:00
+```
+
+It prints the SPAN file in force at that time, the step, and the parts. For that basket:
+
+```
+NIFTY: step B1_span_nse_elm (exact SPAN + NSE's ELM file)
+  SPAN                Rs 1,58,589.00
+  exposure (ELM)      Rs 64,965.00
+  total               Rs 2,23,554.00
+```
+
+`--date` defaults to the newest archived day and `--at` to 15:30 IST. Exit code 2 means a bad leg or unknown symbol;
+1 means no SPAN file was in force at that time. Live prices move the exposure part a little.
+
+### How good is each step: `margin scorecard`
+
+`margin scorecard` prices every stored Kite basket-margin answer with every step and prints the median and 90th
+percentile error, overall and per basket type. It also says when a less exact step beats a more exact one (an
+inversion), notes that B3 is not scored until a calibrated row is adopted (section 6), and warns that the expiry-day
+extra has not been tested against NSE.
+
+```
+python -m stockify margin scorecard
+```
+
+Its first rows read: B1 priced 405, median ₹14.17, 90th percentile ₹40.90, 0.01 % relative.
 
 **Flat** (`margin_params.json` → `flat`) is a fixed share of each position's value:
 
