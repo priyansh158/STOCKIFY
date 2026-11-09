@@ -133,6 +133,22 @@ def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
             log.warning("NSE files for %s still missing after the retry window; giving up "
                         "(run `python -m stockify nse fetch --date %s` later)", day, day)
             state.mark(job, day)
+    elif job == "margin_files":
+        from stockify.daemon import scheduler
+        from stockify.data import nse_margin_files
+        try:
+            res = nse_margin_files.fetch_day(day)
+        except Exception as e:                       # network or config trouble: retried on the next pass
+            log.exception("margin files for %s failed: %s", day, e)
+            return
+        log.info("margin files %s: stored %d, already archived %d, missing %d, rejected %d, errors %d",
+                 day, len(res.stored), len(res.unchanged), len(res.missing), len(res.rejected), len(res.errors))
+        if nse_margin_files.complete(res):
+            state.mark(job, day)
+        elif timeutil.now_ns() >= scheduler.plan(day).margin_files_until_ns:
+            log.warning("NSE margin files for %s still incomplete after the retry window; giving up "
+                        "(run `python -m stockify nse margin-files --date %s` later)", day, day)
+            state.mark(job, day)
     elif job == "prune":
         from stockify import store
         week_ago = timeutil.now_ns() - 7 * 86_400 * 1_000_000_000

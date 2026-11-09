@@ -116,6 +116,11 @@ class RunDaemonTests(unittest.TestCase):
         from stockify import daemon
         self.daemon = daemon
         self.power = FakePower(idle_s=3600)
+        from unittest.mock import patch
+        from stockify.data import nse_margin_files
+        patcher = patch.object(nse_margin_files, "fetch_day", side_effect=RuntimeError("offline"))
+        patcher.start()
+        self.addCleanup(patcher.stop)                                # catch-up must never reach the network
 
     def run_from(self, start_ns: int, record_code: int = exitcodes.OK):
         clock = ManualClock(start_ns)

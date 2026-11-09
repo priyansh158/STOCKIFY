@@ -10,6 +10,7 @@ trade date and are skipped on non-trading days:
 | session     | subscribe 08:58 → 15:45   | the recorder (`run_recorder`)                |
 | compaction  | 16:30                     | must finish before sleeping (M1.7)           |
 | nse_fetch   | 19:30 → 23:00             | catch-up: runs on the next wake if slept through (M1.3) |
+| margin_files | 17:20 → 22:00            | catch-up: NSE's SPAN + ELM margin files (CAM 4.2) |
 | prune       | after the session         | recorder_status rows older than 7 days       |
 
 Completed jobs are remembered in `$LAB/scheduler_state.json` so a restart or a
@@ -34,7 +35,7 @@ from stockify.data import calendar
 SEGMENT = "FO"
 CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
-CATCH_UP = ("nse_fetch",)
+CATCH_UP = ("nse_fetch", "margin_files")
 
 
 def schedule() -> dict:
@@ -51,6 +52,8 @@ class DayPlan:
     compaction_ns: int
     nse_fetch_ns: int
     nse_fetch_until_ns: int
+    margin_files_ns: int
+    margin_files_until_ns: int
     keep_awake_ns: int
 
 
@@ -66,6 +69,8 @@ def plan(day: date, cfg: dict | None = None) -> DayPlan:
         compaction_ns=timeutil.ist_ns(day, jobs["compaction"]),
         nse_fetch_ns=timeutil.ist_ns(day, jobs["nse_fetch"]["start"]),
         nse_fetch_until_ns=timeutil.ist_ns(day, jobs["nse_fetch"]["until"]),
+        margin_files_ns=timeutil.ist_ns(day, jobs["margin_files"]["start"]),
+        margin_files_until_ns=timeutil.ist_ns(day, jobs["margin_files"]["until"]),
         keep_awake_ns=timeutil.ist_ns(day, cfg["keep_awake"]["from"]),
     )
 
@@ -125,6 +130,8 @@ def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tupl
         p = plan(d, cfg)
         if "nse_fetch" in CATCH_UP and p.nse_fetch_ns <= now_ns and not state.done("nse_fetch", d):
             out.append(("nse_fetch", d))
+        if "margin_files" in CATCH_UP and p.margin_files_ns <= now_ns and not state.done("margin_files", d):
+            out.append(("margin_files", d))
     return out
 
 

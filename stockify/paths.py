@@ -58,6 +58,16 @@ def nse_raw_dir(dataset: str | None = None) -> Path:
     return _dir(base / dataset if dataset else base)
 
 
+MARGIN_KINDS = ("span", "elm", "manifest")
+
+
+def nse_margin_dir(kind: str) -> Path:
+    """$LAB/nse/margin/<kind>: NSE's SPAN zips, ELM gzips and the per-day manifests."""
+    if kind not in MARGIN_KINDS:
+        raise ValueError(f"unknown margin archive kind {kind!r}; known: {', '.join(MARGIN_KINDS)}")
+    return _dir(lab_dir() / "nse" / "margin" / kind)
+
+
 def packs_dir() -> Path:
     return _dir(lab_dir() / "packs")
 

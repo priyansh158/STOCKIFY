@@ -210,6 +210,41 @@ def _cmd_nse_backfill(args) -> int:
     return 0 if not totals.get("error") else 1
 
 
+def _cmd_nse_margin_files(args) -> int:
+    from datetime import date
+
+    from stockify.data import nse_margin_files as mf
+
+    if args.elm_window:
+        results = mf.elm_window()
+        for r in results:
+            if r.stored or r.errors or r.rejected:
+                _print_margin(r)
+        have = sum(1 for r in results if mf.elm_name(r.day) in r.stored + r.unchanged)
+        print(f"ELM window: {have} of {len(results)} trading days archived "
+              f"({sum(1 for r in results if r.stored)} new)")
+        return 0 if not any(r.errors or r.rejected for r in results) else 1
+    if args.backfill:
+        results = mf.backfill(date.fromisoformat(args.backfill[0]), date.fromisoformat(args.backfill[1]))
+    elif args.date:
+        results = [mf.fetch_day(date.fromisoformat(args.date))]
+    else:
+        print("give --date YYYY-MM-DD, --backfill FROM TO or --elm-window", file=sys.stderr)
+        return 2
+    for r in results:
+        _print_margin(r)
+    return 0 if not any(r.errors or r.rejected for r in results) else 1
+
+
+def _print_margin(r) -> None:  # noqa: ANN001
+    print(f"{r.day}  stored {len(r.stored)}  already {len(r.unchanged)}  missing {len(r.missing)}  "
+          f"rejected {len(r.rejected)}  errors {len(r.errors)}")
+    for label, names in (("stored", r.stored), ("missing", r.missing), ("rejected", r.rejected),
+                         ("errors", r.errors)):
+        for name in names:
+            print(f"    {label:<8} {name}")
+
+
 def _cmd_bars_fetch(args) -> int:
     from datetime import date
 
@@ -534,6 +569,14 @@ def main(argv: list[str] | None = None) -> int:
     nb.add_argument("--allow-unverified", action="store_true", help="use sources.json rows not yet verified")
     nb.add_argument("--rows", dest="verbose_rows", action="store_true", help="print one line per file")
     nb.set_defaults(func=_cmd_nse_backfill)
+
+    nm = nsub.add_parser("margin-files", help="archive NSE's SPAN risk files and the contract-wise ELM file")
+    nm.add_argument("--date", help="IST trade date YYYY-MM-DD: every SPAN file of the day plus its ELM file")
+    nm.add_argument("--backfill", nargs=2, metavar=("FROM", "TO"),
+                    help="end-of-day SPAN files for every trading day in the range (resumable)")
+    nm.add_argument("--elm-window", action="store_true",
+                    help="the ELM file of every trading day back 120 days that NSE still serves")
+    nm.set_defaults(func=_cmd_nse_margin_files)
 
     b = sub.add_parser("bars", help="Kite historical bar cache (M1.4)")
     bsub = b.add_subparsers(dest="bars_command", required=True)
