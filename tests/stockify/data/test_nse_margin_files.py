@@ -23,7 +23,8 @@ SAT = date(2026, 11, 7)
 def span_zip(day: date, suffix: str, created: str = "202611082026") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr(f"nsccl.{day:%Y%m%d}.{suffix}.spn",
+        # A fixed member time: the zip's bytes must not depend on the wall clock (a second build compares equal).
+        z.writestr(zipfile.ZipInfo(f"nsccl.{day:%Y%m%d}.{suffix}.spn", date_time=(2026, 11, 9, 0, 0, 0)),
                    f'<?xml version="1.0"?><spanFile><fileFormat>4.00</fileFormat><created>{created}</created>'
                    f"<pointInTime/></spanFile>")
     return buf.getvalue()

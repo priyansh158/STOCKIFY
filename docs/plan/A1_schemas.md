@@ -302,7 +302,13 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 }
 ```
 
-`strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14). `margin.model`: `flat` (the default), `spanlite`, `span_exact` or `staircase` (the last two read NSE's SPAN files from the bundle, §6.2; the default stays `flat` until the engines run them).
+`strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
+
+<!-- <block name="margin-models" same-as-pattern='\x60(?P<value>[a-z_]+)\x60'> -->
+- `margin.model` choices, in this order: `flat` (the default), `spanlite`, `span_exact`, `staircase`.
+<!-- </block> -->
+
+The last two read NSE's SPAN files from the bundle (§6.2); the default stays `flat` until the engines run them.
 
 ### 6.2 `bundle.json` (D-22)
 
@@ -352,20 +358,35 @@ bundle is unchanged, key for key):
                               "intra_tiers": [], "inter_tiers": [], "som_tiers": [ { "…": "…", "rates": { "1": "…" } } ],
                               "calendar_spreads": [ { "number": 1, "charge_method": "…", "rates": { "1": "…" },
                                                       "legs": [ { "expiry": "…", "side": "A", "weight": "…" } ] } ] } } } ] },
+"span_skipped": { "2026-11-09": [ { "file": "span/2026/nsccl.20261109.i2.zip", "reason": "SpanFileError: …" } ] },
 "elm": { "2026-11-09": { "NIFTY": { "CE|2026-11-23|2500000": "2", "FUT|2026-11-23|": "2" } } }
 ```
 
 `span[D]` lists every NSE SPAN file a backtest may use on run day D, in `created_ns` order, with no lookahead (spec
-§5.1): first the file in force at the open (D's `i1`, created the evening before, when archived; else the previous
-trading day's end-of-day `.s`), then D's intraday files (`i2`..`i4`). D's own `.s` is never listed: it comes after the
-close. A file applies from its `created_ns`; a day with no usable file has `[]`. `file` is relative to
-`$LAB/nse/margin`, `sha256` is the archived zip's. Only the bundle's underlyings are kept, with only the contracts the
-bundle trades (a contract the file lacks is absent) but every parameter block (all series, tiers, spreads). Every
-number is the file's decimal string; strikes are paise. `elm[D]` is present when D's contract-wise ELM file is
-archived (D's file applies to D): per underlying, `"<kind>|<expiry>|<strike_paise>"` (futures: empty strike) to the
-ELM **per cent** as a decimal string, for the bundle's derivatives the file lists. Keyed by underlying because the
-same kind, expiry and strike exist on several underlyings. Until both engines implement these models (Task 7), they
-refuse `span_exact` and `staircase` ("margin model … is not supported yet"); they never fall back to flat.
+§5.1): the previous F&O trading day's end-of-day `.s` when archived (that day's only: an older `.s` is never used),
+then D's `i1`..`i4` (`i1` is normally created the evening before). D's own `.s` is never listed: it comes after the
+close. **Each entry applies from its own `created_ns`: the file in force at t is the last entry with
+`created_ns <= t`. Before the first entry nothing is in force (the underlying steps down); an entry is never applied
+earlier than its `created_ns`**, so a late `i1` (created after 09:15 on D) leaves the previous `.s` in force until
+then. A day with no usable file has `[]`. A file that cannot be read, or whose business date differs from the date
+in its name, is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are absent), and the
+run is labelled `margin_span:skipped_files`.
+
+`file` is relative to `$LAB/nse/margin`, `sha256` is the archived zip's. Only the bundle's underlyings are kept, with
+only the contracts the bundle trades, but every parameter block (all series, tiers, spreads). **Absent means missing,
+never zero:** a contract or underlying the file lacks (e.g. a stock not in it) is not in the entry, and the margin
+model steps that underlying down. File values are the file's decimal strings; strikes are paise. Integers:
+`created_ns`, `strike_paise` (`null` for a FUT), scan `point` / `paired_point` (`null` when the file has none), tier
+and spread `number`. A series field is `null` when the file gives the series a scan range but not that field.
+`scan_points` (the 16 scenario definitions) is provenance: the risk arrays are already evaluated, so the exact SPAN
+calculation does not read them.
+
+`elm[D]` is present when D's contract-wise ELM file is archived (D's file applies to D): per underlying,
+`"<kind>|<expiry>|<strike_paise>"` (futures: empty strike) to the ELM **per cent** as a decimal string, for the
+bundle's derivatives the file lists. Keyed by underlying because the same kind, expiry and strike exist on several
+underlyings. A contract listed twice with different %, or with 0 %, is absent (missing). Until both engines implement
+these models (Task 7), they refuse `span_exact` and `staircase` ("margin model … is not supported yet"); they never
+fall back to flat.
 
 (Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
 

@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import zipfile
+import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -428,27 +430,50 @@ def _scan_points(f) -> list[dict]:  # noqa: ANN001
             for _, sp in sorted(f.scan_points.items())]
 
 
-def span_section(instruments_rows: list[dict], days: list[dict]) -> dict[str, list[dict]]:
+_UNREADABLE = (ValueError, OSError, EOFError, zlib.error, zipfile.BadZipFile)   # SpanFileError is a ValueError
+
+
+def _span_entry(path: str, root: Path, keys: dict[str, set[tuple]]) -> dict:
+    """One file's bundle entry (without created_ns). Raises one of _UNREADABLE for a file that cannot be used."""
+    from stockify.fno.span_file import SpanFileError, parse_span
+    f = parse_span(path, set(keys))
+    named = Path(path).name.split(".")[1]                     # nsccl.<YYYYMMDD>.<suffix>.zip
+    if f.business_date != f"{named[:4]}-{named[4:6]}-{named[6:]}":
+        raise SpanFileError(f"business date {f.business_date or '?'} is not the date in the file name")
+    return {"file": Path(path).relative_to(root).as_posix(), "sha256": _file_sha(Path(path)),
+            "scan_points": _scan_points(f),
+            "commodities": {code: _span_commodity(cc, keys[code])
+                            for code, cc in sorted(f.commodities.items()) if code in keys}}
+
+
+def span_section(instruments_rows: list[dict], days: list[dict],
+                 skipped: dict[str, list[dict]] | None = None) -> dict[str, list[dict]]:
     """bundle["span"]: per run day, every NSE SPAN file usable that day in created order, without lookahead
-    (`nse_margin_files.usable_files`: the file in force at the open, then D's intraday files, never D's `.s`). Each
-    keeps the bundle's underlyings only, with the contracts the bundle trades and all their parameter blocks. A day
-    with no usable file has an empty list (the margin model steps down)."""
+    (`nse_margin_files.usable_files`: the previous trading day's `.s`, then D's `i1`..`i4`, never D's `.s`; each
+    applies from its own created_ns). Each keeps the bundle's underlyings only, with the contracts the bundle trades
+    and all their parameter blocks. A day with no usable file has an empty list (the margin model steps down).
+    A file that cannot be read, or whose business date is not its name's, is left out; with `skipped`, it is
+    recorded there as {day: [{"file", "reason"}]}."""
     from stockify.data import nse_margin_files as mf
-    from stockify.fno.span_file import parse_span
     keys = _contract_keys(instruments_rows)
     root = paths.nse_margin_dir("span").parent
-    parsed: dict[str, dict] = {}
+    parsed: dict[str, dict | str] = {}                        # path -> entry, or the reason it is unusable
     out = {}
     for d in days:
         files = []
         for path, created_ns in mf.usable_files(date.fromisoformat(d["date"])):
             if path not in parsed:
-                f = parse_span(path, set(keys))
-                parsed[path] = {"file": Path(path).relative_to(root).as_posix(), "sha256": _file_sha(Path(path)),
-                                "scan_points": _scan_points(f),
-                                "commodities": {code: _span_commodity(cc, keys[code])
-                                                for code, cc in sorted(f.commodities.items()) if code in keys}}
-            files.append({"created_ns": created_ns, **parsed[path]})
+                try:
+                    parsed[path] = _span_entry(path, root, keys)
+                except _UNREADABLE as e:
+                    parsed[path] = f"{type(e).__name__}: {e}"
+            entry = parsed[path]
+            if isinstance(entry, str):
+                if skipped is not None:
+                    skipped.setdefault(d["date"], []).append(
+                        {"file": Path(path).relative_to(root).as_posix(), "reason": entry})
+                continue
+            files.append({"created_ns": created_ns, **entry})
         out[d["date"]] = files
     return out
 
@@ -515,8 +540,12 @@ def resolve_bundle(cfg: dict) -> dict:
         "packs": pack_rows, "strategy": strategy_ref(cfg), "labels": sorted(set(labels)), "sod_state": None,
     }
     if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
-        out["span"] = span_section(instruments_rows, days)
+        skipped: dict[str, list[dict]] = {}
+        out["span"] = span_section(instruments_rows, days, skipped)
+        out["span_skipped"] = skipped
         out["elm"] = elm_section(instruments_rows, days)
+        if skipped:
+            out["labels"] = sorted(set(out["labels"]) | {"margin_span:skipped_files"})
     return out
 
 

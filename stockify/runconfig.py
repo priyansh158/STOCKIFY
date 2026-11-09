@@ -20,7 +20,9 @@ FILL_KINDS = ("bar", "snapshot_ltp", "snapshot_quote", "eod_close")
 SLIPPAGE_KINDS = ("none", "fixed_ticks", "random_ticks", "bps")
 # span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines refuse them until they
 # implement them, so the default stays flat until then.
+# <block name="margin-models" same-as="docs/plan/A1_schemas.md:margin-models" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 MARGIN_MODELS = ("flat", "spanlite", "span_exact", "staircase")
+# </block>
 DEFAULTS = {
     "family_id": None,
     "price_basis": None,

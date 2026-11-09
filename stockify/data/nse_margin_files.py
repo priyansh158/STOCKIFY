@@ -268,16 +268,28 @@ def in_force_files(day: date) -> list[tuple[str, int]]:
         path = _span_path(day, suffix)
         if not path.exists():
             continue
-        created = manifest.get(span_name(day, suffix), {}).get("created")
-        if created is None:                                    # archived without a manifest row: read the header
-            created = span_created(path.read_bytes())
-        if created is not None:
-            out.append((str(path), _created_ns(created)))
+        created_ns = _checked_created_ns(manifest.get(span_name(day, suffix), {}).get("created"))
+        if created_ns is None:                                 # no (valid) manifest row: read the header
+            created_ns = _checked_created_ns(span_created(path.read_bytes()))
+        if created_ns is not None:                             # neither readable: the file is not used
+            out.append((str(path), created_ns))
     return sorted(out, key=lambda t: t[1])
 
 
+def _checked_created_ns(created) -> int | None:  # noqa: ANN001
+    """`_created_ns` of a `YYYYMMDDHHMM` string; None for anything else (a hand-edited or damaged manifest)."""
+    if not isinstance(created, str) or not re.fullmatch(r"\d{12}", created):
+        return None
+    try:
+        return _created_ns(created)
+    except ValueError:
+        return None
+
+
 def previous_eod(day: date, *, max_days: int = 30) -> tuple[str, int] | None:
-    """The archived end-of-day (`.s`) file of the latest trading day before `day`."""
+    """The archived end-of-day (`.s`) file of the latest trading day before `day`, looking back at most `max_days`
+    trading days. `max_days=1` is strict: only the previous F&O trading day's `.s` (the bundle, CAM 4.3). The
+    validator keeps the default: it asks which file Kite had, and a gap in the archive is not a gap at NSE."""
     d = day
     for _ in range(max_days):
         d = calendar.previous_trading_day(SEGMENT, d)
@@ -289,14 +301,14 @@ def previous_eod(day: date, *, max_days: int = 30) -> tuple[str, int] | None:
 
 def usable_files(day: date) -> list[tuple[str, int]]:
     """Every SPAN file a backtest may use during trade date `day`, as (path, created_ns) in created order, without
-    lookahead (spec §5.1, CAM 4.3): first the file in force at the open (D's `i1`, created the evening before, when
-    archived; else the previous trading day's `.s`), then D's intraday files `i2`..`i4`. D's own `.s` never: it is
-    published after the close. A later file applies from its `created_ns`."""
+    lookahead (spec §5.1, CAM 4.3): the previous F&O trading day's `.s` when archived (only that day's: an older one
+    is never used), then D's `i1`..`i4`. D's own `.s` never: it is published after the close. Each file applies from
+    its own `created_ns`; the file in force at t is the last one created at or before t, and before the first one
+    nothing is (a late `i1` does not move earlier)."""
     own = [(p, c) for p, c in in_force_files(day) if not p.endswith(".s.zip")]
-    if not any(p.endswith(".i1.zip") for p, _ in own):
-        opener = previous_eod(day)
-        if opener is not None:
-            own = [opener] + own
+    opener = previous_eod(day, max_days=1)
+    if opener is not None:
+        own = [opener] + own
     return sorted(own, key=lambda t: t[1])
 
 
@@ -311,7 +323,8 @@ def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, tuple], Decima
     A contract key is (kind, expiry "YYYY-MM-DD", strike paise | None), as `stockify.fno.span_file` keys contracts.
     Rows: instrument, symbol, expiry DD-MMM-YYYY, strike (rupees; -1 for futures), CE | PE | XX, 0, ELM %.
     The file is untrusted data: a malformed row is skipped, and a contract listed twice with different % maps to None
-    (unusable, so its legs report it missing instead of taking either value). The % keeps the file's digits."""
+    (unusable, so its legs report it missing instead of taking either value); so is a 0 %. The % keeps the file's
+    digits."""
     path = paths.nse_margin_dir("elm") / f"{day:%Y}" / elm_name(day)
     if not path.exists():
         return None
@@ -331,7 +344,7 @@ def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, tuple], Decima
                 else:
                     continue
                 pct = Decimal(p[6])
-                if not pct.is_finite() or pct < 0:
+                if not pct.is_finite() or pct <= 0:          # NSE's ELM % is never 0: a 0 is missing
                     continue
             except (ValueError, KeyError, ArithmeticError):
                 continue

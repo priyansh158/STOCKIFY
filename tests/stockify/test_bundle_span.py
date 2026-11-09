@@ -9,6 +9,7 @@ import copy
 import gzip
 import hashlib
 import io
+import json
 import unittest
 import zipfile
 from datetime import date
@@ -28,9 +29,13 @@ HEADER = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,
           "instrument_type,segment,exchange")
 
 
-def archive_span(day: date, suffix: str, created: str) -> Path:
-    """The fixture as `nsccl.<day>.<suffix>.zip` with header `<created>` = `created` (YYYYMMDDHHMM, IST)."""
+def archive_span(day: date, suffix: str, created: str, business: date | None = None, cut: int | None = None) -> Path:
+    """The fixture as `nsccl.<day>.<suffix>.zip` with header `<created>` = `created` (YYYYMMDDHHMM, IST) and business
+    date `business` (default `day`); `cut` truncates the XML after that many bytes (a damaged file)."""
     body = FIXTURE.read_bytes().replace(b"<created>202611082026</created>", f"<created>{created}</created>".encode(), 1)
+    body = body.replace(b"<date>20261109</date>", f"<date>{business or day:%Y%m%d}</date>".encode(), 1)
+    if cut is not None:
+        body = body[:cut]
     folder = paths.nse_margin_dir("span") / f"{day:%Y}"
     folder.mkdir(parents=True, exist_ok=True)
     buf = io.BytesIO()
@@ -49,6 +54,17 @@ def archive_elm(day: date, text: str) -> None:
 
 def ns(day: date, hhmm: str) -> int:
     return timeutil.ist_ns(day, hhmm)
+
+
+def in_force(entries: list[dict], t: int) -> dict | None:
+    """How a consumer reads span[D] (A1 §6.2): the last entry created at or before t, else nothing."""
+    live = [e for e in entries if e["created_ns"] <= t]
+    return live[-1] if live else None
+
+
+def write_manifest(day: date, rows: dict) -> None:
+    folder = paths.nse_margin_dir("manifest")
+    (folder / f"{day:%Y%m%d}.json").write_text(json.dumps(rows), encoding="utf-8")
 
 
 def inst(kind: str, underlying: str, expiry: str, strike_paise: int | None = None) -> dict:
@@ -96,6 +112,86 @@ class SpanSectionTests(SandboxedDBTest):
     def test_nothing_archived_gives_an_empty_day(self):
         self.assertEqual(bundle.span_section(ROWS, DAYS), {DAY.isoformat(): []})
 
+    def test_created_ns_is_utc(self):
+        archive_span(DAY, "i1", "202611082026")
+        day = bundle.span_section(ROWS, DAYS)[DAY.isoformat()]
+        self.assertEqual(day[0]["created_ns"], 1_794_149_760_000_000_000)        # 2026-11-08 14:56:00 UTC
+
+    def test_previous_eod_always_comes_first(self):
+        archive_span(PREV, "s", "202611061655")
+        archive_span(DAY, "i1", "202611082026")
+        archive_span(DAY, "i2", "202611091103")
+        self.assertEqual([f["file"] for f in bundle.span_section(ROWS, DAYS)[DAY.isoformat()]],
+                         ["span/2026/nsccl.20261106.s.zip", "span/2026/nsccl.20261109.i1.zip",
+                          "span/2026/nsccl.20261109.i2.zip"])
+
+    def test_a_late_i1_applies_from_its_created_time_only(self):
+        # I-1: D's i1 re-issued at 09:40 IST on D. 09:15-09:40 is the previous day's .s; the i1 from 09:40.
+        archive_span(PREV, "s", "202611061655")
+        archive_span(DAY, "i1", "202611090940")
+        day = bundle.span_section(ROWS, DAYS)[DAY.isoformat()]
+        self.assertEqual([(f["file"], f["created_ns"]) for f in day],
+                         [("span/2026/nsccl.20261106.s.zip", ns(PREV, "16:55")),
+                          ("span/2026/nsccl.20261109.i1.zip", ns(DAY, "09:40"))])
+        self.assertEqual(in_force(day, ns(DAY, "09:15"))["file"], "span/2026/nsccl.20261106.s.zip")
+        self.assertEqual(in_force(day, ns(DAY, "09:39"))["file"], "span/2026/nsccl.20261106.s.zip")
+        self.assertEqual(in_force(day, ns(DAY, "09:40"))["file"], "span/2026/nsccl.20261109.i1.zip")
+
+    def test_a_late_i1_alone_leaves_the_open_uncovered(self):
+        archive_span(DAY, "i1", "202611090940")
+        day = bundle.span_section(ROWS, DAYS)[DAY.isoformat()]
+        self.assertIsNone(in_force(day, ns(DAY, "09:15")))                      # missing, never moved earlier
+
+    def test_an_older_eod_is_never_used(self):
+        # I-3: D-1's .s missing, D-3's present: the slot stays empty.
+        archive_span(date(2026, 11, 4), "s", "202611041655")
+        self.assertEqual(bundle.span_section(ROWS, DAYS), {DAY.isoformat(): []})
+
+    def test_an_unreadable_file_is_skipped_and_recorded(self):
+        # I-2: a truncated i2 (its header is readable, the XML is not) and a misfiled i3 (business date of D+1).
+        archive_span(DAY, "i1", "202611082026")
+        archive_span(DAY, "i2", "202611091103", cut=5000)
+        archive_span(DAY, "i3", "202611091232", business=date(2026, 11, 11))
+        skipped: dict = {}
+        day = bundle.span_section(ROWS, DAYS, skipped)[DAY.isoformat()]
+        self.assertEqual([f["file"] for f in day], ["span/2026/nsccl.20261109.i1.zip"])
+        self.assertEqual([s["file"] for s in skipped[DAY.isoformat()]],
+                         ["span/2026/nsccl.20261109.i2.zip", "span/2026/nsccl.20261109.i3.zip"])
+        reasons = [s["reason"] for s in skipped[DAY.isoformat()]]
+        self.assertIn("not well-formed", reasons[0])
+        self.assertIn("business date 2026-11-11", reasons[1])
+
+    def test_a_corrupt_zip_is_skipped(self):
+        archive_span(DAY, "i1", "202611082026")
+        bad = archive_span(DAY, "i2", "202611091103")
+        bad.write_bytes(b"PK\x03\x04" + b"\x00" * 64)                           # not a zip any more
+        write_manifest(DAY, {"nsccl.20261109.i2.zip": {"created": "202611091103"}})
+        skipped: dict = {}
+        day = bundle.span_section(ROWS, DAYS, skipped)[DAY.isoformat()]
+        self.assertEqual(len(day), 1)
+        self.assertIn("not a zip", skipped[DAY.isoformat()][0]["reason"])
+
+    def test_manifest_created_is_used_and_a_bad_one_falls_back_to_the_header(self):
+        archive_span(DAY, "i2", "202611091103")
+        archive_span(DAY, "i3", "202611091232")
+        write_manifest(DAY, {"nsccl.20261109.i2.zip": {"created": "202611091105"},
+                             "nsccl.20261109.i3.zip": {"created": "202613091232"}})   # month 13: ignored
+        day = bundle.span_section(ROWS, DAYS)[DAY.isoformat()]
+        self.assertEqual([f["created_ns"] for f in day], [ns(DAY, "11:05"), ns(DAY, "12:32")])
+
+    def test_an_underlying_the_file_lacks_is_absent(self):
+        archive_span(DAY, "i1", "202611082026")
+        f = bundle.span_section([NIFTY_FUT, inst("FUT", "RELIANCE", "2026-11-23")], DAYS)[DAY.isoformat()][0]
+        self.assertEqual(set(f["commodities"]), {"NIFTY"})
+
+    def test_usable_files_directly(self):
+        from stockify.data import nse_margin_files as mf
+        archive_span(PREV, "s", "202611061655")
+        archive_span(DAY, "i2", "202611091103")
+        archive_span(DAY, "s", "202611091655")
+        self.assertEqual([(Path(p).name, c) for p, c in mf.usable_files(DAY)],
+                         [("nsccl.20261106.s.zip", ns(PREV, "16:55")), ("nsccl.20261109.i2.zip", ns(DAY, "11:03"))])
+
     def test_only_bundle_instruments_included(self):
         archive_span(DAY, "i1", "202611082026")
         f = bundle.span_section([NIFTY_CE, NIFTY_FUT, inst("CE", "NIFTY", "2030-01-01", 100)], DAYS)[DAY.isoformat()][0]
@@ -121,10 +217,12 @@ class SpanSectionTests(SandboxedDBTest):
                          "OPTIDX,NIFTY,23-NOV-2026,25000,PE,0,2.00\n"
                          "OPTIDX,NIFTY,23-NOV-2026,26000,CE,0,2\n"            # not in the bundle
                          "OPTIDX,BANKNIFTY,23-NOV-2026,25000,CE,0,3\n"        # same contract, other underlying
-                         "FUTIDX,NIFTY,23-NOV-2026,-1,XX,0,2\n")
+                         "FUTIDX,NIFTY,23-NOV-2026,-1,XX,0,2\n"
+                         "FUTIDX,NIFTY,29-DEC-2026,-1,XX,0,0\n")             # 0 %: treated as missing
+        rows = ROWS + [inst("FUT", "NIFTY", "2026-12-29")]
         bnf = inst("CE", "BANKNIFTY", "2026-11-23", 2500000)
         days = DAYS + [{"date": "2026-11-11"}]                                  # no ELM file archived
-        self.assertEqual(bundle.elm_section(ROWS + [bnf], days), {DAY.isoformat(): {
+        self.assertEqual(bundle.elm_section(rows + [bnf], days), {DAY.isoformat(): {
             "NIFTY": {"CE|2026-11-23|2500000": "4.5", "PE|2026-11-23|2500000": "2.00", "FUT|2026-11-23|": "2"},
             "BANKNIFTY": {"CE|2026-11-23|2500000": "3"}}})
 
@@ -211,11 +309,22 @@ class ResolveBundleSpanTests(SandboxedDBTest):
                 self.assertEqual(b["span"]["2026-11-09"][0]["commodities"]["NIFTY"]["contracts"][0]["expiry"],
                                  "2026-11-23")
                 self.assertEqual(b["elm"], {"2026-11-09": {"NIFTY": {"FUT|2026-11-23|": "2"}}})
+                self.assertEqual(b["span_skipped"], {})
+                self.assertNotIn("margin_span:skipped_files", b["labels"])
+                self.assertEqual(bundle.dumps(self.resolve(model)), bundle.dumps(b))   # deterministic
         for model in ("flat", "spanlite"):
             with self.subTest(model=model):
                 b = self.resolve(model)
                 self.assertNotIn("span", b)
+                self.assertNotIn("span_skipped", b)
                 self.assertNotIn("elm", b)
+
+    def test_a_skipped_file_labels_the_run(self):
+        archive_span(DAY, "i2", "202611091103", cut=5000)
+        b = self.resolve("staircase")
+        self.assertEqual([f["file"] for f in b["span"]["2026-11-09"]], ["span/2026/nsccl.20261109.i1.zip"])
+        self.assertEqual([s["file"] for s in b["span_skipped"]["2026-11-09"]], ["span/2026/nsccl.20261109.i2.zip"])
+        self.assertIn("margin_span:skipped_files", b["labels"])
 
 
 if __name__ == "__main__":
