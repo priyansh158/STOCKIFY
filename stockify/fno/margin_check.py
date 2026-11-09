@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
@@ -58,6 +59,14 @@ class CheckError(ValueError):
     """The check cannot be priced as asked; the message says why."""
 
 
+class CheckInputError(CheckError):
+    """The request is wrong: a malformed leg, a symbol refdata does not know, not a future or option (exit 2)."""
+
+
+class CheckDataError(CheckError):
+    """The archive cannot price the request: no file archived or in force, or no price for a leg (exit 1)."""
+
+
 def _rupees(paise) -> str:  # noqa: ANN001
     from stockify.oracle.report import _rupees as fmt   # en-IN grouping: ₹2,19,708.00
     return fmt(paise)
@@ -77,14 +86,14 @@ def parse_leg(text: str) -> tuple[str, int, str]:
     """"SELL 65 NIFTY26N1724950CE" -> ("SELL", 65, "NIFTY26N1724950CE"); units are positive."""
     parts = text.split()
     if len(parts) != 3 or parts[0].upper() not in SIDES:
-        raise CheckError(f"a leg is \"BUY or SELL, units, tradingsymbol\", e.g. \"SELL 65 NIFTY26N1724950CE\"; "
+        raise CheckInputError(f"a leg is \"BUY or SELL, units, tradingsymbol\", e.g. \"SELL 65 NIFTY26N1724950CE\"; "
                          f"got {text!r}")
     try:
         units = int(parts[1])
     except ValueError:
         units = 0
     if units <= 0:
-        raise CheckError(f"units must be a positive whole number; got {parts[1]!r} in {text!r}")
+        raise CheckInputError(f"units must be a positive whole number; got {parts[1]!r} in {text!r}")
     return parts[0].upper(), units, parts[2].upper()
 
 
@@ -119,6 +128,7 @@ class CheckResult:
     parts: list[tuple[str, UnderlyingMargin]]   # (underlying, its staircase breakdown)
     prices: dict[str, int]                 # what each price came from -> paise
     labels: list[str] = field(default_factory=list)
+    at_defaulted: bool = False
 
     @property
     def total(self) -> int:
@@ -137,17 +147,17 @@ def _rows_for(legs: list[tuple[str, int, str]], day: date) -> tuple[dict[int, di
         exch = exch or "NFO"
         iid = instruments.find(exch, name)
         if iid is None:
-            raise CheckError(f"{sym}: not in refdata (use Kite's tradingsymbol, e.g. NIFTY26N1724950CE; "
+            raise CheckInputError(f"{sym}: not in refdata (use Kite's tradingsymbol, e.g. NIFTY26N1724950CE; "
                              f"`refdata sync` adds new contracts)")
         info = instruments.get(iid)
         if info["kind"] not in ("FUT", "CE", "PE") or not info.get("underlying"):
-            raise CheckError(f"{sym}: a {info['kind']}, not a future or option")
+            raise CheckInputError(f"{sym}: a {info['kind']}, not a future or option")
         und = info["underlying"]
         if und not in unds:
             try:
                 unds[und] = calibrate._underlying_row(und)
             except calibrate.CalibrationError as exc:
-                raise CheckError(str(exc)) from exc
+                raise CheckDataError(str(exc)) from exc
             index_id, is_index = unds[und]
             rows[index_id] = calibrate._row_for(index_id, "INDEX" if is_index else "EQ", und, index_id, is_index,
                                                 day.isoformat())
@@ -167,10 +177,15 @@ def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | N
     if day is None:
         day = latest_archived_day()
         if day is None:
-            raise CheckError("no NSE SPAN file is archived (`nse margin-files --date D` archives a day)")
+            raise CheckDataError("no NSE SPAN file is archived (`nse margin-files --date D` archives a day)")
+    defaulted = at is None
     at = at or DEFAULT_AT
     now_ns = timeutil.ist_ns(day, at)
     d = day.isoformat()
+    try:                                                   # a clean message, not a traceback, without refdata
+        sqlite3.connect(Path(refdata._db_path()).as_uri() + "?mode=ro", uri=True).close()
+    except sqlite3.OperationalError as exc:
+        raise CheckDataError(f"refdata cannot be opened read-only ({exc}); `refdata sync` creates it") from exc
     with sv.read_only(refdata):                            # the check needs refdata only, never the store
         rows, signed, index_of = _rows_for(legs, day)
         inst_rows = list(rows.values())
@@ -184,13 +199,15 @@ def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | N
         if chosen is None:
             usable = ", ".join(f"{Path(e['file']).name} (created "
                                f"{timeutil.ns_to_ist(e['created_ns']):%Y-%m-%d %H:%M})" for e in entries) or "none"
-            raise CheckError(f"no SPAN file in force on {d} at {at} IST (usable that day: {usable}); offline, "
-                             "nothing else prices the legs")
+            raise CheckDataError(f"no SPAN file in force on {d} at {at} IST (usable that day: {usable}); offline, "
+                                 "nothing else prices the legs")
         quotes, prices = {}, {}
+        file = Path(chosen["file"]).name
         for und, index_id in index_of.items():
             cc = chosen["commodities"].get(und)
-            if cc is None:
-                continue
+            if cc is None:                                 # never a silent ₹0: nothing else prices its legs
+                raise CheckDataError(f"{und} is not in {file}, the SPAN file in force; offline, nothing prices its "
+                                     "legs")
             if cc.get("spot"):
                 quotes[index_id] = _paise(cc["spot"])
                 prices[f"{und} spot"] = quotes[index_id]
@@ -202,8 +219,15 @@ def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | N
                 if by_key.get(key):
                     quotes[iid] = _paise(by_key[key])
                     prices[row["tradingsymbol"]] = quotes[iid]
-        first = next(iter(index_of.values()))
-        snap = calibrate.Snapshot(rows[first]["tradingsymbol"], d, now_ns, first, rows,
+        # A future without its price, or a sold option without the index's, would be margined at ₹0 below B1.
+        unpriced = [rows[i]["tradingsymbol"] for i, u in signed
+                    if (rows[i]["kind"] == "FUT" and i not in quotes)
+                    or (rows[i]["kind"] != "FUT" and u < 0 and rows[i]["underlying_id"] not in quotes)]
+        if unpriced:
+            raise CheckDataError(f"no price in {file} for {', '.join(unpriced)} (missing: the contract, or the "
+                                 "index spot); offline, nothing else prices it")
+        first_und, first = next(iter(index_of.items()))
+        snap = calibrate.Snapshot(first_und, d, now_ns, first, rows,
                                   {i: {"ltp": p, "bid": None, "ask": None, "oi": None} for i, p in quotes.items()})
         margin, pricing = calibrate._config_params()
         engine = calibrate._SnapshotEngine(snap, margin, pricing)
@@ -211,15 +235,16 @@ def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | N
         model = StaircaseMargin(engine.bundle, engine)
         parts = model.breakdown([(i, "NRML", u) for i, u in signed], rows.__getitem__, quotes.get, d)
     named = [(next(u for u, i in index_of.items() if i == b.underlying_id), b) for b in parts]
-    return CheckResult(day, at, now_ns, legs, Path(chosen["file"]).name, chosen["created_ns"], named, prices,
-                       sorted(model.labels | engine.labels))
+    return CheckResult(day, at, now_ns, legs, file, chosen["created_ns"], named, prices,
+                       sorted(model.labels | engine.labels), at_defaulted=defaulted)
 
 
 def check_text(res: CheckResult) -> str:
     from stockify import timeutil
     created = timeutil.ns_to_ist(res.file_created_ns)
-    lines = [f"Margin for {len(res.legs)} leg{'s' if len(res.legs) != 1 else ''} on {res.day.isoformat()} at "
-             f"{res.at} IST, NRML, offline from the archived NSE files", ""]
+    at = f"{res.at} IST" + (" (default: the close)" if res.at_defaulted else "")
+    lines = [f"Margin for {len(res.legs)} leg{'s' if len(res.legs) != 1 else ''} on {res.day.isoformat()} at {at}, "
+             "NRML, offline from the archived NSE files", ""]
     lines += [f"  {side} {units} {sym}" for side, units, sym in res.legs]
     lines += ["", f"SPAN file in force: {res.file} (created {created:%Y-%m-%d %H:%M} IST; none created later is used)"]
     for und, b in res.parts:
@@ -262,6 +287,7 @@ class ScoreRow:
     kite_span: int | None
     kite_exposure: int | None
     steps: dict[str, StepValue]
+    expiry_day: bool = False    # a leg's contract expires on the answer's own day (the X-9 add-on can apply)
 
 
 @dataclass(frozen=True)
@@ -414,8 +440,11 @@ def scorecard() -> Scorecard:
                     if row is not None:
                         steps[step] = _spanlite_value(pricer, cal.portfolio, row)
                 steps[STEP_B5] = StepValue(pricer.t0(cal.portfolio), None, None)
-                out.append(ScoreRow(r["sample_id"], und, s.kind, day, calibrate.kite_target(json.loads(r["kite_json"])),
-                                    _kite_paise(s.kite_span), _kite_paise(s.kite_exposure), steps))
+                expiring = any((snap.rows[i].get("actual_expiry") or snap.rows[i].get("expiry")) == day.isoformat()
+                               for i, _ in cal.portfolio.legs)
+                out.append(ScoreRow(r["sample_id"], und, s.kind, day,
+                                    calibrate.kite_target(json.loads(r["kite_json"])), _kite_paise(s.kite_span),
+                                    _kite_paise(s.kite_exposure), steps, expiring))
     return Scorecard(sorted(out, key=lambda r: r.sample_id), notes)
 
 
@@ -454,16 +483,20 @@ def scorecard_text(card: Scorecard) -> str:
     if card.notes:
         lines.append("")
     # Overall headline per step
-    lines += ["## All answers", "", "| Step | Priced | Median error | p90 | Median relative |", "|---|---|---|---|---|"]
+    lines += ["## All answers", "",
+              "| Step | Priced | Median error | p90 | Median relative | p90 relative | SPAN max |",
+              "|---|---|---|---|---|---|---|"]
     best = None
     for step in STEPS:
         errs = card.errors(rows, step)
         if not errs:
-            lines.append(f"| {step} | 0 | — | — | — |")
+            lines.append(f"| {step} | 0 | — | — | — | — | — |")
             continue
         med = quantile(errs, MEDIAN)
+        rel, se = card.relative(rows, step), card.errors(rows, step, "span")
         lines.append(f"| {step} | {len(errs)} | {_money(med)} | {_money(quantile(errs, P90))} | "
-                     f"{_pct(quantile(card.relative(rows, step), MEDIAN))} |")
+                     f"{_pct(quantile(rel, MEDIAN))} | {_pct(quantile(rel, P90))} | "
+                     f"{_money(max(se)) if se else '—'} |")
         if best is None or med < best[1]:
             best = (step, med, len(errs))
     if best:
@@ -471,8 +504,8 @@ def scorecard_text(card: Scorecard) -> str:
                   f"{best[2]} answers."]
     for (und, kind), group in card.groups().items():
         lines += ["", f"## {und} {WORDS.get(kind, kind)} ({len(group)} answers)", "",
-                  "| Step | Priced | Total median | Total p90 | Relative median | SPAN median | SPAN p90 | "
-                  "Exposure median | Exposure p90 |", "|---|---|---|---|---|---|---|---|---|"]
+                  "| Step | Priced | Total median | Total p90 | Relative median | SPAN median | SPAN p90 | SPAN max | "
+                  "Exposure median | Exposure p90 |", "|---|---|---|---|---|---|---|---|---|---|"]
         for step in STEPS:
             errs = card.errors(group, step)
             if not errs:
@@ -480,7 +513,8 @@ def scorecard_text(card: Scorecard) -> str:
             se, ee = card.errors(group, step, "span"), card.errors(group, step, "exposure")
             lines.append(f"| {step} | {len(errs)} | {_money(quantile(errs, MEDIAN))} | {_money(quantile(errs, P90))} | "
                          f"{_pct(quantile(card.relative(group, step), MEDIAN))} | {_money(quantile(se, MEDIAN))} | "
-                         f"{_money(quantile(se, P90))} | {_money(quantile(ee, MEDIAN))} | "
+                         f"{_money(quantile(se, P90))} | {_money(max(se)) if se else '—'} | "
+                         f"{_money(quantile(ee, MEDIAN))} | "
                          f"{_money(quantile(ee, P90))} |")
     inv = card.inversions()
     lines += ["", "## Inversions", ""]
@@ -494,15 +528,27 @@ def scorecard_text(card: Scorecard) -> str:
                      f"against {_money(x.worse_median)}, on {x.n} answers.")
     lines += ["", "## Reading this", "",
               "- SPAN and exposure are compared separately as well as in total. The exact SPAN (B1, B2) depends only "
-              "on the file in force and the legs, not on prices: its error is the model's, plus the rounding of "
-              "each part up to the whole rupee (up to ₹1).",
+              "on the file in force and the legs, not on prices: its error is the model's plus the rounding of "
+              "each part up to the whole rupee (see SPAN max for the largest).",
               "- Exposure follows Kite's convention (the ELM % on the future's price for futures, on the index for "
               "sold options), but the stored snapshot prices drift by up to about 0.08 % from the live price Kite "
               "used when each answer was asked. Part of every exposure error, and so of the total, is that price "
               "drift, not model error.",
+              "- Prices differ by step: B1 and B2 use each snapshot's last traded price (the convention span-validate "
+              "proved against Kite), B4 and B5 the calibration's mark (mid of bid and ask, else the last price). "
+              "Part of the gap between B1's and B4's exposure columns is that price basis, not the model.",
               "- B5 has no SPAN / exposure split: only its total is compared."]
     both = [r for r in rows if STEP_B1 in r.steps and STEP_B2 in r.steps]
-    if both and all(r.steps[STEP_B1] == r.steps[STEP_B2] for r in both):
-        lines.append(f"- B1 and B2 give the same margin on all {len(both)} answers both priced: the dated rule's ELM "
-                     "(with any expiry-day add-on) comes to exactly what NSE's ELM file charges on every one of them.")
+    if both:
+        same = sum(r.steps[STEP_B1] == r.steps[STEP_B2] for r in both)
+        expiring = [r for r in both if r.expiry_day]
+        lines.append(f"- B1 and B2 (NSE's ELM file against the dated rule) give the same margin, after rounding each "
+                     f"part up to the rupee, on {same} of the {len(both)} answers both priced.")
+        if not expiring:
+            lines.append("- No stored Kite answer had a contract expiring that day, so the expiry-day add-on was not "
+                         "tested against NSE.")
+        else:
+            agree = sum(r.steps[STEP_B1] == r.steps[STEP_B2] for r in expiring)
+            lines.append(f"- {len(expiring)} answer{'s' if len(expiring) != 1 else ''} had a contract expiring that "
+                         f"day (the dated rule adds the expiry-day add-on); B1 and B2 agree on {agree} of them.")
     return "\n".join(lines) + "\n"

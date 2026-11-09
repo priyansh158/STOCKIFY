@@ -32,17 +32,29 @@ WALL = timeutil.ist_ns(DAY, "09:49")
 SPOT_PAISE = 2494125                       # NIFTY 50 LTP 24,941.25 in the stored snapshot
 FUT_PAISE = 2495900
 
+# The rule (margin_params.json, INDEX) charges 2 % ELM plus the X-9 2 % on short index options expiring that day.
+# The file differs from it on the 17-Nov 25000 pair (5 %: an expiry-day figure) and the Dec future (3.5 %).
 ELM_CSV = ("OPTIDX,NIFTY,23-NOV-2026,25000,CE,0,2\n"
            "OPTIDX,NIFTY,23-NOV-2026,25000,PE,0,2\n"
-           "FUTIDX,NIFTY,23-NOV-2026,-1,XX,0,2\n")
+           "OPTIDX,NIFTY,17-NOV-2026,25000,CE,0,5\n"
+           "OPTIDX,NIFTY,17-NOV-2026,25000,PE,0,5\n"
+           "FUTIDX,NIFTY,23-NOV-2026,-1,XX,0,2\n"
+           "FUTIDX,NIFTY,29-DEC-2026,-1,XX,0,3.5\n")
 
 
 def dumps() -> dict[str, str]:
     nfo = [HEADER,
            "9001,1,NIFTY26NOVFUT,NIFTY,0,2026-11-23,0,0.1,65,FUT,NFO-FUT,NFO",
+           "9002,2,NIFTY26DECFUT,NIFTY,0,2026-12-29,0,0.1,65,FUT,NFO-FUT,NFO",
+           "9005,5,NIFTY26N1725000CE,NIFTY,0,2026-11-17,25000,0.05,65,CE,NFO-OPT,NFO",
+           "9006,6,NIFTY26N1725000PE,NIFTY,0,2026-11-17,25000,0.05,65,PE,NFO-OPT,NFO",
+           "9007,7,FINNIFTY26NOVFUT,FINNIFTY,0,2026-11-23,0,0.1,65,FUT,NFO-FUT,NFO",
+           "9008,8,NIFTY27JANFUT,NIFTY,0,2027-01-26,0,0.1,65,FUT,NFO-FUT,NFO",
            "9003,3,NIFTY26NOV25000CE,NIFTY,0,2026-11-23,25000,0.05,65,CE,NFO-OPT,NFO",
            "9004,4,NIFTY26NOV25000PE,NIFTY,0,2026-11-23,25000,0.05,65,PE,NFO-OPT,NFO"]
-    return {"NSE": f"{HEADER}\n256265,1,NIFTY 50,NIFTY 50,0,,0,0,0,EQ,INDICES,NSE\n", "NFO": "\n".join(nfo) + "\n"}
+    nse = (f"{HEADER}\n256265,1,NIFTY 50,NIFTY 50,0,,0,0,0,EQ,INDICES,NSE\n"
+           "257801,2,NIFTY FIN SERVICE,NIFTY FIN SERVICE,0,,0,0,0,EQ,INDICES,NSE\n")
+    return {"NSE": nse, "NFO": "\n".join(nfo) + "\n"}
 
 
 def run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -57,7 +69,7 @@ class ArchiveTest(SandboxedDBTest):
 
     def setUp(self):
         super().setUp()
-        instruments.sync(DAY, dumps(), underlyings={"NIFTY": "NSE:NIFTY 50"})
+        instruments.sync(DAY, dumps(), underlyings={"NIFTY": "NSE:NIFTY 50", "FINNIFTY": "NSE:NIFTY FIN SERVICE"})
         span_dir = paths.nse_margin_dir("span") / "2026"
         span_dir.mkdir(parents=True, exist_ok=True)
         buf = io.BytesIO()
@@ -102,10 +114,34 @@ class MarginCheckTests(ArchiveTest):
 
     def test_check_rejects_unknown_symbol(self):
         code, out, err = run_cli(["margin", "check", "--leg", "SELL 65 NIFTY26NOV99999CE", "--date", "2026-11-09"])
-        self.assertNotEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertIn("NIFTY26NOV99999CE", err)
         self.assertIn("refdata", err)
         self.assertEqual(out, "")
+
+    def test_check_never_prices_an_underlying_the_file_lacks(self):
+        # FINNIFTY is in refdata but not in the trimmed file: an error (exit 1), never a quiet ₹0.
+        code, out, err = run_cli(["margin", "check", "--leg", "SELL 65 FINNIFTY26NOVFUT", "--date", "2026-11-09",
+                                  "--at", "10:00"])
+        self.assertEqual(code, 1)
+        self.assertIn("FINNIFTY is not in nsccl.20261109.i1.zip", err)
+        self.assertEqual(out, "")
+
+    def test_check_never_prices_a_future_the_file_lacks(self):
+        # The Jan future is not in the file: no price for it offline, so no ₹0 flat margin either.
+        with self.assertRaises(MC.CheckDataError) as ctx:
+            MC.check([("BUY", 65, "NIFTY27JANFUT")], DAY, "10:00")
+        self.assertIn("no price in nsccl.20261109.i1.zip for NIFTY27JANFUT", str(ctx.exception))
+
+    def test_check_never_uses_the_days_own_end_of_day_file(self):
+        # D's .s (created 18:00 on D) is archived, yet at 23:59 the check still prices with i1: D's .s is published
+        # after the close and is never used for D (usable_files).
+        span_dir = paths.nse_margin_dir("span") / "2026"
+        (span_dir / "nsccl.20261109.s.zip").write_bytes((span_dir / "nsccl.20261109.i1.zip").read_bytes())
+        (paths.nse_margin_dir("manifest") / "20261109.json").write_text(
+            json.dumps({"nsccl.20261109.s.zip": {"created": "202611091800"}}), encoding="utf-8")
+        res = MC.check([("SELL", 65, "NIFTY26NOV25000CE")], DAY, "23:59")
+        self.assertEqual(res.file, "nsccl.20261109.i1.zip")
 
     def test_check_rejects_a_malformed_leg(self):
         code, _, err = run_cli(["margin", "check", "--leg", "SHORT 65 NIFTY26NOV25000CE", "--date", "2026-11-09"])
@@ -162,14 +198,51 @@ class ScorecardTests(ArchiveTest):
         self.assertEqual((inv.group, inv.better, inv.worse), (("NIFTY", "straddle"), "B4_spanlite_placeholder",
                                                              "B1_span_nse_elm"))
         text = MC.scorecard_text(card)
-        self.assertIn("Inversion", text)
-        self.assertIn("B4", text)
+        self.assertIn("- Inversion: on NIFTY straddle, B4 (SPAN-lite, placeholder parameters) beats B1 (exact SPAN + "
+                      "NSE's ELM file): median error ₹10.00 against ₹100.00, on 3 answers.", text)
+        self.assertNotIn("None: on every portfolio type", text)
 
     def test_no_inversion_when_the_higher_step_is_closer(self):
         row = MC.ScoreRow(1, "NIFTY", "straddle", DAY, 100_000, 60_000, 40_000,
                           {"B1_span_nse_elm": MC.StepValue(100_100, None, None),
                            "B5_flat": MC.StepValue(150_000, None, None)})
         self.assertEqual(MC.Scorecard([row], []).inversions(), [])
+        self.assertIn("None: on every portfolio type", MC.scorecard_text(MC.Scorecard([row], [])))
+
+    def test_b2_differs_from_b1_where_the_elm_file_differs_from_the_rule(self):
+        # Long 65 Dec future at 24,959.00. B1: the file's 3.5 % -> 56,781.725 -> ₹56,782. B2: the rule's 2 % ->
+        # 32,446.70 -> ₹32,447. The same exact SPAN in both: 153,121.15 -> ₹1,53,122.
+        self.add("future", [("NIFTY26DECFUT", 65)], answer("150000", "56781.73"))
+        [row] = MC.scorecard().rows
+        b1, b2 = row.steps["B1_span_nse_elm"], row.steps["B2_span_rule_elm"]
+        self.assertEqual((b1.exposure, b2.exposure), (5_678_200, 3_244_700))
+        self.assertEqual((b1.span, b2.span), (15_312_200, 15_312_200))
+        self.assertEqual((b1.total, b2.total), (20_990_400, 18_556_900))
+        self.assertFalse(row.expiry_day)
+        text = MC.scorecard_text(MC.scorecard())
+        self.assertIn("give the same margin, after rounding each part up to the rupee, on 0 of the 1 answers", text)
+        self.assertIn("No stored Kite answer had a contract expiring that day, so the expiry-day add-on was not "
+                      "tested against NSE.", text)
+
+    def test_b2_adds_the_expiry_day_addon_and_b1_takes_the_file(self):
+        # NSE moved the 17-Nov contracts' last day to the 9th (actual_expiry), as a holiday does: on the 9th the short
+        # straddle expires. Index LTP 24,941.25, 130 short units:
+        #   B1: the file's 5 % -> 162,118.125 -> ₹1,62,119 (no add-on: the file's figure already holds the uplift).
+        #   B2: the rule's 2 % ELM (64,847.25 -> ₹64,848) + the X-9 2 % add-on (64,847.25 -> ₹64,848) = ₹1,29,696.
+        #   SPAN (both): 155,655.50 -> ₹1,55,656. Totals: B1 ₹3,17,775, B2 ₹2,85,352.
+        conn = refdata._connect()
+        conn.execute("UPDATE instruments SET actual_expiry = '2026-11-09' WHERE tradingsymbol LIKE 'NIFTY26N1725000%'")
+        conn.commit()
+        self.add("straddle", [("NIFTY26N1725000CE", -65), ("NIFTY26N1725000PE", -65)], answer("150000", "162118.13"))
+        card = MC.scorecard()
+        [row] = card.rows
+        b1, b2 = row.steps["B1_span_nse_elm"], row.steps["B2_span_rule_elm"]
+        self.assertTrue(row.expiry_day)
+        self.assertEqual((b1.exposure, b2.exposure), (16_211_900, 12_969_600))
+        self.assertEqual((b1.span, b2.span), (15_565_600, 15_565_600))
+        self.assertEqual((b1.total, b2.total), (31_777_500, 28_535_200))
+        self.assertIn("- 1 answer had a contract expiring that day (the dated rule adds the expiry-day add-on); B1 and "
+                      "B2 agree on 0 of them.", MC.scorecard_text(card))
 
     def test_quantile_interpolates_between_ranks(self):
         # rank (n - 1) q: [0, 10, 20, 30] -> median at 1.5 = 15, p90 at 2.7 = 27.

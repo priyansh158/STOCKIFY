@@ -476,9 +476,12 @@ def _cmd_margin_check(args) -> int:
         return 2
     try:
         res = mc.check(legs, day, args.at)
-    except mc.CheckError as e:
+    except mc.CheckInputError as e:                     # the request is wrong
         print(e, file=sys.stderr)
-        return 2 if "refdata" in str(e) or "not a future" in str(e) else 1
+        return 2
+    except mc.CheckDataError as e:                      # the archive cannot price it
+        print(e, file=sys.stderr)
+        return 1
     _print_console(mc.check_text(res))
     return 0
 
@@ -719,7 +722,8 @@ def main(argv: list[str] | None = None) -> int:
                                         "files (offline; reads the lab, writes nothing)")
     mk.add_argument("--leg", action="append", required=True,
                     help='"BUY|SELL <units> <tradingsymbol>", e.g. "SELL 65 NIFTY26N1724950CE"; repeat per leg')
-    mk.add_argument("--date", help="IST trade date YYYY-MM-DD (default: the latest archived day)")
+    mk.add_argument("--date", help="IST trade date YYYY-MM-DD (default: the latest archived day; after about 20:30 "
+                                   "IST that can be tomorrow, whose i1 file NSE creates the evening before)")
     mk.add_argument("--at", help="IST time HH:MM: the SPAN file in force is the last created by then "
                                  "(default 15:30)")
     mk.set_defaults(func=_cmd_margin_check)
