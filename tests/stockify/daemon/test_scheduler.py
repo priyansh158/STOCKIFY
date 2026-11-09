@@ -121,6 +121,10 @@ class RunDaemonTests(unittest.TestCase):
         patcher = patch.object(nse_margin_files, "fetch_day", side_effect=RuntimeError("offline"))
         patcher.start()
         self.addCleanup(patcher.stop)                                # catch-up must never reach the network
+        from stockify.data import nse_files
+        patcher = patch.object(nse_files, "fetch", side_effect=RuntimeError("offline"))
+        patcher.start()
+        self.addCleanup(patcher.stop)                                # nse_fetch is a job boundary too
 
     def run_from(self, start_ns: int, record_code: int = exitcodes.OK):
         clock = ManualClock(start_ns)
