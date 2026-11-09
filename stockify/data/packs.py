@@ -668,16 +668,17 @@ def _pause(attempt: int) -> None:
 
 def _publish(tmp: Path, target: Path, digest: str) -> None:
     """Move a finished pack into place. Packs are content-addressed, so a target that already exists holds the
-    same bytes: keep it. Two builders of one spec can race (both saw no target); the loser's replace fails on
-    Windows while the winner's file is open or memory-mapped by an engine. Then the existing target is accepted
-    only if its hash matches; a different file re-raises at once. A pack in use is never overwritten."""
+    same bytes: keep it. The move is os.rename, which refuses an existing target (CB 4.6): a published pack is
+    never replaced, so no reader ever meets a replace window. Two builders of one spec can race (both saw no
+    target); the loser's rename is refused, and the existing target is accepted only if its hash matches; a
+    different file re-raises at once."""
     if target.exists():
         tmp.unlink()
         return
     error: OSError | None = None
     for attempt in range(_RETRIES):
         try:
-            tmp.replace(target)
+            os.rename(tmp, target)
             return
         except (PermissionError, FileExistsError) as e:
             error = e
@@ -694,33 +695,36 @@ def _publish(tmp: Path, target: Path, digest: str) -> None:
     raise error  # type: ignore[misc]
 
 
-# Manifest fields that depend on when or where a pack was built rather than on its content. There are none
-# today (every field is derived from the records), so racing builders write identical text; the comparison
-# still ignores such fields so that adding one later cannot turn a harmless race into a failure.
+# Manifest fields that depend on when a pack was built rather than on its content. There are none today; the
+# comparison still ignores such fields so that adding one later cannot turn a harmless race into a failure.
 _WALL_CLOCK_FIELDS = frozenset({"created_ns", "built_ns", "duration_ms", "pid", "host"})
+# Provenance: where the records were read from (landing or archive, P-05). The same pack can be rebuilt from
+# another source (after retention moves a day to the archive); the manifest then follows its latest build.
+_PROVENANCE_FIELDS = frozenset({"sources"})
 
 
-def _same_manifest(existing: str, ours: str) -> bool | None:
+def _same_manifest(existing: str, ours: str, ignore: frozenset[str] = _WALL_CLOCK_FIELDS) -> bool | None:
     """True: same content; False: different content; None: not readable as a manifest yet (look again)."""
     try:
         a, b = json.loads(existing), json.loads(ours)
     except json.JSONDecodeError:
         return None
-    strip = lambda m: {k: v for k, v in m.items() if k not in _WALL_CLOCK_FIELDS}  # noqa: E731
+    strip = lambda m: {k: v for k, v in m.items() if k not in ignore}  # noqa: E731
     return isinstance(a, dict) and strip(a) == strip(b)
 
 
 def _publish_text(target: Path, text: str) -> None:
-    """Write a manifest atomically (unique tmp, then replace). A racing builder writes the same content; when
-    the replace is refused (someone has the file open, or is replacing it), an existing manifest with the same
-    content is accepted. One whose content differs re-raises at once: it is never overwritten."""
+    """Write a manifest atomically: a unique tmp, then os.rename, which refuses an existing target (CB 4.6).
+    When it is refused, an existing manifest with the same content is kept as it is (a racing builder, or a
+    rebuild), so a reader meets no replace window. One that differs only in provenance (`sources`) is refreshed
+    by a replace, retried while refused. Any other difference re-raises at once: it is never overwritten."""
     tmp = target.with_name(f".{target.name}.{os.getpid()}-{secrets.token_hex(6)}.tmp")
     _refused_retry(lambda p: p.write_text(text, encoding="utf-8"), tmp)
     error: OSError | None = None
     try:
         for attempt in range(_RETRIES):
             try:
-                tmp.replace(target)
+                os.rename(tmp, target)
                 return
             except (PermissionError, FileExistsError) as e:
                 error = e
@@ -732,8 +736,14 @@ def _publish_text(target: Path, text: str) -> None:
                 verdict = _same_manifest(existing, text)
                 if verdict:
                     return
-                if verdict is False:                     # a complete manifest with other content: a conflict
-                    raise error
+                if verdict is False:
+                    if not _same_manifest(existing, text, _WALL_CLOCK_FIELDS | _PROVENANCE_FIELDS):
+                        raise error                      # a complete manifest with other content: a conflict
+                    try:
+                        tmp.replace(target)              # same pack read from elsewhere: follow the latest build
+                        return
+                    except PermissionError as e:
+                        error = e
             _pause(attempt)
         raise error  # type: ignore[misc]
     finally:

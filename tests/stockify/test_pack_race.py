@@ -85,7 +85,7 @@ class PackRaceTests(BundleTest):
         target = packs.pack_path(sha)
         real_exists = Path.exists
         with mock.patch.object(Path, "exists", lambda p: False if p == target else real_exists(p)):
-            with self.assertRaises(PermissionError):
+            with self.assertRaises(FileExistsError):
                 packs._publish(tmp, target, "0" * 64)       # our bytes hash to something else
         self.assertEqual(target.read_bytes(), before)
         tmp.unlink()
@@ -162,6 +162,33 @@ class PackRaceTests(BundleTest):
         self.assertGreater(reads[0], 0)
         self.assertEqual(self._leftovers(sha), [])
 
+    def test_a_rebuild_never_replaces_the_existing_files(self):
+        """CB 4.6: a pack and its manifest, once published, are never replaced (os.rename refuses an existing
+        target), so a reader can never meet the replace window. Same file ids after a rebuild."""
+        import os
+        sha = packs.build(self.spec)
+        ids = [os.stat(packs.pack_path(sha)).st_ino, os.stat(packs.manifest_path(sha)).st_ino]
+        self.assertEqual(packs.build(self.spec), sha)
+        self.assertEqual([os.stat(packs.pack_path(sha)).st_ino, os.stat(packs.manifest_path(sha)).st_ino], ids)
+        self.assertEqual(self._leftovers(sha), [])
+
+    def test_only_provenance_may_refresh_a_manifest(self):
+        """CB 4.6: the same pack read from another source (landing → archive, P-05) refreshes `sources`; any other
+        difference is a conflict and the manifest is left as it was."""
+        sha = packs.build(self.spec)
+        target = packs.manifest_path(sha)
+        text = target.read_text(encoding="utf-8")
+        moved = json.loads(text)
+        moved["sources"] = [{**src, "source": "archive"} for src in moved["sources"]] or [{"source": "archive"}]
+        moved_text = json.dumps(moved, indent=2, sort_keys=True) + chr(10)
+        packs._publish_text(target, moved_text)
+        self.assertEqual(target.read_text(encoding="utf-8"), moved_text)
+        other = {**moved, "records": moved["records"] + 1}
+        with self.assertRaises(FileExistsError):
+            packs._publish_text(target, json.dumps(other))
+        self.assertEqual(target.read_text(encoding="utf-8"), moved_text)
+        self.assertEqual(self._leftovers(sha), [])
+
     def test_an_open_manifest_with_the_same_content_is_accepted(self):
         sha = packs.build(self.spec)
         target = packs.manifest_path(sha)
@@ -198,7 +225,7 @@ class PackRaceTests(BundleTest):
         text = target.read_text(encoding="utf-8")
         other = json.loads(text)
         other["records"] += 1
-        with target.open("rb"), self.assertRaises(PermissionError):
+        with target.open("rb"), self.assertRaises(FileExistsError):
             packs._publish_text(target, json.dumps(other))
         self.assertEqual(target.read_text(encoding="utf-8"), text)
         self.assertEqual(self._leftovers(sha), [])
