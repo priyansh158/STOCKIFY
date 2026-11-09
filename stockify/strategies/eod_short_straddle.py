@@ -24,7 +24,7 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, decode_state, encode_state
 
 
 class EodShortStraddle(Strategy):
@@ -55,6 +55,16 @@ class EodShortStraddle(Strategy):
         if self.pending_day != ctx.today():
             self.pending_day = ctx.today()
             ctx.schedule_at(ctx.now() + 1)                     # after every bar published at this moment
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the date `pending_day` as ISO text.
+    def save_state(self) -> dict:
+        d = self.pending_day
+        return encode_state(self, {**vars(self), "pending_day": d.isoformat() if d else None})
+
+    def load_state(self, state: dict) -> None:
+        for name, value in decode_state(state).items():
+            setattr(self, name, value)
+        self.pending_day = date.fromisoformat(self.pending_day) if self.pending_day else None
 
     def _close(self, ctx, iid: int) -> int | None:  # noqa: ANN001
         bars = ctx.bars(iid, 86400, 1)

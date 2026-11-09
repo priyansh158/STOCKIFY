@@ -516,12 +516,6 @@ class RandomTrader(Strategy):
     def on_session_end(self, ctx):  # noqa: ANN001
         ctx.log("info", f"end funds {ctx.funds()!r} positions {ctx.positions()!r}")
 
-    def save_state(self) -> dict:                    # a paper session's day-to-day state (VOL 5.2)
-        return {"placed": list(self.placed)}
-
-    def load_state(self, state: dict) -> None:
-        self.placed = list(state["placed"])
-
 
 # ── Recording a strategy's context calls (replayed by stockify.tools.replay) ──
 

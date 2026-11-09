@@ -23,7 +23,7 @@ The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference st
 
 ```python
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, decode_state, encode_state
 
 
 class OpeningRangeBreakout(Strategy):
@@ -79,6 +79,16 @@ class OpeningRangeBreakout(Strategy):
                                      tag="orb_stop")
             self.traded = True
 
+    # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
+    def save_state(self) -> dict:
+        return encode_state(self, {**vars(self), "day": self.day.isoformat() if self.day else None})
+
+    def load_state(self, state: dict) -> None:
+        from datetime import date
+        for name, value in decode_state(state).items():
+            setattr(self, name, value)
+        self.day = date.fromisoformat(self.day) if self.day else None
+
     def on_timer(self, ctx, timer_id):
         if self.stop_id is not None:
             ctx.cancel(self.stop_id)
@@ -87,6 +97,11 @@ class OpeningRangeBreakout(Strategy):
             side = "SELL" if pos.qty > 0 else "BUY"
             ctx.place(self.iid, side, abs(pos.qty), "MIS", "MARKET", tag="orb_exit")
 ```
+
+`save_state` / `load_state` matter only in paper trading, where each trading day runs a fresh engine and `on_start`
+runs on the first day only: everything the strategy keeps on `self` must come back the next morning. The default
+`save_state` saves every attribute that is an int, bool, str, None, `Decimal`, tuple, list or str-keyed dict; this
+strategy keeps a `date` (`self.day`), so it writes it as text and reads it back (A2 §4.1).
 
 Things to know when you write your own (the full API is A2 §4):
 

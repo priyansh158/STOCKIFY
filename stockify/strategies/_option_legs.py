@@ -21,7 +21,7 @@ from datetime import date
 from decimal import ROUND_CEILING, Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, decode_state, encode_state
 
 DAY_NS = 86_400 * 1_000_000_000
 
@@ -51,6 +51,18 @@ class OptionLegs(Strategy):
         self.waiting_for = ""                   # why the armed entry has not happened yet
         self.entry_timer = self._daily(ctx, self.entry_hhmm)
         self.exit_timer = self._daily(ctx, self.exit_hhmm)
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the int-keyed dicts `entries` (sell order id
+    # → instrument) and `stops` (instrument → stop order id) as [key, value] pairs in insertion order.
+    def save_state(self) -> dict:
+        return encode_state(self, {**vars(self), "entries": [[k, v] for k, v in self.entries.items()],
+                                   "stops": [[k, v] for k, v in self.stops.items()]})
+
+    def load_state(self, state: dict) -> None:
+        for name, value in decode_state(state).items():
+            setattr(self, name, value)
+        self.entries = {k: v for k, v in self.entries}
+        self.stops = {k: v for k, v in self.stops}
 
     def _index_ids(self, ctx) -> set[int]:  # noqa: ANN001
         return {r["underlying_id"] for r in ctx._rows()

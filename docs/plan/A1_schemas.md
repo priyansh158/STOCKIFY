@@ -413,7 +413,7 @@ that day's underlyings step to B2, and is recorded in `elm_skipped[D]` (`{file, 
 these models (MEZ 4.9 oracle, MEZ 4.10 engine, §6.1); an unknown model is refused ("margin model … is not supported
 yet"), never a fallback to flat.
 
-(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. A day's `seed` is present only when `run.seed_mode` is `per_day`: derived from the run's `seed` and the date as in A4 §4.5, the only source of that day's seed for both engines. Paper sessions get one bundle per day, `per_day`, with `sod_state` filled. Such a bundle may also carry `next_days`: the trading days after its own, in the `days[]` shape without `seed`. They are never processed (no phases, events or `DAY_END`); both engines consult them only for where an order queued after the day's session activates (A4 §3.10) and for trading-day counts such as the D-60 delivery-margin schedule, so a one-day bundle decides both as the whole run would. `sod_state` is §6.4.
+(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. A day's `seed` is present only when `run.seed_mode` is `per_day`: derived from the run's `seed` and the date as in A4 §4.5, the only source of that day's seed for both engines. Paper sessions get one bundle per day, `per_day`, with `sod_state` filled. Such a bundle also carries `prev_days` and `next_days` (VOL 5.2): the trading days before and after its own, in the `days[]` shape without `seed`, dates rising (`prev_days` all before `days[0]`, `next_days` all after `days[-1]`; both engines refuse anything else). The key `next_days` (or `prev_days`) being present is what marks a paper session's day bundle. They are never processed (no phases, events or `DAY_END`). Both engines consult them only for: a day's `CONTINUOUS` start when a bar dated that day arrives on a later one (a daily bar published at the next midnight is matched against its own session), where an order queued after the day's session activates (A4 §3.10), and trading-day counts such as the D-60 delivery-margin schedule. So a one-day bundle decides all three as the whole run would. Split equals whole holds when they cover the whole run's other days (the tests); a paper day bundle carries at least the previous trading day, and enough following days to reach every open position's expiry (D-60 counts from E-4), which a backtest ending before an expiry does not see (Task 8). `sod_state` is §6.4.
 
 ### 6.3 Run folder `runs/<run_id>/`
 
@@ -451,44 +451,68 @@ outside `strategy`, which is whatever the strategy's `save_state()` returns (flo
 A4 §9.2). JSON objects keyed by an instrument id use the id in decimal as the key (`"123"`), so they sort as strings.
 `null` stands for an absent value. Lists keep the order given below.
 
+Each object holds exactly its listed keys: a missing key or one the schema does not have is refused.
+
+<!-- <block name="sod-state-keys" same-as-pattern='^\| \x60(?P<value>[a-z_]+)\x60 \|'> -->
+
 | Key | Value |
 |---|---|
 | `schema` | `"stockify.sod_state/1"` |
-| `trade_date` | the trading day whose `DAY_END` ran last (`null` before any) |
+| `trade_date` | the bundle trading day whose `DAY_END` ran last (`null` before any; a D-52 close-out on a later, non-trading date does not change it) |
 | `cash_paise` | the ledger's cash |
 | `ledger` | `{capital_paise, charges_total_paise, reserved_paise, positions}`; `positions` = every position the run has opened, flat ones too, **in the order they were first opened** (that order decides later iteration): `{instrument_id, product, style ("premium" \| "variation"), q (open units ≥ 0), d (+1 long, −1 short), c (exact cost of the open units, Σ price × units), realised, vm (variation already moved to cash), last_mark (paise or null), mark_source ("" \| "fill" \| "ltp" \| "settle" \| "fallback")}` (A4 §6.1); the average price is `floor_div(c, q)` and is not stored |
-| `cnc_releases` | CNC sale proceeds not usable yet: `[[trade_date, paise], …]` by date (A4 §6.5) |
 | `pending_orders` | every order not final (`PENDING`, `OPEN`, `TRIGGER_PENDING`), by `order_id`, including those queued for the next trading day (A4 §3.10). Each is an order record (below) |
 | `final_orders` | every final order of earlier days (`COMPLETE`, `CANCELLED`, `REJECTED`, `SLICED`), by `order_id`, so `ctx.order(id)` sees them as in a whole run. They are not written to the next day's `orders.csv` |
 | `dp_done` | `[[instrument_id, trade_date], …]` sorted: DP charges already taken (A4 §5) |
-| `timers` | live timers `[[timer_id, t_ns, period_ns], …]` (`period_ns` 0 = one-shot) **in firing order**: by time, then by the order they were scheduled. A timer due on a date that is not a trading day stays here and fires in the next day's run at its own time (A4 §1.10) |
+| `timers` | live timers `[[timer_id, t_ns, period_ns], …]` (`period_ns` 0 = one-shot; `t_ns` the next firing) **in firing order**: by time, then by the order their next firing was queued (for a periodic timer, when its last firing re-armed it). A timer due on a date that is not a trading day stays here and fires in the next day's run at its own time (A4 §1.10) |
 | `built_bars` | bars built from snapshots whose `BAR_BUILT` is still to come (a bucket past `DAY_END`, e.g. a daily one): `[[instrument_id, interval_s, start_ns, open, high, low, close, volume, oi], …]` in firing order |
-| `counters` | `{next_order, next_fill, next_timer, charge_row, event_no}`: the next order, fill and timer ids, the number of `charges.csv` rows already written (the next day numbers on from it), market-data events so far |
+| `counters` | `{next_order, next_fill, next_timer, charge_row}`: the next order, fill and timer ids, and the number of `charges.csv` rows already written (the next day numbers on from it) |
 | `rng` | `{slippage: [state, inc], strategy: [state, inc]}`: PCG32 stream 1 and stream 2 as they are after the day (unsigned 64-bit, A4 §4.5). With `per_day` a day's first event re-creates both from its `days[].seed` as usual; this is what events before it (a weekend timer) draw, as in a whole run |
 | `subscriptions` | `{ticks: [instrument_id, …] sorted, bars: {"<id>": [interval_s, …] sorted}}` |
 | `strategy_enabled` | `true` (D-70, Task 7, makes it a journaled switch) |
 | `pause_reasons` | `[]` sorted (D-70) |
 | `queued_notifications` | `[]` (D-70: `on_fill` / `on_order_update` held while disabled) |
-| `fsp_seen` | final settlement prices seen: `[[underlying_id, date, paise], …]` sorted |
-| `marks` | `{"<id>": paise}`: the last price seen per instrument (LTP, bar close or index value), used for reference prices and the §7.2 fallback |
+| `fsp_seen` | final settlement prices seen: `[[underlying_id, date, paise], …]` sorted (an `eod_close` fill of an expiring contract published after midnight settles at the FSP seen the day before, A4 §4.9) |
 | `market` | `{"<id>": {ltp, t, s0, s1, bid, ask, book, band, oi, min_interval, day}}` (A4 §2): `s0`/`s1` = `{t, ltp, volume, atp, high, low}` or null; `book` = the last depth `[[price, qty, orders], …]` (5 bids, then 5 asks) or null; `band` = `[lower, upper]` or null; `min_interval` = the smallest bar interval seen (null on tick data); `day` = the IST date of its last event |
 | `bar_history` | `{"<id>:<interval_s>": [[start_ns, open, high, low, close, volume, oi], …]}` in arrival order: **the full history, never trimmed** (C-2), since indicators run over every bar |
-| `strategy` | `save_state()` |
+| `strategy` | the strategy's `save_state()`, checked at the day's `DAY_END` (A2 §4.1): a JSON object of JSON-typed values only (null, booleans, integers, finite floats that canonical JSON gives back exactly, strings, lists, objects with string keys). A Python strategy returns a dict; a C++ strategy's `save_state()` string is parsed as JSON, must be an object, and is embedded as that value, so both serialise it canonically |
 
-An **order record** has the fields `order_id, parent_id, instrument_id, side, qty, product, type, price, trigger,
-validity, protection ("AUTO" or bp), tag, t_submit, t_activate, status, filled_qty, fill_value (Σ price × qty),
-reason, limit (null or paise), from_market, triggered, protection_bp (null or bp), reserved (paise),
-first_eligible_done, trade_date (null or date), charged, eod_after (null or date)`.
+<!-- </block> -->
+
+An **order record** has exactly these fields (A4 §3; the enum spellings are the `orders.csv` ones):
+
+| Field | Type |
+|---|---|
+| `order_id`, `parent_id` | int (`parent_id` 0 = none; a slice's parent otherwise) |
+| `instrument_id`, `qty`, `price`, `trigger`, `t_submit`, `t_activate`, `filled_qty`, `fill_value` (Σ price × qty), `reserved` (paise) | int |
+| `side` | `"BUY"` \| `"SELL"` |
+| `product` | `"CNC"` \| `"MIS"` \| `"NRML"` |
+| `type` | `"MARKET"` \| `"LIMIT"` \| `"SL"` \| `"SL-M"` (as placed or as modified) |
+| `validity` | `"DAY"` \| `"IOC"` |
+| `protection` | `"AUTO"` or int bp |
+| `tag`, `reason` | string, `""` when none (never null) |
+| `status` | `"PENDING"` \| `"OPEN"` \| `"TRIGGER_PENDING"` \| `"COMPLETE"` \| `"CANCELLED"` \| `"REJECTED"` \| `"SLICED"` |
+| `limit`, `protection_bp` | int or null |
+| `from_market`, `triggered`, `first_eligible_done`, `charged` | boolean |
+| `trade_date`, `eod_after` | date or null |
 
 Not part of it: per-day metrics (`rejects`, `participation_used`, exposure's open/flat changes), labels, the day's
 fills, order events and log lines. A day's `positions_eod`, `equity` and `margin_daily` rows are that day's output.
+Left out because they are implied (VOL 5.2 fix round, proved rather than carried):
+- **CNC releases** (A4 §6.5): `DAY_END` releases every credit dated on or before its day, and no credit can carry a
+  later date then, so there are none at the end of a day. Writing the state checks this and fails otherwise.
+- **Last prices** (`underlying_last`, used for reference prices and the §7.2 fallback): always the instrument's market
+  `ltp`, so they are rebuilt from `market` on load. Writing the state checks they are equal.
+- **The market-data event count** (`event_no`): neither engine reads it. The lab store numbers a session's order
+  events itself (`apply_session_outputs`, `first_event_no`).
 
 **Size.** One bar row is about 70 bytes of canonical JSON. One minute-bar series on an F&O instrument (09:15–15:40,
 385 bars a day, about 21 days) is about **0.57 MB per instrument-month** (measured: 69.9 bytes a row); a 5-second
 series about 12× that, about 6.8 MB. A session with 20 minute-bar instruments grows about 11 MB a month, so 64 MB is
 reached after about 6 months. `sod_state.size_warning(text, warn_bytes)` returns a warning past `paper.json` →
 `sod_state_warn_mb` (64); the daemon logs it and writes a timeline row `sod_state_large` (Task 16). Nothing is
-trimmed; a compact encoding would be a later D-entry for both engines.
+trimmed; a compact encoding would be a later D-entry for both engines. `final_orders` also grows with the session:
+an order record is about 500 bytes (measured: 503), so a session placing 50 orders a day adds about 0.5 MB a month.
 
 ## §7 Config files (`stockify/config/`)
 

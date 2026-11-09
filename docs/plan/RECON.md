@@ -973,3 +973,14 @@ for Task 21).
 565,002 bytes). One minute-bar series on an F&O instrument (385 bars a day, 21 days) is about **0.57 MB per
 instrument-month**; a 5-second series about 6.8 MB; 20 minute-bar instruments about 11 MB a month, so the 64 MB
 warning (`paper.json` → `sod_state_warn_mb`) comes after about 6 months. Nothing is trimmed (C-2).
+
+**Fix round 1 (review of cb18bdb).**
+- No shipped strategy implemented `save_state` / `load_state`, and the base returned `{}`. With `on_start` skipped on
+  day 2, `sma_cross` raised `AttributeError` on its first bar. The base now saves every attribute (A2 §4.1).
+- A one-day bundle also needs the previous trading day: a daily bar published at the next midnight is matched against
+  its own date's `CONTINUOUS` start (`runner._match_bar` / `_match_eod` → `continuous_start(d)`). Without it the order
+  was cancelled EOD unfilled (buy_and_hold, eod fills). Hence `bundle.prev_days`.
+- `dp_done` and `fsp_seen` are needed only in narrow cases, each now with a world: a part-filled CNC sell resting past
+  its close on daily bars (D-44) and charged at the next midnight; an `eod_close` fill of an expiring contract
+  published after midnight. `cnc_releases` (always empty after `DAY_END`), last prices (the market LTPs) and
+  `event_no` (never read) are no longer carried.

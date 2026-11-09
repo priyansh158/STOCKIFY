@@ -15,6 +15,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import tests.support  # noqa: F401  — must precede project imports
 
@@ -45,6 +46,7 @@ def day_bundles(whole: dict) -> list[dict]:
     for i, day in enumerate(whole["days"]):
         b = copy.deepcopy(whole)
         b["days"] = [copy.deepcopy(day)]
+        b["prev_days"] = [{k: v for k, v in d.items() if k != "seed"} for d in whole["days"][:i]]
         b["next_days"] = [{k: v for k, v in d.items() if k != "seed"} for d in whole["days"][i + 1:]]
         out.append(b)
     return out
@@ -191,12 +193,28 @@ def long_history_world() -> tuple[dict, int]:
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 
-class SodStateTests(unittest.TestCase):
-    def test_split_equals_whole_on_fuzz_worlds(self):
+class SplitCase(unittest.TestCase):
+    def assert_split_equals_whole(self, bundle: dict, records: list, make, folder: Path, msg=None) -> bool:  # noqa: ANN001
+        """Split equals whole, or both fail with the same error; True when artifacts were compared."""
+        try:
+            run_whole(bundle, records, make, folder)
+        except Exception as e:  # noqa: BLE001 — then the split run must fail alike
+            with self.assertRaises(type(e), msg=msg) as ctx:
+                run_day_by_day(bundle, records, make, folder)
+            self.assertEqual(str(ctx.exception), str(e), msg)
+            return False
+        run_day_by_day(bundle, records, make, folder)
+        self.assertIsNone(first_difference(folder / "whole", folder / "parts"), msg)
+        return True
+
+
+
+class SodStateTests(SplitCase):
+    def _fuzz_split(self, seed_mode: str) -> None:
         compared = 0
         for seed in range(4000, 4040):
             world = fuzz.fuzz_world(seed)
-            world["run"]["seed_mode"] = "per_day"
+            world["run"]["seed_mode"] = seed_mode
             ids = [i["id"] for i in world["bundle"]["instruments"]]
 
             def make(ids=ids, p=world["fuzz"]["p_act"]):  # noqa: ANN001, ANN202
@@ -204,17 +222,15 @@ class SodStateTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 folder = Path(tmp)
                 bundle, records = _world_inputs(world, folder)
-                try:
-                    run_whole(bundle, records, make, folder)
-                except Exception as e:  # noqa: BLE001 — then the split run must fail alike
-                    with self.assertRaises(type(e), msg=seed) as ctx:
-                        run_day_by_day(bundle, records, make, folder)
-                    self.assertEqual(str(ctx.exception), str(e), seed)
-                    continue
-                run_day_by_day(bundle, records, make, folder)
-                self.assertIsNone(first_difference(folder / "whole", folder / "parts"), seed)
-                compared += 1
+                compared += self.assert_split_equals_whole(bundle, records, make, folder, (seed, seed_mode))
         self.assertGreater(compared, 30)
+
+    def test_split_equals_whole_on_fuzz_worlds(self):
+        self._fuzz_split("per_day")
+
+    def test_split_equals_whole_on_fuzz_worlds_with_seed_mode_run(self):
+        # one stream position for the whole run: every world needs the rng carry (the reviewer's 40/40)
+        self._fuzz_split("run")
 
     def test_long_history_ema_strategy_split_equals_whole(self):
         world, sat = long_history_world()
@@ -330,6 +346,379 @@ class SodStateTests(unittest.TestCase):
     def test_seed_mode_helper(self):
         self.assertEqual(runconfig.seed_mode({}), "run")
         self.assertEqual(runconfig.seed_mode({"seed_mode": "per_day"}), "per_day")
+
+
+# ── Fix round 1: shipped strategies, strategy state checks, carried parts proved by worlds ───────────────────────
+
+def _drop_on_restore(key: str, empty):  # noqa: ANN001, ANN202
+    """Patch sod_state.restore so the loaded state has `key` emptied (a mutation: split must then differ)."""
+    orig = sod_state.restore
+
+    def restore(engine, state):  # noqa: ANN001, ANN202
+        return orig(engine, {**state, key: copy.deepcopy(empty)})
+    return mock.patch.object(sod_state, "restore", restore)
+
+
+def _flat_margin_without_next_days():  # noqa: ANN202
+    from stockify.oracle import margin
+    orig = margin.FlatMargin.__init__
+
+    def init(self, bundle):  # noqa: ANN001, ANN202
+        orig(self, {**bundle, "next_days": []})
+    return mock.patch.object(margin.FlatMargin, "__init__", init)
+
+
+def _tick(iid: int, at: str, ltp: int, volume: int) -> dict:
+    return {"kind": "TICK_QUOTE", "instrument": iid, "t": at, "ltp": ltp, "volume": volume, "atp": ltp,
+            "high": ltp + 100, "low": ltp - 100, "open": ltp}
+
+
+def _eq(iid: int = 1, sym: str = "TEST") -> dict:
+    return {"id": iid, "kind": "EQ", "tradingsymbol": sym, "specs": [{"from": "2015-01-01", "lot": 1, "tick_paise": 5}]}
+
+
+def delivery_window_world() -> dict:
+    """D-60 across a split: a long ITM stock call (physically settled) bought on Friday and held into its expiry on
+    Tuesday, with the shipped Z-4 schedule. Friday is E-2 and Monday E-1, which only next_days lets a one-day bundle
+    count."""
+    days = ["2026-03-06", "2026-03-09", "2026-03-10"]
+    inst = [_eq(1, "AAA"),
+            {"id": 2, "kind": "CE", "tradingsymbol": "AAACE", "underlying": "AAA", "underlying_id": 1,
+             "expiry": days[2], "strike_paise": 240_000, "underlying_class": "STOCK", "settlement": "physical",
+             "specs": [{"from": "2015-01-01", "lot": 250, "tick_paise": 5}]}]
+    evs = []
+    for d in days:
+        for n, hhmm in enumerate(("09:15", "09:16", "09:17", "09:18")):
+            evs.append(_tsbar(1, d, hhmm, 250_000 + 100 * n))
+            evs.append(_tsbar(2, d, hhmm, 12_000 + 50 * n))
+    evs.append({"kind": "SETTLE", "instrument": 1, "t": f"{days[2]}T16:05:00+05:30", "date": days[2],
+                "price": 250_300, "subtype": "final"})
+    actions = [{"at_ns": f"{days[0]}T09:16:30+05:30",
+                "place": {"instrument": 2, "side": "BUY", "qty": 250, "product": "NRML", "type": "LIMIT",
+                          "price": 13_000}}]
+    return {"id": "D60SPLIT", "bundle": {"dates": days, "instruments": inst, "delivery_schedule": True},
+            "run": {"fill_model": {"kind": "bar", "participation": "1"}, "capital_paise": 10**9, "price_basis": "raw"},
+            "events": evs, "strategy": {"actions": actions}}
+
+
+def _tsbar(iid: int, d: str, hhmm: str, c: int, v: int = 100_000) -> dict:
+    return {"kind": "BAR", "instrument": iid, "interval_s": 60, "start": f"{d}T{hhmm}:00+05:30", "o": c, "h": c + 50,
+            "l": c - 50, "c": c, "v": v}
+
+
+def dp_world() -> dict:
+    """dp_done across a split: CNC shares bought on Monday from ticks (snapshot_ltp); on Tuesday a small sell (B)
+    completes and takes the day's DP charge, a large one (A) fills only in part. The stock also has daily bars
+    (published at the next midnight), so A rests past Tuesday's close (D-44) and is cancelled by Tuesday's daily bar at
+    Wednesday 00:00, in Wednesday's part: its charge, dated Tuesday, must not take a second DP charge."""
+    days = ["2026-03-02", "2026-03-03", "2026-03-04"]
+    evs = []
+    for d in days:
+        evs.append({"kind": "BAR", "instrument": 1, "interval_s": 86400, "start": f"{d}T00:00:00+05:30",
+                    "o": 10_000, "h": 10_100, "l": 9_900, "c": 10_000, "v": 1_000_000})
+        for n in range(30):
+            mm = 20 + n
+            evs.append(_tick(1, f"{d}T09:{mm:02d}:00+05:30", 10_000, 100 * (n + 1)))
+    actions = [{"at_ns": f"{days[0]}T09:22:30+05:30",
+                "place": {"instrument": 1, "side": "BUY", "qty": 100, "product": "CNC", "type": "MARKET"}},
+               {"at_ns": f"{days[1]}T09:44:30+05:30",
+                "place": {"instrument": 1, "side": "SELL", "qty": 10, "product": "CNC", "type": "MARKET"}},
+               {"at_ns": f"{days[1]}T09:44:31+05:30",
+                "place": {"instrument": 1, "side": "SELL", "qty": 90, "product": "CNC", "type": "LIMIT",
+                          "price": 9_000}}]
+    return {"id": "DPSPLIT", "bundle": {"dates": days, "instruments": [_eq()], "charges": fuzz._real_charges()},
+            "run": {"fill_model": {"kind": "snapshot_ltp", "participation": "0.10"}, "capital_paise": 10**8,
+                    "price_basis": "raw", "costs": {"allow_unverified": True, "dp_charges": True}},
+            "events": evs, "strategy": {"actions": actions}}
+
+
+def fsp_world() -> dict:
+    """fsp_seen across a split: eod_close fills on daily bars published at the next midnight. A call sold on its
+    expiry day (Tuesday) fills at Tuesday's close, which arrives at Wednesday 00:00 (Wednesday's part); the FSP came
+    at Tuesday 16:00 (Tuesday's part), and the fill settles at it."""
+    days = ["2026-03-02", "2026-03-03", "2026-03-04"]
+    inst = [{"id": 1, "kind": "INDEX", "tradingsymbol": "NIFTY 50"},
+            {"id": 2, "kind": "CE", "tradingsymbol": "NC", "underlying": "NIFTY", "underlying_id": 1,
+             "expiry": days[1], "strike_paise": 2_400_000, "specs": [{"from": "2015-01-01", "lot": 65, "tick_paise": 5}]}]
+    evs = []
+    for d, spot, ce in zip(days, (2_400_000, 2_402_000, 2_410_000), (10_000, 9_000, 9_500)):
+        for iid, c in ((1, spot), (2, ce)):
+            evs.append({"kind": "BAR", "instrument": iid, "interval_s": 86400, "start": f"{d}T00:00:00+05:30",
+                        "o": c, "h": c, "l": c, "c": c, "v": 100_000})
+    evs.append({"kind": "SETTLE", "instrument": 1, "t": f"{days[1]}T16:00:00+05:30", "date": days[1],
+                "price": 2_405_000, "subtype": "final"})
+    actions = [{"at_ns": f"{days[1]}T08:00:00+05:30",
+                "place": {"instrument": 2, "side": "SELL", "qty": 65, "product": "NRML", "type": "MARKET",
+                          "protection": 5000}}]
+    return {"id": "FSPSPLIT", "bundle": {"dates": days, "instruments": inst},
+            "run": {"fill_model": {"kind": "eod_close", "half_spread_ticks": 1}, "capital_paise": 10**8,
+                    "price_basis": "raw"},
+            "events": evs, "strategy": {"actions": actions}}
+
+
+def _script(bundle: dict):  # noqa: ANN202
+    from stockify.strategies._script import Script
+    return lambda: Script(copy.deepcopy(bundle["strategy"]["actions"]))
+
+
+def _shipped_worlds() -> dict:
+    """Every catalogue strategy with a multi-day world and params: ref -> (world, params, bundle builder)."""
+    from tests.stockify import test_strategies as TS
+    from tests.stockify.test_chain_view import EXPIRY, chain_bundle, chain_world
+    closes = [10000, 10000, 10000, 10100, 10200, 10300, 10150, 10000, 9900, 9850]
+    daily = TS.world(TS.walk(closes), dates=TS.DAYS)
+    orb_days = TS.DAYS[:3]
+    orb = []
+    for d in orb_days:
+        orb += [TS.minute(d, "09:15", 10000, 10050, 9950, 10000), TS.minute(d, "09:16", 10000, 10060, 9980, 10040),
+                TS.minute(d, "09:17", 10040, 10120, 10040, 10100), TS.minute(d, "09:18", 10100, 10150, 10090, 10140),
+                TS.minute(d, "15:10", 10200, 10210, 10190, 10200), TS.minute(d, "15:11", 10200, 10210, 10190, 10200)]
+    orb_world = TS.world(orb, dates=orb_days, mis_cutoff={"CM": "15:20"})
+    eod_days = ["2026-03-02", "2026-03-03", "2026-03-04"]
+    inst = [{"id": 1, "kind": "INDEX", "tradingsymbol": "NIFTY 50"},
+            {"id": 2, "kind": "CE", "tradingsymbol": "NC", "underlying": "NIFTY", "underlying_id": 1,
+             "expiry": "2026-03-04", "strike_paise": 2400000, "specs": [{"from": "2026-01-01", "lot": 65, "tick_paise": 5}]},
+            {"id": 3, "kind": "PE", "tradingsymbol": "NP", "underlying": "NIFTY", "underlying_id": 1,
+             "expiry": "2026-03-04", "strike_paise": 2400000, "specs": [{"from": "2026-01-01", "lot": 65, "tick_paise": 5}]}]
+    eod = []
+    for day, spot, ce, pe in zip(eod_days, (2400000, 2402000, 2410000), (10000, 9000, 10000), (10000, 8000, 0)):
+        for iid, c in ((2, ce), (3, pe), (1, spot)):
+            eod.append({"kind": "BAR", "instrument": iid, "interval_s": 86400, "start": f"{day}T00:00:00+05:30",
+                        "t": f"{day}T19:00:00+05:30", "o": c, "h": c, "l": c, "c": c, "v": 100_000})
+    eod.append({"kind": "SETTLE", "instrument": 1, "t": "2026-03-04T16:00:00+05:30", "date": "2026-03-04",
+                "price": 2410000, "subtype": "final"})
+    eod_world = TS.world(eod, instruments=inst, dates=eod_days,
+                         run={"fill_model": {"kind": "eod_close", "half_spread_ticks": 1}, "capital_paise": 100_000_000})
+    chain = chain_world(7, with_future=True)                # two sessions: 2026-08-03 and its copy on the expiry day
+    day = 86_400 * 1_000_000_000
+    chain["events"] += [{**copy.deepcopy(e), "t": golden.ts(e["t"]) + day} for e in chain["events"]]
+    chain["bundle"]["dates"] = ["2026-08-03", EXPIRY]
+    chain["run"]["capital_paise"] = 10**9
+    opt = {"entry_hhmm": "09:20", "exit_hhmm": "10:05", "stop_pct": "0.05"}
+    return {
+        "stockify.strategies.buy_and_hold:BuyAndHold": (daily, {"symbol": "NSE:TEST"}, golden.build_bundle),
+        "stockify.strategies.sma_cross:SmaCross": (daily, {"symbol": "NSE:TEST", "fast": 2, "slow": 3},
+                                                   golden.build_bundle),
+        "stockify.strategies.opening_range_breakout:OpeningRangeBreakout": (
+            orb_world, {"symbol": "NSE:TEST", "range_minutes": 2, "qty": 10}, golden.build_bundle),
+        "stockify.strategies.eod_short_straddle:EodShortStraddle": (eod_world, {"min_days": 1}, golden.build_bundle),
+        "stockify.strategies.short_straddle_stop:ShortStraddleStop": (chain, dict(opt), chain_bundle),
+        "stockify.strategies.iron_fly:IronFly": (chain, {**opt, "wing_strikes": 1}, chain_bundle),
+        # the comparison wrapper (not in the catalogue) around a catalogue strategy
+        "stockify.strategies._margin_watch:MarginWatch": (
+            daily, {"inner_ref": "stockify.strategies.sma_cross:SmaCross", "symbol": "NSE:TEST", "fast": 2, "slow": 3},
+            golden.build_bundle),
+    }
+
+
+class StrategyStateTests(SplitCase):
+    """I-1 / I-2: every shipped strategy carries its own state; strategy states are checked at day end."""
+
+    def test_every_shipped_strategy_split_equals_whole(self):
+        from stockify import strategy as S
+        from stockify.strategies import _catalogue
+        worlds = _shipped_worlds()
+        refs = {s["ref"] for s in _catalogue.python_strategies()}
+        self.assertLessEqual(refs, set(worlds), "a catalogue strategy has no split test world")
+        for ref, (world, params, build) in worlds.items():
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                bundle = build(world)
+                bundle["strategy"]["params"] = params
+                records = load_records([golden.build_pack(world, folder)])
+                self.assertTrue(self.assert_split_equals_whole(bundle, records, lambda r=ref: S.load(r), folder, ref),
+                                ref)
+                fills = (folder / "whole" / "fills.csv").read_text(encoding="utf-8").splitlines()
+                self.assertGreater(len(fills), 1, f"{ref} made no trade: the world proves nothing")
+
+    def test_script_goldens_split_equals_whole(self):
+        multi = [(p, g) for p, g in golden.goldens() if len(g["bundle"]["dates"]) > 1 and not g["strategy"].get("ref")]
+        self.assertGreaterEqual(len(multi), 4)
+        for _, g in multi:
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                bundle, records = _world_inputs(g, folder)
+                self.assert_split_equals_whole(bundle, records, _script(bundle), folder, g["id"])
+
+    def test_default_state_round_trips_decimal_and_tuple(self):
+        from decimal import Decimal
+
+        from stockify import strategy as S
+
+        class Mine(S.Strategy):
+            pass
+        a = Mine()
+        a.share, a.last, a.legs, a.cfg, a.none = Decimal("0.95"), (1, "x", (2, Decimal("1E+2"))), [1, 2], {"k": [True]}, None
+        st = a.save_state()
+        text = numerics.dumps_canonical(st)
+        b = Mine()
+        b.load_state(json.loads(text))
+        self.assertEqual(vars(b), vars(a))
+        self.assertIsInstance(b.last, tuple)
+        self.assertIsInstance(b.last[2], tuple)
+        self.assertEqual(str(b.last[2][1]), "1E+2")
+        self.assertEqual(list(st), sorted(st))                     # sorted by attribute name
+
+    def test_default_state_refuses_other_types_naming_class_and_attribute(self):
+        from datetime import date
+
+        from stockify import strategy as S
+
+        class Mine(S.Strategy):
+            pass
+        for value, attr in ((date(2026, 1, 1), "when"), ({3: "x"}, "by_id"), (1.5, "ratio"), ({"$decimal": "1"}, "raw")):
+            m = Mine()
+            setattr(m, attr, value)
+            with self.assertRaises(S.StrategyStateError) as ctx:
+                m.save_state()
+            self.assertIn(f"Mine.{attr}", str(ctx.exception))
+            self.assertIn("save_state/load_state", str(ctx.exception))
+
+    def _one_day(self, strategy, folder: Path) -> Engine:
+        world = fuzz.fuzz_world(4003)
+        bundle, records = _world_inputs(world, folder)
+        b0 = day_bundles(bundle)[0]
+        e = Engine(json.loads(bundle_mod.dumps(b0)), slice_records(records, bundle["days"])[0], strategy)
+        return e
+
+    def test_bad_strategy_state_fails_at_day_end_naming_the_strategy(self):
+        class NanState(Strategy):
+            def save_state(self) -> dict:
+                return {"ema": float("nan")}
+
+        class TupleState(Strategy):
+            def save_state(self) -> dict:
+                return {"last": (1, 2)}
+
+        class IntKeys(Strategy):
+            def save_state(self) -> dict:
+                return {"by_id": {3: 1}}
+
+        class Raises(Strategy):
+            def save_state(self) -> dict:
+                raise KeyError("placed")
+        for cls, words in ((NanState, "NaN"), (TupleState, "tuple"), (IntKeys, "keys must be strings"),
+                           (Raises, "save_state() raised KeyError")):
+            with tempfile.TemporaryDirectory() as tmp:
+                e = self._one_day(cls(), Path(tmp))
+                with self.assertRaises(RunError) as ctx:
+                    e.run()                                         # at DAY_END, not later at finalisation
+                self.assertIn(cls.__name__, str(ctx.exception))
+                self.assertIn(words, str(ctx.exception))
+
+    def test_load_state_errors_name_the_strategy(self):
+        class Fragile(Strategy):
+            def load_state(self, state: dict) -> None:
+                state["missing"]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            world = fuzz.fuzz_world(4003)
+            bundle, records = _world_inputs(world, folder)
+            b0, b1 = day_bundles(bundle)[:2]
+            text = _run(b0, slice_records(records, bundle["days"])[0], Strategy(), folder / "d0").eod_state()
+            with self.assertRaisesRegex(RunError, r"Fragile\.load_state\(\) raised KeyError: 'missing'"):
+                Engine(json.loads(bundle_mod.dumps(b1)), [], Fragile()).load_sod_state(text)
+
+    def test_unknown_state_keys_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            world = fuzz.fuzz_world(4003)
+            bundle, records = _world_inputs(world, folder)
+            b0, b1 = day_bundles(bundle)[:2]
+            st = json.loads(_run(b0, slice_records(records, bundle["days"])[0], Strategy(), folder / "d0").eod_state())
+            for bad in ({**st, "marks": {}}, {**st, "counters": {**st["counters"], "event_no": 0}}):
+                with self.assertRaisesRegex(RunError, "unknown keys"):
+                    Engine(json.loads(bundle_mod.dumps(b1)), [], Strategy()).load_sod_state(numerics.dumps_canonical(bad))
+
+    def test_next_days_are_validated(self):
+        world = fuzz.fuzz_world(4003)
+        whole = golden.build_bundle(world)
+        b0 = day_bundles(whole)[0]
+        for bad, words in ((list(reversed(b0["next_days"])), "is not after"), ([b0["days"][0]], "is not after"),
+                           ([{**b0["next_days"][0], "seed": 1}], "seed"), ({"x": 1}, "must be a list"),
+                           ([{"date": "2099-01-01"}], "day object")):
+            with self.assertRaisesRegex(RunError, words):
+                Engine(json.loads(bundle_mod.dumps({**b0, "next_days": bad})), [], Strategy())
+
+    def test_cpp_engine_refuses_day_bundles_before_writing_anything(self):
+        from stockify import engine as cpp
+        world = fuzz.fuzz_world(4003)
+        whole = golden.build_bundle(world)
+        b0 = day_bundles(whole)[0]
+        for b in (b0, {**whole, "sod_state": {"schema": sod_state.SCHEMA}}):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp) / "run"
+                with self.assertRaisesRegex(NotImplementedError, "VOL 5.3"):
+                    cpp.run_bundle(b, [], out, strategy=Strategy(), report=False)
+                self.assertFalse(out.exists())
+
+
+class CarriedPartsTests(SplitCase):
+    """Each carried part that only some worlds need has a world that breaks without it (M-1, I-3)."""
+
+    def _split(self, world: dict, make=None) -> Path:  # noqa: ANN001
+        folder = Path(tempfile.mkdtemp(dir=str(tests.support.SANDBOX_ROOT)))
+        bundle, records = _world_inputs(world, folder)
+        make = make or _script(bundle)
+        self.assertTrue(self.assert_split_equals_whole(bundle, records, make, folder, world["id"]))
+        return folder
+
+    def _split_differs(self, world: dict) -> str | None:
+        folder = Path(tempfile.mkdtemp(dir=str(tests.support.SANDBOX_ROOT)))
+        bundle, records = _world_inputs(world, folder)
+        run_whole(bundle, records, _script(bundle), folder)
+        run_day_by_day(bundle, records, _script(bundle), folder)
+        return first_difference(folder / "whole", folder / "parts")
+
+    def test_delivery_margin_window_crosses_a_split(self):
+        world = delivery_window_world()
+        folder = self._split(world)
+        eq = (folder / "whole" / "equity.csv").read_text(encoding="utf-8").splitlines()[1:]
+        self.assertTrue(all(int(r.split(",")[3]) > 0 for r in eq[:2]), eq)   # E-2, E-1: Z-4 margin blocked
+        with _flat_margin_without_next_days():
+            diff = self._split_differs(world)
+        self.assertIsNotNone(diff)
+        self.assertIn("equity.csv", diff)
+
+    def test_dp_done_carries_a_days_dp_charge_across_a_split(self):
+        world = dp_world()
+        folder = self._split(world)
+        charges = (folder / "whole" / "charges.csv").read_text(encoding="utf-8").splitlines()[1:]
+        orders = (folder / "whole" / "orders.csv").read_text(encoding="utf-8").splitlines()[1:]
+        self.assertEqual(sum(1 for r in charges if r.split(",")[1] == "dp"), 1, charges)
+        self.assertIn("CANCELLED", orders[2])                      # A: part filled, cancelled by the daily bar
+        self.assertNotEqual(orders[2].split(",")[15], "0")
+        with _drop_on_restore("dp_done", []):
+            diff = self._split_differs(world)
+        self.assertIsNotNone(diff)
+        self.assertIn("charges.csv", diff)
+
+    def test_prev_days_give_a_midnight_daily_bar_its_session(self):
+        # a daily bar dated Monday arrives at Tuesday 00:00, in Tuesday's part: matching needs Monday's CONTINUOUS
+        # start, which only prev_days give a one-day bundle (the sold call otherwise never fills)
+        world = fsp_world()
+        self._split(world)
+        orig = day_bundles
+
+        def without_prev(whole):  # noqa: ANN001, ANN202
+            out = orig(whole)
+            for b in out:
+                b["prev_days"] = []
+            return out
+        with mock.patch(f"{__name__}.day_bundles", without_prev):
+            diff = self._split_differs(world)
+        self.assertIsNotNone(diff)
+
+    def test_fsp_seen_settles_a_fill_after_midnight(self):
+        world = fsp_world()
+        folder = self._split(world)
+        fills = (folder / "whole" / "fills.csv").read_text(encoding="utf-8").splitlines()[1:]
+        self.assertEqual(len(fills), 1, fills)
+        pos = (folder / "whole" / "positions_eod.csv").read_text(encoding="utf-8").splitlines()[1:]
+        self.assertFalse([r for r in pos if r.split(",")[1] == "2" and r.split(",")[3] != "0"], pos)   # settled
+        with _drop_on_restore("fsp_seen", []):
+            diff = self._split_differs(world)
+        self.assertIsNotNone(diff)
 
 
 if __name__ == "__main__":

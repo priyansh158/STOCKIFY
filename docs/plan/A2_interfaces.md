@@ -188,9 +188,32 @@ class Strategy:
     def on_order_update(self, ctx, order): ...      # order.status, .reason, .filled_qty, .avg_price
     def on_session_phase(self, ctx, change): ...    # change.group, .phase, .t_ns
     def on_session_end(self, ctx): ...              # at DAY_END (A4 §1.10)
-    def save_state(self) -> dict: return {}
-    def load_state(self, state: dict) -> None: ...
+    def save_state(self) -> dict: ...              # default: every attribute, encoded (below)
+    def load_state(self, state: dict) -> None: ... # default: every saved attribute set back
 ```
+
+**Day-to-day state (paper sessions, D-66, VOL 5.2).** A paper session runs one engine per trading day; `on_start`
+runs only on its first day. Each later day starts from `load_state(state)` with what `save_state()` returned at the
+previous day's `DAY_END` (A4 §1.10; the subscriptions, timers and orders come back from the engine's own state). So
+**everything a strategy sets in `on_start` or changes later must round-trip through `save_state` / `load_state`**,
+or the strategy breaks (or silently differs) on day 2.
+- The default `save_state()` snapshots the instance's own attributes (`vars(self)`, sorted by name) with
+  `stockify.strategy.encode_state`: int, bool, str and None as they are; `Decimal` exactly, as `{"$decimal": "<text>"}`;
+  a tuple as `{"$tuple": [...]}` (restored as a tuple); lists and dicts with string keys (not starting with `$`) of
+  these. Any other value (a float, a `date`, an int-keyed dict, an object) raises `StrategyStateError` naming the class
+  and the attribute: implement `save_state` / `load_state` for it. The default `load_state` decodes and sets each one
+  back (`decode_state`).
+- An override may return any JSON object of JSON-typed values: null, bool, int, finite floats (canonical JSON gives
+  them back exactly), str, lists, objects with string keys. The engine checks it at each `DAY_END` of a paper day and
+  fails the day there, naming the strategy and the bad value (NaN, Infinity, a tuple, a non-string key, any other type).
+  An exception raised inside `save_state` or `load_state` fails the run as `RunError` naming the strategy, the
+  exception type and its message.
+- Shipped strategies: the default covers `sma_cross`, `buy_and_hold` (a `Decimal`) and `fuzz.RandomTrader`.
+  `opening_range_breakout` and `eod_short_straddle` override it to store a `date` as ISO text; `_option_legs`
+  (`short_straddle_stop`, `iron_fly`) and `_script` to store int-keyed dicts as `[key, value]` pairs; `_margin_watch`
+  to re-load its wrapped strategy by ref and hand it its own state. Each is tested split against whole
+  (`tests/stockify/test_sod_state.py`).
+- A C++ strategy's `save_state()` returns JSON text for an object; `load_state` gets the same text back.
 
 ### 4.2 Context (snake_case mirror of §2)
 

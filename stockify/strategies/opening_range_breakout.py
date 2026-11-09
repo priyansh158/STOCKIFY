@@ -11,7 +11,7 @@ Params: `symbol`, `range_minutes` (15), `qty` (units), `short` (false), `exit_hh
 from __future__ import annotations
 
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, decode_state, encode_state
 
 
 class OpeningRangeBreakout(Strategy):
@@ -66,6 +66,16 @@ class OpeningRangeBreakout(Strategy):
             self.stop_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "SL-M", trigger=-(-self.hi // tick) * tick,
                                      tag="orb_stop")
             self.traded = True
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
+    def save_state(self) -> dict:
+        return encode_state(self, {**vars(self), "day": self.day.isoformat() if self.day else None})
+
+    def load_state(self, state: dict) -> None:
+        from datetime import date
+        for name, value in decode_state(state).items():
+            setattr(self, name, value)
+        self.day = date.fromisoformat(self.day) if self.day else None
 
     def on_timer(self, ctx, timer_id):  # noqa: ANN001
         if self.stop_id is not None:

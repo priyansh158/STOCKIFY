@@ -62,9 +62,14 @@ class Book:
     dp_done: set = field(default_factory=set)
     next_fill: int = 1
 
-    def fork(self, iid: int) -> "Book":
-        """A copy for one bar path: the ledger, this instrument's live orders and the RNG."""
-        orders = {k: (o.copy() if o.instrument_id == iid and o.status in ACTIVE else o) for k, o in self.orders.items()}
+    def fork(self, iid: int, live: list) -> "Book":
+        """A copy for one bar path: the ledger, this instrument's live orders (`live`: every order not final) and the
+        RNG. The dict is copied whole (same order) and only those orders are replaced, so a long paper session's many
+        final orders cost a C-level copy, not a Python loop."""
+        orders = dict(self.orders)
+        for o in live:
+            if o.instrument_id == iid and o.status in ACTIVE:
+                orders[o.order_id] = o.copy()
         return Book(self.ledger.copy(), orders, self.rng.copy(), [], [], [], [], set(self.dp_done), self.next_fill)
 
 
@@ -105,10 +110,17 @@ class Engine:
         self._check_instruments(bundle["instruments"])
         self.days = bundle["days"]
         self.day_by_date = {d["date"]: d for d in self.days}
-        # next_days (A1 §6.2, VOL 5.2): trading days after the bundle's own, never processed; consulted only for where
-        # an order queued after today's session activates (A4 §3.10) and for trading-day counts (D-60)
-        self.cal_days = self.days + list(bundle.get("next_days") or [])
+        # prev_days / next_days (A1 §6.2, VOL 5.2): trading days before and after the bundle's own, never processed;
+        # consulted only for a day's CONTINUOUS start when a bar dated that day arrives later (a daily bar published at
+        # the next midnight), where an order queued after today's session activates (A4 §3.10), and for trading-day
+        # counts (D-60)
+        self.day_bundle = "next_days" in bundle or "prev_days" in bundle   # a paper session's day bundle (A1 §6.2)
+        prev, nxt = bundle.get("prev_days"), bundle.get("next_days")
+        self._check_cal_days("prev_days", prev, None, self.days[0]["date"])
+        self._check_cal_days("next_days", nxt, self.days[-1]["date"], None)
+        self.cal_days = list(prev or []) + self.days + list(nxt or [])
         self.cal_day_ends = [d["day_end_ns"] for d in self.cal_days]
+        self.cal_by_date = {d["date"]: d for d in self.cal_days}
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
@@ -164,6 +176,7 @@ class Engine:
         self.prior_final: set[int] = set()             # final orders loaded from sod_state (not this day's output)
         self.charge_row_base = 0                       # charges.csv rows written on earlier days
         self.state_date: str | None = None             # the last trading day whose DAY_END ran
+        self.day_end_strategy_state: dict | None = None  # save_state() at DAY_END, checked (day bundles only)
         self.strategy_enabled = True                   # Task 7 (D-70) fills these three
         self.pause_reasons: set[str] = set()
         self.queued_notifications: list = []
@@ -204,7 +217,31 @@ class Engine:
     def eod_state(self) -> str:
         """The state for the next day's sod_state, as canonical JSON (A1 §6.4)."""
         from stockify.oracle import sod_state
-        return sod_state.dumps(sod_state.capture(self))
+        try:
+            return sod_state.dumps(sod_state.capture(self))
+        except sod_state.StateError as e:
+            raise RunError(str(e)) from e
+
+    @staticmethod
+    def _check_cal_days(key: str, rows, after: str | None, before: str | None) -> None:  # noqa: ANN001
+        """prev_days / next_days: day objects in the days[] shape without seed, dates rising, all after `after` (the
+        last day) or all before `before` (the first day)."""
+        if rows is None:
+            return
+        if not isinstance(rows, list):
+            raise RunError(f"bundle: {key} must be a list")
+        last = after
+        for n, d in enumerate(rows):
+            where = f"bundle: {key}[{n}]"
+            if not isinstance(d, dict) or not {"date", "groups", "mis_cutoff_ns", "day_end_ns"} <= set(d):
+                raise RunError(f"{where} must be a day object (date, groups, mis_cutoff_ns, day_end_ns)")
+            if "seed" in d:
+                raise RunError(f"{where} has a seed: these days are never processed")
+            if last is not None and d["date"] <= last:
+                raise RunError(f"{where}: {d['date']} is not after {last}")
+            last = d["date"]
+        if before is not None and rows and last >= before:
+            raise RunError(f"bundle: {key}: {last} is not before {before}")
 
     def day_orders(self) -> dict:
         """This day's orders: all but the final ones loaded from sod_state (orders.csv, metrics)."""
@@ -232,7 +269,7 @@ class Engine:
         return "CLOSED"
 
     def continuous_start(self, group: str, d: str) -> int | None:
-        day = self.day_by_date.get(d)
+        day = self.cal_by_date.get(d)
         if day is None:
             return None
         starts = [p["start_ns"] for p in day["groups"][group] if p["phase"] == "CONTINUOUS"]
@@ -776,7 +813,7 @@ class Engine:
         tick, lot = spec["tick_paise"], spec["lot"]
         results = []
         for high_first in (True, False):                # P_HL, then P_LH
-            sim = self.book.fork(iid)
+            sim = self.book.fork(iid, self.live_orders())
             self._simulate_bar(sim, iid, bar, high_first, eligible, tick, lot)
             nav = sim.ledger.nav(lambda i: bar["close"] if i == iid else self.mark_price(i))
             results.append((nav, high_first, sim))
@@ -1253,7 +1290,14 @@ class Engine:
         self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))
-        self.state_date = d
+        if d in self.day_by_date:                     # not the D-52 close-out's own (maybe non-trading) date
+            self.state_date = d
+        if self.day_bundle:                           # paper sessions: save_state() at DAY_END, checked (A4 §1.10)
+            from stockify.oracle import sod_state
+            try:
+                self.day_end_strategy_state = sod_state.strategy_state(self.strategy)
+            except sod_state.StateError as e:
+                raise RunError(str(e)) from e
 
     def _next_date(self, d: str) -> str:
         return _date.fromordinal(_date.fromisoformat(d).toordinal() + 1).isoformat()

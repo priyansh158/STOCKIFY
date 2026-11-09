@@ -36,10 +36,74 @@ class Strategy:
     def on_session_end(self, ctx): ...           # noqa: ANN001, ANN201
 
     def save_state(self) -> dict:
-        return {}
+        """What a paper session carries to the next day (A2 §4.1): by default every attribute of the instance
+        (`vars(self)`), encoded by `encode_state`. Override (with load_state) for anything else."""
+        return encode_state(self, vars(self))
 
     def load_state(self, state: dict) -> None:
-        pass
+        """The inverse of save_state: by default every saved attribute is set back, decoded."""
+        for name, value in decode_state(state).items():
+            setattr(self, name, value)
+
+
+# ── Day-to-day state (A2 §4.1, VOL 5.2) ──────────────────────────────────────
+
+DECIMAL_TAG, TUPLE_TAG = "$decimal", "$tuple"
+
+
+class StrategyStateError(TypeError):
+    pass
+
+
+def _encode(owner: str, path: str, v):  # noqa: ANN001, ANN202
+    if v is None or isinstance(v, (bool, str)):
+        return v
+    if isinstance(v, int):
+        return v
+    if isinstance(v, Decimal):
+        if not v.is_finite():
+            raise StrategyStateError(f"{owner}.{path}: a non-finite Decimal cannot be saved")
+        return {DECIMAL_TAG: str(v)}                 # str(Decimal) is exact
+    if isinstance(v, tuple):
+        return {TUPLE_TAG: [_encode(owner, f"{path}[{n}]", x) for n, x in enumerate(v)]}
+    if isinstance(v, list):
+        return [_encode(owner, f"{path}[{n}]", x) for n, x in enumerate(v)]
+    if isinstance(v, dict):
+        out = {}
+        for k in sorted(v, key=lambda k: (not isinstance(k, str), str(k))):
+            if not isinstance(k, str) or k.startswith("$"):
+                raise StrategyStateError(
+                    f"{owner}.{path}: dict key {k!r} cannot be saved by the default save_state (keys must be strings "
+                    f"not starting with '$'); implement save_state/load_state")
+            out[k] = _encode(owner, f"{path}[{k!r}]", v[k])
+        return out
+    raise StrategyStateError(
+        f"{owner}.{path}: a {type(v).__name__} cannot be saved by the default save_state (it keeps int, bool, str, "
+        f"None, Decimal, tuples, lists and str-keyed dicts of these); implement save_state/load_state")
+
+
+def encode_state(strategy, attrs: dict) -> dict:  # noqa: ANN001
+    """The default state of a strategy: each attribute in `attrs`, sorted by name, as JSON values. Decimal becomes
+    {"$decimal": "<exact text>"}, a tuple {"$tuple": [...]}; anything else not JSON-typed is refused, naming the
+    strategy class and the attribute."""
+    owner = type(strategy).__name__
+    return {name: _encode(owner, name, attrs[name]) for name in sorted(attrs)}
+
+
+def _decode(v):  # noqa: ANN001, ANN202
+    if isinstance(v, list):
+        return [_decode(x) for x in v]
+    if isinstance(v, dict):
+        if len(v) == 1 and DECIMAL_TAG in v:
+            return Decimal(v[DECIMAL_TAG])
+        if len(v) == 1 and TUPLE_TAG in v:
+            return tuple(_decode(x) for x in v[TUPLE_TAG])
+        return {k: _decode(x) for k, x in v.items()}
+    return v
+
+
+def decode_state(state: dict) -> dict:
+    return {name: _decode(v) for name, v in state.items()}
 
 
 @dataclass(frozen=True)

@@ -25,9 +25,22 @@ class _InnerParams:
 class MarginWatch(S.Strategy):
     def on_start(self, ctx):  # noqa: ANN001
         params = dict(ctx.params)
-        self.inner = S.load(params.pop("inner_ref"))
+        self.inner_ref = params.pop("inner_ref")
+        self.inner = S.load(self.inner_ref)
         self._params = params
         self.inner.on_start(self._wrap(ctx))
+
+    # A paper session's day-to-day state (A2 §4.1): the wrapped strategy is re-loaded by its ref and given its own
+    # saved state; the rest is the default.
+    def save_state(self) -> dict:
+        return {"inner": self.inner.save_state(),
+                "own": S.encode_state(self, {k: v for k, v in vars(self).items() if k != "inner"})}
+
+    def load_state(self, state: dict) -> None:
+        for name, value in S.decode_state(state["own"]).items():
+            setattr(self, name, value)
+        self.inner = S.load(self.inner_ref)
+        self.inner.load_state(state["inner"])
 
     def _wrap(self, ctx):  # noqa: ANN001, ANN202
         return _InnerParams(ctx, self._params)
