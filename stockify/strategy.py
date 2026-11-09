@@ -37,8 +37,13 @@ class Strategy:
 
     def save_state(self) -> dict:
         """What a paper session carries to the next day (A2 §4.1): by default every attribute of the instance
-        (`vars(self)`), encoded by `encode_state`. Override (with load_state) for anything else."""
-        return encode_state(self, vars(self))
+        (`state_attrs()`), encoded by `encode_state`. Override (with load_state) for anything else."""
+        return encode_state(self, self.state_attrs())
+
+    def state_attrs(self) -> dict:
+        """A copy of the instance's attributes. Strategy code cannot call vars() (the source guard refuses it), so
+        a save_state override that extends the default starts from this."""
+        return dict(vars(self))
 
     def load_state(self, state: dict) -> None:
         """The inverse of save_state: by default every saved attribute is set back, decoded."""

@@ -197,12 +197,13 @@ runs only on its first day. Each later day starts from `load_state(state)` with 
 previous day's `DAY_END` (A4 §1.10; the subscriptions, timers and orders come back from the engine's own state). So
 **everything a strategy sets in `on_start` or changes later must round-trip through `save_state` / `load_state`**,
 or the strategy breaks (or silently differs) on day 2.
-- The default `save_state()` snapshots the instance's own attributes (`vars(self)`, sorted by name) with
+- The default `save_state()` snapshots the instance's own attributes (`self.state_attrs()`, sorted by name) with
   `stockify.strategy.encode_state`: int, bool, str and None as they are; `Decimal` exactly, as `{"$decimal": "<text>"}`;
   a tuple as `{"$tuple": [...]}` (restored as a tuple); lists and dicts with string keys (not starting with `$`) of
   these. Any other value (a float, a `date`, an int-keyed dict, an object) raises `StrategyStateError` naming the class
   and the attribute: implement `save_state` / `load_state` for it. The default `load_state` decodes and sets each one
-  back (`decode_state`).
+  back (`decode_state`). `state_attrs()` exists because the source guard refuses `vars()`, `setattr()` and
+  `getattr()` in strategy code: an override calls it to extend the default and `super().load_state(state)` to restore it.
 - An override may return any JSON object of JSON-typed values: null, bool, int, finite floats (canonical JSON gives
   them back exactly), str, lists, objects with string keys. The engine checks it at each `DAY_END` of a paper day and
   fails the day there, naming the strategy and the bad value (NaN, Infinity, a tuple, a non-string key, any other type).

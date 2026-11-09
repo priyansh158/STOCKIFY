@@ -34,11 +34,12 @@ class MarginWatch(S.Strategy):
     # saved state; the rest is the default.
     def save_state(self) -> dict:
         return {"inner": self.inner.save_state(),
-                "own": S.encode_state(self, {k: v for k, v in vars(self).items() if k != "inner"})}
+                "own": S.encode_state(self, {k: v for k, v in self.state_attrs().items() if k != "inner"})}
 
     def load_state(self, state: dict) -> None:
-        for name, value in S.decode_state(state["own"]).items():
-            setattr(self, name, value)
+        own = S.decode_state(state["own"])
+        self.inner_ref = own["inner_ref"]
+        self._params = own["_params"]
         self.inner = S.load(self.inner_ref)
         self.inner.load_state(state["inner"])
 

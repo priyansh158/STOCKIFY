@@ -21,7 +21,7 @@ from datetime import date
 from decimal import ROUND_CEILING, Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy, decode_state, encode_state
+from stockify.strategy import Strategy, encode_state
 
 DAY_NS = 86_400 * 1_000_000_000
 
@@ -55,12 +55,11 @@ class OptionLegs(Strategy):
     # A paper session's day-to-day state (A2 §4.1): the default, with the int-keyed dicts `entries` (sell order id
     # → instrument) and `stops` (instrument → stop order id) as [key, value] pairs in insertion order.
     def save_state(self) -> dict:
-        return encode_state(self, {**vars(self), "entries": [[k, v] for k, v in self.entries.items()],
+        return encode_state(self, {**self.state_attrs(), "entries": [[k, v] for k, v in self.entries.items()],
                                    "stops": [[k, v] for k, v in self.stops.items()]})
 
     def load_state(self, state: dict) -> None:
-        for name, value in decode_state(state).items():
-            setattr(self, name, value)
+        super().load_state(state)
         self.entries = {k: v for k, v in self.entries}
         self.stops = {k: v for k, v in self.stops}
 

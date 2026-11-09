@@ -23,7 +23,7 @@ The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference st
 
 ```python
 from stockify import timeutil
-from stockify.strategy import Strategy, decode_state, encode_state
+from stockify.strategy import Strategy, encode_state
 
 
 class OpeningRangeBreakout(Strategy):
@@ -81,12 +81,11 @@ class OpeningRangeBreakout(Strategy):
 
     # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
     def save_state(self) -> dict:
-        return encode_state(self, {**vars(self), "day": self.day.isoformat() if self.day else None})
+        return encode_state(self, {**self.state_attrs(), "day": self.day.isoformat() if self.day else None})
 
     def load_state(self, state: dict) -> None:
         from datetime import date
-        for name, value in decode_state(state).items():
-            setattr(self, name, value)
+        super().load_state(state)
         self.day = date.fromisoformat(self.day) if self.day else None
 
     def on_timer(self, ctx, timer_id):
