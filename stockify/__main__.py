@@ -357,6 +357,11 @@ def _cmd_run(args) -> int:
         if same:
             print(f"determinism.json reproduced byte for byte ({args.rerun} -> {new_id})", file=sys.stderr)
             return 0
+        if runs.step_column_only(args.rerun, new_id):     # a folder saved before D-64 (final I-3)
+            print(f"reproduced ({runs.STEP_COLUMN_NOTE}) ({args.rerun} -> {new_id}): every other deterministic "
+                  "file is byte for byte the same, and margin_daily.csv only gained its step column", file=sys.stderr)
+            return 0
+        print(f"not reproduced ({args.rerun} -> {new_id})", file=sys.stderr)
         for name in runs.determinism_diff(args.rerun, new_id):
             print(f"differs: {name}", file=sys.stderr)
         return 1
@@ -682,7 +687,8 @@ def main(argv: list[str] | None = None) -> int:
     rmode = rn.add_mutually_exclusive_group()
     rmode.add_argument("--config", help="path to run.json")
     rmode.add_argument("--rerun", metavar="RUN_ID", help="re-run a finished run from its folder; exit 1 unless "
-                       "determinism.json is reproduced byte for byte (DT-03)")
+                       "determinism.json is reproduced byte for byte (DT-03; a folder saved before D-64 may differ "
+                       "only by margin_daily.csv's step column)")
     rn.add_argument("--run-id", help="run this queued run (its stored config); --config is then optional")
     rn.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     rn.add_argument("--no-report", action="store_true", help="skip report.md and the charts")

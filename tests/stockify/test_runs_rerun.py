@@ -13,6 +13,60 @@ from stockify import engine, paths, runs
 from tests.stockify.test_runs_launch import BUY, RunsTestBase, _cli
 
 
+def to_old_margin_file(folder: Path) -> None:
+    """Rewrite a run folder's margin_daily.csv as it was before D-64 (no `step` column), and its hash."""
+    import csv
+    import hashlib
+    import io
+    path = folder / "margin_daily.csv"
+    rows = list(csv.reader(io.StringIO(path.read_text(encoding="utf-8"))))
+    step = rows[0].index("step")
+    lines = [",".join(r[:step] + r[step + 1:]) for r in rows]
+    path.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    det = folder / "determinism.json"
+    hashes = json.loads(det.read_text(encoding="utf-8"))
+    hashes["margin_daily.csv"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+OLD_HEADER = "trade_date,underlying_id,model,scan,somc,elm,addons,total\n"
+OLD_ROWS = "2026-11-09,7,staircase,100,10,5,0,105\n2026-11-10,7,staircase,200,0,0,0,200\n"
+
+
+class StepColumnOnlyTests(tests.support.SandboxedDBTest):
+    """runs.step_column_only on hand-made folders with margin rows."""
+
+    NEW = ("trade_date,underlying_id,model,step,scan,somc,elm,addons,total\n"
+           "2026-11-09,7,staircase,B1_span_nse_elm,100,10,5,0,105\n"
+           "2026-11-10,7,staircase,B5_flat,200,0,0,0,200\n")
+
+    def folder(self, name: str, margin: str, fills: str = "f") -> str:
+        import hashlib
+        d = paths.run_dir(name)
+        (d / "margin_daily.csv").write_bytes(margin.encode("utf-8"))
+        hashes = {"fills.csv": fills, "margin_daily.csv": hashlib.sha256(margin.encode("utf-8")).hexdigest()}
+        (d / "determinism.json").write_text(json.dumps(hashes), encoding="utf-8")
+        return name
+
+    def test_only_the_step_column(self):
+        self.assertTrue(runs.step_column_only(self.folder("old", OLD_HEADER + OLD_ROWS), self.folder("new", self.NEW)))
+
+    def test_any_other_difference_is_not_tolerated(self):
+        new = self.folder("new", self.NEW)
+        for name, text, fills in (
+                ("value", OLD_HEADER + OLD_ROWS.replace("105", "106"), "f"),
+                ("row", OLD_HEADER + OLD_ROWS.split("\n")[0] + "\n", "f"),
+                ("other-file", OLD_HEADER + OLD_ROWS, "g"),
+                ("same-header", self.NEW.replace("105", "106"), "f")):
+            with self.subTest(name):
+                self.assertFalse(runs.step_column_only(self.folder(f"old-{name}", text, fills), new))
+
+    def test_an_old_file_that_is_not_the_one_its_hash_names_is_not_tolerated(self):
+        old = self.folder("old", OLD_HEADER + OLD_ROWS)
+        (paths.run_path(old) / "margin_daily.csv").write_bytes((OLD_HEADER + OLD_ROWS).encode() + b"\n")
+        self.assertFalse(runs.step_column_only(old, self.folder("new", self.NEW)))
+
+
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class RerunTests(RunsTestBase):
     def test_dt03_a_rerun_reproduces_determinism_json(self):
@@ -42,6 +96,25 @@ class RerunTests(RunsTestBase):
         code, _, err = _cli("run", "--rerun", rid)
         self.assertEqual(code, 1)
         self.assertEqual([x for x in err.splitlines() if x.startswith("differs:")], ["differs: fills.csv"])
+
+    def test_a_run_saved_before_the_step_column_reproduces_with_a_note(self):
+        """I-3 / D-64: an old folder's margin_daily.csv has no `step` column. When that column is the only
+        difference, the re-run is reported reproduced, naming the cause, and exits 0."""
+        rid = runs.launch(self.config(BUY), report=False)
+        to_old_margin_file(paths.runs_dir() / rid)
+        code, _, err = _cli("run", "--rerun", rid)
+        self.assertEqual(code, 0, err)
+        self.assertIn("reproduced (margin_daily.csv gained the step column, D-64)", err)
+        self.assertNotIn("differs:", err)
+        det = paths.runs_dir() / rid / "determinism.json"                 # and anything else still fails
+        hashes = json.loads(det.read_text(encoding="utf-8"))
+        hashes["fills.csv"] = "0" * 64
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        code, _, err = _cli("run", "--rerun", rid)
+        self.assertEqual(code, 1)
+        self.assertIn("not reproduced", err)
+        self.assertEqual(sorted(x for x in err.splitlines() if x.startswith("differs:")),
+                         ["differs: fills.csv", "differs: margin_daily.csv"])
 
     def test_the_archived_bundle_is_used_not_a_fresh_one(self):
         rid = runs.launch(self.config(BUY), report=False)

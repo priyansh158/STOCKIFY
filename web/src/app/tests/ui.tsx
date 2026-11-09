@@ -52,6 +52,22 @@ function marginLabel(label: string): { text: string; detail: string; warn: boole
     return { text: "some NSE margin files skipped", warn: true,
       detail: "At least one NSE margin file could not be used and was skipped; those days fell back to a lower step." };
   }
+  if (label === "margin_elm:skipped_files") {
+    return { text: "an NSE ELM file skipped", warn: true,
+      detail: "At least one day's NSE exposure-margin file could not be read and was skipped; those days used the dated exposure rule (step B2) instead." };
+  }
+  if (label === "margin_span:no_derivatives") {
+    return { text: "no futures or options", warn: false,
+      detail: "The test traded no futures or options, so no NSE margin file was needed or read." };
+  }
+  if (label === "margin:staircase") {
+    return { text: "margin staircase", warn: false,
+      detail: "Margin was priced by the most exact method available each day: NSE's own SPAN file first, stepping down to an estimate only where the file could not price a position. The margin-step labels say which methods were used." };
+  }
+  if (label === "margin:span_exact") {
+    return { text: "exact NSE SPAN margin", warn: false,
+      detail: "Margin came only from NSE's SPAN file; the test would have stopped had any position been missing from it." };
+  }
   if (label.startsWith("margin_steps:")) {
     const m = /^margin_steps:([^=]+)=(\d+)$/.exec(label);
     if (!m) return { text: label, detail: label, warn: false };

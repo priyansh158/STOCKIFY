@@ -99,19 +99,20 @@ export const runs: TestRun[] = [
   { ...base, run_id: "iron_fly_nifty-20261108T040000-a1b2c3", name: "iron_fly_nifty",
     strategy_ref: "stockify.strategies.iron_fly:IronFly", price_basis: "raw",
     nav_end_paise: 101_840_000, max_drawdown: 0.0231, trades: 12, costs_total_paise: 412_660,
-    labels: ["fill:snapshot_quote", "margin:spanlite(approx)", "margin_spanlite:placeholder", "settlement_fallback",
-             "delivery_margin_approx", "short_delivery"] },
+    labels: ["fill:snapshot_quote", "margin:staircase", "margin:B1_span_nse_elm", "margin:B4_spanlite_placeholder",
+             "margin_steps:B1_span_nse_elm=1", "margin_steps:B4_spanlite_placeholder=1", "margin_spanlite:placeholder",
+             "settlement_fallback", "delivery_margin_approx", "short_delivery"] },
 ];
 
 const FLY = "iron_fly_nifty-20261108T040000-a1b2c3";
 
-/** Margin by day for the sample iron fly (SPAN-lite); other sample runs use the flat model and have none. */
+/** Margin by day for the sample iron fly (the margin staircase); other sample runs use the flat model and have none. */
 export function margin(id: string): TestMargin[] {
   if (id !== FLY) return [];
   return [
-    { trade_date: "2026-11-03", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", step: "B1_span_nse_elm", scan_paise: 9_412_300,
+    { trade_date: "2026-11-03", underlying_id: 256265, underlying: "NIFTY 50", model: "staircase", step: "B1_span_nse_elm", scan_paise: 9_412_300,
       somc_paise: 0, elm_paise: 3_120_000, addons_paise: 0, total_paise: 12_532_300 },
-    { trade_date: "2026-11-04", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", step: "B4_spanlite_placeholder", scan_paise: 8_905_100,
+    { trade_date: "2026-11-04", underlying_id: 256265, underlying: "NIFTY 50", model: "staircase", step: "B4_spanlite_placeholder", scan_paise: 8_905_100,
       somc_paise: 0, elm_paise: 3_098_000, addons_paise: 3_098_000, total_paise: 15_101_100 },
   ];
 }

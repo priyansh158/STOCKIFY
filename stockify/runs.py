@@ -286,6 +286,38 @@ def rerun(run_id: str) -> tuple[str, bool]:
     return new_id, same
 
 
+# margin_daily.csv's header before D-64 added the `step` column (MEZ 4.9).
+MARGIN_HEADER_BEFORE_D64 = "trade_date,underlying_id,model,scan,somc,elm,addons,total"
+STEP_COLUMN_NOTE = "margin_daily.csv gained the step column, D-64"
+
+
+def step_column_only(run_old: str, run_new: str) -> bool:
+    """Whether a re-run of a folder saved before D-64 differs from it only by margin_daily.csv's added `step`
+    column (final I-3): determinism.json differs in margin_daily.csv alone, the old file is the one its
+    determinism.json names, its header is the pre-D-64 one, the new one has today's header, and row by row the new
+    file without its `step` cell is the old file."""
+    import hashlib
+    import io
+    from stockify.oracle.artifacts import MARGIN
+    if determinism_diff(run_old, run_new) != ["margin_daily.csv"]:
+        return False
+    old_folder, new_folder = paths.run_path(run_old), paths.run_path(run_new)
+    try:
+        old_bytes = (old_folder / "margin_daily.csv").read_bytes()
+        hashes = json.loads((old_folder / "determinism.json").read_text(encoding="utf-8"))
+        old_rows = list(csv.reader(io.StringIO(old_bytes.decode("utf-8"), newline="")))
+        new_rows = list(csv.reader(io.StringIO((new_folder / "margin_daily.csv").read_text(encoding="utf-8"),
+                                               newline="")))
+    except (OSError, ValueError):
+        return False
+    if hashes.get("margin_daily.csv") != hashlib.sha256(old_bytes).hexdigest():
+        return False
+    if not old_rows or not new_rows or old_rows[0] != MARGIN_HEADER_BEFORE_D64.split(",")             or new_rows[0] != MARGIN.split(",") or len(old_rows) != len(new_rows):
+        return False
+    step = new_rows[0].index("step")
+    return all(new[:step] + new[step + 1:] == old for old, new in zip(old_rows[1:], new_rows[1:]))
+
+
 def determinism_diff(run_a: str, run_b: str) -> list[str]:
     """The deterministic files whose hashes differ between two run folders' determinism.json."""
     def hashes(run_id: str) -> dict:

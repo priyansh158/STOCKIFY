@@ -38,6 +38,12 @@ SCHEMA = "stockify.compare/1"
 MORE_LABELS = {
     "margin:flat(approx)": "margin from a flat percentage of the position's value (approximate)",
     "margin:spanlite(approx)": "margin from SPAN-lite scenarios (approximate)",
+    "margin:staircase": "margin from NSE's SPAN file where it could price, else the next step down (see margin:<step>)",
+    "margin:span_exact": "margin from NSE's SPAN file only (exact)",
+    "margin_span:no_derivatives": "no futures or options, so no NSE margin file was read",
+    "margin_span:no_section": "the bundle had no NSE SPAN section: every day used a lower margin step",
+    "margin_span:skipped_files": "at least one NSE SPAN file could not be used and was skipped",
+    "margin_elm:skipped_files": "at least one NSE ELM file could not be read; those days used the rule ELM (B2)",
     "margin_spanlite:iv_fallback": "some option volatilities for margin had to be filled in (no usable quote)",
     "fill:eod_close": "fills at the next day's closing price",
     "fill:snapshot_quote": "fills against the recorded bid and ask",
