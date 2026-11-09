@@ -112,7 +112,7 @@ def exchange_request_token(request_token: str) -> dict:
     if not request_token:
         raise KiteAuthError("missing request_token")
 
-    kc = KiteConnect(api_key=_api_key())
+    kc = strip_order_routes(KiteConnect(api_key=_api_key()))
     data = kc.generate_session(request_token, api_secret=_api_secret())
     # Augment with our own metadata
     data["obtained_at"] = int(time.time())
@@ -181,6 +181,144 @@ def is_authenticated() -> bool:
     return is_enabled() and token_is_fresh(load_cached_token())
 
 
+# ── Paper only: Kite's order routes are stripped from every client ───────────
+#
+# STOCKIFY never places, modifies, cancels or exits a real order (plan Global
+# Constraints, "Paper only"). Every KiteConnect this module builds is stripped
+# in place: its instance `_routes` lacks the order routes; `_request`, `_get`,
+# `_post`, `_put`, `_delete` and the HTTP session's `request` refuse them by
+# route key and by URL; and every order method is rebound to a function that
+# raises. Margin and charges calculators, quotes, history, instruments, profile
+# and login keep working.
+
+class OrderRouteForbidden(RuntimeError):
+    """A Kite order route was asked for: STOCKIFY is paper only."""
+
+
+# ORDER-DENY-LIST BEGIN (the only lines outside tests/ allowed to name order routes and methods)
+ORDER_URL_PREFIXES = ("/orders", "/gtt", "/mf/orders", "/mf/sips", "/portfolio/positions")
+_PUT_ONLY_URL_PREFIXES = ("/portfolio/positions",)        # PUT converts a position; GET lists them
+_ORDER_KEY_PREFIXES = ("order", "gtt", "mf.order", "mf.sip")
+_POSITION_CONVERT_KEY = "portfolio.positions.convert"
+# Route keys with an order prefix that are read-only calculators on other URLs (K-10): kept.
+_ORDER_KEY_READS = frozenset({"order.margins", "order.margins.basket", "order.contract_note"})
+_REQUIRED_ORDER_ROUTE_KEYS = frozenset({
+    "order.place", "order.modify", "order.cancel",
+    "gtt.place", "gtt.modify", "gtt.delete",
+    "mf.order.place", "mf.order.cancel",
+    "mf.sip.place", "mf.sip.modify", "mf.sip.cancel",
+    "portfolio.positions.convert",
+})
+ORDER_METHODS = (
+    "place_order", "modify_order", "cancel_order", "exit_order", "place_autoslice_order",
+    "place_gtt", "modify_gtt", "delete_gtt",
+    "place_mf_order", "cancel_mf_order", "place_mf_sip", "modify_mf_sip", "cancel_mf_sip",
+    "convert_position",
+)
+_ORDER_METHOD_PREFIXES = ("place_", "modify_", "cancel_", "exit_", "delete_", "convert_")
+# ORDER-DENY-LIST END
+
+
+def _url_path(url: object) -> str:
+    """The lower-cased path of a route template or a full URL (scheme, host and query dropped)."""
+    from urllib.parse import urlsplit
+    text = str(url or "").strip()
+    path = urlsplit(text).path if "://" in text else text.split("?", 1)[0]
+    return "/" + path.lstrip("/").lower()
+
+
+def _url_forbidden(url: object, method: str) -> bool:
+    path = _url_path(url)
+    for prefix in ORDER_URL_PREFIXES:
+        if path.startswith(prefix):
+            return prefix not in _PUT_ONLY_URL_PREFIXES or str(method).upper() == "PUT"
+    return False
+
+
+def order_route_keys(routes: dict) -> frozenset:
+    """The order route keys of a `KiteConnect._routes` table, fail-closed.
+
+    A key is denied when its URL is under an order prefix (for positions: only the convert key), or when its
+    name has an order prefix and it is not one of the known read-only calculators. Raises RuntimeError when a
+    required key is missing: the installed kiteconnect changed, so the deny-list must be re-checked (RECON).
+    """
+    keys = set()
+    for key, url in routes.items():
+        if key == _POSITION_CONVERT_KEY or _url_forbidden(url, "GET"):
+            keys.add(key)
+        elif key.startswith(_ORDER_KEY_PREFIXES) and key not in _ORDER_KEY_READS:
+            keys.add(key)
+    missing = _REQUIRED_ORDER_ROUTE_KEYS - keys
+    if missing:
+        raise RuntimeError("kiteconnect's route table lacks the order routes " + ", ".join(sorted(missing))
+                           + ": the SDK changed; re-check kite_client's deny-list before using Kite")
+    return frozenset(keys)
+
+
+# Built from the installed SDK; fails loudly at import when the SDK's table no longer has the asserted keys.
+ORDER_ROUTE_KEYS: frozenset = (order_route_keys(KiteConnect._routes) if KITECONNECT_AVAILABLE
+                               else _REQUIRED_ORDER_ROUTE_KEYS)
+
+
+def _refuse(name: str):  # noqa: ANN202
+    def refuse(*_args, **_kwargs):  # noqa: ANN202
+        raise OrderRouteForbidden(f"{name} is not available: STOCKIFY is paper only")
+    refuse.__name__ = name
+    return refuse
+
+
+def _check_route(deny: frozenset, routes: dict, route: object, method: str) -> None:
+    if isinstance(route, str) and route in deny:
+        raise OrderRouteForbidden(f"Kite route {route} is not available: STOCKIFY is paper only")
+    candidates = [route]
+    if isinstance(route, str) and route in routes:
+        candidates.append(routes[route])
+    for url in candidates:
+        if _url_forbidden(url, method):
+            raise OrderRouteForbidden(f"Kite URL {_url_path(url)} ({str(method).upper()}) is not available: "
+                                      "STOCKIFY is paper only")
+
+
+def strip_order_routes(kc):  # noqa: ANN001, ANN201
+    """Make one KiteConnect instance paper-only, in place, and return it. The class is left untouched."""
+    class_routes = dict(type(kc)._routes)
+    deny = ORDER_ROUTE_KEYS | order_route_keys(class_routes)
+    routes = {k: v for k, v in class_routes.items() if k not in deny}
+    kc._routes = routes
+    inner_request = kc._request
+
+    def _request(route, method, *args, **kwargs):  # noqa: ANN001, ANN202
+        _check_route(deny, kc._routes, route, method)
+        return inner_request(route, method, *args, **kwargs)
+
+    def _verb(verb: str):  # noqa: ANN202
+        def call(route, *args, **kwargs):  # noqa: ANN001, ANN202
+            return _request(route, verb, *args, **kwargs)
+        call.__name__ = "_" + verb.lower()
+        return call
+
+    kc._request = _request
+    for verb in ("GET", "POST", "PUT", "DELETE"):
+        setattr(kc, "_" + verb.lower(), _verb(verb))
+
+    session = getattr(kc, "reqsession", None)
+    if session is not None and callable(getattr(session, "request", None)):
+        inner_send = session.request
+
+        def guarded_send(method, url, *args, **kwargs):  # noqa: ANN001, ANN202
+            if _url_forbidden(url, method):
+                raise OrderRouteForbidden(f"Kite URL {_url_path(url)} ({str(method).upper()}) is not available: "
+                                          "STOCKIFY is paper only")
+            return inner_send(method, url, *args, **kwargs)
+        session.request = guarded_send
+
+    names = set(ORDER_METHODS)
+    names.update(n for n in dir(type(kc)) if n.startswith(_ORDER_METHOD_PREFIXES))
+    for name in sorted(names):
+        setattr(kc, name, _refuse(name))
+    return kc
+
+
 # ── KiteConnect instance ──────────────────────────────────────────────────────
 
 _client_lock = threading.Lock()
@@ -189,8 +327,10 @@ _client_token_fp: str = ""
 
 
 def get_client() -> "KiteConnect":
-    """Return a KiteConnect instance with access_token set.
+    """Return the paper-only KiteConnect instance with access_token set.
 
+    Every caller (CLI, calibrate, kitecheck, capture_charges, instruments, history, the server) gets this one
+    stripped client: order routes and methods raise OrderRouteForbidden (`strip_order_routes`).
     Raises KiteNotAuthenticated / KiteTokenExpired if no fresh token cached.
     """
     global _client, _client_token_fp
@@ -208,9 +348,9 @@ def get_client() -> "KiteConnect":
 
     with _client_lock:
         if _client is None or _client_token_fp != fp:
-            _client = KiteConnect(api_key=_api_key())
-            _client.set_access_token(token)
-            _client_token_fp = fp
+            client = strip_order_routes(KiteConnect(api_key=_api_key()))
+            client.set_access_token(token)
+            _client, _client_token_fp = client, fp
         return _client
 
 

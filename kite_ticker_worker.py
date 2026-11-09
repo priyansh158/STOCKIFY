@@ -31,6 +31,8 @@ except ImportError:
 
 import kite_client
 import tick_buffer
+from stockify.daemon import conn_budget
+from stockify.log import redact
 
 
 # ── Supervisor singleton ──────────────────────────────────────────────────────
@@ -38,6 +40,7 @@ import tick_buffer
 class _Supervisor:
     def __init__(self) -> None:
         self.ticker: Optional["KiteTicker"] = None
+        self.ticket: Optional[conn_budget.Ticket] = None   # connection budget, role `api` (M5.14)
         self.thread: Optional[threading.Thread] = None
         self.started: bool = False
         self.connected: bool = False
@@ -70,6 +73,11 @@ class _Supervisor:
             payload = kite_client.load_cached_token()
             if not payload or not payload.get("access_token"):
                 return False
+            try:
+                self.ticket = conn_budget.register("api", limit=conn_budget.limit())
+            except conn_budget.BudgetExceeded as e:
+                self.errors = (self.errors + [f"[{int(time.time())}] not connecting: {e}"])[-20:]  # lock held
+                return False
             self.ticker = KiteTicker(
                 api_key=kite_client._api_key(),
                 access_token=payload["access_token"],
@@ -100,6 +108,9 @@ class _Supervisor:
                     self.ticker.close()
             except Exception:
                 pass
+            if self.ticket is not None:
+                self.ticket.release()
+                self.ticket = None
             self.ticker = None
             self.thread = None
             self.started = False
@@ -211,11 +222,11 @@ class _Supervisor:
         self.connected = False
         # Auth errors → stop reconnecting (token expired); the sidebar widget
         # will detect lack of fresh token and re-prompt for login.
-        msg = f"socket closed: code={code} reason={reason!r}"
-        self._record_error(msg)
+        # Never the websocket URL or a token: these errors reach /api status (I-10).
+        self._record_error(f"socket closed: code={code} reason={redact(reason)!r}")
 
     def _on_error(self, ws, code, reason):  # noqa: ANN001
-        self._record_error(f"error: code={code} reason={reason!r}")
+        self._record_error(f"error: code={code} reason={redact(reason)!r}")
 
     def _on_reconnect(self, ws, attempts):  # noqa: ANN001
         # KiteTicker handles reconnect internally — just log.

@@ -299,7 +299,12 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
             return exitcodes.TOKEN_EXPIRED
         _ensure_refdata(day)
         payload = kite_client.load_cached_token()
-        ticker = make_live_ticker(kite_client._api_key(), payload["access_token"])
+        from stockify.daemon import conn_budget
+        try:
+            ticker = make_live_ticker(kite_client._api_key(), payload["access_token"], role="daemon")
+        except conn_budget.BudgetExceeded as e:
+            log.error("no live ticker: %s", e)
+            return exitcodes.RECONNECT_EXHAUSTED
         landing = LandingDB(day)
         call = live_call_in_ticker
 
@@ -317,9 +322,11 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
         if clock.now_ns() < start_ns:
             log.info("waiting for the subscribe time %s IST", schedule["jobs"]["subscribe"])
             if not clock.sleep_until(start_ns, stop):
+                _release_ticket(ticker)
                 return exitcodes.OK
         if clock.now_ns() >= end_ns:
             log.info("the session is over for %s", day)
+            _release_ticket(ticker)
             return exitcodes.OK
 
     recorder.start()
@@ -333,7 +340,8 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
     bands = None
     if not replay:
         from stockify.data import limits
-        bands = limits.Snapshotter(day, manager, client=kite_client.get_client(), clock=clock)
+        from stockify import kite_readonly
+        bands = limits.Snapshotter(day, manager, client=kite_readonly.client(), clock=clock)
     try:
         while not stop.is_set() and not session.stopped.is_set():
             session.tick()
@@ -363,6 +371,7 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
                 ticker.stop()
         except Exception as e:                  # the reactor may already be gone
             log.debug("ticker close: %s", e)
+        _release_ticket(ticker)
         recorder.stop()
         session.tick()
         landing.close()
@@ -370,3 +379,10 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
         log.info("recorded %d packets in %d frames; %d heartbeats; dropped %d; exit %d",
                  stats.packets, stats.frames, stats.heartbeats, stats.dropped_frames, session.exit_code)
     return session.exit_code
+
+
+def _release_ticket(ticker) -> None:  # noqa: ANN001
+    """Give back a live ticker's connection-budget ticket (M5.14); replay tickers hold none."""
+    ticket = getattr(ticker, "budget_ticket", None)
+    if ticket is not None:
+        ticket.release()

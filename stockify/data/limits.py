@@ -66,7 +66,10 @@ class Snapshotter:
 
     RETRY_NS = 5 * 60 * SEC
 
-    def __init__(self, day: date, manager, *, client, clock):  # noqa: ANN001
+    def __init__(self, day: date, manager, *, client=None, clock):  # noqa: ANN001
+        if client is None:                      # Kite's read-only view: quotes only, no order route (LCB 5.1)
+            from stockify import kite_readonly
+            client = kite_readonly.client()
         self.day, self.manager, self.client, self.clock = day, manager, client, clock
         self.bucket = history.TokenBucket(history.limits()["quote_rps"], clock)
         self.done: dict[int, int] = {}        # instrument_id -> last snapshot ns

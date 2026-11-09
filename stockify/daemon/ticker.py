@@ -27,6 +27,7 @@ import threading
 from typing import Callable
 
 from stockify import store
+from stockify.log import redact
 from stockify.daemon import exitcodes
 from stockify.daemon.clock import Clock
 from stockify.daemon.recorder import Recorder
@@ -40,11 +41,24 @@ RECONNECT_MAX_TRIES = 300      # library maximum (RECON M1.0)
 RECONNECT_MAX_DELAY = 60
 
 
-def make_live_ticker(api_key: str, access_token: str):
-    """A KiteTicker with the longest reconnect budget the library allows."""
+def make_live_ticker(api_key: str, access_token: str, *, role: str = "daemon"):
+    """A KiteTicker with the longest reconnect budget the library allows.
+
+    Takes a connection-budget ticket first (M5.14): raises conn_budget.BudgetExceeded when two live tickers are
+    already open. The ticket rides on the ticker as `budget_ticket`; the caller releases it after closing.
+    """
     from kiteconnect import KiteTicker
-    return KiteTicker(api_key, access_token, reconnect=True,
-                      reconnect_max_tries=RECONNECT_MAX_TRIES, reconnect_max_delay=RECONNECT_MAX_DELAY)
+
+    from stockify.daemon import conn_budget
+    ticket = conn_budget.register(role, limit=conn_budget.limit())
+    try:
+        ticker = KiteTicker(api_key, access_token, reconnect=True,
+                            reconnect_max_tries=RECONNECT_MAX_TRIES, reconnect_max_delay=RECONNECT_MAX_DELAY)
+    except BaseException:
+        ticket.release()
+        raise
+    ticker.budget_ticket = ticket
+    return ticker
 
 
 def live_call_in_ticker(fn: Callable, *args) -> None:
@@ -125,17 +139,17 @@ class RecorderSession:
         log.info("ticker connected; %d subscriptions", len(self.manager.current))
 
     def _on_close(self, ws, code, reason) -> None:  # noqa: ANN001
+        # Every close is logged loudly (M5.14); never the websocket's URL, which carries the access token.
+        log.error("ticker closed: code %s, reason %s", code, redact(reason))
         with self._lock:
             self.connected = False
             if self.stopped.is_set() or code == 1000:
                 return
             if self._disconnect_gap is None:
                 self._disconnect_gap = self.recorder.landing.open_gap(self.clock.now_ns(), "disconnect")
-        log.warning("ticker closed: %s %s", code, reason)
 
     def _on_error(self, ws, code, reason) -> None:  # noqa: ANN001
-        text = f"{code} {reason}"
-        log.error("ticker error: %s", text)
+        log.error("ticker error: code %s, reason %s", code, redact(reason))
         if str(code) == "403" or "token" in str(reason).lower():
             with self._lock:
                 if self._disconnect_gap is not None:

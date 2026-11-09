@@ -906,3 +906,36 @@ is Wed 2026-11-11 IST; M5 is "built" until a live day passes, "done" after.
 11. A journal parity failure on a real day (M5.10, E-01), if it happens.
 12. Adopting the pending SPAN-lite calibration rows (M4.9, existing).
 13. Push to the remote, only on the owner's "push".
+
+## 2026-11-09 — Kite access rules: order routes stripped, budget, secrets scan (LCB 5.1, M5.14, D-73)
+
+**SDK.** The venv has kiteconnect **5.2.2** (`kiteconnect/__version__.py`; checked by import only, no request). Its
+`KiteConnect._routes` has 44 keys. The deny-list `kite_client.ORDER_ROUTE_KEYS` built from it has 21:
+`orders`, `order.info`, `order.place`, `order.modify`, `order.cancel`, `order.trades`, `gtt`, `gtt.place`, `gtt.info`,
+`gtt.modify`, `gtt.delete`, `mf.orders`, `mf.order.info`, `mf.order.place`, `mf.order.cancel`, `mf.sips`,
+`mf.sip.info`, `mf.sip.place`, `mf.sip.modify`, `mf.sip.cancel`, `portfolio.positions.convert`. Kept although
+order-named: `order.margins`, `order.margins.basket`, `order.contract_note` (read-only calculators, K-10). The 14 order
+methods of 5.2.2 bound to refuse: `place_order`, `modify_order`, `cancel_order`, `exit_order`, `place_autoslice_order`,
+`place_gtt`, `modify_gtt`, `delete_gtt`, `place_mf_order`, `cancel_mf_order`, `place_mf_sip`, `modify_mf_sip`,
+`cancel_mf_sip`, `convert_position`.
+
+**On a kiteconnect upgrade, re-check the deny-list.** Importing `kite_client` raises when the SDK's table lacks a
+required writer key; `tests/stockify/test_kite_readonly.py` (`RealSdkTest`) pins the 5.2.2 table, the 21-key list and
+the method names, and skips with a "re-check" message on any other version. Update `tests/stockify/kite_fakes.py`
+from the new SDK after reviewing its new routes.
+
+**Where.** `kite_client.strip_order_routes` (every client `get_client()` builds, and the login exchange's);
+`stockify/kite_readonly.py` (`ReadOnlyKite`, `client()`), used by the daemon's price-band snapshotter;
+`stockify/daemon/conn_budget.py` (tickets in `$LAB/ticker_connections/`, limit `kite_limits.json` →
+`ws_max_connections` = 3, so at most two live): the daemon (`daemon`, exit 78 when refused), the API's ticker worker
+(`api`), `kite check` (`dev`). Close and error reasons go through `stockify.log.redact` (URLs and token parameters
+blanked) in the daemon, the API worker's status errors and `kite check`.
+
+**Limits of the guarantee.** Python cannot hide an object from introspection: `type(ro)`'s closure cells or the SDK
+class called with a fresh, unstripped instance would still reach Kite. The source scans (no order method names, route
+keys or order URLs in any tracked or new `.py`/`.ps1` outside `tests/` and the deny-list block; no `KiteConnect(`,
+`._routes` or `reqsession` outside `kite_client.py`) are what close those paths. `ReadOnlyKite.order_margins` sends
+`consider_positions=false`, but Kite documents that parameter only for `/margins/basket`; whether `/margins/orders`
+counts real positions is unverified (live item for Task 21).
+
+**Live pending (owner).** Two live KiteTicker connections observed and a third refused (item 9 above, Task 30).

@@ -110,7 +110,7 @@ NSE trades 20:30–03:10 in Seattle (PDT; 19:30–02:10 PST), so the host must b
 
 ## M5.14 Connection budget and development mode (S)
 
-- [ ] Normal operation uses two KiteTicker connections (API for UI prices, daemon), out of three (K-1, D-20). Development runs use `--ticker replay:…`, never a third live connection. The daemon logs every close code and reason loudly.
+- [x] Normal operation uses two KiteTicker connections (API for UI prices, daemon), out of three (K-1, D-20). Development runs use `--ticker replay:…`, never a third live connection. The daemon logs every close code and reason loudly. (Code done, LCB 5.1: `conn_budget` tickets for roles `api`, `daemon`, `dev`; a third live connection is refused; close codes at ERROR without the websocket URL. Live pending: two live connections observed and a third refused, Task 30; see RECON.)
 
 ---
 
