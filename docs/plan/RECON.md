@@ -655,5 +655,5 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Refit 2026-11-09 (pending, not adopted): NIFTY psr 0.0951, futures 0.0886, vsr 0.3222, ₹3,157/lot, mean error 3.9 %;
   BANKNIFTY psr 0.0963, futures 0.0881, vsr 0.5646, ₹3,033/lot, 7.4 %. The minimum per lot binds on ~60 samples
   per index, so it is determined.
-- Known gap: hedged futures (NIFTY 7.5 %, BANKNIFTY 51.8 % off). Kite's SPAN credits the bought option's value; one
+- **Open item: hedged futures stay off (2026-11-09: BANKNIFTY ~52 %, NIFTY 7.5 % too high). Kite credits bought options' value in SPAN (net option value / long option credit); not modelled; candidate for a future SPAN-lite improvement or M4.10.** Detail: hedged futures (NIFTY 7.5 %, BANKNIFTY 51.8 % off). Kite's SPAN credits the bought option's value; one
   BANKNIFTY long future + long ITM put has SPAN 0. SPAN-lite has no such credit (exact SPAN, M4.10, would).
