@@ -798,3 +798,13 @@ B3 is unscored: no calibrated row is adopted yet (two wait in `spanlite_pending`
   14.8 KB). A chain of ~2,000 bundle contracts gives ~0.7 MB per entry: ~175 MB for a year with one file a day, up to
   ~0.9 GB with five a day, written into every run and re-run folder and loaded whole by the C++ engine. Owner
   decision: de-duplicate entries by SHA, or keep only strikes near the money.
+
+## 2026-11-09 - the engine is built with Control Flow Guard and SDL checks (ST 4.1)
+- `engine/CMakeLists.txt`: compile flags gain `/guard:cf /sdl` (in `STOCKSIM_CXX_FLAGS`, so every target and the
+  `flags_hash`); `add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA)` for the link. `/fp:precise` and `/W4 /WX` unchanged.
+- No new warnings or errors under `/sdl`; no code changes. `flags_hash` e910e917c8d189f4 -> 3052014b56f68721
+  (a build fingerprint; nothing in the tests or goldens pins it). `dumpbin /headers /loadconfig` shows "Control Flow
+  Guard", "Dynamic base", "High Entropy Virtual Addresses" and "CF instrumented" on `stocksim_run.exe`,
+  `stocksim_tests.exe` and `stockify/_engine.cp312-win_amd64.pyd`.
+- Speed, synthetic 600,000-event tick pack, median of 9: `noop_cpp` 488.6 -> 483.6 / 488.8 ms (two runs, within
+  noise); Python no-op 1812.6 -> 1827.7 / 1791.2 ms; Python SMA 673.9 -> 672.7 / 674.4 ms. No measurable change.
