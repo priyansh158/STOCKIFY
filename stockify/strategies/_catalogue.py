@@ -41,6 +41,7 @@ def python_strategies() -> list[dict]:
     for info in pkgutil.iter_modules(pkg.__path__):
         if info.name.startswith("_"):
             continue
+        S.check_module(f"{pkg.__name__}.{info.name}")   # before the import: top-level code never runs unchecked
         module = importlib.import_module(f"{pkg.__name__}.{info.name}")
         for cls_name, cls in inspect.getmembers(module, inspect.isclass):
             if cls is S.Strategy or not issubclass(cls, S.Strategy) or cls.__module__ != module.__name__:

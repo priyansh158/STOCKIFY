@@ -362,9 +362,11 @@ class SourceScanTest(unittest.TestCase):
     exact lines in OWN_API_LINES.
     """
 
-    # Our own API's routes that end in an order-like segment (never a Kite URL).
+    # Exact lines that only look like Kite access: our own API's route ending in /orders, and the strategy load
+    # check's list of modules it refuses (LCB 5.3).
     OWN_API_LINES = {"server/routers/tests.py": {'@router.get("/api/tests/{run_id}/orders", '
-                                                 'response_model=list[dict[str, Any]])'}}
+                                                 'response_model=list[dict[str, Any]])'},
+                     "stockify/strategy.py": {'"kite_client", "kiteconnect", "ctypes", "importlib", "builtins"}'}}
 
     def _scan(self, patterns, allowed_files=()) -> list[str]:  # noqa: ANN001
         matches = []

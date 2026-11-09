@@ -99,6 +99,13 @@ Things to know when you write your own (the full API is A2 §4):
   `socket`, `requests`, `threading`, `sqlite3` and the like, or call `open`, `eval`, `exec`, `datetime.now()` or
   `date.today()`. Use `ctx.now()`, `ctx.today()`, `ctx.rng()` and `ctx.log()` instead. This is what makes a run
   reproducible.
+- **No network, no Kite, nothing past Python (LCB 5.3).** The same check refuses imports of `kite_client`,
+  `kiteconnect`, `stockify.kite_readonly`, `stockify.kitecheck`, `requests`, `httpx`, `urllib`, `socket`, `http`,
+  `subprocess`, `ctypes`, `importlib` and `builtins`, and any use of `__import__`, `__builtins__`, `exec`, `eval` or
+  `compile`. The paper daemon runs strategies in a process that holds a live Kite token, so a strategy must never be
+  able to reach it. The source is parsed **before** the module is imported, so a refused file's top-level code never
+  runs; modules the strategy imports from its own package (such as `stockify/strategies/_option_legs.py`) are checked
+  the same way. This guards against accidents; it is not a sandbox.
 - To make your own, put the file in `stockify/strategies/` and name it in the config as
   `"stockify.strategies.<module>:<Class>"`. The `PARAMS` list is only a description, for the strategy catalogue
   and the `/tests` form (labels, types, defaults, help text); the strategy itself reads `ctx.params`.
