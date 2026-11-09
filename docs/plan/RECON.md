@@ -627,3 +627,11 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Expectations changed: only test_spanlite's bundle test, which resolved a RELIANCE-only run and expected
   `placeholder`; it now resolves the NIFTY future. No golden carries this label (goldens build their own bundles),
   and the web fixture's `margin_spanlite:placeholder` stays valid. The /tests page explains `none`.
+
+## 2026-11-09 — first live SPAN-lite calibration against Kite (IWB 4.3)
+
+- Run by the supervisor during the 2026-11-09 IST session (owner authorised, owner logged in to Kite; read-only endpoints only: quotes and basket margins; no order method exists in the tool). `refdata sync` first (51,670 rows, 2,464 new). NIFTY with `--skip-expiring` (9 Nov was NIFTY's weekly expiry: priced 17 and 23 Nov), BANKNIFTY without (priced 23 Nov and 29 Dec); 200 portfolios each, seed 0, at about 09:50 IST. Reports: `$LAB/margin_calibration/NIFTY-2026-11-09.md`, `BANKNIFTY-2026-11-09.md`.
+- Average error against Kite's `final`: NIFTY 13.1 % with the placeholder rows → 4.4 % fitted (price move 0.0797, volatility move 0.1473, ₹60 minimum per short lot); BANKNIFTY 9.2 % → 4.7 % (0.0735, 0.4558, ₹95). Option portfolios (single legs, straddles, strangles, spreads, iron flies, condors) fit within about 1 % at the median and 3 % (NIFTY) / 13 % (BANKNIFTY straddles, strangles) for 9 in 10. The flat T0 model is off by 100–500 % on the same option portfolios.
+- Weak spot, open: futures stay 8–14 % off even fitted, and futures hedged with options 26 % (NIFTY), so one price-move setting cannot serve both options and futures. A model gap, not a settings gap: likely a separate futures scan/ELM treatment. To look at before adopting for futures strategies.
+- The volatility move differs a lot between the two indices (0.15 vs 0.46), which suggests one day does not pin it down. A second calibration on another day (the next good one: Wed 11 Nov IST, needs the owner's Kite login Tue 16:30–19:30 PST) would show whether the settings are stable.
+- The two fitted rows are committed under `spanlite_pending` (verified: false). No model reads them. 🛑 Adoption waits for the owner's review of the reports.
