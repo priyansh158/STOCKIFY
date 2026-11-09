@@ -16,14 +16,14 @@ from stockify.strategy import Strategy
 
 # Each replayed call, by name: an explicit table, since the load check refuses getattr (LCB 5.4).
 _CALLS = {
-    "subscribe_ticks": lambda ctx: ctx.subscribe_ticks,
-    "subscribe_bars": lambda ctx: ctx.subscribe_bars,
-    "schedule_at": lambda ctx: ctx.schedule_at,
-    "schedule_every": lambda ctx: ctx.schedule_every,
-    "cancel_timer": lambda ctx: ctx.cancel_timer,
-    "place": lambda ctx: ctx.place,
-    "modify": lambda ctx: ctx.modify,
-    "cancel": lambda ctx: ctx.cancel,
+    "subscribe_ticks": lambda c: c.subscribe_ticks,
+    "subscribe_bars": lambda c: c.subscribe_bars,
+    "schedule_at": lambda c: c.schedule_at,
+    "schedule_every": lambda c: c.schedule_every,
+    "cancel_timer": lambda c: c.cancel_timer,
+    "place": lambda c: c.place,
+    "modify": lambda c: c.modify,
+    "cancel": lambda c: c.cancel,
 }
 REPLAYED = tuple(_CALLS)
 

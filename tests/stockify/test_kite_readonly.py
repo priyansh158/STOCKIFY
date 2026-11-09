@@ -154,6 +154,22 @@ class StrippedClientTest(unittest.TestCase):
                 k._post("market.instruments", url_args=args, params={})
         self.assertEqual(k.reqsession.sent, [])
 
+    def test_guarding_the_class_strips_every_instance(self):
+        class FreshFake(FakeKiteConnect):
+            pass
+        kite_client._guard_the_class(FreshFake)
+        kc = FreshFake(api_key="k")                                          # built directly, not via get_client
+        for name in ORDER_METHODS_5_2_2:
+            with self.subTest(name=name), self.assertRaises(kite_client.OrderRouteForbidden):
+                getattr(kc, name)(variety="regular")
+            with self.subTest(cls_name=name), self.assertRaises(kite_client.OrderRouteForbidden):
+                getattr(FreshFake, name)(kc, variety="regular")
+        with self.assertRaises(kite_client.OrderRouteForbidden):
+            FreshFake._request(kc, "order.place", "POST", url_args={"variety": "regular"})
+        self.assertNotIn("order.place", kc._routes)
+        kc.quote("NSE:X")
+        self.assertEqual([s[0] for s in kc.sent], ["market.quote"])
+
     def test_deny_list_from_the_fake_table(self):
         self.assertEqual(kite_client.order_route_keys(ROUTES_5_2_2), EXPECTED_DENY_5_2_2)
 
@@ -231,6 +247,25 @@ class RealSdkTest(unittest.TestCase):
             with self.subTest(prefix=prefix), self.assertRaises(kite_client.OrderRouteForbidden):
                 kc.reqsession.get_adapter(prefix + "api.kite.trade/").send(prepared)
         self.assertEqual(self.wire, [])
+
+    def test_a_fresh_sdk_client_built_directly_is_stripped(self):
+        import kiteconnect
+        import kiteconnect.connect
+        self.assertIs(kiteconnect.connect.KiteConnect, kiteconnect.KiteConnect)
+        kc = kiteconnect.KiteConnect(api_key="x", access_token="t")         # not through kite_client
+        self.assertNotIn("order.place", kc._routes)
+        for call in (lambda: kc.place_order(variety="regular"), lambda: kc.exit_order(variety="regular"),
+                     lambda: kiteconnect.KiteConnect.place_order(kc, variety="regular"),
+                     lambda: kiteconnect.KiteConnect._request(kc, "order.place", "POST", url_args={"variety": "r"}),
+                     lambda: kc._post("order.place", url_args={"variety": "regular"}),
+                     lambda: kc.reqsession.request("POST", "https://api.kite.trade/orders/regular"),
+                     lambda: kc.reqsession.post("https://api.kite.trade/%6Frders/regular")):
+            with self.assertRaises(kite_client.OrderRouteForbidden):
+                call()
+        self.assertEqual(self.wire, [])
+        kc.basket_order_margins([])                                         # reads and calculators still work
+        self.assertEqual([(r.method, r.url) for r in self.wire],
+                         [("POST", "https://api.kite.trade/margins/basket?consider_positions=false")])
 
     def test_method_override_headers_and_keys_are_refused(self):
         kc = self._client()

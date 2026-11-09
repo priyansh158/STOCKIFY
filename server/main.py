@@ -20,6 +20,7 @@ _WEB_ORIGIN = stockify_paths.loopback_origin(
     "STOCKIFY_WEB_ORIGIN", "http://127.0.0.1:3000"
 )
 
+import kite_client  # noqa: E402, F401  — patches the Kite SDK's client class to paper only (LCB 5.7)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

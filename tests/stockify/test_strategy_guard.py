@@ -132,6 +132,57 @@ class StrategyGuardTest(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
                 S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
 
+    def test_round5_string_eval_paths_are_refused(self):
+        for code in (
+                # evalprobe.py
+                "from typing import get_type_hints\ndef f(a: \"__import__('math').pi\"): pass\nh = get_type_hints(f)",
+                "from typing import get_type_hints\ndef f(a: \"__import__('kiteconnect').KiteConnect\"): ...\n"
+                "get_type_hints(f)",
+                # the same through ForwardRef, typing attributes, singledispatch.register and annotations
+                "import typing as t\nx = t.get_type_hints(f)", "from typing import ForwardRef\nx = ForwardRef('1')",
+                "import typing as t\nx = t.ForwardRef('1')", "import typing as t\nx = t.evaluate_forward_ref",
+                "def f(o):\n  return o.get_annotations(o)", "def f(o):\n  return o.get_type_hints(o)",
+                "from functools import singledispatch\n@singledispatch\ndef f(x): pass\n@f.register\n"
+                "def _(x: int): pass",
+                "def f(g):\n  return g.register(int)",
+                "def f(a: 'x') -> None: pass", "def f(a) -> 'x': pass", "x: 'int' = 1",
+                "from typing import Optional\nx: Optional['int'] = None", "def f(*a: 'x', **k: 'y'): pass",
+                "class A:\n    n: 'int' = 0"):
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
+
+    def test_round5_ctx_cannot_be_rebound_or_fed_a_clock(self):
+        for code in (
+                "from datetime import datetime\ndef f():\n ctx = datetime\n return ctx.now()",
+                "from datetime import datetime\ndef h(ctx):\n return ctx.now()\nx = h(datetime)",
+                "from datetime import datetime\nwith datetime as ctx:\n pass",
+                "from datetime import datetime\nfor ctx in [datetime]:\n ctx.now()",
+                "from datetime import datetime\nf = (lambda ctx: ctx.now())(datetime)",
+                "from datetime import datetime\n(ctx := datetime)\nctx.now()",
+                "from datetime import datetime\nx = [ctx.now() for ctx in [datetime]]",
+                "from datetime import datetime\ndef h(ctx=datetime):\n return ctx.now()",
+                "from datetime import datetime\ndef h(*, ctx=datetime):\n return ctx.now()",
+                "from datetime import datetime\ndef h(ctx):\n return ctx.now()\nx = h(ctx=datetime)",
+                "from datetime import datetime\nclass A:\n def h(self, ctx):\n  return ctx.now()\n"
+                " def on_bar(self, ctx, bar):\n  self.h(datetime)",
+                "class A:\n @staticmethod\n def h(ctx):\n  return ctx.now()\n def on_bar(self, ctx, bar):\n"
+                "  self.h(bar)",
+                "def h(ctx):\n return ctx.now()\ndef g(*a):\n return h(*a)",
+                "ctx = 1", "ctx += 1", "del ctx", "def f():\n global ctx", "from datetime import datetime as ctx",
+                "try:\n pass\nexcept Exception as ctx:\n pass"):
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
+
+    def test_round5_passing_ctx_along_still_works(self):
+        S.check_source("class A:\n"
+                       "    def on_bar(self, ctx, bar):\n"
+                       "        self._close(ctx, bar.instrument)\n        self._daily(ctx, '09:15')\n"
+                       "        helper(ctx)\n        helper(ctx=ctx)\n        x = ctx.now()\n"
+                       "    def _close(self, ctx, iid):\n        return ctx.today()\n"
+                       "    @staticmethod\n    def _daily(ctx, hhmm):\n        return ctx.now()\n"
+                       "def helper(ctx):\n    return ctx.now()\n",
+                       "stockify.strategies.probe", "stockify.strategies")
+
     def test_round4_legitimate_chains_and_ctx_clock_pass(self):
         S.check_source("from __future__ import annotations\nfrom typing import Optional\n"
                        "from datetime import date, datetime, timezone\n"

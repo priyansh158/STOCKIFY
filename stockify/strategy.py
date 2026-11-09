@@ -206,12 +206,15 @@ _STRATEGY_PACKAGE = "stockify.strategies"
 BANNED_CALLS = {"getattr", "setattr", "delattr", "globals", "locals", "vars", "breakpoint", "open", "input",
                 "__import__", "exec", "eval", "compile"}
 BANNED_NAMES = {"__import__", "__builtins__", "__loader__", "__spec__", "exec", "eval", "compile", "globals",
-                "locals", "vars", "breakpoint", "getattr", "setattr", "delattr"}
+                "locals", "vars", "breakpoint", "getattr", "setattr", "delattr",
+                "get_type_hints", "ForwardRef", "evaluate_forward_ref", "get_annotations"}
 # Attribute names that hand over a module or the module table (`stockify.timeutil` holds `time`, the engine `sys`).
 BANNED_ATTR_NAMES = {"importlib", "sys", "modules", "kite_client", "kiteconnect", "os", "subprocess", "socket",
                      "time", "ast", "inspect", "builtins",
                      # frame and code objects lead back to globals (LCB 5.5)
-                     "f_globals", "f_locals", "f_builtins", "f_back", "gi_frame", "cr_frame", "ag_frame", "tb_frame"}
+                     "f_globals", "f_locals", "f_builtins", "f_back", "gi_frame", "cr_frame", "ag_frame", "tb_frame",
+                     # these evaluate strings as code (LCB 5.7)
+                     "get_type_hints", "ForwardRef", "evaluate_forward_ref", "get_annotations", "register"}
 # `_`-prefixed attributes other than on `self`/`cls`: only these, by name. `ctx._rows()` is the context's instrument
 # table, read by the option helpers in stockify/strategies (_option_legs.py, _script.py).
 ALLOWED_PRIVATE_ATTRS = {"_rows"}
@@ -336,7 +339,95 @@ def check_source(source: str, name: str = "<strategy>", package: str = "") -> li
             if attr in BANNED_ATTR_NAMES:
                 refuse(node, f"the attribute .{attr}")
     _check_chains(tree, package, own, refuse)
+    _check_annotations(tree, refuse)
+    _check_ctx(tree, refuse)
     return local
+
+
+def _check_annotations(tree: ast.AST, refuse) -> None:  # noqa: ANN001
+    """No string constant inside an annotation: typing evaluates such strings as code (LCB 5.7)."""
+    def scan(annotation: ast.AST | None) -> None:
+        if annotation is None:
+            return
+        for sub in ast.walk(annotation):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                refuse(sub, "a string annotation (typing would evaluate it as code)")
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg):
+                if arg is not None:
+                    scan(arg.annotation)
+            scan(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            scan(node.annotation)
+
+
+def _check_ctx(tree: ast.AST, refuse) -> None:  # noqa: ANN001
+    """`ctx` is only ever the strategy context (LCB 5.7): the clock names are allowed on it alone.
+
+    It may be bound only as a parameter of a `def` (no assignment, loop, with, walrus, comprehension, except, import,
+    lambda, global or default value), and a call to a function of this module may pass only the name `ctx` into a
+    parameter called `ctx`. Calls through other objects or stored callables are not followed (a determinism note
+    in the report, not an order-safety gap)."""
+    def is_ctx(n: ast.AST) -> bool:
+        return isinstance(n, ast.Name) and n.id == "ctx"
+
+    params: dict[str, list[tuple[list[str], bool]]] = {}         # function name -> [(param names, drops first)]
+    methods = {id(item) for node in ast.walk(tree) if isinstance(node, ast.ClassDef) for item in node.body}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    static = any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in item.decorator_list)
+                    names = [x.arg for x in (*item.args.posonlyargs, *item.args.args)]
+                    params.setdefault(item.name, []).append((names, not static))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and id(node) not in methods:
+            names = [x.arg for x in (*node.args.posonlyargs, *node.args.args)]
+            params.setdefault(node.name, []).append((names, False))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "ctx" and isinstance(node.ctx, (ast.Store, ast.Del)):
+            refuse(node, "rebinding the name ctx")
+        elif isinstance(node, ast.arg) and node.arg == "ctx":
+            pass                                             # a def's parameter: checked with the lambdas below
+        elif isinstance(node, ast.Lambda) and any(a.arg == "ctx" for a in (*node.args.posonlyargs, *node.args.args,
+                                                                             *node.args.kwonlyargs)):
+            refuse(node, "a lambda parameter named ctx")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and "ctx" in node.names:
+            refuse(node, "global/nonlocal ctx")
+        elif isinstance(node, ast.alias) and (node.asname or node.name) == "ctx":
+            refuse(node, "importing a name as ctx")
+        elif isinstance(node, ast.ExceptHandler) and node.name == "ctx":
+            refuse(node, "except ... as ctx")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            positional = [*a.posonlyargs, *a.args]
+            for arg, default in zip(positional[len(positional) - len(a.defaults):], a.defaults):
+                if arg.arg == "ctx":
+                    refuse(default, "a default value for ctx")
+            for arg, default in zip(a.kwonlyargs, a.kw_defaults):
+                if arg.arg == "ctx" and default is not None:
+                    refuse(default, "a default value for ctx")
+        elif isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == "ctx" and not is_ctx(kw.value):
+                    refuse(kw.value, "passing anything but ctx as ctx=")
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else (
+                f.attr if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                and f.value.id in ("self", "cls") else None)
+            for names, drops_first in params.get(name or "", ()):
+                if isinstance(f, ast.Attribute) and drops_first:
+                    names = names[1:]
+                for i, value in enumerate(node.args):
+                    if isinstance(value, ast.Starred):
+                        if "ctx" in names[i:]:
+                            refuse(value, "passing *args into a ctx parameter")
+                        break
+                    if i < len(names) and names[i] == "ctx" and not is_ctx(value):
+                        refuse(value, f"passing anything but ctx as the ctx of {name}()")
 
 
 # ── Attribute chains rooted at an imported module (LCB 5.6) ──────────────────
@@ -497,6 +588,7 @@ def load(ref: str, params: dict | None = None) -> Strategy:
     """'package.module:ClassName' → an instance, after the source check (which runs before the import)."""
     module_name, cls_name = ref.split(":")
     check_module(module_name)
+    import kite_client  # noqa: F401 — before any strategy runs: the Kite SDK's client class is paper only (LCB 5.7)
     module = importlib.import_module(module_name)
     cls = getattr(module, cls_name, None)
     if cls is None or not (isinstance(cls, type) and issubclass(cls, Strategy)):

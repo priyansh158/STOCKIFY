@@ -359,7 +359,9 @@ def _check_route(deny: frozenset, routes: dict, route: object, method: str, url_
 
 
 def strip_order_routes(kc):  # noqa: ANN001, ANN201
-    """Make one KiteConnect instance paper-only, in place, and return it. The class is left untouched."""
+    """Make one KiteConnect instance paper-only, in place, and return it (idempotent)."""
+    if getattr(kc, "_stockify_paper_only", False):
+        return kc
     class_routes = dict(type(kc)._routes)
     deny = ORDER_ROUTE_KEYS | order_route_keys(class_routes)
     routes = {k: v for k, v in class_routes.items() if k not in deny}
@@ -408,7 +410,40 @@ def strip_order_routes(kc):  # noqa: ANN001, ANN201
 
     kc.basket_order_margins = basket_order_margins
     kc.order_margins = order_margins
+    kc._stockify_paper_only = True
     return kc
+
+
+def _guard_the_class(cls) -> None:  # noqa: ANN001
+    """Patch the SDK's KiteConnect class itself (LCB 5.7), so that a client built anywhere in the process, even by
+    `kiteconnect.KiteConnect(...)` directly, is stripped as it is constructed: `__init__` ends in
+    `strip_order_routes`, the class's order methods raise, and its `_request` refuses order routes and URLs."""
+    if getattr(cls, "_stockify_paper_only_class", False):
+        return
+    inner_init = cls.__init__
+    inner_request = cls._request
+    deny = ORDER_ROUTE_KEYS
+
+    def __init__(self, *args, **kwargs):  # noqa: ANN001, ANN202, N807
+        inner_init(self, *args, **kwargs)
+        strip_order_routes(self)
+
+    def _request(self, route, method, *args, **kwargs):  # noqa: ANN001, ANN202
+        url_args = kwargs.get("url_args", args[0] if args else None)
+        _check_route(deny, getattr(self, "_routes", cls._routes), route, method, url_args)
+        return inner_request(self, route, method, *args, **kwargs)
+
+    cls.__init__ = __init__
+    cls._request = _request
+    names = set(ORDER_METHODS)
+    names.update(n for n in dir(cls) if n.startswith(_ORDER_METHOD_PREFIXES))
+    for name in sorted(names):
+        setattr(cls, name, _refuse(name))
+    cls._stockify_paper_only_class = True
+
+
+if KITECONNECT_AVAILABLE:
+    _guard_the_class(KiteConnect)
 
 
 def margin_query(consider_positions: object = False, mode: object = None) -> dict:

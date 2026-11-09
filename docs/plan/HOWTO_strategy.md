@@ -117,7 +117,13 @@ Things to know when you write your own (the full API is A2 §4):
     `__import__`, `exec`, `eval` and `compile`, and the names `__builtins__`, `__loader__` and `__spec__`;
   - the wall clock: the attributes `now`, `today`, `utcnow`, `time_ns`, `monotonic` and `perf_counter` on anything
     but the strategy context (`ctx.now()` and `ctx.today()` are the API), and `fromtimestamp` without a time and an explicit `tz`;
-  - the attributes `exec`, `eval`, `compile`, `bltns` and `builtins` on any object;
+  - the attributes `exec`, `eval`, `compile`, `bltns` and `builtins` on any object, and anything that evaluates a
+    string as code: `get_type_hints`, `ForwardRef`, `evaluate_forward_ref`, `get_annotations`, `.register`, and any
+    string inside an annotation (`def f(a: "X")`, `-> "X"`, `x: "int"`); write annotations as plain names (with
+    `from __future__ import annotations` they are never evaluated anyway) (LCB 5.7);
+  - rebinding `ctx`: it may only be a parameter of a `def` (no assignment, loop, `with ... as`, walrus,
+    comprehension, `except ... as`, import alias, lambda parameter or default value), and a call to a function of
+    the same module may pass only `ctx` itself into a parameter named `ctx`;
   - attribute chains that start at an imported module are followed over the real objects (LCB 5.6): reaching a
     module that is not on the list (`enum.bltns` is builtins, `dataclasses.types`), a dangerous builtin (`eval`,
     `open`, `getattr`, …) or a frame or code object is refused, and so is a step that does not resolve or indexing

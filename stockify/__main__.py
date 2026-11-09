@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 
+import kite_client  # noqa: F401  — first: patches the Kite SDK's client class to paper only (LCB 5.7)
 from stockify import log
 
 # command -> (milestone, help)

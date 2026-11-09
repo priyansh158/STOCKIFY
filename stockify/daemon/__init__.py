@@ -18,6 +18,7 @@ import logging
 import threading
 from datetime import date
 
+import kite_client  # noqa: F401  — first: patches the Kite SDK's client class to paper only (LCB 5.7)
 from stockify import log as slog
 from stockify import paths, timeutil
 from stockify.daemon import exitcodes
