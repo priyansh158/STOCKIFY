@@ -28,7 +28,7 @@ def fixture(name: str) -> bytes:
 def zipped(name: str, data: bytes) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr(name, data)
+        z.writestr(zipfile.ZipInfo(name, date_time=(2026, 11, 9, 0, 0, 0)), data)   # a fixed member time: the same bytes each call
     return buf.getvalue()
 
 

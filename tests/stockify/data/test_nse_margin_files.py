@@ -31,7 +31,8 @@ def span_zip(day: date, suffix: str, created: str = "202611082026") -> bytes:
 
 
 def elm_gz(day: date) -> bytes:
-    return gzip.compress(f"OPTIDX,NIFTY,2026-11-10,24000,CE,0,2.0\n".encode())
+    # mtime=0: no wall-clock stamp in the gzip header, so two calls give the same bytes (I-4: the old flake).
+    return gzip.compress(f"OPTIDX,NIFTY,{day:%d-%b-%Y},24000,CE,0,2.0\n".upper().encode(), mtime=0)
 
 
 class FakeHttp:
@@ -150,7 +151,7 @@ class FetchDayTests(MarginFilesTest):
     def test_zip_without_a_created_stamp_is_rejected(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
-            z.writestr("nsccl.20261109.i2.spn", "<spanFile/>")
+            z.writestr(zipfile.ZipInfo("nsccl.20261109.i2.spn", date_time=(2026, 11, 9, 0, 0, 0)), "<spanFile/>")
         routes = {"nsccl.20261109.i2.zip": (200, buf.getvalue())}
         res = M.fetch_day(DAY, FakeHttp(routes), elm=False)
         self.assertEqual(res.rejected, ["nsccl.20261109.i2.zip"])

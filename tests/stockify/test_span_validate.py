@@ -63,11 +63,12 @@ class SpanValidateTests(SandboxedDBTest):
         span_dir.mkdir(parents=True, exist_ok=True)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("nsccl.20261109.i1.spn", FIXTURE.read_bytes())
+            z.writestr(zipfile.ZipInfo("nsccl.20261109.i1.spn", date_time=(2026, 11, 9, 0, 0, 0)),
+                       FIXTURE.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
         (span_dir / "nsccl.20261109.i1.zip").write_bytes(buf.getvalue())
         elm_dir = paths.nse_margin_dir("elm") / "2026"
         elm_dir.mkdir(parents=True, exist_ok=True)
-        (elm_dir / "F_AEL_OPT_CONTRACTS_09112026.csv.gz").write_bytes(gzip.compress(ELM_CSV.encode()))
+        (elm_dir / "F_AEL_OPT_CONTRACTS_09112026.csv.gz").write_bytes(gzip.compress(ELM_CSV.encode(), mtime=0))
 
     def add(self, kind: str, legs: list[tuple[str, int]], kite: dict, wall_ns: int = WALL) -> int:
         market = {"underlying": {"ltp": SPOT_PAISE, "bid": None, "ask": None, "oi": None}}
@@ -216,7 +217,7 @@ class SpanValidateTests(SandboxedDBTest):
         path = paths.nse_margin_dir("elm") / "2026" / "F_AEL_OPT_CONTRACTS_09112026.csv.gz"
         path.write_bytes(gzip.compress((ELM_CSV + "OPTIDX,NIFTY,BAD-DATE,25000,CE,0,2\n"
                                         "OPTIDX,NIFTY,23-NOV-2026,abc,CE,0,x\n"
-                                        "OPTIDX,NIFTY,23-NOV-2026,25000,PE,0,3\n").encode()))
+                                        "OPTIDX,NIFTY,23-NOV-2026,25000,PE,0,3\n").encode(), mtime=0))
         elm = SV.read_elm(DAY, {"NIFTY"})
         self.assertEqual(elm[("NIFTY", ("CE", "2026-11-23", 2500000))], Decimal(2))
         self.assertIsNone(elm[("NIFTY", ("PE", "2026-11-23", 2500000))])      # 2 and 3: conflicting, unusable

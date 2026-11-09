@@ -74,11 +74,12 @@ class ArchiveTest(SandboxedDBTest):
         span_dir.mkdir(parents=True, exist_ok=True)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("nsccl.20261109.i1.spn", FIXTURE.read_bytes())
+            z.writestr(zipfile.ZipInfo("nsccl.20261109.i1.spn", date_time=(2026, 11, 9, 0, 0, 0)),
+                       FIXTURE.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
         (span_dir / "nsccl.20261109.i1.zip").write_bytes(buf.getvalue())
         elm_dir = paths.nse_margin_dir("elm") / "2026"
         elm_dir.mkdir(parents=True, exist_ok=True)
-        (elm_dir / "F_AEL_OPT_CONTRACTS_09112026.csv.gz").write_bytes(gzip.compress(ELM_CSV.encode()))
+        (elm_dir / "F_AEL_OPT_CONTRACTS_09112026.csv.gz").write_bytes(gzip.compress(ELM_CSV.encode(), mtime=0))
 
 
 class MarginCheckTests(ArchiveTest):

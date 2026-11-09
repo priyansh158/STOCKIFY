@@ -40,7 +40,8 @@ def archive_span(day: date, suffix: str, created: str, business: date | None = N
     folder.mkdir(parents=True, exist_ok=True)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(f"nsccl.{day:%Y%m%d}.{suffix}.spn", body)
+        z.writestr(zipfile.ZipInfo(f"nsccl.{day:%Y%m%d}.{suffix}.spn", date_time=(2026, 11, 9, 0, 0, 0)),
+                   body, compress_type=zipfile.ZIP_DEFLATED)  # a fixed member time: the same bytes each call
     path = folder / f"nsccl.{day:%Y%m%d}.{suffix}.zip"
     path.write_bytes(buf.getvalue())
     return path
@@ -49,7 +50,7 @@ def archive_span(day: date, suffix: str, created: str, business: date | None = N
 def archive_elm(day: date, text: str) -> None:
     folder = paths.nse_margin_dir("elm") / f"{day:%Y}"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"F_AEL_OPT_CONTRACTS_{day:%d%m%Y}.csv.gz").write_bytes(gzip.compress(text.encode()))
+    (folder / f"F_AEL_OPT_CONTRACTS_{day:%d%m%Y}.csv.gz").write_bytes(gzip.compress(text.encode(), mtime=0))
 
 
 def ns(day: date, hhmm: str) -> int:
