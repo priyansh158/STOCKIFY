@@ -98,6 +98,7 @@ TEST_CASE("specs are dated, and CM_CAS stocks change group by date (M3.4, G12)")
     Json rows = Json::array();
     rows.push_back({{"id", 7}, {"exchange", "NFO"}, {"kind", "FUT"}, {"tradingsymbol", "NIFTY26NOVFUT"},
                     {"underlying_id", 1}, {"expiry", "2026-11-24"}, {"session_group", "FO_FUT"},
+                    {"last_trading_ns", 1795515000000000000LL},  // 15:40 IST (D-61: required)
                     {"specs", Json::array({{{"from", "2026-10-01"}, {"lot", 75}, {"tick_paise", 10}, {"freeze_qty", 1800}},
                                            {{"from", "2026-11-04"}, {"lot", 65}, {"tick_paise", 10}, {"freeze_qty", nullptr}}})}});
     rows.push_back({{"id", 9}, {"exchange", "NSE"}, {"kind", "EQ"}, {"tradingsymbol", "RELIANCE"},

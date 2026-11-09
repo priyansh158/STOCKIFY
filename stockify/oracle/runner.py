@@ -192,6 +192,8 @@ class Engine:
                 v = r.get(field)
                 if v is not None and not 0 <= v <= 4294967295:
                     raise RunError(f"bundle: {where}: {field} must be between 0 and 4294967295, got {v}")
+            if r.get("kind") in ("FUT", "CE", "PE") and r.get("last_trading_ns") is None:
+                raise RunError(f"bundle: {where}: a {r['kind']} needs last_trading_ns (D-61)")
             for s in r.get("specs") or []:
                 at = f"bundle: {where}.specs (from {s['from']}): "
                 if s["lot"] <= 0:

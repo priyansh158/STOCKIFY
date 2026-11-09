@@ -386,7 +386,8 @@ def test_greeks(run_id: str) -> list[TestGreekDTO]:
 
 
 def _expiry_close_estimate(inst: dict, day: dict, trade_date: str) -> int | None:
-    """An expiry after the run's last day has no session in the bundle, so no last_trading_ns. Estimate it as the
+    """For run folders made before D-61, whose bundles have no last_trading_ns for an expiry after the run's last
+    day (newer bundles always carry it). Estimate it as the
     expiry date at the IST time of day this trade date's group closes (IST has no daylight saving, so that is the
     close plus whole days). Comes from the bundle's own sessions, not a hard-coded time."""
     from datetime import date

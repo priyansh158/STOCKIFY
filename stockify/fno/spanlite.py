@@ -134,8 +134,7 @@ class SpanLiteMargin:
             chain = e.ctx.chain(row["underlying"], row["expiry"]) if row.get("underlying") else None
             f_paise = (chain.forward_paise if chain is not None and chain.forward_paise is not None
                        else und_paise if und_paise is not None else row["strike_paise"])
-            last = row["last_trading_ns"] if row.get("last_trading_ns") is not None else e.now
-            t = B.year_fraction(e.now, last)
+            t = B.year_fraction(e.now, row["last_trading_ns"])  # always set: the bundle load checks it (D-61)
             sigma = self._iv(row, chain, date)
             valued.append((units, False, f_paise / 100.0, row["strike_paise"] / 100.0, t, sigma, row["kind"] == "CE"))
             if units < 0:

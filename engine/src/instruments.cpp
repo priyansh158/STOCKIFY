@@ -79,6 +79,9 @@ InstrumentTable::InstrumentTable(const Json& rows, const SessionCalendar& calend
             }
         }
         inst.session_group = require_string(r, "session_group", where);
+        if ((inst.kind == "FUT" || inst.kind == "CE" || inst.kind == "PE") && !inst.last_trading_ns) {
+            throw FormatError("bundle: " + where + ": a " + inst.kind + " needs last_trading_ns (D-61)");
+        }
         if (const auto it = r.find("specs"); it != r.end() && it->is_array()) {
             for (const Json& s : *it) {
                 Spec spec;

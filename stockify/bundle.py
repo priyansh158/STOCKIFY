@@ -229,6 +229,9 @@ def resolve_instruments(ids: set[int], start: date, end: date, days: list[dict],
             last = info.get("actual_expiry") or info["expiry"]
             if last and last in day_by_date:
                 row["last_trading_ns"] = group_close_ns(day_by_date[last], row["session_group"])
+            elif last:                                   # expiry after the run (D-61): its own dated session
+                from stockify.data import calendar
+                row["last_trading_ns"] = calendar.session_close_ns(row["session_group"], date.fromisoformat(last))
         elif kind == "INDEX":
             row["session_group"] = "CM"
         else:

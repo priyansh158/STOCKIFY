@@ -143,7 +143,7 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
         const double f_paise = chain && chain->forward ? *chain->forward
                                : und                    ? static_cast<double>(*und)
                                                         : static_cast<double>(row->strike.value_or(0));
-        const double t = pricing::year_fraction(now, row->last_trading_ns.value_or(now));
+        const double t = pricing::year_fraction(now, row->last_trading_ns.value());  // set: checked at load (D-61)
         const double sigma = iv(*row, chain ? &*chain : nullptr, date);
         valued.push_back(Valued{units, false, f_paise / 100.0, static_cast<double>(row->strike.value_or(0)) / 100.0,
                                 t, sigma, row->kind == "CE"});

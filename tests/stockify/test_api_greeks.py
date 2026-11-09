@@ -54,16 +54,12 @@ class GreeksApiTests(SandboxedDBTest):
         bundle = json.loads((folder / "bundle.json").read_text(encoding="utf-8"))
         row = next(i for i in bundle["instruments"] if i["id"] == 4)
         day_end = next(d["day_end_ns"] for d in bundle["days"] if d["date"] == "2026-03-03")
-        self.assertIsNone(row["last_trading_ns"])                                   # expiry after the run
-        from stockify import timeutil
-        from datetime import date
-        last = timeutil.ist_ns(date(2026, 3, 30), "15:30")                          # FO close in this world's sessions
-        t = B.year_fraction(day_end, last)
+        t = B.year_fraction(day_end, row["last_trading_ns"])                       # set even after the run (D-61)
         r = B.rate_on(bundle["pricing"].get("risk_free", []), "2026-03-03")
         sigma, why = B.implied_vol(True, 405.0, 25120.0, 25000.0, t, r)
         self.assertIsNone(why)
         g = B.greeks(True, 25120.0, 25000.0, t, r, sigma)
-        self.assertEqual((ce["iv_reason"], ce["expiry_close_estimated"]), (None, True))
+        self.assertEqual((ce["iv_reason"], ce["expiry_close_estimated"]), (None, False))
         self.assertTrue(math.isclose(ce["iv"], sigma, rel_tol=1e-12))
         self.assertTrue(math.isclose(ce["delta_units"], g.delta * 75, rel_tol=1e-12))
         self.assertTrue(math.isclose(ce["gamma_units_per_rupee"], g.gamma * 75, rel_tol=1e-12))

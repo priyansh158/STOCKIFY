@@ -216,7 +216,7 @@ class Context:
                        and r["kind"] in ("CE", "PE")), key=lambda r: (r["strike_paise"], r["kind"]))
         if not rows:
             return [], None, None, None
-        t = B.year_fraction(e.now, rows[0]["last_trading_ns"] if rows[0]["last_trading_ns"] is not None else e.now)
+        t = B.year_fraction(e.now, rows[0]["last_trading_ns"])   # always set: the bundle load checks it (D-61)
         r = B.rate_on(e.bundle["pricing"].get("risk_free", []), e._date(e.now))
         disc = math.exp(-r * t)
         fwd, source = self._forward(underlying, expiry, rows, disc)

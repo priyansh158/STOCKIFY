@@ -156,6 +156,29 @@ def phases(group: str, d: date, *, preopen: bool = True) -> list[Phase]:
     return sorted(out, key=lambda p: p.start_ns)
 
 
+def session_close_ns(group: str, d: date) -> int:
+    """End of the group's last CONTINUOUS or CAS phase on `d` under the dated session rules (special_sessions.csv,
+    else sessions.json), without consulting the holiday list. For a contract's expiry date (D-61): NSE's record of
+    the expiry is the authority, and the holiday list may not reach that far ahead yet. CalendarError if no rule
+    covers the date."""
+    if group not in GROUP_SEGMENT:
+        raise CalendarError(f"unknown session group {group!r}")
+    special = _special_sessions().get((d.isoformat(), group))
+    if special:
+        rows = special
+    else:
+        version = _version(group, d)
+        if version is None and group == "CM_CAS":
+            version = _version("CM", d)
+        if version is None:
+            raise CalendarError(f"no sessions.json version for {group} on {d}")
+        rows = version["phases"]
+    ends = [timeutil.ist_ns(d, r["end"]) for r in rows if r["phase"] in ("CONTINUOUS", "CAS")]
+    if not ends:
+        raise CalendarError(f"no CONTINUOUS or CAS phase for {group} on {d}")
+    return max(ends)
+
+
 def phase_at(group: str, t_ns: int, *, preopen: bool = True) -> str | None:
     """Phase name in force at t_ns (start inclusive, end exclusive), or None."""
     d = timeutil.ns_to_ist(t_ns).date()

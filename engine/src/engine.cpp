@@ -1010,7 +1010,7 @@ Context::ChainView Context::compute_chain(std::string_view underlying, std::stri
     if (rows.empty()) {
         return view;
     }
-    const double t = pricing::year_fraction(e_.now_, rows.front()->last_trading_ns.value_or(e_.now_));
+    const double t = pricing::year_fraction(e_.now_, rows.front()->last_trading_ns.value());  // set: checked at load (D-61)
     const double r = rate_on(e_.bundle_.root, iso_date(e_.date_of(e_.now_)));
     const double disc = std::exp(-r * t);
 

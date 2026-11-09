@@ -86,26 +86,28 @@ def _charges(spec) -> dict:  # noqa: ANN001
 
 
 def _days(g: dict) -> list[dict]:
+    return [_day(g, d) for d in g["bundle"]["dates"]]
+
+
+def _day(g: dict, d: str) -> dict:
+    """One day's sessions from the golden's own session table (also used for an expiry after the run, D-61)."""
     b = g["bundle"]
     sessions = {**DEFAULT_SESSIONS, **b.get("sessions", {})}
     sessions.setdefault("CM_CAS", sessions["CM"])
     cut = b.get("mis_cutoff", {})
-    out = []
-    for d in b["dates"]:
-        day = date.fromisoformat(d)
-        groups = {}
-        for gname in ("CM", "CM_CAS", "FO_FUT", "FO_OPT"):
-            rows = b.get("sessions_by_date", {}).get(d, {}).get(gname, sessions[gname])
-            groups[gname] = [{"phase": p, "start_ns": timeutil.ist_ns(day, s), "end_ns": timeutil.ist_ns(day, e)}
-                             for p, s, e in rows]
-        cuts = cut.get(d, cut) if isinstance(cut.get(d), dict) else cut
-        out.append({"date": d, "groups": groups,
-                    "mis_cutoff_ns": {"CM": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
-                                      "CM_CAS": timeutil.ist_ns(day, cuts.get("CM_CAS", cuts.get("CM")))
-                                      if "CM_CAS" in cuts or "CM" in cuts else None,
-                                      "FO": timeutil.ist_ns(day, cuts["FO"]) if "FO" in cuts else None},
-                    "day_end_ns": timeutil.ist_ns(day, "23:59:59") + 999_999_999})
-    return out
+    day = date.fromisoformat(d)
+    groups = {}
+    for gname in ("CM", "CM_CAS", "FO_FUT", "FO_OPT"):
+        rows = b.get("sessions_by_date", {}).get(d, {}).get(gname, sessions[gname])
+        groups[gname] = [{"phase": p, "start_ns": timeutil.ist_ns(day, s), "end_ns": timeutil.ist_ns(day, e)}
+                         for p, s, e in rows]
+    cuts = cut.get(d, cut) if isinstance(cut.get(d), dict) else cut
+    return {"date": d, "groups": groups,
+            "mis_cutoff_ns": {"CM": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
+                              "CM_CAS": timeutil.ist_ns(day, cuts.get("CM_CAS", cuts.get("CM")))
+                              if "CM_CAS" in cuts or "CM" in cuts else None,
+                              "FO": timeutil.ist_ns(day, cuts["FO"]) if "FO" in cuts else None},
+            "day_end_ns": timeutil.ist_ns(day, "23:59:59") + 999_999_999}
 
 
 def _instruments(g: dict, days: list[dict]) -> list[dict]:
@@ -127,6 +129,8 @@ def _instruments(g: dict, days: list[dict]) -> list[dict]:
         last = row["actual_expiry"] or row["expiry"]
         if last in by_date:
             row["last_trading_ns"] = bundle_mod.group_close_ns(by_date[last], group)
+        elif last:                                       # expiry after the run (D-61)
+            row["last_trading_ns"] = bundle_mod.group_close_ns(_day(g, last), group)
         out.append(row)
     return out
 
