@@ -417,6 +417,41 @@ def _cmd_margin_calibrate(args) -> int:
     return 0
 
 
+def _cmd_margin_span_validate(args) -> int:
+    """MEZ 4.8: the exact SPAN calculator and the ELM file against the stored Kite answers of one day (offline)."""
+    from datetime import date
+    from stockify import paths, store, timeutil
+    from stockify.fno import span_validate as sv
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD, got {args.date!r}", file=sys.stderr)
+        return 2
+    underlyings = args.underlying
+    if not underlyings:
+        with sv.read_only():
+            underlyings = sorted({r["underlying"] for r in store.margin_calibrations()
+                                  if timeutil.ns_to_ist(r["wall_ns"]).date() == day})
+    rep = sv.validate(day, underlyings)
+    if not rep.samples:
+        print(f"no stored calibration samples on {day}", file=sys.stderr)
+        return 1
+    text = sv.report_text(rep)
+    out_dir = paths.lab_dir() / "margin_calibration"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = out_dir / f"span-validate-{day.isoformat()}.md"
+    report.write_text(text, encoding="utf-8")
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:                          # a cp1252 console: plain ASCII words for the symbols
+        text = text.replace("₹", "Rs ").replace("—", "-").replace("×", "x")
+        text = text.encode(encoding, errors="replace").decode(encoding)
+    print(text)
+    print(report, file=sys.stderr)
+    return 0
+
+
 def _cmd_compare_strategies(args) -> int:
     from stockify import runs
     from stockify.tools import compare_strategies as cs
@@ -633,6 +668,11 @@ def main(argv: list[str] | None = None) -> int:
                          "pending row")
     mc.add_argument("--date", help="with --refit: the IST trade date of the stored calibration, YYYY-MM-DD")
     mc.set_defaults(func=_cmd_margin_calibrate)
+    sv = mgsub.add_parser("span-validate", help="check the exact SPAN calculator and NSE's ELM %% against the Kite "
+                                                "answers stored for a day (offline; reads the lab, writes one report)")
+    sv.add_argument("--date", required=True, help="IST trade date of the stored calibration samples, YYYY-MM-DD")
+    sv.add_argument("--underlying", nargs="*", help="default: every underlying sampled that day")
+    sv.set_defaults(func=_cmd_margin_span_validate)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)
