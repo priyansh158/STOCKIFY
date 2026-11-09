@@ -140,6 +140,42 @@ class SpanExactTests(unittest.TestCase):
         with self.assertRaises(SpanCalcError):
             span_requirement(cc, [(FUT_NOV, LOT)])
 
+    # Scan tiers that split 23-Nov from 29-Dec (the fixture's own tiers hold both in tier 2).
+    SPLIT_TIERS = (Tier(1, "2026-11-09", "2026-11-23", {}), Tier(2, "2026-11-24", "2031-06-24", {}))
+
+    def test_scan_is_summed_per_scan_tier(self):
+        # Long 65 Nov / short 65 Dec futures. One tier (the fixture's): worst of Nov[s] - Dec[s] = 16.26 (s11:
+        # -2319.88 + 2336.14) x 65 = 1,056.90. Split tiers, no offset: Nov alone worst 2339.32 (s13) x 65 =
+        # 152,055.80; short Dec alone worst -(-2336.14) = 2336.14 (s11) x 65 = 151,849.10; sum 303,904.90.
+        book = [(FUT_NOV, LOT), (FUT_DEC, -LOT)]
+        self.assertEqual(span_requirement(self.nifty, book).scan, Decimal("1056.90"))
+        split = dataclasses.replace(self.nifty, scan_tiers=self.SPLIT_TIERS)
+        self.assertEqual(span_requirement(split, book).scan, Decimal("303904.90"))
+
+    def test_each_tier_scan_floored_at_zero(self):
+        # A tier whose sub-book gains in every scenario adds 0, not a credit. The Dec future is given a made-up
+        # risk array of -1.00 everywhere (a gain of 1 rupee/unit long), in tier 2 on its own: 65 x -1.00 = -65 in
+        # every scenario -> floored to 0. Tier 1 (long 65 Nov) = 152,055.80. Scan = 152,055.80, not 151,990.80.
+        gainer = dataclasses.replace(self.nifty.contracts[FUT_DEC], risk_array=("-1.00",) * 16)
+        cc = dataclasses.replace(self.nifty, scan_tiers=self.SPLIT_TIERS,
+                                 contracts={**self.nifty.contracts, FUT_DEC: gainer})
+        self.assertEqual(span_requirement(cc, [(FUT_NOV, LOT), (FUT_DEC, LOT)]).scan, Decimal("152055.80"))
+
+    def test_ranged_som_tier_wins_over_tier_0(self):
+        # Short 65 CE 23-Nov: a ranged tier holding 23-Nov (rate 10) beats the range-less tier 0 (rate 1):
+        # 65 x 10 = 650. A 17-Nov short outside the range falls back to tier 0: 65 x 1 = 65.
+        cc = dataclasses.replace(self.nifty, som_tiers=(Tier(0, None, None, {"1": "1"}),
+                                                        Tier(1, "2026-11-20", "2026-12-31", {"1": "10"})))
+        self.assertEqual(span_requirement(cc, [(CE_25000, -LOT)]).som, Decimal("650"))
+        self.assertEqual(span_requirement(cc, [(("CE", "2026-11-17", 2495000), -LOT)]).som, Decimal("65"))
+
+    def test_half_open_tier_refused(self):
+        # A tier with only a start (or only an end) is not understood; it must not silently defer to tier 0.
+        for tier in (Tier(1, "2026-11-20", None, {"1": "10"}), Tier(1, None, "2026-12-31", {"1": "10"})):
+            cc = dataclasses.replace(self.nifty, som_tiers=(Tier(0, None, None, {"1": "1"}), tier))
+            with self.assertRaises(SpanCalcError):
+                span_requirement(cc, [(CE_25000, -LOT)])
+
     def test_span_paise_rounds_up_to_rupee(self):
         # 152,055.80 rupees -> 152,056 rupees -> 15,205,600 paise; a whole rupee stays as it is.
         self.assertEqual(span_paise(_result(span=Decimal("152055.80"))), 15_205_600)

@@ -41,7 +41,7 @@ The SPAN elements, per combined commodity:
                     BANKNIFTY carry a 0 SOM rate); Task 4's comparison with Kite is where it is confirmed.
 
 A leg whose contract is not in the file is never guessed: it is listed in `missing`, every amount is Decimal NaN
-(it cannot pass for a margin, and any comparison with it raises), and `span_paise` raises `SpanMissingError`. The
+(it cannot pass for a margin: ordering comparisons with it raise, though == / != do not), and `span_paise` raises `SpanMissingError`. The
 caller steps down to the next margin source. A file this module does not understand (an unknown charge or SOM
 method, a contract outside every tier, a cvf other than 1) raises `SpanCalcError`; callers step down on that too.
 """
@@ -93,7 +93,11 @@ def _dec(text: str, what: str) -> Decimal:
 
 
 def _tier_for(tiers: tuple[Tier, ...], expiry: str, what: str) -> Tier:
-    """The tier whose expiry range holds `expiry`; else the tier without a range (tier 0, the whole commodity)."""
+    """The tier whose expiry range holds `expiry`; else the tier without a range (tier 0, the whole commodity).
+    A tier with only one end of a range is refused, so it can never defer silently to tier 0."""
+    for tier in tiers:
+        if (tier.start is None) != (tier.end is None):
+            raise SpanCalcError(f"{what}: tier {tier.number} has a half-open range {tier.start}..{tier.end}")
     for tier in tiers:
         if tier.start is not None and tier.end is not None and tier.start <= expiry <= tier.end:
             return tier
