@@ -92,6 +92,20 @@ class SpanLiteTests(unittest.TestCase):
         self.assertEqual(m.requirement(legs, lambda i: FUT, price_of({1: SPOT, 2: SPOT}), DAY), b.total)
         self.assertEqual(b.total, b.scan + b.elm)
 
+    def test_bought_options_alone_need_no_span(self):
+        """MEZ 4.5: a book of bought options only has scan 0 (Kite: span 0; the premium is paid in cash). With a
+        sold option or a future beside them, the scan is the scenario loss as before."""
+        ce, pe = option(10, "CE", 25_000), option(11, "PE", 24_800)
+        rows = {10: ce, 11: pe, 2: FUT}
+        m, _ = model([ce, pe, FUT], {10: 0.12, 11: 0.13})
+        prices = price_of({1: SPOT, 2: SPOT})
+        [b] = m.breakdown([(10, "NRML", 75), (11, "NRML", 150)], rows.__getitem__, prices, DAY)
+        self.assertEqual((b.scan, b.somc, b.elm, b.addons), (0, 0, 0, 0))
+        [mixed] = m.breakdown([(10, "NRML", 75), (11, "NRML", -75)], rows.__getitem__, prices, DAY)
+        self.assertGreater(mixed.scan, 0)
+        [hedged] = m.breakdown([(10, "NRML", 75), (2, "NRML", -75)], rows.__getitem__, prices, DAY)
+        self.assertGreater(hedged.scan, 0)
+
     def test_long_and_short_futures_cancel(self):
         m, _ = model([FUT], {})
         [b] = m.breakdown([(2, "NRML", 75), (2, "NRML", -75)], lambda i: FUT, price_of({1: SPOT, 2: SPOT}), DAY)

@@ -657,3 +657,18 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   per index, so it is determined.
 - **Open item: hedged futures stay off (2026-11-09: BANKNIFTY ~52 %, NIFTY 7.5 % too high). Kite credits bought options' value in SPAN (net option value / long option credit); not modelled; candidate for a future SPAN-lite improvement or M4.10.** Detail: hedged futures (NIFTY 7.5 %, BANKNIFTY 51.8 % off). Kite's SPAN credits the bought option's value; one
   BANKNIFTY long future + long ITM put has SPAN 0. SPAN-lite has no such credit (exact SPAN, M4.10, would).
+
+## Bought options need no SPAN-lite (MEZ 4.5, bug fix)
+
+- SPAN-lite charged a book of bought options a scan of almost their whole value (the −1 × PSR move wipes most of
+  it out), on top of the premium a run already pays in cash: an option-buying run with SPAN-lite blocked the
+  premium twice and could be refused for lack of funds. Kite's SPAN is 0 for every bought single (24 of 24 stored
+  samples on 2026-11-09). Fix, in `spanlite.py` and `spanlite.cpp` alike: when every leg of an underlying is a bought
+  option, its scan is 0 (SOMC, ELM and the expiry add-on were already 0 for them). A loss could never exceed the
+  model's own value of the options anyway, so this only removes the double charge; mixed books are unchanged.
+- Under the net-option-value form tried for MEZ 4.4, 11 of 12 NIFTY bought singles still came to ₹1: the scan is
+  rounded up to the rupee before the credit, so scan − value was a few paise. The explicit rule above avoids that.
+- Checked on the stored data at the pending settings: 12/12 NIFTY and 12/12 BANKNIFTY bought singles at 0; every
+  other type's error unchanged. Expectations that moved: none. No golden stores SPAN-lite values (the fuzz worlds
+  use the placeholders but compare oracle with engine; test_api_m4 reads a hand-written CSV); the parity tests,
+  the comparison test and the how-to example (short options only) are unchanged.

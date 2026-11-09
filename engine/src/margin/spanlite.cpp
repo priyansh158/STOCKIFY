@@ -1,6 +1,7 @@
 // T1 SPAN-lite margin (M4.8, C-12): see spanlite.hpp. Mirrors stockify/fno/spanlite.py step by step.
 #include "stocksim/margin/spanlite.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -190,6 +191,12 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
             }
         }
         worst = std::max(worst, -pnl * s.weight);
+    }
+    const bool long_options_only =
+        !valued.empty() && std::all_of(valued.begin(), valued.end(),
+                                       [](const Valued& v) { return v.units > 0 && !v.future; });
+    if (long_options_only) {
+        worst = 0.0;  // MEZ 4.5: only bought options, whose premium the run already paid in cash
     }
     UnderlyingMargin out;
     out.underlying = uid;
