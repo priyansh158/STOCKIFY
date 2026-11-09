@@ -87,14 +87,15 @@ def _kite(value) -> Decimal | None:  # noqa: ANN001
 # ── Read-only access to the lab's databases ──────────────────────────────────
 
 @contextlib.contextmanager
-def read_only():
-    """For the block, `stockify.store` and `stockify.data.refdata` answer from read-only connections (`mode=ro`), so
-    their own readers (margin_calibrations, instruments.find / get) are used unchanged and nothing can be written."""
+def read_only(*modules):  # noqa: ANN002
+    """For the block, `stockify.store` and `stockify.data.refdata` (or just the `modules` given) answer from
+    read-only connections (`mode=ro`), so their own readers (margin_calibrations, instruments.find / get) are used
+    unchanged and nothing can be written."""
     from stockify import store
     from stockify.data import refdata
     saved, opened = [], []
     try:
-        for mod in (store, refdata):
+        for mod in modules or (store, refdata):
             conn = sqlite3.connect(Path(mod._db_path()).as_uri() + "?mode=ro", uri=True, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             opened.append(conn)

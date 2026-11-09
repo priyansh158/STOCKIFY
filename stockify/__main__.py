@@ -441,15 +441,57 @@ def _cmd_margin_span_validate(args) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     report = out_dir / f"span-validate-{day.isoformat()}.md"
     report.write_text(text, encoding="utf-8")
+    _print_console(text)
+    print(report, file=sys.stderr)
+    return 0 if rep.gate()["passed"] else 1             # the report is written either way; 1 = the gate failed
+
+
+def _print_console(text: str) -> None:
+    """Print, with plain ASCII for the symbols a cp1252 console cannot show (₹ -> Rs)."""
     encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
     try:
         text.encode(encoding)
-    except UnicodeEncodeError:                          # a cp1252 console: plain ASCII words for the symbols
-        text = text.replace("₹", "Rs ").replace("—", "-").replace("×", "x")
+    except UnicodeEncodeError:
+        text = (text.replace("₹", "Rs ").replace("—", "-").replace("×", "x").replace("−", "-")
+                .replace("·", "*").replace("≤", "<="))
         text = text.encode(encoding, errors="replace").decode(encoding)
     print(text)
-    print(report, file=sys.stderr)
-    return 0 if rep.gate()["passed"] else 1             # the report is written either way; 1 = the gate failed
+
+
+def _cmd_margin_check(args) -> int:
+    """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
+    from datetime import date
+    from stockify import timeutil
+    from stockify.fno import margin_check as mc
+    try:
+        legs = [mc.parse_leg(x) for x in args.leg]
+        day = date.fromisoformat(args.date) if args.date else None
+        if args.at is not None:
+            timeutil.parse_hhmm(args.at)
+    except mc.CheckError as e:
+        print(e, file=sys.stderr)
+        return 2
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD and --at HH:MM (IST); got {args.date!r}, {args.at!r}", file=sys.stderr)
+        return 2
+    try:
+        res = mc.check(legs, day, args.at)
+    except mc.CheckError as e:
+        print(e, file=sys.stderr)
+        return 2 if "refdata" in str(e) or "not a future" in str(e) else 1
+    _print_console(mc.check_text(res))
+    return 0
+
+
+def _cmd_margin_scorecard(args) -> int:
+    """MEZ 4.11: every staircase step against every stored Kite answer (offline; writes nothing)."""
+    from stockify.fno import margin_check as mc
+    card = mc.scorecard()
+    if not card.rows:
+        print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
+        return 1
+    _print_console(mc.scorecard_text(card))
+    return 0
 
 
 def _cmd_compare_strategies(args) -> int:
@@ -673,6 +715,17 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--date", required=True, help="IST trade date of the stored calibration samples, YYYY-MM-DD")
     sv.add_argument("--underlying", nargs="*", help="default: every underlying sampled that day")
     sv.set_defaults(func=_cmd_margin_span_validate)
+    mk = mgsub.add_parser("check", help="price a proposed basket with the margin staircase from the archived NSE "
+                                        "files (offline; reads the lab, writes nothing)")
+    mk.add_argument("--leg", action="append", required=True,
+                    help='"BUY|SELL <units> <tradingsymbol>", e.g. "SELL 65 NIFTY26N1724950CE"; repeat per leg')
+    mk.add_argument("--date", help="IST trade date YYYY-MM-DD (default: the latest archived day)")
+    mk.add_argument("--at", help="IST time HH:MM: the SPAN file in force is the last created by then "
+                                 "(default 15:30)")
+    mk.set_defaults(func=_cmd_margin_check)
+    mgsub.add_parser("scorecard", help="every staircase step's error against every stored Kite answer, by portfolio "
+                                       "type (offline; reads the lab, writes nothing)"
+                     ).set_defaults(func=_cmd_margin_scorecard)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)
