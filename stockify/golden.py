@@ -151,6 +151,7 @@ def build_bundle(g: dict) -> dict:
     run = {"schema": "stockify.run/1", "name": g["id"], "strategy": {"kind": "script", "actions": []},
            "data": {"packs": [{"sha256": "0" * 64}]}, "capital_paise": 10_000_000, "price_basis": "raw",
            "fill_model": {"kind": "bar"}, **copy.deepcopy(g.get("run", {}))}
+    run["margin"] = {"model": "flat", **run.get("margin", {})}   # pinned: goldens never follow a changed default
     ref = g["strategy"].get("ref")
     actions = copy.deepcopy(g["strategy"].get("actions", []))
     for a in actions:

@@ -371,6 +371,110 @@ def _spanlite_calibrations(rows: list[dict], instruments_rows: list[dict], days:
     return sorted(used) or ["none"]
 
 
+# ── NSE SPAN files and ELM % (CAM 4.3) ──────────────────────────────────────
+
+SPAN_MODELS = ("span_exact", "staircase")     # the margin models that read NSE's SPAN files (spec §5.1)
+_DERIVATIVES = ("FUT", "CE", "PE")
+
+
+def _contract_keys(instruments_rows: list[dict]) -> dict[str, set[tuple]]:
+    """{underlying: {(kind, expiry, strike paise | None)}} of the bundle's dated derivatives (SPAN's contract key)."""
+    out: dict[str, set[tuple]] = {}
+    for r in instruments_rows:
+        if r["kind"] in _DERIVATIVES and r.get("underlying") and r.get("expiry"):
+            out.setdefault(r["underlying"], set()).add(
+                (r["kind"], r["expiry"], None if r["kind"] == "FUT" else r["strike_paise"]))
+    return out
+
+
+def _sort_key(key: tuple) -> tuple:
+    return key[0], key[1], -1 if key[2] is None else key[2]
+
+
+def _tiers(tiers) -> list[dict]:  # noqa: ANN001
+    return [{"number": t.number, "start": t.start, "end": t.end, "rates": dict(t.rates)} for t in tiers]
+
+
+def _span_commodity(cc, keys: set[tuple]) -> dict:  # noqa: ANN001
+    """One combined commodity: the bundle's contracts that the file lists, and every parameter block, as the file's
+    decimal strings (strikes in paise)."""
+    contracts = []
+    for key in sorted(keys, key=_sort_key):
+        c = cc.contracts.get(key)
+        if c is not None:
+            contracts.append({"kind": key[0], "expiry": key[1], "strike_paise": key[2], "price": c.price,
+                              "delta": c.delta, "vol": c.vol, "risk_array": list(c.risk_array),
+                              "composite_delta": c.composite_delta})
+    series = []
+    for skey in sorted(set(cc.series) | set(cc.price_scan) | set(cc.vol_scan)):
+        info = cc.series.get(skey)
+        series.append({"type": skey[0], "expiry": skey[1], "price_scan": cc.price_scan.get(skey),
+                       "vol_scan": cc.vol_scan.get(skey),
+                       "time_to_expiry": info.time_to_expiry if info else None, "vol": info.vol if info else None,
+                       "interest_rate": info.interest_rate if info else None,
+                       "settle_date": info.settle_date if info else None})
+    return {"spot": cc.spot, "cvf": dict(cc.cvf), "som_method": cc.som_method, "contracts": contracts,
+            "series": series, "scan_tiers": _tiers(cc.scan_tiers), "intra_tiers": _tiers(cc.intra_tiers),
+            "inter_tiers": _tiers(cc.inter_tiers), "som_tiers": _tiers(cc.som_tiers),
+            "calendar_spreads": [{"number": sp.number, "charge_method": sp.charge_method, "rates": dict(sp.rates),
+                                  "legs": [{"expiry": leg.expiry, "side": leg.side, "weight": leg.weight}
+                                           for leg in sp.legs]} for sp in cc.calendar_spreads]}
+
+
+def _scan_points(f) -> list[dict]:  # noqa: ANN001
+    return [{"point": sp.point, "price_mult": sp.price_mult, "price_numerator": sp.price_numerator,
+             "price_denominator": sp.price_denominator, "vol_mult": sp.vol_mult, "vol_numerator": sp.vol_numerator,
+             "vol_denominator": sp.vol_denominator, "weight": sp.weight, "paired_point": sp.paired_point}
+            for _, sp in sorted(f.scan_points.items())]
+
+
+def span_section(instruments_rows: list[dict], days: list[dict]) -> dict[str, list[dict]]:
+    """bundle["span"]: per run day, every NSE SPAN file usable that day in created order, without lookahead
+    (`nse_margin_files.usable_files`: the file in force at the open, then D's intraday files, never D's `.s`). Each
+    keeps the bundle's underlyings only, with the contracts the bundle trades and all their parameter blocks. A day
+    with no usable file has an empty list (the margin model steps down)."""
+    from stockify.data import nse_margin_files as mf
+    from stockify.fno.span_file import parse_span
+    keys = _contract_keys(instruments_rows)
+    root = paths.nse_margin_dir("span").parent
+    parsed: dict[str, dict] = {}
+    out = {}
+    for d in days:
+        files = []
+        for path, created_ns in mf.usable_files(date.fromisoformat(d["date"])):
+            if path not in parsed:
+                f = parse_span(path, set(keys))
+                parsed[path] = {"file": Path(path).relative_to(root).as_posix(), "sha256": _file_sha(Path(path)),
+                                "scan_points": _scan_points(f),
+                                "commodities": {code: _span_commodity(cc, keys[code])
+                                                for code, cc in sorted(f.commodities.items()) if code in keys}}
+            files.append({"created_ns": created_ns, **parsed[path]})
+        out[d["date"]] = files
+    return out
+
+
+def elm_section(instruments_rows: list[dict], days: list[dict]) -> dict[str, dict[str, dict[str, str]]]:
+    """bundle["elm"]: per run day whose contract-wise ELM file is archived, {underlying:
+    {"<kind>|<expiry>|<strike paise>": ELM % (per cent, decimal string)}} for the bundle's derivatives the file lists
+    (futures have an empty strike). D's file applies to D (spec §5.1). A contract the file lists twice with different
+    % is left out, as if missing."""
+    from stockify.data import nse_margin_files as mf
+    keys = _contract_keys(instruments_rows)
+    out = {}
+    for d in days:
+        elm = mf.read_elm(date.fromisoformat(d["date"]), set(keys))
+        if elm is None:
+            continue
+        day = {}
+        for und, wanted in sorted(keys.items()):
+            rows = {f"{k[0]}|{k[1]}|{'' if k[2] is None else k[2]}": format(elm[(und, k)], "f")
+                    for k in sorted(wanted, key=_sort_key) if elm.get((und, k)) is not None}
+            if rows:
+                day[und] = rows
+        out[d["date"]] = day
+    return out
+
+
 def resolve_bundle(cfg: dict) -> dict:
     """The bundle for a validated run config (`runconfig.load`)."""
     from stockify.config import loader
@@ -404,12 +508,16 @@ def resolve_bundle(cfg: dict) -> dict:
         labels.append("charges:unverified_rows")
     if not rows_in_range(policy.get("market_protection_auto_bp", []), start, end):
         raise BundleError("no market_protection_auto_bp row in force in range (broker_policy.json)")
-    return {
+    out = {
         "schema": SCHEMA, "run": cfg, "seed": cfg["seed"], "days": days,
         "instruments": instruments_rows,
         "charges": charges, "broker_policy": policy, "margin_params": margin, "pricing": pricing,
         "packs": pack_rows, "strategy": strategy_ref(cfg), "labels": sorted(set(labels)), "sod_state": None,
     }
+    if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
+        out["span"] = span_section(instruments_rows, days)
+        out["elm"] = elm_section(instruments_rows, days)
+    return out
 
 
 def dumps(bundle: dict) -> str:

@@ -108,11 +108,14 @@ class Engine:
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
-        if self.run_cfg["margin"]["model"] == "spanlite":
+        model = self.run_cfg["margin"]["model"]
+        if model == "spanlite":
             from stockify.fno.spanlite import SpanLiteMargin
             self.margin = SpanLiteMargin(bundle, self)
-        else:
+        elif model == "flat":
             self.margin = FlatMargin(bundle)
+        else:                                          # never a silent fallback to flat (CAM 4.3)
+            raise RunError(f"run.margin: margin model {model!r} is not supported yet")
         self.margin_daily: list[tuple] = []   # (date, underlying_id, model, scan, somc, elm, addons, total), M4.8
         self.market: dict[int, Market] = {}
         capital = self.run_cfg["capital_paise"]

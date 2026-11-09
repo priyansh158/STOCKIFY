@@ -18,6 +18,9 @@ from stockify import numerics, paths
 SCHEMA = "stockify.run/1"
 FILL_KINDS = ("bar", "snapshot_ltp", "snapshot_quote", "eod_close")
 SLIPPAGE_KINDS = ("none", "fixed_ticks", "random_ticks", "bps")
+# span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines refuse them until they
+# implement them, so the default stays flat until then.
+MARGIN_MODELS = ("flat", "spanlite", "span_exact", "staircase")
 DEFAULTS = {
     "family_id": None,
     "price_basis": None,
@@ -134,7 +137,7 @@ def validate(raw: dict) -> dict:
     cfg["fill_model"] = _fill(raw.get("fill_model"))
     _int(cfg["latency_ms"], "latency_ms", 0)
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
-    _choice(cfg["margin"]["model"], ("flat", "spanlite"), "margin.model")
+    _choice(cfg["margin"]["model"], MARGIN_MODELS, "margin.model")
     pol = cfg["policies"]
     _choice(pol["preopen"], ("queue", "reject"), "policies.preopen")
     _choice(pol["cas"], ("none", "close_price"), "policies.cas")

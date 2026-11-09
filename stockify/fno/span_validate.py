@@ -35,7 +35,6 @@ create empty year folders, as everywhere in the archive code).
 from __future__ import annotations
 
 import contextlib
-import gzip
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -44,6 +43,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from stockify.fno.span_exact import SpanCalcError, SpanResult, span_requirement
+from stockify.data.nse_margin_files import read_elm  # noqa: F401  — re-exported (moved there, CAM 4.3)
 from stockify.fno.span_file import ContractKey, SpanFile, parse_span
 
 SPAN_ABS_TOL = Decimal(50)          # rupees
@@ -106,50 +106,6 @@ def read_only():
             mod._conn = conn
         for conn in opened:
             conn.close()
-
-
-# ── The ELM file ─────────────────────────────────────────────────────────────
-
-_MONTH = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10,
-          "NOV": 11, "DEC": 12}
-
-
-def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, ContractKey], Decimal | None] | None:
-    """{(underlying, contract key): ELM %} from the archived `F_AEL_OPT_CONTRACTS_<day>` file; None if not archived.
-    Rows: instrument, symbol, expiry DD-MMM-YYYY, strike (rupees; -1 for futures), CE | PE | XX, 0, ELM %.
-    The file is untrusted data: a malformed row is skipped, and a contract listed twice with different % maps to None
-    (unusable, so its legs report it missing instead of taking either value)."""
-    from stockify import paths
-    from stockify.data import nse_margin_files as mf
-    path = paths.nse_margin_dir("elm") / f"{day:%Y}" / mf.elm_name(day)
-    if not path.exists():
-        return None
-    out = {}
-    with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
-        for line in f:
-            p = [c.strip() for c in line.split(",")]
-            if len(p) < 7 or p[1] not in underlyings:
-                continue
-            try:
-                dd, mon, yyyy = p[2].split("-")
-                expiry = date(int(yyyy), _MONTH[mon.upper()], int(dd)).isoformat()
-                if p[4] == "XX":
-                    key: ContractKey = ("FUT", expiry, None)
-                elif p[4] in ("CE", "PE"):
-                    key = (p[4], expiry, int(Decimal(p[3]) * 100))
-                else:
-                    continue
-                pct = Decimal(p[6])
-                if not pct.is_finite() or pct < 0:
-                    continue
-            except (ValueError, KeyError, ArithmeticError):
-                continue
-            k = (p[1], key)
-            if k in out and out[k] != pct:
-                out[k] = None
-            elif k not in out:
-                out[k] = pct
-    return out
 
 
 # ── Samples ──────────────────────────────────────────────────────────────────

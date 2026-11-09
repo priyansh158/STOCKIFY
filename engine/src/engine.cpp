@@ -46,7 +46,8 @@ Engine::Engine(Bundle bundle)
     latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
     const Json& margin_cfg = require(run, "margin", "run");
-    if (require_string(margin_cfg, "model", "run.margin") == "spanlite") {
+    const std::string margin_model = require_string(margin_cfg, "model", "run.margin");
+    if (margin_model == "spanlite") {
         margin_ = std::make_unique<SpanLiteMargin>(
             bundle_.root,
             SpanLiteHost{[this] { return now_; },
@@ -54,8 +55,10 @@ Engine::Engine(Bundle bundle)
                          [this](InstrumentId iid, Date d) { return spec(iid, d); },
                          [this](const std::string& label) { labels_.insert(label); },
                          [this](const std::string& d) { return rate_on(bundle_.root, d); }});
-    } else {
+    } else if (margin_model == "flat") {
         margin_ = std::make_unique<FlatMargin>(bundle_.root);
+    } else {  // never a silent fallback to flat (CAM 4.3)
+        throw RunError("run.margin: margin model '" + margin_model + "' is not supported yet");
     }
 }
 

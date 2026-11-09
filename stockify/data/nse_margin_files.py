@@ -20,6 +20,7 @@ archived one stays. Fetching reuses `nse_files.Http` (browser headers, throttle,
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -29,6 +30,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from decimal import Decimal
 from urllib.parse import quote
 
 from stockify import paths, timeutil
@@ -283,3 +285,59 @@ def previous_eod(day: date, *, max_days: int = 30) -> tuple[str, int] | None:
             if path.endswith(".s.zip"):
                 return path, created_ns
     return None
+
+
+def usable_files(day: date) -> list[tuple[str, int]]:
+    """Every SPAN file a backtest may use during trade date `day`, as (path, created_ns) in created order, without
+    lookahead (spec §5.1, CAM 4.3): first the file in force at the open (D's `i1`, created the evening before, when
+    archived; else the previous trading day's `.s`), then D's intraday files `i2`..`i4`. D's own `.s` never: it is
+    published after the close. A later file applies from its `created_ns`."""
+    own = [(p, c) for p, c in in_force_files(day) if not p.endswith(".s.zip")]
+    if not any(p.endswith(".i1.zip") for p, _ in own):
+        opener = previous_eod(day)
+        if opener is not None:
+            own = [opener] + own
+    return sorted(own, key=lambda t: t[1])
+
+
+# ── The ELM file ─────────────────────────────────────────────────────────────
+
+_MONTH = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10,
+          "NOV": 11, "DEC": 12}
+
+
+def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, tuple], Decimal | None] | None:
+    """{(underlying, contract key): ELM %} from the archived `F_AEL_OPT_CONTRACTS_<day>` file; None if not archived.
+    A contract key is (kind, expiry "YYYY-MM-DD", strike paise | None), as `stockify.fno.span_file` keys contracts.
+    Rows: instrument, symbol, expiry DD-MMM-YYYY, strike (rupees; -1 for futures), CE | PE | XX, 0, ELM %.
+    The file is untrusted data: a malformed row is skipped, and a contract listed twice with different % maps to None
+    (unusable, so its legs report it missing instead of taking either value). The % keeps the file's digits."""
+    path = paths.nse_margin_dir("elm") / f"{day:%Y}" / elm_name(day)
+    if not path.exists():
+        return None
+    out = {}
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
+        for line in f:
+            p = [c.strip() for c in line.split(",")]
+            if len(p) < 7 or p[1] not in underlyings:
+                continue
+            try:
+                dd, mon, yyyy = p[2].split("-")
+                expiry = date(int(yyyy), _MONTH[mon.upper()], int(dd)).isoformat()
+                if p[4] == "XX":
+                    key = ("FUT", expiry, None)
+                elif p[4] in ("CE", "PE"):
+                    key = (p[4], expiry, int(Decimal(p[3]) * 100))
+                else:
+                    continue
+                pct = Decimal(p[6])
+                if not pct.is_finite() or pct < 0:
+                    continue
+            except (ValueError, KeyError, ArithmeticError):
+                continue
+            k = (p[1], key)
+            if k in out and out[k] != pct:
+                out[k] = None
+            elif k not in out:
+                out[k] = pct
+    return out

@@ -302,7 +302,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 }
 ```
 
-`strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
+`strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14). `margin.model`: `flat` (the default), `spanlite`, `span_exact` or `staircase` (the last two read NSE's SPAN files from the bundle, §6.2; the default stays `flat` until the engines run them).
 
 ### 6.2 `bundle.json` (D-22)
 
@@ -331,6 +331,41 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
   "sod_state": null
 }
 ```
+
+**`span` and `elm` (CAM 4.3)**, present only when `run.margin.model` is `span_exact` or `staircase` (every other
+bundle is unchanged, key for key):
+
+```json
+"span": { "2026-11-09": [ { "created_ns": 0, "file": "span/2026/nsccl.20261109.i1.zip", "sha256": "…",
+                            "scan_points": [ { "point": 1, "price_mult": "…", "price_numerator": "…",
+                                               "price_denominator": "…", "vol_mult": "…", "vol_numerator": "…",
+                                               "vol_denominator": "…", "weight": "…", "paired_point": 2 } ],
+                            "commodities": { "NIFTY": {
+                              "spot": "…", "cvf": { "PHY": "1.00", "FUT": "1.00", "OOP": "1.00" }, "som_method": "GROSS",
+                              "contracts": [ { "kind": "CE", "expiry": "2026-11-23", "strike_paise": 2500000,
+                                               "price": "…", "delta": "…", "vol": "…", "risk_array": [ "…16 values" ],
+                                               "composite_delta": "…" } ],
+                              "series": [ { "type": "OOP", "expiry": "2026-11-23", "price_scan": "…", "vol_scan": "…",
+                                            "time_to_expiry": "…", "vol": "…", "interest_rate": "…",
+                                            "settle_date": "2026-11-24" } ],
+                              "scan_tiers": [ { "number": 1, "start": "…", "end": "…", "rates": {} } ],
+                              "intra_tiers": [], "inter_tiers": [], "som_tiers": [ { "…": "…", "rates": { "1": "…" } } ],
+                              "calendar_spreads": [ { "number": 1, "charge_method": "…", "rates": { "1": "…" },
+                                                      "legs": [ { "expiry": "…", "side": "A", "weight": "…" } ] } ] } } } ] },
+"elm": { "2026-11-09": { "NIFTY": { "CE|2026-11-23|2500000": "2", "FUT|2026-11-23|": "2" } } }
+```
+
+`span[D]` lists every NSE SPAN file a backtest may use on run day D, in `created_ns` order, with no lookahead (spec
+§5.1): first the file in force at the open (D's `i1`, created the evening before, when archived; else the previous
+trading day's end-of-day `.s`), then D's intraday files (`i2`..`i4`). D's own `.s` is never listed: it comes after the
+close. A file applies from its `created_ns`; a day with no usable file has `[]`. `file` is relative to
+`$LAB/nse/margin`, `sha256` is the archived zip's. Only the bundle's underlyings are kept, with only the contracts the
+bundle trades (a contract the file lacks is absent) but every parameter block (all series, tiers, spreads). Every
+number is the file's decimal string; strikes are paise. `elm[D]` is present when D's contract-wise ELM file is
+archived (D's file applies to D): per underlying, `"<kind>|<expiry>|<strike_paise>"` (futures: empty strike) to the
+ELM **per cent** as a decimal string, for the bundle's derivatives the file lists. Keyed by underlying because the
+same kind, expiry and strike exist on several underlyings. Until both engines implement these models (Task 7), they
+refuse `span_exact` and `staircase` ("margin model … is not supported yet"); they never fall back to flat.
 
 (Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
 
