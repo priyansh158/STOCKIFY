@@ -284,7 +284,7 @@ def test_margin(run_id: str) -> list[TestMarginDTO]:
         return []
     symbols = _symbols(row)
     return [TestMarginDTO(trade_date=r["trade_date"], underlying_id=r["underlying_id"],
-                          underlying=symbols.get(r["underlying_id"]), model=r["model"] or "", scan_paise=r["scan"] or 0,
+                          underlying=symbols.get(r["underlying_id"]), model=r["model"] or "", step=r.get("step") or "", scan_paise=r["scan"] or 0,
                           somc_paise=r["somc"] or 0, elm_paise=r["elm"] or 0, addons_paise=r["addons"] or 0,
                           total_paise=r["total"] or 0)
             for r in runs.read_csv(folder / "margin_daily.csv")]

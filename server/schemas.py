@@ -202,6 +202,7 @@ class TestMarginDTO(BaseModel):
     underlying_id: int
     underlying: str | None = None
     model: str
+    step: str = ""
     scan_paise: int
     somc_paise: int
     elm_paise: int

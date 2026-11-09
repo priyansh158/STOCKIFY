@@ -22,6 +22,53 @@ export function StatusChip({ status }: { status: TestStatus }) {
   );
 }
 
+/** The margin staircase steps (A1 6.3 margin_daily.csv `step`), in plain words. An unknown code is shown as-is. */
+const MARGIN_STEPS: Record<string, { text: string; detail: string }> = {
+  B1_span_nse_elm: { text: "exact NSE margin",
+    detail: "NSE's own SPAN risk file and its extreme-loss margin file were both used, so this day's margin is the exchange's figure." },
+  B2_span_rule_elm: { text: "NSE margin, exposure from rules",
+    detail: "NSE's SPAN risk file was used, but the extreme-loss (exposure) part came from the published rules, not NSE's file for that day." },
+  B3_spanlite_calibrated: { text: "estimate (calibrated)",
+    detail: "No NSE risk file for the day, so a SPAN-like estimate was used, with settings calibrated against Kite's margin figures." },
+  B4_spanlite_placeholder: { text: "estimate (not calibrated)",
+    detail: "No NSE risk file for the day, so a SPAN-like estimate was used with placeholder settings; the amount is rough." },
+  B5_flat: { text: "simple estimate",
+    detail: "A fixed percentage of position value, not a SPAN calculation." },
+};
+
+/** The step's plain-words name (and a longer sentence for a tooltip); an unrecognised code comes back unchanged. */
+export function marginStep(step: string | null | undefined): { text: string; detail: string } | null {
+  if (!step) return null;
+  return MARGIN_STEPS[step] ?? { text: step, detail: step };
+}
+
+/** Plain words for the margin-staircase labels, or null when the label is not one of them. */
+function marginLabel(label: string): { text: string; detail: string; warn: boolean } | null {
+  if (label === "margin_span:no_section") {
+    return { text: "no NSE margin data in this test", warn: true,
+      detail: "The test's data had no exchange margin section at all, so every day used an estimate." };
+  }
+  if (label === "margin_span:skipped_files") {
+    return { text: "some NSE margin files skipped", warn: true,
+      detail: "At least one NSE margin file could not be used and was skipped; those days fell back to a lower step." };
+  }
+  if (label.startsWith("margin_steps:")) {
+    const m = /^margin_steps:([^=]+)=(\d+)$/.exec(label);
+    if (!m) return { text: label, detail: label, warn: false };
+    const s = marginStep(m[1])!;
+    const n = Number(m[2]);
+    return { text: `${s.text}: ${n} ${n === 1 ? "day" : "days"}`, warn: m[1] !== "B1_span_nse_elm" && m[1] !== "B2_span_rule_elm",
+             detail: `${n} ${n === 1 ? "run day was" : "run days were"} priced by this margin step. ${s.detail}` };
+  }
+  if (/^margin:B\d/.test(label)) {
+    const step = label.slice("margin:".length);
+    const s = marginStep(step)!;
+    return { text: `margin: ${s.text}`, detail: `Margin was priced this way on at least one day. ${s.detail}`,
+             warn: step !== "B1_span_nse_elm" && step !== "B2_span_rule_elm" };
+  }
+  return null;
+}
+
 /** What each run label means, in plain words (labels from bundle.py / the engine, A4 I-14). */
 function labelText(label: string): { text: string; warn: boolean } {
   const fixed: Record<string, { text: string; warn: boolean }> = {
@@ -37,6 +84,8 @@ function labelText(label: string): { text: string; warn: boolean } {
     short_delivery: { text: "short stock delivered", warn: true },
   };
   if (fixed[label]) return fixed[label];
+  const ml = marginLabel(label);
+  if (ml) return { text: ml.text, warn: ml.warn };
   if (label.startsWith("margin_spanlite:")) {
     const calib = label.slice("margin_spanlite:".length);
     if (calib === "none") return { text: "no SPAN-like settings needed", warn: false };
@@ -62,6 +111,8 @@ export function labelMeaning(label: string): string {
     short_delivery: "A short stock F&O position ended in delivering shares that were not held; a real account would face an auction penalty.",
   };
   if (fixed[label]) return fixed[label];
+  const ml = marginLabel(label);
+  if (ml) return ml.detail;
   if (label === "margin_spanlite:none") {
     return "The run had no futures or options, so the SPAN-like margin's settings were never needed.";
   }

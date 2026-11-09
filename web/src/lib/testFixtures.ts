@@ -109,9 +109,9 @@ const FLY = "iron_fly_nifty-20261108T040000-a1b2c3";
 export function margin(id: string): TestMargin[] {
   if (id !== FLY) return [];
   return [
-    { trade_date: "2026-11-03", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", scan_paise: 9_412_300,
+    { trade_date: "2026-11-03", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", step: "B1_span_nse_elm", scan_paise: 9_412_300,
       somc_paise: 0, elm_paise: 3_120_000, addons_paise: 0, total_paise: 12_532_300 },
-    { trade_date: "2026-11-04", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", scan_paise: 8_905_100,
+    { trade_date: "2026-11-04", underlying_id: 256265, underlying: "NIFTY 50", model: "spanlite", step: "B4_spanlite_placeholder", scan_paise: 8_905_100,
       somc_paise: 0, elm_paise: 3_098_000, addons_paise: 3_098_000, total_paise: 15_101_100 },
   ];
 }

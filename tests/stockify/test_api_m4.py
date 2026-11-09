@@ -76,14 +76,15 @@ class FnoApiTests(SandboxedDBTest):
         folder = self._run("g10-margin", "G10", "fsp")
         self.assertEqual(self.client.get("/api/tests/g10-margin/margin").json(), [])     # flat model: no rows
         (folder / "margin_daily.csv").write_text(
-            "trade_date,underlying_id,model,scan,somc,elm,addons,total\n"
-            "2026-03-02,1,spanlite,1200000,0,300000,0,1500000\n"
-            "2026-03-03,1,spanlite,900000,10000,250000,50000,1210000\n", encoding="utf-8", newline="")
+            "trade_date,underlying_id,model,step,scan,somc,elm,addons,total\n"
+            "2026-03-02,1,spanlite,B1_span_nse_elm,1200000,0,300000,0,1500000\n"
+            "2026-03-03,1,spanlite,B4_spanlite_placeholder,900000,10000,250000,50000,1210000\n", encoding="utf-8", newline="")
         rows = self.client.get("/api/tests/g10-margin/margin").json()
         self.assertEqual([(r["trade_date"], r["model"], r["scan_paise"], r["elm_paise"], r["addons_paise"], r["total_paise"])
                           for r in rows],
                          [("2026-03-02", "spanlite", 1200000, 300000, 0, 1500000),
                           ("2026-03-03", "spanlite", 900000, 250000, 50000, 1210000)])
+        self.assertEqual([r["step"] for r in rows], ["B1_span_nse_elm", "B4_spanlite_placeholder"])
         self.assertTrue(rows[0]["underlying"])
 
     def test_unknown_runs_404(self):

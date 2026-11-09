@@ -192,6 +192,7 @@ export interface TestMargin {
   underlying_id: number;
   underlying?: string | null;
   model: string;
+  step?: string;
   scan_paise: number;
   somc_paise: number;
   elm_paise: number;

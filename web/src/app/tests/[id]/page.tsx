@@ -6,7 +6,7 @@ import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
 import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
-import { buttonStyle, Card, LabelChips, Stat, StatusChip, labelMeaning, runSummary } from "../ui";
+import { buttonStyle, Card, LabelChips, Stat, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
 const POLL_MS = 2000;
@@ -289,6 +289,13 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
 const muted = { color: "var(--color-fg-muted)" };
 const rowBorder = { borderColor: "rgba(0,255,65,0.15)" };
 
+/** What the `scan` amount is for a row: the whole SPAN requirement (B1/B2), the flat requirement (B5), else the scan risk. */
+function scanLabel(step?: string): string {
+  if (step === "B1_span_nse_elm" || step === "B2_span_rule_elm") return "SPAN requirement";
+  if (step === "B5_flat") return "Flat margin";
+  return "Price and volatility risk";
+}
+
 /** Margin held by day: the SPAN-lite breakdown when the run has one (margin_daily.csv), else the flat model's
  * day-end amount from the equity rows. */
 function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[] }) {
@@ -329,7 +336,15 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
                     <dt className="col-span-2" style={{ color: "var(--color-fg)" }}>
                       {r.underlying ?? `underlying ${r.underlying_id}`}
                     </dt>
-                    <dt>Price and volatility risk</dt><dd className="stk-mono text-right">{rupees(r.scan_paise)}</dd>
+                    {marginStep(r.step) && (
+                      <dd className="col-span-2 mb-1" title={marginStep(r.step)!.detail}>
+                        {marginStep(r.step)!.text}
+                        {r.step && marginStep(r.step)!.text !== r.step && (
+                          <span className="sr-only"> ({marginStep(r.step)!.detail})</span>
+                        )}
+                      </dd>
+                    )}
+                    <dt>{scanLabel(r.step)}</dt><dd className="stk-mono text-right">{rupees(r.scan_paise)}</dd>
                     <dt>Short-option minimum</dt><dd className="stk-mono text-right">{rupees(r.somc_paise)}</dd>
                     <dt>Extreme-loss margin</dt><dd className="stk-mono text-right">{rupees(r.elm_paise)}</dd>
                     <dt>Expiry-day and other add-ons</dt><dd className="stk-mono text-right">{rupees(r.addons_paise)}</dd>
