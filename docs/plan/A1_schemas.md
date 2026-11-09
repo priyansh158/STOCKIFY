@@ -383,7 +383,8 @@ then. A day with no usable file has `[]`. A file that cannot be read, whose busi
 in its name, or whose created time (manifest, else header) is not plausible for that business date B (from 12:00 IST on the day
 before the previous trading day of B to B+1 06:00 IST, L-4), is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are
 absent), and the run is labelled `margin_span:skipped_files`. Parsed entries are cached under `$LAB/cache/span`
-(`paths.span_cache_dir`), keyed by the file's SHA-256, its archive path, the wanted contracts and a format version;
+(`paths.span_cache_dir`), keyed by the file's SHA-256, its archive path, the wanted contracts, a format version and a fingerprint of the parser's code
+(SHA-256 of `stockify/fno/span_file.py` and `stockify/bundle.py`, once per process: a parser change can never serve an old entry);
 a cache file that cannot be read or whose key or entry hash does not match is rebuilt, so the bundle is the same
 with or without the cache.
 

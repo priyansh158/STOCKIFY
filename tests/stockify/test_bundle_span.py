@@ -329,6 +329,21 @@ class SpanCacheTests(SandboxedDBTest):
         self.assertEqual(again, first)
         self.assertEqual(bundle.dumps(again), bundle.dumps(first))
 
+    def test_a_changed_parser_fingerprint_makes_the_old_entry_unusable(self):
+        from stockify.fno import span_file
+        first = bundle.span_section(ROWS, DAYS)
+        self.assertEqual(len(self.cache_files()), 1)
+        with mock.patch("stockify.bundle._code_fingerprint", return_value="another-parser"),                 mock.patch("stockify.fno.span_file.parse_span", wraps=span_file.parse_span) as parse:
+            again = bundle.span_section(ROWS, DAYS)
+        self.assertTrue(parse.called)                                               # re-parsed, not served from cache
+        self.assertEqual(len(self.cache_files()), 2)                                # and a new entry written
+        self.assertEqual(bundle.dumps(again), bundle.dumps(first))
+
+    def test_the_fingerprint_is_a_stable_sha256_of_the_parser_code(self):
+        fp = bundle._code_fingerprint()
+        self.assertRegex(fp, r"^[0-9a-f]{64}$")
+        self.assertEqual(bundle._code_fingerprint(), fp)
+
     def test_other_wanted_contracts_are_another_entry(self):
         bundle.span_section(ROWS, DAYS)
         other = bundle.span_section([NIFTY_FUT], DAYS)

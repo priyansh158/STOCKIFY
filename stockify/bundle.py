@@ -441,13 +441,29 @@ _UNREADABLE = (ValueError, ArithmeticError, OSError, EOFError, zlib.error, zipfi
 
 # The on-disk cache of parsed entries (CAM 4.4, I-1): `_span_entry` of one archived file for one set of wanted
 # contracts. Keyed by the file's SHA-256, its archive path, the sorted wanted contracts and this format version
-# (bump it whenever `_span_entry`'s output changes). A cache file that cannot be read, or whose key or entry hash
+# (bump it whenever `_span_entry`'s output changes) and a fingerprint of the parser's own code (`_code_fingerprint`:
+# a change to span_file.py or to this module can never serve an old entry). A cache file that cannot be read, or whose key or entry hash
 # does not match, is ignored and rebuilt.
 SPAN_CACHE_VERSION = 1
 
 
+_FINGERPRINT: str | None = None
+
+
+def _code_fingerprint() -> str:
+    """SHA-256 of the source bytes of the SPAN parser (stockify/fno/span_file.py) and of this module (which holds
+    `_span_entry`, `_span_commodity` and their helpers). Computed once per process."""
+    global _FINGERPRINT
+    if _FINGERPRINT is None:
+        h = hashlib.sha256()
+        for src in (Path(__file__).with_name("fno") / "span_file.py", Path(__file__)):
+            h.update(hashlib.sha256(src.read_bytes()).digest())
+        _FINGERPRINT = h.hexdigest()
+    return _FINGERPRINT
+
+
 def _cache_key(sha: str, rel: str, keys: dict[str, set[tuple]]) -> dict:
-    return {"version": SPAN_CACHE_VERSION, "sha256": sha, "file": rel,
+    return {"version": SPAN_CACHE_VERSION, "code": _code_fingerprint(), "sha256": sha, "file": rel,
             "wanted": [[und, [list(k) for k in sorted(keys[und], key=_sort_key)]] for und in sorted(keys)]}
 
 
