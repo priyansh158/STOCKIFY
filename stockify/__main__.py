@@ -358,7 +358,8 @@ def _cmd_margin_calibrate(args) -> int:
         print("Log in to Kite first (the token is missing or from before today's 06:00 IST).", file=sys.stderr)
         return 2
     try:
-        report, params = calibrate.calibrate(client, args.underlying, args.samples, seed=args.seed)
+        report, params = calibrate.calibrate(client, args.underlying, args.samples, seed=args.seed,
+                                             skip_expiring=args.skip_expiring)
     except calibrate.CalibrationError as e:
         print(e, file=sys.stderr)
         return 1
@@ -569,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
     mc.add_argument("--underlying", default="NIFTY")
     mc.add_argument("--samples", type=int, default=200, help="portfolios to price (default 200)")
     mc.add_argument("--seed", type=int, default=0, help="which portfolios are drawn (default 0)")
+    mc.add_argument("--skip-expiring", action="store_true",
+                    help="leave out contracts whose last trading day is today and take the next two expiries (use on an expiry day)")
     mc.set_defaults(func=_cmd_margin_calibrate)
 
     tl = sub.add_parser("tools", help="maintenance tools")

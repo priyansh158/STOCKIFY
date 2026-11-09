@@ -51,6 +51,12 @@ class Snapshot:
     quotes: dict[int, dict]                                # iid → {ltp, bid, ask, oi} (paise; None if missing)
     futures: list[int] = field(default_factory=list)
     expiries: list[str] = field(default_factory=list)
+    skip_expiring: bool = False                            # IWB 4.2: contracts expiring on `day` left out
+    skipped: list[str] = field(default_factory=list)       # the expiries left out for that reason
+
+    def choice(self) -> dict:
+        """What the snapshot priced, for the report and each margin_calibration row."""
+        return {"skip_expiring": self.skip_expiring, "expiries": list(self.expiries), "skipped": list(self.skipped)}
 
     def options(self, expiry: str) -> list[dict]:
         return sorted((r for r in self.rows.values() if r["kind"] in ("CE", "PE") and r["expiry"] == expiry),
@@ -88,8 +94,29 @@ def _last_trading_ns(expiry: str, group: str) -> int | None:
     return max(ends) if ends else None
 
 
+def _last_day(underlying: str, expiry: str, kinds: tuple[str, ...]) -> str:
+    """The last trading day of one expiry's contracts: refdata's actual_expiry when NSE moved it, else the expiry."""
+    from stockify.data import refdata
+    marks = ",".join("?" * len(kinds))
+    row = refdata._connect().execute(
+        f"SELECT MAX(IFNULL(actual_expiry, expiry)) AS last FROM instruments WHERE underlying=? AND expiry=? "
+        f"AND kind IN ({marks})", (underlying.upper(), expiry, *kinds)).fetchone()
+    return (row["last"] if row and row["last"] else expiry)
+
+
+def _pick(underlying: str, found: list[str], kinds: tuple[str, ...], day: str, n: int,
+          skip_expiring: bool) -> tuple[list[str], list[str]]:
+    """The first `n` expiries; with skip_expiring, any whose last trading day is `day` is left out (IWB 4.2)."""
+    if not skip_expiring:
+        return found[:n], []
+    skipped = [e for e in found if _last_day(underlying, e, kinds) == day]
+    return [e for e in found if e not in skipped][:n], skipped
+
+
 def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep=time.sleep,  # noqa: ANN001
-                   now_ns=None) -> Snapshot:  # noqa: ANN001
+                   now_ns=None, skip_expiring: bool = False) -> Snapshot:  # noqa: ANN001
+    """With `skip_expiring`, contracts whose last trading day is `day` are left out and the next ones taken
+    (IWB 4.2: on an expiry day the expiring options and the expiry-day add-on would skew the fit)."""
     from stockify import timeutil
     from stockify.data import instruments, refdata
     conn = refdata._connect()
@@ -119,7 +146,8 @@ def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep
                      "last_trading_ns": _last_trading_ns(last, group) if last else None}
 
     add(index_id, "INDEX" if is_index else "EQ")
-    fut_exp = instruments.expiries(underlying, "FUT", day)[:1]
+    fut_exp, fut_skipped = _pick(underlying, instruments.expiries(underlying, "FUT", day), ("FUT",), day, 1,
+                                 skip_expiring)
     futures = [iid for e in fut_exp if (iid := instruments.derivative(underlying, "FUT", e)) is not None]
     for iid in futures:
         add(iid, "FUT")
@@ -128,7 +156,8 @@ def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep
     spot = quotes[index_id]["ltp"]
     if spot is None:
         raise CalibrationError(f"{underlying}: no price for the underlying in the quote")
-    expiries = instruments.expiries(underlying, "OPT", day)[:2]
+    expiries, opt_skipped = _pick(underlying, instruments.expiries(underlying, "OPT", day), ("CE", "PE"), day, 2,
+                                  skip_expiring)
     for e in expiries:
         chain = instruments.option_chain(underlying, e, day)
         ks = sorted({r["strike_paise"] for r in chain})
@@ -147,7 +176,8 @@ def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep
         for i in part:
             quotes[i] = _quote_fields(answer.get(f"{rows[i]['exchange']}:{rows[i]['tradingsymbol']}", {}))
     wall = now_ns() if now_ns else timeutil.now_ns()
-    return Snapshot(underlying, day, wall, index_id, rows, quotes, futures, expiries)
+    return Snapshot(underlying, day, wall, index_id, rows, quotes, futures, expiries, skip_expiring,
+                    sorted(set(fut_skipped) | set(opt_skipped)))
 
 
 # ── 2. Portfolios ────────────────────────────────────────────────────────────
@@ -393,6 +423,9 @@ def report_text(snap: Snapshot, table: dict, base: dict, fitted: dict, before: f
     lines = [f"# SPAN-lite calibration: {snap.underlying}, {snap.day}", "",
              "How close our margin estimates came to Kite's, for the same portfolios priced at the same moment. ",
              "\"Within 5 %\" means our number was no more than 5 % above or below Kite's.", "",
+             f"- Expiries priced: {', '.join(snap.expiries) or 'none'}"
+             + (f"; contracts expiring today left out (--skip-expiring): {', '.join(snap.skipped) or 'none'}."
+                if snap.skip_expiring else "; contracts expiring today were not left out."),
              f"- Settings now: price move {base['psr_pct']}, volatility move {base['vsr_pct']}, minimum "
              f"₹{base['somc_per_lot_paise'] / 100:,.0f} per short lot; off by {before * 100:.1f} % on average.",
              f"- Fitted settings: price move {fitted['psr_pct']}, volatility move {fitted['vsr_pct']}, minimum "
@@ -438,11 +471,12 @@ def write_pending(row: dict, path: Path | None = None) -> Path:
 # ── The whole run ────────────────────────────────────────────────────────────
 
 def calibrate(client, underlying: str, n: int, *, seed: int = 0, day: str | None = None, sleep=time.sleep,  # noqa: ANN001
-              snapshot: Snapshot | None = None, params_path: Path | None = None) -> tuple[Path, Path]:
+              snapshot: Snapshot | None = None, params_path: Path | None = None,
+              skip_expiring: bool = False) -> tuple[Path, Path]:
     """Run 1–5; returns (report path, margin_params path). `snapshot` skips the quote calls (tests)."""
     from stockify import paths, store, timeutil
     day = day or timeutil.ist_today().isoformat()
-    snap = snapshot or build_snapshot(client, underlying, day, sleep=sleep)
+    snap = snapshot or build_snapshot(client, underlying, day, sleep=sleep, skip_expiring=skip_expiring)
     margin, pricing = _config_params()
     base = class_row(margin, snap)
     pricer = Pricer(snap, margin, pricing)
@@ -454,7 +488,8 @@ def calibrate(client, underlying: str, n: int, *, seed: int = 0, day: str | None
         t0 = pricer.t0(p)
         t1, rows = pricer.t1(p, base)
         samples.append(Sample(p, final, t0, t1))
-        market = {str(i): snap.quotes.get(i) for i, _ in p.legs} | {"underlying": snap.quotes[snap.index_id]}
+        market = {str(i): snap.quotes.get(i) for i, _ in p.legs} | {"underlying": snap.quotes[snap.index_id],
+                                                                     "snapshot": snap.choice()}
         store.add_margin_calibration({
             "wall_ns": snap.wall_ns, "underlying": underlying,
             "portfolio_json": json.dumps({"kind": p.kind, "legs": kite_orders(snap, p)}, sort_keys=True),

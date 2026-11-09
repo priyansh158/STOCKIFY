@@ -21,7 +21,7 @@ from stockify.fno import black76 as B
 from stockify.fno import calibrate as CAL
 
 DAY = "2026-11-09"
-E1, E2 = "2026-11-11", "2026-11-17"      # trading days (10 and 24 Nov are NSE holidays)
+E1, E2, E3 = "2026-11-11", "2026-11-17", "2026-11-23"      # trading days (10 and 24 Nov are NSE holidays)
 HEADER = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,"
           "instrument_type,segment,exchange")
 SPOT = 25_000.0
@@ -32,7 +32,7 @@ TOKEN = "fake-access-token-do-not-store"
 def dumps() -> dict[str, str]:
     nfo = [HEADER, "9001,1,NIFTY26NOVFUT,NIFTY,0,2026-11-26,0,0.1,75,FUT,NFO-FUT,NFO"]
     tok = 10_000
-    for exp, tag in ((E1, "26N11"), (E2, "26N17")):
+    for exp, tag in ((E1, "26N11"), (E2, "26N17"), (E3, "26N23")):
         for k in range(24_000, 26_001, 100):
             for kind in ("CE", "PE"):
                 tok += 1
@@ -83,6 +83,15 @@ class FakeKite:
         row = CAL.with_params(self.base, TRUE["psr"], TRUE["vsr"], TRUE["somc"])
         final = self.pricer.t1(CAL.Portfolio("x", legs), row)[0] / 100
         return {"initial": {"total": final * 1.1}, "final": {"total": final}, "orders": [{"total": 0}] * len(orders)}
+
+
+def redirect_quiet():  # noqa: ANN201
+    import io
+    from contextlib import ExitStack, redirect_stderr, redirect_stdout
+    stack = ExitStack()
+    stack.enter_context(redirect_stdout(io.StringIO()))
+    stack.enter_context(redirect_stderr(io.StringIO()))
+    return stack
 
 
 class CalibrationTests(SandboxedDBTest):
@@ -186,6 +195,59 @@ class CalibrationTests(SandboxedDBTest):
         doc = loader.load_json("margin_params.json", tmp)                    # refuses duplicate dated rows
         self.assertEqual(sorted((r["applies"]["underlying"], r["psr_pct"]) for r in doc["spanlite_pending"]),
                          [("BANKNIFTY", "0.07"), ("NIFTY", "0.08")])
+
+    def test_skip_expiring_leaves_out_todays_expiry_and_takes_the_next_two(self):
+        """IWB 4.2: on an expiry day, --skip-expiring prices the next two expiries; the choice is recorded."""
+        for name, day, moved in (("on the expiry date", E1, False), ("moved by refdata's actual_expiry", DAY, True)):
+            with self.subTest(name):
+                if moved:                         # NSE moved E1's last trading day to DAY (as a holiday does)
+                    with refdata.transaction() as conn:
+                        conn.execute("UPDATE instruments SET actual_expiry=? WHERE expiry=?", (DAY, E1))
+                kw = dict(strikes=4, sleep=self.sleeps.append, now_ns=lambda: 1_794_180_600_000_000_000)
+                plain = CAL.build_snapshot(self.kite, "NIFTY", day, **kw)
+                self.assertEqual((plain.expiries, plain.skipped, plain.skip_expiring), ([E1, E2], [], False))
+                snap = CAL.build_snapshot(self.kite, "NIFTY", day, skip_expiring=True, **kw)
+                self.assertEqual((snap.expiries, snap.skipped, snap.skip_expiring), ([E2, E3], [E1], True))
+                self.assertFalse([r for r in snap.rows.values() if r["expiry"] == E1])
+                self.assertEqual(len(snap.futures), 1)                      # the future expires on the 26th
+                self.assertTrue({p.kind for p in CAL.sample_portfolios(snap, 40, 3)} >= {"straddle", "iron_fly"})
+                margin, pricing = CAL._config_params()
+                self.kite.snapshot, self.kite.base = snap, CAL.class_row(margin, snap)
+                self.kite.pricer = CAL.Pricer(snap, margin, pricing)
+                tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+                params = tmp / "margin_params.json"
+                from stockify.config import loader
+                shutil.copy(Path(loader.__file__).with_name("margin_params.json"), params)
+                before = len(store.margin_calibrations("NIFTY"))
+                report, _ = CAL.calibrate(self.kite, "NIFTY", 8, seed=2, day=day, sleep=self.sleeps.append,
+                                          snapshot=snap, params_path=params)
+                text = report.read_text(encoding="utf-8")
+                self.assertIn(f"Expiries priced: {E2}, {E3}; contracts expiring today left out (--skip-expiring): "
+                              f"{E1}.", text)
+                rows = store.margin_calibrations("NIFTY")[before:]
+                self.assertTrue(rows)
+                for r in rows:
+                    self.assertEqual(json.loads(r["market_json"])["snapshot"],
+                                     {"skip_expiring": True, "expiries": [E2, E3], "skipped": [E1]})
+
+    def test_the_cli_passes_skip_expiring(self):
+        from unittest import mock
+        from stockify import __main__ as cli
+        import kite_client
+        seen = {}
+
+        def fake(client, und, n, **kw):  # noqa: ANN001, ANN202
+            seen.update(kw, und=und, n=n)
+            return Path("r.md"), Path("p.json")
+        with mock.patch.object(kite_client, "is_enabled", return_value=True), \
+                mock.patch.object(kite_client, "get_client", return_value=self.kite), \
+                mock.patch.object(CAL, "calibrate", side_effect=fake), redirect_quiet():
+            self.assertEqual(cli.main(["margin", "calibrate", "--underlying", "NIFTY", "--samples", "5",
+                                       "--skip-expiring"]), 0)
+            self.assertTrue(seen["skip_expiring"])
+            self.assertEqual(cli.main(["margin", "calibrate", "--underlying", "NIFTY", "--samples", "5"]), 0)
+            self.assertFalse(seen["skip_expiring"])
+        self.assertEqual(self.kite.calls, [])                               # nothing reached the fake Kite
 
     def test_no_kite_when_not_logged_in(self):
         from stockify import __main__ as cli

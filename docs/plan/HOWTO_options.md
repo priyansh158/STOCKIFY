@@ -304,6 +304,15 @@ With 10 Nov a holiday, NIFTY's weekly expiry moves forward to Mon 9 Nov, so the 
 **Wed 11 Nov IST**. Run it between 10:00 and 15:00 IST, which is Tue 10 Nov 20:30 to Wed 01:30 PST. That avoids
 the opening and closing minutes.
 
+**On an expiry day, add `--skip-expiring`.** It leaves out every contract whose last trading day is today, using
+NSE's moved date when a holiday moved it, and prices the next two option expiries and the next future instead. The
+expiry-day extra margin only applies to contracts expiring that day, so those positions price as on any other day.
+The report's header lists the expiries priced and the ones left out, and so does each sample saved in `lab.sqlite`:
+
+```
+.\.venv\Scripts\python.exe -m stockify margin calibrate --underlying NIFTY --samples 200 --skip-expiring
+```
+
 **What to do.**
 
 1. Log in to Kite in the login window (`http://127.0.0.1:3000/portfolio` → **Login to Kite**), as for recording.
