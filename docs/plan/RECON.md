@@ -598,3 +598,22 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Pending: the first real calibration (owner, market hours, from Monday 9 November IST), then the owner's review
   of the report and adoption of the pending row.
 
+
+## Options how-to (ENG 4.1–4.2)
+
+- `docs/plan/HOWTO_options.md`, linked from HOWTO_strategy.md: the chain view with X's short_straddle_stop, flat and
+  SPAN-lite margin with every label's meaning, expiry (cash at the FSP, stock delivery, the ₹23.60 expiry fee), the
+  comparison tool, the calibration session and how to adopt a pending row. `test_howto_options.py` ties the doc to
+  the code: the quoted code is the module's, every chain-view key and every label the UI explains is covered, the
+  quoted config numbers are the config's, and adopting a row as described passes the config check and changes
+  the engine's margin from its date on, not before.
+- New examples: `eod_straddle_flat_vs_spanlite.json` (runs offline on October 2026's NSE files; flat blocks at most
+  ₹3,59,629, SPAN-lite with placeholders ₹1,54,342, same trades and money) and `short_straddle_nifty_recorded.json`
+  (needs recorded ticks for 11 Nov 2026).
+- Found and fixed (ENG 4.1): a second calibration on the same day appended a second pending row with the same
+  `applies` and `effective_from`, which makes the config loader refuse `margin_params.json` and so every run.
+- Found: with 10 Nov a holiday, NIFTY's weekly expiry moves to Mon 9 Nov, so the first good calibration day is
+  Wed 11 Nov IST, not Mon 9 Nov. The recorded comparison's dates 9–13 Nov were only four trading days; now 9–16 Nov.
+- Found: the `margin_spanlite:` label names every SPAN-lite row in the file, so after an adoption it still reads
+  `…+placeholder` (and the UI still warns "not yet calibrated") even for runs that only used the fitted row.
+  Documented as is; changing it changes labels in goldens and both implementations.

@@ -6,6 +6,9 @@ result. Every command below was run on 2026-11-06 against the lab's data and gav
 
 Everything is simulated. No order ever reaches a broker.
 
+For options (the chain view, margin models, expiry, comparisons and margin calibration), read this page first, then
+[HOWTO_options.md](HOWTO_options.md).
+
 ## 1. The strategy
 
 The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference strategy). In words:

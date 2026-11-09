@@ -1,7 +1,7 @@
 {
   "schema": "stockify.compare/1",
   "name": "straddle_vs_ironfly_recorded",
-  "about": "M4.13: the same recorded days as an end-of-day straddle (NSE files), an intraday straddle with stops and an intraday iron fly (recorded chains, quote fills, SPAN-lite). Run: python -m stockify tools compare-strategies --config examples/runs/straddle_vs_ironfly_recorded.json. Needs at least five recorded days: set from/to to them once the recorder is live.",
+  "about": "M4.13: the same recorded days as an end-of-day straddle (NSE files), an intraday straddle with stops and an intraday iron fly (recorded chains, quote fills, SPAN-lite). Run: python -m stockify tools compare-strategies --config examples/runs/straddle_vs_ironfly_recorded.json. Needs at least five recorded days: 9-16 Nov 2026 is five trading days (10 Nov is a holiday); move from/to if any of them is not recorded.",
   "runs": [
     {
       "title": "End-of-day straddle (NSE files)",
@@ -13,7 +13,7 @@
         "strategy": {"kind": "python", "ref": "stockify.strategies.eod_short_straddle:EodShortStraddle",
                      "params": {"underlying": "NIFTY", "index": "NSE:NIFTY 50", "lots": 1, "stop_multiple": "1.3",
                                 "min_days": 0, "protection_bp": 5000}},
-        "data": {"packs": [{"spec": {"dataset": "bhav_eod", "from": "2026-11-09", "to": "2026-11-13",
+        "data": {"packs": [{"spec": {"dataset": "bhav_eod", "from": "2026-11-09", "to": "2026-11-16",
                                      "instruments": ["NSE:NIFTY 50",
                                                      {"chain": {"underlying": "NIFTY", "expiry": "nearest", "strikes": 10}},
                                                      {"chain": {"underlying": "NIFTY", "expiry": "next", "strikes": 10}}]}}]},
@@ -36,7 +36,7 @@
         "strategy": {"kind": "python", "ref": "stockify.strategies.short_straddle_stop:ShortStraddleStop",
                      "params": {"underlying": "NIFTY", "entry_hhmm": "09:30", "exit_hhmm": "15:15", "stop_pct": "0.3",
                                 "lots": 1, "min_days": 0, "protection_bp": 5000}},
-        "data": {"packs": [{"spec": {"dataset": "ticks", "from": "2026-11-09", "to": "2026-11-13",
+        "data": {"packs": [{"spec": {"dataset": "ticks", "from": "2026-11-09", "to": "2026-11-16",
                                      "instruments": ["NSE:NIFTY 50",
                                                      {"chain": {"underlying": "NIFTY", "expiry": "nearest", "strikes": 10}}]}}]},
         "price_basis": "raw",
@@ -58,7 +58,7 @@
         "strategy": {"kind": "python", "ref": "stockify.strategies.iron_fly:IronFly",
                      "params": {"underlying": "NIFTY", "entry_hhmm": "09:30", "exit_hhmm": "15:15", "stop_pct": "0.3",
                                 "wing_strikes": 2, "lots": 1, "min_days": 0, "protection_bp": 5000}},
-        "data": {"packs": [{"spec": {"dataset": "ticks", "from": "2026-11-09", "to": "2026-11-13",
+        "data": {"packs": [{"spec": {"dataset": "ticks", "from": "2026-11-09", "to": "2026-11-16",
                                      "instruments": ["NSE:NIFTY 50",
                                                      {"chain": {"underlying": "NIFTY", "expiry": "nearest", "strikes": 10}}]}}]},
         "price_basis": "raw",

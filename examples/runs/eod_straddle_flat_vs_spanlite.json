@@ -1,0 +1,52 @@
+{
+  "schema": "stockify.compare/1",
+  "name": "eod_straddle_flat_vs_spanlite",
+  "about": "HOWTO_options §4: the same end-of-day NIFTY straddle on NSE's files for October 2026, once with the flat margin model and once with SPAN-lite, so the only difference is how margin is estimated. Runs offline on the lab's bhavcopy data. Run: python -m stockify tools compare-strategies --config examples/runs/eod_straddle_flat_vs_spanlite.json",
+  "runs": [
+    {
+      "title": "End-of-day straddle, flat margin",
+      "role": "eod",
+      "config": {
+        "schema": "stockify.run/1",
+        "name": "cmp_eod_straddle_flat",
+        "family_id": "compare/eod_straddle_margin",
+        "strategy": {"kind": "python", "ref": "stockify.strategies.eod_short_straddle:EodShortStraddle",
+                     "params": {"underlying": "NIFTY", "index": "NSE:NIFTY 50", "lots": 1, "stop_multiple": "1.5",
+                                "min_days": 2, "protection_bp": 5000}},
+        "data": {"packs": [{"spec": {"dataset": "bhav_eod", "from": "2026-10-01", "to": "2026-10-30",
+                                     "instruments": ["NSE:NIFTY 50",
+                                                     {"chain": {"underlying": "NIFTY", "expiry": "nearest", "strikes": 10}},
+                                                     {"chain": {"underlying": "NIFTY", "expiry": "next", "strikes": 10}}]}}]},
+        "price_basis": "raw",
+        "capital_paise": 100000000,
+        "fill_model": {"kind": "eod_close", "participation": "0.10", "half_spread_ticks": 1},
+        "costs": {"broker": "zerodha", "allow_unverified": true},
+        "margin": {"model": "flat"},
+        "mark": "ltp",
+        "seed": 42
+      }
+    },
+    {
+      "title": "End-of-day straddle, SPAN-lite margin",
+      "config": {
+        "schema": "stockify.run/1",
+        "name": "cmp_eod_straddle_spanlite",
+        "family_id": "compare/eod_straddle_margin",
+        "strategy": {"kind": "python", "ref": "stockify.strategies.eod_short_straddle:EodShortStraddle",
+                     "params": {"underlying": "NIFTY", "index": "NSE:NIFTY 50", "lots": 1, "stop_multiple": "1.5",
+                                "min_days": 2, "protection_bp": 5000}},
+        "data": {"packs": [{"spec": {"dataset": "bhav_eod", "from": "2026-10-01", "to": "2026-10-30",
+                                     "instruments": ["NSE:NIFTY 50",
+                                                     {"chain": {"underlying": "NIFTY", "expiry": "nearest", "strikes": 10}},
+                                                     {"chain": {"underlying": "NIFTY", "expiry": "next", "strikes": 10}}]}}]},
+        "price_basis": "raw",
+        "capital_paise": 100000000,
+        "fill_model": {"kind": "eod_close", "participation": "0.10", "half_spread_ticks": 1},
+        "costs": {"broker": "zerodha", "allow_unverified": true},
+        "margin": {"model": "spanlite"},
+        "mark": "ltp",
+        "seed": 42
+      }
+    }
+  ]
+}
