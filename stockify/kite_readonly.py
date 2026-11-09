@@ -24,6 +24,13 @@ def _no_positions(consider_positions: object) -> None:
                                 "mixes in the real account's positions")
 
 
+def _query(mode: object) -> dict:
+    query = {"consider_positions": "false"}
+    if mode is not None:
+        query["mode"] = str(mode)
+    return query
+
+
 class ReadOnlyKite:
     """`ReadOnlyKite(inner)`: a read-only view of a Kite client. It has no attributes of its own."""
 
@@ -33,15 +40,15 @@ class ReadOnlyKite:
         if inner is None:
             raise ValueError("ReadOnlyKite needs a client")
 
+        # Both calculators post directly with the literal query `consider_positions=false`: the SDK would send
+        # Python's `False` ("False") for the basket and nothing at all for single orders.
         def basket_order_margins(orders, *, consider_positions=False, mode=None):  # noqa: ANN001, ANN202
             _no_positions(consider_positions)
-            return inner.basket_order_margins(orders, consider_positions=False, mode=mode)
+            return inner._post("order.margins.basket", params=orders, is_json=True, query_params=_query(mode))
 
         def order_margins(orders, *, consider_positions=False, mode=None):  # noqa: ANN001, ANN202
-            # The SDK's order_margins(params) sends no query; send the same POST with the flag stated.
             _no_positions(consider_positions)
-            return inner._post("order.margins", params=orders, is_json=True,
-                               query_params={"consider_positions": False, "mode": mode})
+            return inner._post("order.margins", params=orders, is_json=True, query_params=_query(mode))
 
         wrapped = {"basket_order_margins": basket_order_margins, "order_margins": order_margins}
 

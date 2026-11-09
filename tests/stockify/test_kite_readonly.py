@@ -28,6 +28,14 @@ METHODS = re.compile(r"\b(place_order|modify_order|cancel_order|exit_order|place
 ROUTES = re.compile(r"['\"](order\.(place|modify|cancel)|gtt\.(place|modify|delete)|mf\.(order|sip)\.[a-z]+|"
                     r"portfolio\.positions\.convert)['\"]")
 URLS = re.compile(r"['\"]/(orders|gtt|mf/orders|mf/sips)\b")
+# Composed or absolute order paths: an order segment that starts a path (string start, `}`, quote, host).
+ORDER_PATHS = re.compile(r"(^|[^A-Za-z0-9_.-]|kite\.trade)/(orders|gtt|mf/orders|mf/sips|portfolio/positions)\b")
+# Order segments joined piecewise ("/".join(["", "orders"])), and the GTT/SIP words on their own.
+ORDER_SEGMENTS = re.compile(r"join\(.*['\"](orders|gtt|mf|portfolio)['\"]|['\"](gtt|sips|triggers)['\"]")
+METHOD_PIECES = re.compile(r"['\"](place|modify|cancel|exit|delete|convert)_['\"]")
+KITE_HOST = re.compile(r"kite\.trade|\bapi\.kite\b")
+SDK_IMPORT = re.compile(r"^\s*(import|from)\s+kiteconnect\b")
+SDK_STRING = re.compile(r"['\"]kiteconnect(\.[\w.]+)?['\"]")
 DENY_BEGIN, DENY_END = "# ORDER-DENY-LIST BEGIN", "# ORDER-DENY-LIST END"
 
 
@@ -122,6 +130,24 @@ class StrippedClientTest(unittest.TestCase):
             kc.place_order(variety="regular")
         self.assertEqual([s[0] for s in kc.sent], ["api.token"])
 
+    def test_stripped_margin_calls_send_lowercase_false_and_refuse_true(self):
+        k = kite_client.get_client()
+        k.basket_order_margins([{"x": 1}])                     # the SDK's default would be True
+        k.order_margins([{"x": 1}], mode="compact")
+        self.assertEqual(k.sent[-2][4], {"consider_positions": "false"})
+        self.assertEqual(k.sent[-1][4], {"consider_positions": "false", "mode": "compact"})
+        for bad in (True, "False", 0, None):
+            with self.subTest(bad=bad), self.assertRaises(kite_client.OrderRouteForbidden):
+                k.basket_order_margins([], consider_positions=bad)
+
+    def test_url_args_traversal_is_refused_before_the_sdk(self):
+        k = kite_client.get_client()
+        for args in ({"exchange": "../orders/regular"}, {"exchange": "../%6Frders/regular"},
+                     {"exchange": "..%2F%2E%2E%2Fgtt/triggers"}, {"exchange": "%252E%252E/mf/sips"}):
+            with self.subTest(args=args), self.assertRaises(kite_client.OrderRouteForbidden):
+                k._post("market.instruments", url_args=args, params={})
+        self.assertEqual(k.reqsession.sent, [])
+
     def test_deny_list_from_the_fake_table(self):
         self.assertEqual(kite_client.order_route_keys(ROUTES_5_2_2), EXPECTED_DENY_5_2_2)
 
@@ -147,11 +173,81 @@ class RealSdkTest(unittest.TestCase):
     """The installed SDK itself: route table, method names, and a stripped instance (no request is sent)."""
 
     def setUp(self):
+        import requests
         import requests.adapters
-        p = mock.patch.object(requests.adapters.HTTPAdapter, "send",
-                              side_effect=AssertionError("a test tried to reach the network"))
+        self.wire: list = []                      # every request that reached the real transport (stubbed)
+
+        def stub_send(adapter, request, **kwargs):  # noqa: ANN001, ANN202
+            self.wire.append(request)
+            response = requests.Response()
+            response.status_code = 200
+            response.headers["content-type"] = "application/json"
+            response._content = b'{"status": "success", "data": {"access_token": "t", "user_id": "AB1", "login_time": "2026-11-09 08:00:00"}}'
+            response.request, response.url = request, request.url
+            return response
+        p = mock.patch.object(requests.adapters.HTTPAdapter, "send", stub_send)
         p.start()
         self.addCleanup(p.stop)
+
+    def _client(self):  # noqa: ANN202
+        from kiteconnect import KiteConnect
+        return kite_client.strip_order_routes(KiteConnect(api_key="test-key", access_token="test-access"))
+
+    def test_review_reproductions_are_refused_at_the_adapter(self):
+        kc = self._client()
+        session = kc.reqsession
+        probes = [
+            lambda: kc._post("market.instruments", url_args={"exchange": "../%6Frders/regular"}, params={"q": 1}),
+            lambda: kc._delete("market.instruments", url_args={"exchange": "../%67tt/triggers/1"}),
+            lambda: kc._put("market.instruments", url_args={"exchange": "../portfolio/%70ositions"}),
+            lambda: kc._post("market.instruments", url_args={"exchange": "..%2forders%2fregular"}),
+            lambda: session.request("POST", "https://api.kite.trade/%6Frders/regular"),
+            lambda: session.request("POST", "https://api.kite.trade/margins/../orders/regular"),
+            lambda: session.request("DELETE", "https://api.kite.trade/gtt/triggers/1"),
+            lambda: session.request("PUT", "https://api.kite.trade/portfolio/positions"),
+            lambda: session.request("POST", "https://api.kite.trade/margins/basket/../../orders/regular"),
+            lambda: session.request("POST", "https://api.kite.trade/user/profile"),
+            lambda: session.request("PATCH", "https://api.kite.trade/margins/basket"),
+        ]
+        kc._routes["sneaky"] = "/%6frders/regular"
+        probes.append(lambda: kc._post("sneaky", params={}))
+        for i, probe in enumerate(probes):
+            with self.subTest(i=i), self.assertRaises(kite_client.OrderRouteForbidden):
+                probe()
+        self.assertEqual(self.wire, [])
+
+    def test_the_adapter_itself_refuses_a_prepared_order(self):
+        import requests
+        kc = self._client()
+        prepared = requests.Request("POST", "https://api.kite.trade/%6Frders/regular", data={"q": 1}).prepare()
+        self.assertEqual(prepared.url, "https://api.kite.trade/orders/regular")   # requests decodes %6F itself
+        for prefix in ("https://", "http://"):
+            with self.subTest(prefix=prefix), self.assertRaises(kite_client.OrderRouteForbidden):
+                kc.reqsession.get_adapter(prefix + "api.kite.trade/").send(prepared)
+        self.assertEqual(self.wire, [])
+
+    def test_allowlisted_calls_pass_with_the_exact_query(self):
+        kc = self._client()
+        kc.basket_order_margins([{"tradingsymbol": "NIFTY"}])
+        kc.order_margins([{"tradingsymbol": "NIFTY"}], mode="compact")
+        kc.get_virtual_contract_note([{"order_id": "1"}])
+        kite_readonly.ReadOnlyKite(kc).basket_order_margins([])
+        kc.profile()
+        kc.margins()
+        sent = [(r.method, r.url) for r in self.wire]
+        self.assertEqual(sent, [
+            ("POST", "https://api.kite.trade/margins/basket?consider_positions=false"),
+            ("POST", "https://api.kite.trade/margins/orders?consider_positions=false&mode=compact"),
+            ("POST", "https://api.kite.trade/charges/orders"),
+            ("POST", "https://api.kite.trade/margins/basket?consider_positions=false"),
+            ("GET", "https://api.kite.trade/user/profile"),
+            ("GET", "https://api.kite.trade/user/margins"),
+        ])
+
+    def test_login_exchange_passes(self):
+        kc = self._client()
+        kc.generate_session("req-123", api_secret="test-secret")
+        self.assertEqual([(r.method, r.url) for r in self.wire], [("POST", "https://api.kite.trade/session/token")])
 
     def test_fake_table_matches_the_installed_sdk(self):
         from kiteconnect import KiteConnect, __version__
@@ -219,10 +315,10 @@ class ReadOnlyKiteTest(unittest.TestCase):
                 ro.basket_order_margins([], consider_positions=bad)
         self.assertEqual(fake.calls, [])
         ro.basket_order_margins([])
-        self.assertIs(fake.calls[-1]["consider_positions"], False)
+        self.assertEqual(fake.calls[-1]["route"], "order.margins.basket")
+        self.assertEqual(fake.calls[-1]["query_params"], {"consider_positions": "false"})
         ro.basket_order_margins([], consider_positions=False, mode="compact")
-        self.assertIs(fake.calls[-1]["consider_positions"], False)
-        self.assertEqual(fake.calls[-1]["mode"], "compact")
+        self.assertEqual(fake.calls[-1]["query_params"], {"consider_positions": "false", "mode": "compact"})
 
     def test_order_margins_sends_consider_positions_false(self):
         fake = FakeKite()
@@ -232,8 +328,7 @@ class ReadOnlyKiteTest(unittest.TestCase):
         ro.order_margins([{"tradingsymbol": "X"}], mode="compact")
         call = fake.calls[-1]
         self.assertEqual(call["route"], "order.margins")
-        self.assertIs(call["query_params"]["consider_positions"], False)
-        self.assertEqual(call["query_params"]["mode"], "compact")
+        self.assertEqual(call["query_params"], {"consider_positions": "false", "mode": "compact"})
 
     def test_wrapper_over_the_stripped_client(self):
         with mock.patch.object(kite_client, "KiteConnect", FakeKiteConnect):
@@ -242,7 +337,7 @@ class ReadOnlyKiteTest(unittest.TestCase):
         ro.order_margins([])
         ro.basket_order_margins([])
         self.assertEqual([s[0] for s in inner.sent], ["order.margins", "order.margins.basket"])
-        self.assertIs(inner.sent[-1][4]["consider_positions"], False)
+        self.assertEqual(inner.sent[-1][4], {"consider_positions": "false"})
 
     def test_client_passes_auth_errors_through(self):
         err = kite_client.KiteTokenExpired("expired")
@@ -261,24 +356,37 @@ class ReadOnlyKiteTest(unittest.TestCase):
 
 
 class SourceScanTest(unittest.TestCase):
-    """No tracked or new source outside tests/ names an order method, route key or URL (but the deny-list)."""
+    """Backstop scans over every tracked or new .py/.ps1 outside tests/ (the transport adapter is the real guard).
 
-    def _scan(self, patterns) -> list[str]:
+    Allowlists are named and minimal: the deny-list block in kite_client.py, the files listed per scan, and the
+    exact lines in OWN_API_LINES.
+    """
+
+    # Our own API's routes that end in an order-like segment (never a Kite URL).
+    OWN_API_LINES = {"server/routers/tests.py": {'@router.get("/api/tests/{run_id}/orders", '
+                                                 'response_model=list[dict[str, Any]])'}}
+
+    def _scan(self, patterns, allowed_files=()) -> list[str]:  # noqa: ANN001
         matches = []
         for path in tracked_sources():
+            rel = path.relative_to(REPO).as_posix()
+            if rel in allowed_files:
+                continue
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
                 continue
-            allowed = path.name == "kite_client.py" and path.parent == REPO
+            owner = rel == "kite_client.py"
             inside = False
             for no, line in enumerate(lines, 1):
-                if allowed and line.startswith(DENY_BEGIN):
+                if owner and line.startswith(DENY_BEGIN):
                     inside = True
-                elif allowed and line.startswith(DENY_END):
+                elif owner and line.startswith(DENY_END):
                     inside = False
-                elif not inside and any(p.search(line) for p in patterns):
-                    matches.append(f"{path.relative_to(REPO).as_posix()}:{no}")
+                elif inside or line.strip() in self.OWN_API_LINES.get(rel, ()):
+                    continue
+                elif any(p.search(line) for p in patterns):
+                    matches.append(f"{rel}:{no}")
         return matches
 
     def test_the_scan_sees_the_repo(self):
@@ -289,20 +397,63 @@ class SourceScanTest(unittest.TestCase):
         self.assertFalse(any(n.startswith("tests/") for n in names))
 
     def test_no_source_calls_an_order_method_or_route(self):
-        self.assertEqual(self._scan([METHODS]), [])
+        self.assertEqual(self._scan([METHODS, METHOD_PIECES]), [])
 
     def test_no_source_names_an_order_route_key_or_url(self):
-        self.assertEqual(self._scan([ROUTES, URLS]), [])
+        self.assertEqual(self._scan([ROUTES, URLS, ORDER_PATHS, ORDER_SEGMENTS]), [])
 
-    def test_the_deny_list_block_exists_once(self):
-        text = (REPO / "kite_client.py").read_text(encoding="utf-8")
-        self.assertEqual(text.count(DENY_BEGIN), 1)
-        self.assertEqual(text.count(DENY_END), 1)
+    def test_the_patterns_catch_composed_urls(self):
+        for text in ('requests.post("https://api.kite.trade/orders/regular")', 'f"{root}/orders/{variety}"',
+                     "root + '/gtt/triggers'", '"/".join(["", "orders", v])', "'/mf/sips/' + sip",
+                     'url = "/portfolio/positions"', 'getattr(k, "place_" + "order")'):
+            with self.subTest(text=text):
+                self.assertTrue(any(p.search(text) for p in (URLS, ORDER_PATHS, ORDER_SEGMENTS, METHOD_PIECES,
+                                                             KITE_HOST)))
+        for text in ('"/api/margins/orders"', '"/charges/orders"', 'store.run_rows(run_id, "orders")'):
+            with self.subTest(text=text):
+                self.assertFalse(any(p.search(text) for p in (URLS, ORDER_PATHS, ORDER_SEGMENTS)))
+
+    def test_no_direct_http_to_kite(self):
+        self.assertEqual(self._scan([KITE_HOST], allowed_files=("kite_client.py",)), [])
+
+    def test_kiteconnect_is_imported_only_for_the_ticker_and_its_version(self):
+        allowed = re.compile(r"^\s*(from kiteconnect import KiteTicker|import kiteconnect\.__version__ as \w+)\s*$")
+        hits = []
+        for hit in self._scan([SDK_IMPORT, SDK_STRING], allowed_files=("kite_client.py",)):
+            rel, no = hit.rsplit(":", 1)
+            if not allowed.match((REPO / rel).read_text(encoding="utf-8").splitlines()[int(no) - 1]):
+                hits.append(hit)
+        self.assertEqual(hits, [])
 
     def test_only_kite_client_builds_a_kiteconnect_or_touches_its_internals(self):
-        pattern = re.compile(r"\bKiteConnect\s*\(|\._routes\b|\breqsession\b")
-        hits = [m for m in self._scan([pattern]) if not m.startswith("kite_client.py:")]
-        self.assertEqual(hits, [])
+        pattern = re.compile(r"\bKiteConnect\b|\._routes\b|\breqsession\b|\bkiteconnect\.connect\b|"
+                             r"\btype\([^()]*(\([^()]*\))?[^()]*\)\s*\(")
+        self.assertEqual(self._scan([pattern], allowed_files=("kite_client.py",)), [])
+
+    def test_private_request_methods_only_in_the_two_kite_modules(self):
+        pattern = re.compile(r"\._(post|put|delete|request)\s*\(")
+        self.assertEqual(self._scan([pattern], allowed_files=("kite_client.py", "stockify/kite_readonly.py")), [])
+
+    def test_kite_ticker_is_built_only_at_the_three_budgeted_sites(self):
+        pattern = re.compile(r"\bKiteTicker\s*\(")
+        sites = ("kite_ticker_worker.py", "stockify/daemon/ticker.py", "stockify/kitecheck.py")
+        self.assertEqual(self._scan([pattern], allowed_files=sites), [])
+        for rel in sites:
+            text = (REPO / rel).read_text(encoding="utf-8")
+            self.assertEqual(len(pattern.findall(text)), 1, rel)
+            self.assertIn("conn_budget.register(", text, rel)
+
+    def test_the_deny_list_block_exists_once_and_only_assigns(self):
+        lines = (REPO / "kite_client.py").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(sum(line.startswith(DENY_BEGIN) for line in lines), 1)
+        self.assertEqual(sum(line.startswith(DENY_END) for line in lines), 1)
+        begin = next(i for i, line in enumerate(lines) if line.startswith(DENY_BEGIN))
+        end = next(i for i, line in enumerate(lines) if line.startswith(DENY_END))
+        call = re.compile(r"\b(?!frozenset\b)[A-Za-z_]\w*\s*\(")
+        for line in lines[begin + 1:end]:
+            code = line.split("#", 1)[0]
+            with self.subTest(line=line):
+                self.assertIsNone(call.search(code))
 
 
 if __name__ == "__main__":

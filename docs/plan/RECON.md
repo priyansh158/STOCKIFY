@@ -931,11 +931,23 @@ from the new SDK after reviewing its new routes.
 (`api`), `kite check` (`dev`). Close and error reasons go through `stockify.log.redact` (URLs and token parameters
 blanked) in the daemon, the API worker's status errors and `kite check`.
 
-**Limits of the guarantee.** Python cannot hide an object from introspection: `type(ro)`'s closure cells or the SDK
-class called with a fresh, unstripped instance would still reach Kite. The source scans (no order method names, route
-keys or order URLs in any tracked or new `.py`/`.ps1` outside `tests/` and the deny-list block; no `KiteConnect(`,
-`._routes` or `reqsession` outside `kite_client.py`) are what close those paths. `ReadOnlyKite.order_margins` sends
-`consider_positions=false`, but Kite documents that parameter only for `/margins/basket`; whether `/margins/orders`
-counts real positions is unverified (live item for Task 21).
+**Fix round 1 (LCB 5.2): allowlist on the prepared request.** The review found that a percent-encoded or
+`..` path (`url_args={"exchange": "../%6Frders/regular"}`) passed every check above and reached the transport,
+because `requests` decodes `%6F` when it prepares the URL. Now `kite_client._mount_guard` mounts a checking adapter on
+`https://` and `http://` of the client's session; `check_prepared_request` decodes the prepared URL's path until it is
+stable, resolves `.`/`..`, and lets through GET and only POST `/margins/orders`, `/margins/basket`, `/charges/orders`
+and `/session/token` (the login exchange; logout and token renewal are not used and are refused). A write must also
+be in its plain form (no `%`, no `..`). The earlier guards also resolve `url_args` and decode. Both margin calculators
+send the literal `consider_positions=false`; with the SDK's own basket call `requests` would send `False`. The source
+scans were widened (absolute and composed order paths, `kite.trade` outside kite_client.py, `kiteconnect` imports
+other than `KiteTicker` and `__version__`, `type(...)(`, private `_post`/`_put`/`_delete`/`_request` outside the two
+Kite modules, `KiteTicker(` only at the three budgeted sites, calls inside the deny-list block). They are a backstop;
+the adapter is the guard.
+
+**Limits of the guarantee.** Python cannot hide an object from introspection: code that mounts its own adapter on the
+session, builds its own `requests.Session` with a token, or reads closure cells can still reach Kite. The scans flag the
+obvious forms (`reqsession`, `kite.trade`, `KiteConnect`); strategies are checked before they are imported (LCB 5.3).
+Whether `/margins/orders` honours `consider_positions` is unverified (Kite documents it for the basket only; live item
+for Task 21).
 
 **Live pending (owner).** Two live KiteTicker connections observed and a third refused (item 9 above, Task 30).

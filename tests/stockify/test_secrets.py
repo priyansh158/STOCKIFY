@@ -133,6 +133,26 @@ class SecretsTest(unittest.TestCase):
         self.assertTrue(any("1006" in r.getMessage() for r in closes))
         assert_no_secret(self._secret_root, secret)
 
+    def test_redact_covers_urls_params_json_and_auth_headers(self):
+        from stockify.log import redact
+        for text in (f"wss://ws.kite.trade?api_key=k&access_token={SECRET}", f"access_token={SECRET}&x=1",
+                     f'{{"access_token": "{SECRET}", "user": "AB"}}', f"'api_secret': '{SECRET}'",
+                     f"Authorization: token test-key:{SECRET}", f"refresh_token = {SECRET}"):
+            with self.subTest(text=text):
+                self.assertNotIn(SECRET, redact(text))
+        self.assertEqual(redact("code 1006, reason going away"), "code 1006, reason going away")
+
+    def test_redact_filter_cleans_the_sdk_ticker_logger(self):
+        from stockify.log import RedactFilter
+        logs = _LogCapture(self)
+        logs.handler.addFilter(RedactFilter())
+        logging.getLogger("kiteconnect.ticker").error("Connection error: %s - %s", 1006,
+                                                     f"closed {_FakeWs.url}")
+        logs.handler.flush()
+        text = logs.path.read_text(encoding="utf-8")
+        self.assertIn("Connection error: 1006", text)
+        self.assertNotIn(SECRET, text)
+
     def test_token_error_still_stops_with_76(self):
         session = _session()
         session._on_error(_FakeWs(), 403, "TokenException")

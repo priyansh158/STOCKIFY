@@ -185,11 +185,14 @@ def is_authenticated() -> bool:
 #
 # STOCKIFY never places, modifies, cancels or exits a real order (plan Global
 # Constraints, "Paper only"). Every KiteConnect this module builds is stripped
-# in place: its instance `_routes` lacks the order routes; `_request`, `_get`,
-# `_post`, `_put`, `_delete` and the HTTP session's `request` refuse them by
-# route key and by URL; and every order method is rebound to a function that
-# raises. Margin and charges calculators, quotes, history, instruments, profile
-# and login keep working.
+# in place. The real guard is a transport adapter mounted on its HTTP session:
+# it checks each request after `requests` has prepared it, on the decoded,
+# dot-resolved path, and lets through GETs and only the named writes in
+# `_WRITE_ALLOWLIST` (margin and charges calculators, the login exchange).
+# Extra layers: the instance `_routes` lacks the order routes; `_request`,
+# `_get`, `_post`, `_put`, `_delete` and the session's `request` refuse them by
+# route key and by URL; every order method is rebound to a function that
+# raises; the margin calculators always send `consider_positions=false`.
 
 class OrderRouteForbidden(RuntimeError):
     """A Kite order route was asked for: STOCKIFY is paper only."""
@@ -216,23 +219,67 @@ ORDER_METHODS = (
     "convert_position",
 )
 _ORDER_METHOD_PREFIXES = ("place_", "modify_", "cancel_", "exit_", "delete_", "convert_")
+# The only requests other than GET a client may send: (method, decoded and normalised path).
+_WRITE_ALLOWLIST = frozenset({
+    ("POST", "/margins/orders"),          # order.margins (K-10)
+    ("POST", "/margins/basket"),          # order.margins.basket (K-10)
+    ("POST", "/charges/orders"),          # order.contract_note
+    ("POST", "/session/token"),           # api.token: the login exchange
+})
 # ORDER-DENY-LIST END
 
 
-def _url_path(url: object) -> str:
-    """The lower-cased path of a route template or a full URL (scheme, host and query dropped)."""
-    from urllib.parse import urlsplit
+def _normalised_path(url: object) -> str | None:
+    """The path of a route template or URL as a server would read it: percent-decoded until stable, `\\` read as
+    `/`, `.` and `..` resolved, empty segments dropped, lower-cased. None when decoding does not settle."""
+    from urllib.parse import unquote, urlsplit
     text = str(url or "").strip()
     path = urlsplit(text).path if "://" in text else text.split("?", 1)[0]
-    return "/" + path.lstrip("/").lower()
+    for _ in range(10):
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    else:
+        return None
+    parts: list[str] = []
+    for seg in path.replace("\\", "/").split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return "/" + "/".join(parts).lower()
+
+
+def _url_path(url: object) -> str:
+    """The normalised path, for messages and prefix checks (no scheme, host or query)."""
+    return _normalised_path(url) or "<undecodable>"
 
 
 def _url_forbidden(url: object, method: str) -> bool:
-    path = _url_path(url)
+    path = _normalised_path(url)
+    if path is None:
+        return True
     for prefix in ORDER_URL_PREFIXES:
         if path.startswith(prefix):
             return prefix not in _PUT_ONLY_URL_PREFIXES or str(method).upper() == "PUT"
     return False
+
+
+def check_prepared_request(method: object, url: object) -> None:
+    """The transport check: GET passes; anything else must be a named write, sent in its plain form."""
+    verb = str(method or "").upper()
+    path = _normalised_path(url)
+    if verb == "GET" and path is not None:
+        return
+    from urllib.parse import urlsplit
+    raw = urlsplit(str(url or "")).path.lower()
+    if path is None or (verb, path) not in _WRITE_ALLOWLIST or raw != path:
+        raise OrderRouteForbidden(f"Kite request {verb} {_url_path(url)} is not allowed: STOCKIFY is paper only "
+                                  "(only the margin and charges calculators and the login exchange may write)")
 
 
 def order_route_keys(routes: dict) -> frozenset:
@@ -267,12 +314,17 @@ def _refuse(name: str):  # noqa: ANN202
     return refuse
 
 
-def _check_route(deny: frozenset, routes: dict, route: object, method: str) -> None:
+def _check_route(deny: frozenset, routes: dict, route: object, method: str, url_args: object = None) -> None:
     if isinstance(route, str) and route in deny:
         raise OrderRouteForbidden(f"Kite route {route} is not available: STOCKIFY is paper only")
     candidates = [route]
     if isinstance(route, str) and route in routes:
         candidates.append(routes[route])
+        if isinstance(url_args, dict) and url_args:
+            try:
+                candidates.append(str(routes[route]).format(**url_args))
+            except (KeyError, IndexError, ValueError):
+                pass                                    # the SDK raises on it itself
     for url in candidates:
         if _url_forbidden(url, method):
             raise OrderRouteForbidden(f"Kite URL {_url_path(url)} ({str(method).upper()}) is not available: "
@@ -288,7 +340,8 @@ def strip_order_routes(kc):  # noqa: ANN001, ANN201
     inner_request = kc._request
 
     def _request(route, method, *args, **kwargs):  # noqa: ANN001, ANN202
-        _check_route(deny, kc._routes, route, method)
+        url_args = kwargs.get("url_args", args[0] if args else None)
+        _check_route(deny, kc._routes, route, method, url_args)
         return inner_request(route, method, *args, **kwargs)
 
     def _verb(verb: str):  # noqa: ANN202
@@ -311,12 +364,64 @@ def strip_order_routes(kc):  # noqa: ANN001, ANN201
                                           "STOCKIFY is paper only")
             return inner_send(method, url, *args, **kwargs)
         session.request = guarded_send
+        _mount_guard(session)
 
     names = set(ORDER_METHODS)
     names.update(n for n in dir(type(kc)) if n.startswith(_ORDER_METHOD_PREFIXES))
     for name in sorted(names):
         setattr(kc, name, _refuse(name))
+
+    def basket_order_margins(params, consider_positions=False, mode=None):  # noqa: ANN001, ANN202
+        return kc._post("order.margins.basket", params=params, is_json=True,
+                        query_params=margin_query(consider_positions, mode))
+
+    def order_margins(params, consider_positions=False, mode=None):  # noqa: ANN001, ANN202
+        return kc._post("order.margins", params=params, is_json=True,
+                        query_params=margin_query(consider_positions, mode))
+
+    kc.basket_order_margins = basket_order_margins
+    kc.order_margins = order_margins
     return kc
+
+
+def margin_query(consider_positions: object = False, mode: object = None) -> dict:
+    """The query of a Kite margin call: always the literal `consider_positions=false` (the SDK would send
+    Python's `False`), refusing anything but False, so no answer mixes in the real account's positions (D-69)."""
+    if consider_positions is not False:
+        raise OrderRouteForbidden("Kite margin calls must use consider_positions=False: a paper book never "
+                                  "mixes in the real account's positions")
+    query = {"consider_positions": "false"}
+    if mode is not None:
+        query["mode"] = str(mode)
+    return query
+
+
+def _mount_guard(session) -> None:  # noqa: ANN001
+    """Mount the checking transport on a requests.Session, wrapping whatever adapter it had."""
+    if not (callable(getattr(session, "mount", None)) and callable(getattr(session, "get_adapter", None))):
+        return
+    import requests.adapters
+
+    class _PaperOnlyAdapter(requests.adapters.BaseAdapter):
+        """Checks every prepared request (`check_prepared_request`) before the real adapter may send it."""
+
+        paper_only = True
+
+        def __init__(self, inner):  # noqa: ANN001
+            super().__init__()
+            self.inner = inner
+
+        def send(self, request, **kwargs):  # noqa: ANN001, ANN201
+            check_prepared_request(request.method, request.url)
+            return self.inner.send(request, **kwargs)
+
+        def close(self) -> None:
+            self.inner.close()
+
+    for prefix in ("https://", "http://"):
+        inner = session.get_adapter(prefix + "api.kite.trade/")
+        if not getattr(inner, "paper_only", False):
+            session.mount(prefix, _PaperOnlyAdapter(inner))
 
 
 # ── KiteConnect instance ──────────────────────────────────────────────────────
