@@ -18,7 +18,7 @@ import tests.support  # noqa: F401  — must precede project imports
 
 from stockify import bundle as bundle_mod
 from stockify import numerics, timeutil
-from stockify.fno.span_exact import SpanMissingError, span_paise, span_requirement
+from stockify.fno.span_exact import SpanCalcError, SpanMissingError, span_paise, span_requirement
 from stockify.fno.span_file import parse_span
 from stockify.fno.spanlite import SpanLiteMargin
 from stockify.fno.staircase import STEPS, SpanExactMargin, StaircaseMargin
@@ -244,7 +244,9 @@ class StaircaseTests(unittest.TestCase):
         self.assertTrue({"margin:B1_span_nse_elm", "margin_steps:B1_span_nse_elm=1", "margin:B3_spanlite_calibrated",
                          "margin_steps:B3_spanlite_calibrated=1"} <= m.labels)
         m.requirement([], ROWS.__getitem__, price, "2026-11-11")    # no legs: no step used
-        self.assertFalse(any("=2" in x for x in m.labels))
+        self.assertEqual({x for x in m.labels if x.startswith("margin")},
+                         {"margin:B1_span_nse_elm", "margin_steps:B1_span_nse_elm=1", "margin:B3_spanlite_calibrated",
+                          "margin_steps:B3_spanlite_calibrated=1"})
 
     def test_span_exact_model_has_no_fallback(self):
         """The strict model raises naming the missing contract (never SPAN-lite, never ₹0)."""
@@ -264,6 +266,100 @@ class StaircaseTests(unittest.TestCase):
         [b] = SpanExactMargin(e.bundle, e).breakdown(nrml([(10, -65)]), ROWS.__getitem__, price, DAY)
         self.assertEqual(b.step, "B2_span_rule_elm")
 
+
+    # ── Fix round 1 ─────────────────────────────────────────────────────────
+
+    def test_span_exact_raises_when_the_elm_file_lacks_a_charged_leg(self):
+        """I-1: the day's ELM file is archived but lacks a sold option's or a future's % (absent; a conflicting or 0 %
+        entry is absent too, A1 §6.2): span_exact fails naming the leg; the staircase steps to B2. With no ELM file
+        for the day at all, both use B2."""
+        legs = nrml([(10, -65), (11, -65)])
+        for elm in (elm_day({11: "2"}), elm_day({10: "2", 2: "2"})):
+            with self.subTest(elm=elm):
+                e = FakeEngine(elm={DAY: elm})
+                with self.assertRaises(SpanMissingError) as cm:
+                    SpanExactMargin(e.bundle, e).requirement(legs, ROWS.__getitem__, price, DAY)
+                self.assertIn("ELM", str(cm.exception))
+                self.assertIn("NIFTY", str(cm.exception))
+                [b] = StaircaseMargin(e.bundle, e).breakdown(legs, ROWS.__getitem__, price, DAY)
+                self.assertEqual(b.step, "B2_span_rule_elm")
+        e = FakeEngine(elm={DAY: elm_day({10: "2", 11: "2"})})
+        with self.assertRaises(SpanMissingError) as cm:                  # a short future without its %
+            SpanExactMargin(e.bundle, e).requirement(nrml([(2, -65)]), ROWS.__getitem__, price, DAY)
+        self.assertIn("FUT 2026-11-23", str(cm.exception))
+        e = FakeEngine(elm={})
+        for model in (SpanExactMargin, StaircaseMargin):
+            [b] = model(e.bundle, e).breakdown(legs, ROWS.__getitem__, price, DAY)
+            self.assertEqual(b.step, "B2_span_rule_elm")
+
+    def test_b1_needs_no_elm_for_bought_options(self):
+        """m-2: bought options carry no exposure, so a bought leg missing from the ELM file keeps B1 (both models)."""
+        legs = nrml([(10, 65), (11, -65)])
+        e = FakeEngine(elm={DAY: elm_day({11: "2"})})
+        for model in (StaircaseMargin, SpanExactMargin):
+            [b] = model(e.bundle, e).breakdown(legs, ROWS.__getitem__, price, DAY)
+            self.assertEqual(b.step, "B1_span_nse_elm")
+            self.assertEqual(b.elm, rupee_up_ppb(20_000_000 * SPOT * 65))
+
+    def test_b1_with_a_missing_price_steps_down_never_substitutes(self):
+        """B1 is exact: a sold option without the index price, or a future without its own price, has no exposure
+        figure, so the underlying steps to B2 (whose dated rules keep SPAN-lite's fallbacks)."""
+        for legs, missing in ((nrml([(10, -65), (11, -65)]), 1), (nrml([(2, -65)]), 2)):
+            with self.subTest(missing=missing):
+                prices = {k: v for k, v in PRICES.items() if k != missing}
+                e = FakeEngine()
+                for model in (StaircaseMargin, SpanExactMargin):
+                    [b] = model(e.bundle, e).breakdown(legs, ROWS.__getitem__, prices.get, DAY)
+                    self.assertEqual(b.step, "B2_span_rule_elm")
+                lite = SpanLiteMargin(e.bundle, e)
+                rows = [(ROWS[i], u) for i, _, u in legs]
+                self.assertEqual((b.elm, b.addons), lite.rule_elm(rows, prices.get, DAY, prices.get(1)))
+
+    def test_pre_trade_increment_compares_one_step(self):
+        """A new leg the file lacks steps the underlying from B1 to B3: before and after are both priced at B3, so
+        the order's margin is after - before at that step, and positive."""
+        e = FakeEngine()
+        m = StaircaseMargin(e.bundle, e)
+        before, after = nrml([(10, -65)]), nrml([(10, -65), (12, -65)])
+        [b_alone] = m.breakdown(before, ROWS.__getitem__, price, DAY)
+        self.assertEqual(b_alone.step, "B1_span_nse_elm")
+        b, a = m.pair(before, after, ROWS.__getitem__, price, price, DAY)
+        lite = SpanLiteMargin(e.bundle, e)
+        self.assertEqual(b, lite.requirement(before, ROWS.__getitem__, price, DAY))
+        self.assertEqual(a, lite.requirement(after, ROWS.__getitem__, price, DAY))
+        self.assertGreater(a - b, 0)
+        self.assertIn("margin:B3_spanlite_calibrated", m.labels)
+        # the runner's pre-trade check uses it
+        from types import SimpleNamespace
+        from stockify.oracle import runner
+        pos = SimpleNamespace(instrument_id=10, product="NRML", qty=-65, q=65)
+        fake = SimpleNamespace(inst=ROWS, margin=StaircaseMargin(e.bundle, e), now=NOW,
+                               book=SimpleNamespace(ledger=SimpleNamespace(positions={(10, "NRML"): pos})),
+                               _date=lambda t: DAY, _reduces=lambda *a: False, _ref_price=price)
+        order = SimpleNamespace(instrument_id=12, product="NRML", side="SELL", qty=65, sign=-1)
+        self.assertEqual(runner.Engine._required(fake, order, 5_000), a - b)
+
+    def test_unreadable_file_steps_down_strict_propagates(self):
+        """A file this code cannot apply exactly (a cvf other than 1, SpanCalcError) steps the staircase down;
+        span_exact lets the error through."""
+        entry = span_entry()
+        entry["commodities"]["NIFTY"]["cvf"]["OOP"] = "2.00"
+        e = FakeEngine(span={DAY: [entry]})
+        [b] = StaircaseMargin(e.bundle, e).breakdown(nrml([(10, -65)]), ROWS.__getitem__, price, DAY)
+        self.assertEqual(b.step, "B3_spanlite_calibrated")
+        with self.assertRaises(SpanCalcError):
+            SpanExactMargin(e.bundle, e).requirement(nrml([(10, -65)]), ROWS.__getitem__, price, DAY)
+
+    def test_no_span_section_is_labelled(self):
+        """5c: a bundle without a span section (hand-built) steps down, labelled margin_span:no_section."""
+        e = FakeEngine()
+        del e.bundle["span"]
+        m = StaircaseMargin(e.bundle, e)
+        [b] = m.breakdown(nrml([(10, -65)]), ROWS.__getitem__, price, DAY)
+        self.assertEqual(b.step, "B3_spanlite_calibrated")
+        self.assertIn("margin_span:no_section", m.labels)
+        e2 = FakeEngine()
+        self.assertNotIn("margin_span:no_section", StaircaseMargin(e2.bundle, e2).labels)
 
 # ── A run on the oracle: the step column and the labels ─────────────────────
 
@@ -328,6 +424,25 @@ class StaircaseRunTests(unittest.TestCase):
         for x in labels:
             if x.startswith("margin_steps:"):
                 self.assertIn(x.split(":")[1].split("=")[0], STEPS)
+
+    def test_span_exact_run_fails_where_it_cannot_price(self):
+        """The same world under span_exact: day 2 has no file in force, so the run fails (never a fallback)."""
+        from stockify.oracle import run_bundle
+        from tests.stockify.test_spanlite_parity import OptionTrader, spanlite_bundle, spanlite_world
+        from stockify import golden
+        g = spanlite_world(4811, True)
+        g["run"]["margin"] = {"model": "span_exact"}
+        b = spanlite_bundle(g)
+        d1, d2 = b["days"][0]["date"], b["days"][1]["date"]
+        b["span"] = {d1: [_synthetic_entry(g, timeutil.ist_ns(date(2026, 8, 2), "20:26"))], d2: []}
+        b["span_skipped"], b["elm"] = {}, {}
+        with tempfile.TemporaryDirectory(prefix="span-exact-") as tmp:
+            folder = Path(tmp)
+            with self.assertRaises(SpanMissingError) as cm:
+                run_bundle(b, [golden.build_pack(g, folder)], folder / "oracle", strategy=OptionTrader(),
+                           report=False)
+        self.assertIn("no SPAN file in force for NIFTY", str(cm.exception))
+        self.assertIn(d2, str(cm.exception))
 
     def test_spanlite_rows_carry_their_step(self):
         """The spanlite model writes its step too: B3 for an adopted row, B4 for the placeholder."""

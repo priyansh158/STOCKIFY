@@ -175,6 +175,20 @@ class SpanLiteParityTests(unittest.TestCase):
             assert_same_artifacts(self, folder / "oracle", folder / "engine")
             self.assertEqual(margin_rows(folder / "oracle"), [])
 
+    def test_step_column_agrees_for_both_rows(self):
+        """MEZ 4.9: the step column, byte for byte: B3 for an adopted row, B4 for the placeholder row."""
+        for cal, step in (("test", "B3_spanlite_calibrated"), ("placeholder", "B4_spanlite_placeholder")):
+            with self.subTest(cal=cal), tempfile.TemporaryDirectory(prefix="spanlite-step-") as tmp:
+                folder = Path(tmp)
+                g = spanlite_world(4811, True)
+                run_both(g, folder, spanlite_bundle(g, calibration_id=cal))
+                assert_same_artifacts(self, folder / "oracle", folder / "engine")
+                self.assertEqual((folder / "oracle" / "margin_daily.csv").read_bytes(),
+                                 (folder / "engine" / "margin_daily.csv").read_bytes())
+                rows = margin_rows(folder / "engine")
+                self.assertTrue(rows)
+                self.assertEqual({r["step"] for r in rows}, {step})
+
 
 class SpanLiteOracleRunTests(unittest.TestCase):
     def test_a_run_writes_margin_rows_and_the_requirement_matches_them(self):

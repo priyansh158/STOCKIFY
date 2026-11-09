@@ -321,13 +321,17 @@ class Engine:
             return o.qty * px
         legs = [(p.instrument_id, p.product, p.qty) for p in self.book.ledger.positions.values()
                 if p.q and p.product == "NRML"]
-        before = self.margin.requirement(legs, self.inst.__getitem__, self._ref_price, d)
         after_legs = legs + [(o.instrument_id, "NRML", o.qty * o.sign)]
         combined: dict = {}
         for iid, prod, units in after_legs:
             combined[(iid, prod)] = combined.get((iid, prod), 0) + units
-        after = self.margin.requirement([(i, p, u) for (i, p), u in combined.items()], self.inst.__getitem__,
-                                        lambda i: px if i == o.instrument_id else self._ref_price(i), d)
+        merged = [(i, p, u) for (i, p), u in combined.items()]
+        price_after = lambda i: px if i == o.instrument_id else self._ref_price(i)  # noqa: E731
+        if hasattr(self.margin, "pair"):            # the staircase: before and after at one step (MEZ 4.9)
+            before, after = self.margin.pair(legs, merged, self.inst.__getitem__, self._ref_price, price_after, d)
+        else:
+            before = self.margin.requirement(legs, self.inst.__getitem__, self._ref_price, d)
+            after = self.margin.requirement(merged, self.inst.__getitem__, price_after, d)
         return max(0, after - before)
 
     # ── Orders (A4 §3) ───────────────────────────────────────────────────────
