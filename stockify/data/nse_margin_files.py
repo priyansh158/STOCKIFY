@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -90,11 +91,16 @@ def read_manifest(day: date) -> dict:
         return {}
 
 
+def _atomic_write(path, data: bytes) -> None:  # noqa: ANN001
+    """Write next to the target and rename over it: a crash leaves no half-written archive file.
+    A leftover `<name>.tmp` is never read as an archive file (only exact names are) and is overwritten next time."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 def _write_manifest(day: date, data: dict) -> None:
-    path = _manifest_path(day)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    _atomic_write(_manifest_path(day), json.dumps(data, indent=2, sort_keys=True).encode("utf-8"))
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
@@ -145,20 +151,23 @@ def complete(res: DayResult) -> bool:
 
 def _keep(res: DayResult, manifest: dict, name: str, target, url: str, body: bytes,  # noqa: ANN001
           created: str | None) -> None:
+    """Archive one file, then record its manifest row at once (a crash later in the day keeps both)."""
     digest = hashlib.sha256(body).hexdigest()
     if target.exists():
         if hashlib.sha256(target.read_bytes()).hexdigest() == digest:
             res.unchanged.append(name)
             if name not in manifest:                           # archived earlier without a manifest row
-                manifest[name] = {"url": url, "fetched_ns": timeutil.now_ns(), "sha256": digest,
+                manifest[name] = {"url": url, "fetched_ns": target.stat().st_mtime_ns, "sha256": digest,
                                   "bytes": len(body), "created": created}
+                _write_manifest(res.day, manifest)
         else:
             log.warning("%s differs from the archived file; the archived one is kept", name)
             res.rejected.append(name)
         return
-    target.write_bytes(body)
+    _atomic_write(target, body)
     manifest[name] = {"url": url, "fetched_ns": timeutil.now_ns(), "sha256": digest, "bytes": len(body),
                       "created": created}
+    _write_manifest(res.day, manifest)
     res.stored.append(name)
 
 
@@ -208,14 +217,11 @@ def fetch_day(day: date, http: nse_files.Http | None = None, *, span: bool = Tru
     http = http or nse_files.Http()
     res = DayResult(day)
     manifest = read_manifest(day)
-    before = json.dumps(manifest, sort_keys=True)
     if span:
         for suffix in suffixes:
             _fetch_span(day, suffix, http, res, manifest)
     if elm:
         _fetch_elm(day, http, res, manifest)
-    if json.dumps(manifest, sort_keys=True) != before:
-        _write_manifest(day, manifest)
     return res
 
 

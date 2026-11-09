@@ -183,6 +183,41 @@ class FetchDayTests(MarginFilesTest):
         kept = (paths.nse_margin_dir("span") / "2026" / "nsccl.20261109.s.zip").read_bytes()
         self.assertEqual(kept, self.routes()["nsccl.20261109.s.zip"][1])
 
+    def test_a_crash_between_files_keeps_manifest_rows_of_stored_files(self):
+        class Crashing(FakeHttp):
+            def get(self, url):
+                if ".i3.zip" in url:
+                    raise RuntimeError("power cut")
+                return super().get(url)
+        with self.assertRaises(RuntimeError):
+            M.fetch_day(DAY, Crashing(self.routes()))
+        manifest = json.loads((paths.nse_margin_dir("manifest") / "20261109.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(manifest), ["nsccl.20261109.i1.zip", "nsccl.20261109.i2.zip"])
+        fetched = manifest["nsccl.20261109.i1.zip"]["fetched_ns"]
+        M.fetch_day(DAY, FakeHttp(self.routes()))                      # the next run keeps the real fetch time
+        again = json.loads((paths.nse_margin_dir("manifest") / "20261109.json").read_text(encoding="utf-8"))
+        self.assertEqual(again["nsccl.20261109.i1.zip"]["fetched_ns"], fetched)
+
+    def test_a_failed_write_never_becomes_the_archived_file(self):
+        from unittest.mock import patch
+        target = paths.nse_margin_dir("span") / "2026" / "nsccl.20261109.s.zip"
+        with patch("stockify.data.nse_margin_files.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                M.fetch_day(DAY, FakeHttp(self.routes()), elm=False, suffixes=("s",))
+        self.assertFalse(target.exists())
+        res = M.fetch_day(DAY, FakeHttp(self.routes()), elm=False, suffixes=("s",))      # retry stores it
+        self.assertEqual(res.stored, ["nsccl.20261109.s.zip"])
+        self.assertEqual(target.read_bytes(), self.routes()["nsccl.20261109.s.zip"][1])
+
+    def test_a_leftover_tmp_file_is_not_an_archive_file(self):
+        year = paths.nse_margin_dir("span") / "2026"
+        year.mkdir(parents=True, exist_ok=True)
+        (year / "nsccl.20261109.s.zip.tmp").write_bytes(b"PK partial")
+        self.assertEqual(M.in_force_files(DAY), [])
+        self.assertEqual(M.backfill(DAY, DAY, FakeHttp({}))[0].missing, ["nsccl.20261109.s.zip"])   # still asked for
+        res = M.fetch_day(DAY, FakeHttp(self.routes()), elm=False, suffixes=("s",))
+        self.assertEqual(res.stored, ["nsccl.20261109.s.zip"])
+
     def test_complete_needs_end_of_day_and_elm(self):
         res = M.fetch_day(DAY, FakeHttp(self.routes(s=False)))
         self.assertFalse(M.complete(res))
