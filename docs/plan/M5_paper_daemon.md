@@ -11,7 +11,7 @@ Concepts: C-9, C-10, C-17. Decisions: D-15, D-16, D-20. Contract: `A4_engine_sem
 ## M5.0 Recon (S)
 
 - [x] Confirm how the API stores the Kite access token and how a new login updates it (from M0.0). The daemon reads the same store; it never copies or logs the token (I-10).
-- [ ] 🛑 Confirm the recorder has run for several days (M1 done) and the replay ticker reproduces them. (Live pending: no lab or recorded day exists yet; see RECON M5.0.)
+- [ ] 🛑 Confirm the recorder has run for several days (M1 done) and the replay ticker reproduces them. (Live pending: one recorded day, 2026-11-05, exists; replay check to run in a sandboxed lab copy; see RECON M5.0.)
 
 ## M5.1 Daemon composition (M)
 

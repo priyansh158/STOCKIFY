@@ -814,13 +814,7 @@ opened).** One store: `kite_client._token_file()` = `<cache dir>/kite_token.json
 (`scripts/run_stockify_daemon.ps1`: `$TokenFile` :32, `Wait-FreshToken` :94, called :140). The daemon reads it through
 `kite_client` (`stockify/daemon/__init__.py:162,297,301`). Confirmed.
 
-**M5.0 box 2: recordings. 🛑 live pending (owner).** The lab does not exist on this machine yet
-(`%LOCALAPPDATA%\STOCKIFY` holds only `kite\` and `logs\`; no `lab\`, so no `ticks\` landing or archive). I listed
-with `ls`, not `ticks.available_days()`: the function only reads (glob + `exists`), but `paths.ticks_*_dir()` create
-empty directories on call, so it was not run against the real lab. No full recorded day exists; the replay check
-(`daemon --recorder-only --ticker replay:<day>:max`, expect `dropped 0; exit 0`) was not run, and `stockify daemon` was
-never run. When a full day exists: "available, replay check pending (run in a sandboxed lab)". Every offline test uses
-fixture days.
+**M5.0 box 2: recordings. 🛑 live pending (owner/controller).** The real lab is `%LOCALAPPDATA%\STOCKIFY\kite\lab` (`stockify.paths.lab_dir()` resolves under `state_dir()`, which is `...\STOCKIFY\kite`). One recorded day exists, 2026-11-05 (about 19 MB): `ticks/archive/date=2026-11-05` and `ticks/landing/ticks_20261105.sqlite` (plus its -shm and -wal files). It has not been checked whether it is a full session. The replay check (`daemon --recorder-only --ticker replay:2026-11-05:max`, expect `dropped 0; exit 0`) is still to do. It must run in a sandboxed copy of the lab, never against the real one, because a replay recorder could write into the irreplaceable tick store. The sqlite files were not opened, `ticks.available_days()` was not run against the real lab (the function only reads, but `paths.ticks_*_dir()` create directories on call), and `stockify daemon` was never run. Every offline test uses fixture days.
 
 ### Verified mismatch table (provisional: controller ruling under owner autonomy, for owner review)
 
@@ -900,7 +894,7 @@ is Wed 2026-11-11 IST; M5 is "built" until a live day passes, "done" after.
 
 1. Review D-65 to D-72, the roster and the stop rule (this section).
 2. Daily Kite login before each NSE trading day (window above).
-3. A full recorded day for M5.0 box 2 and the real-data demo (the recorder going live, an open M1 item).
+3. A full recorded day (2026-11-05 exists, completeness unchecked) and its sandboxed replay check for M5.0 box 2, and the real-data demo (the recorder going live, an open M1 item).
 4. One real token expiry handled through the login flow (Task 19 step 6).
 5. Live Kite margin answers journaled, `margin_live` rows, `margin check --live` (Task 21 step 6).
 6. Notification channel and its secret in the repo's env file (Task 25 step 6).
