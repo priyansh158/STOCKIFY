@@ -217,6 +217,7 @@ struct MarginDailyRow {  // margin_daily.csv (M4.8)
     Date trade_date = 0;
     InstrumentId underlying = 0;
     std::string model;
+    std::string step;  // the staircase step that priced it (MEZ 4.9): B3/B4 for spanlite
     Paise scan = 0, somc = 0, elm = 0, addons = 0, total = 0;
 };
 

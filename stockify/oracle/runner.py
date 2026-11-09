@@ -114,9 +114,17 @@ class Engine:
             self.margin = SpanLiteMargin(bundle, self)
         elif model == "flat":
             self.margin = FlatMargin(bundle)
+        elif model == "staircase":                     # MEZ 4.9: B1..B5 per underlying per check, steps recorded
+            from stockify.fno.staircase import StaircaseMargin
+            self.margin = StaircaseMargin(bundle, self)
+        elif model == "span_exact":                    # exact SPAN only: raises where it cannot price
+            from stockify.fno.staircase import SpanExactMargin
+            self.margin = SpanExactMargin(bundle, self)
         else:                                          # never a silent fallback to flat (CAM 4.3)
             raise RunError(f"run.margin: margin model {model!r} is not supported yet")
-        self.margin_daily: list[tuple] = []   # (date, underlying_id, model, scan, somc, elm, addons, total), M4.8
+        self.margin_model = model
+        # (date, underlying_id, model, step, scan, somc, elm, addons, total): M4.8, step MEZ 4.9
+        self.margin_daily: list[tuple] = []
         self.market: dict[int, Market] = {}
         capital = self.run_cfg["capital_paise"]
         self.book = Book(Ledger(capital, capital), {}, Pcg32(bundle["seed"], SLIPPAGE_STREAM))
@@ -1147,10 +1155,11 @@ class Engine:
         nav = led.nav(self.mark_price)
         blocked = self.blocked(led, d)
         self.equity.append((d, nav, led.cash, blocked, nav - led.capital + led.charges_total, led.charges_total))
-        if hasattr(self.margin, "breakdown"):       # SPAN-lite's per-underlying day rows (M4.8)
+        if hasattr(self.margin, "breakdown"):       # per-underlying day rows (M4.8; flat writes none)
             legs = [(p.instrument_id, p.product, p.qty) for p in led.positions.values() if p.q and p.product == "NRML"]
             for b in self.margin.breakdown(legs, self.inst.__getitem__, self._ref_price, d):
-                self.margin_daily.append((d, b.underlying_id, "spanlite", b.scan, b.somc, b.elm, b.addons, b.total))
+                self.margin_daily.append((d, b.underlying_id, self.margin_model, b.step, b.scan, b.somc, b.elm,
+                                          b.addons, b.total))
         self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))

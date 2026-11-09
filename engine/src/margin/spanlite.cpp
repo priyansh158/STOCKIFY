@@ -213,6 +213,10 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
     out.somc = ceil_to(checked_mul(p.at("somc_per_lot_paise").get<std::int64_t>(), somc_lots), 100);
     out.elm = rupee_up(elm_raw);
     out.addons = rupee_up(addon_raw);
+    // The staircase step (MEZ 4.9, spanlite.step_of): B4 for the shipped placeholder rows, else B3 (adopted).
+    const bool placeholder = p.contains("calibration_id") && p.at("calibration_id").is_string() &&
+                             p.at("calibration_id").get<std::string>() == "placeholder";
+    out.step = placeholder ? "B4_spanlite_placeholder" : "B3_spanlite_calibrated";
     return out;
 }
 

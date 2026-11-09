@@ -705,8 +705,8 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
         }
         for (const UnderlyingMargin& b :
              margin_->breakdown(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, iso_date(d))) {
-            margin_daily_.push_back(MarginDailyRow{d, b.underlying, std::string(margin_->daily_model()), b.scan,
-                                                   b.somc, b.elm, b.addons, b.total()});
+            margin_daily_.push_back(MarginDailyRow{d, b.underlying, std::string(margin_->daily_model()), b.step,
+                                                   b.scan, b.somc, b.elm, b.addons, b.total()});
         }
     }
     strategy_->on_session_end(ctx_);

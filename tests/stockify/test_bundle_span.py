@@ -264,10 +264,13 @@ class GoldenPinTests(unittest.TestCase):
         g["expect"] = {"error": f"margin model {model!r} is not supported yet"}
         return golden.run_one(g, impl)
 
-    def test_oracle_refuses_span_models_until_they_exist(self):
+    def test_oracle_runs_span_models(self):
+        """MEZ 4.9: the oracle accepts both (G01 trades no derivatives, so nothing steps and it passes as is)."""
         for model in ("span_exact", "staircase"):
             with self.subTest(model=model):
-                self.assertEqual(self.refused("oracle", model), [])
+                g = g01()
+                g["run"] = {**g.get("run", {}), "margin": {"model": model}}
+                self.assertEqual(golden.run_one(g, "oracle"), [])
 
     @unittest.skipUnless(engine.available(), "stockify._engine is not built")
     def test_engine_refuses_span_models_until_they_exist(self):

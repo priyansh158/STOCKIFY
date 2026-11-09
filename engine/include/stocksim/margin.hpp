@@ -35,6 +35,7 @@ struct MarginLeg {
 struct UnderlyingMargin {
     InstrumentId underlying = 0;
     Paise scan = 0, somc = 0, elm = 0, addons = 0;
+    std::string step;  // the staircase step (MEZ 4.9): "B3_spanlite_calibrated" | "B4_spanlite_placeholder" | …
     Paise total() const { return std::max(scan, somc) + elm + addons; }
 };
 

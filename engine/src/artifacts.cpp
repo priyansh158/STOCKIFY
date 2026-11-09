@@ -19,7 +19,10 @@ constexpr const char* kPositions =
     "underlying_mark_paise";
 // </block>
 constexpr const char* kEquity = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise";
-constexpr const char* kMargin = "trade_date,underlying_id,model,scan,somc,elm,addons,total";
+constexpr const char* kMargin =
+    // <block name="margin-daily-columns" same-as="stockify/oracle/artifacts.py:margin-daily-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
+    "trade_date,underlying_id,model,step,scan,somc,elm,addons,total";
+// </block>
 
 // The ✔ rows of A1 §6.3, in order (checked by blockwatch).
 // <block name="deterministic-files" same-as="docs/plan/A1_schemas.md:deterministic-files" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+\.[a-z]+)"'>
@@ -85,8 +88,8 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
     CsvWriter margin(kMargin);
     for (const MarginDailyRow& r : e.margin_daily()) {
         const std::string d = iso_date(r.trade_date);
-        margin.add_row({std::string_view(d), std::int64_t{r.underlying}, std::string_view(r.model), r.scan, r.somc,
-                        r.elm, r.addons, r.total});
+        margin.add_row({std::string_view(d), std::int64_t{r.underlying}, std::string_view(r.model),
+                        std::string_view(r.step), r.scan, r.somc, r.elm, r.addons, r.total});
     }
     margin.write(folder / "margin_daily.csv");
 

@@ -36,6 +36,7 @@ from stockify.oracle.margin import PPB, FlatMargin
 
 MOVES = (0.0, 1 / 3, -1 / 3, 2 / 3, -2 / 3, 1.0, -1.0)
 IV_FALLBACK_LABEL = "margin_spanlite:iv_fallback"
+STEP_B3, STEP_B4 = "B3_spanlite_calibrated", "B4_spanlite_placeholder"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class UnderlyingMargin:
     somc: int
     elm: int
     addons: int
+    step: str = ""      # the staircase step that priced it (MEZ 4.9): B3/B4 here, by the row's calibration_id
 
     @property
     def total(self) -> int:
@@ -55,6 +57,11 @@ class UnderlyingMargin:
 def _rupee_up(paise_ppb: int) -> int:
     """paise × 10⁹ → paise, rounded up to the whole rupee."""
     return numerics.ceil_to(numerics.ceil_div(paise_ppb, PPB), 100)
+
+
+def step_of(row: dict) -> str:
+    """The staircase step of a SPAN-lite row (MEZ 4.9): B4 for the shipped placeholder rows, else B3 (adopted)."""
+    return STEP_B4 if row.get("calibration_id") == "placeholder" else STEP_B3
 
 
 def _row(rows: list[dict], date: str, applies: dict) -> dict | None:
@@ -128,30 +135,21 @@ class SpanLiteMargin:
 
         valued = []                                     # (units, is_future, F rupees, K, t, σ, is_call)
         somc_lots = 0
-        elm_raw = addon_raw = 0                         # paise × ppb
-        addon = _row(self.addon_rows, date, {})
         for row, units in legs:
             if row["kind"] == "FUT":
                 f_paise = price(row["id"]) or und_paise
                 if f_paise is None:
                     continue                            # nothing to value it at yet
                 valued.append((units, True, f_paise / 100.0, 0.0, 0.0, 0.0, False))
-                elm_raw += p["elm_pct_ppb"] * f_paise * abs(units)
                 continue
-            chain = e.ctx.chain(row["underlying"], row["expiry"]) if row.get("underlying") else None
-            f_paise = (chain.forward_paise if chain is not None and chain.forward_paise is not None
-                       else und_paise if und_paise is not None else row["strike_paise"])
+            chain = self._chain(row)
+            f_paise = self._forward(row, chain, und_paise)
             t = B.year_fraction(e.now, row["last_trading_ns"])  # always set: the bundle load checks it (D-61)
             sigma = self._iv(row, chain, date)
             valued.append((units, False, f_paise / 100.0, row["strike_paise"] / 100.0, t, sigma, row["kind"] == "CE"))
             if units < 0:
                 lot = e.spec(row["id"], date)["lot"] if e.spec(row["id"], date) else 1
                 somc_lots += -(-abs(units) // lot)       # lots, rounded up
-                notional = (und_paise if und_paise is not None else int(f_paise)) * abs(units)
-                elm_raw += p["elm_pct_ppb"] * notional
-                expires_today = (row.get("actual_expiry") or row["expiry"]) == date
-                if expires_today and addon is not None and row.get("underlying_class") == "INDEX":
-                    addon_raw += addon["pct_ppb"] * notional
 
         def value(f: float, k: float, t: float, sigma: float, is_call: bool) -> float:
             return B.price(is_call, f, k, t, rate, sigma)
@@ -179,7 +177,50 @@ class SpanLiteMargin:
             worst = max(0.0, worst - nov)
         scan = int(math.ceil(worst)) * 100              # rupees → paise, rounded up to the rupee
         somc = numerics.ceil_to(p["somc_per_lot_paise"] * somc_lots, 100)
-        return UnderlyingMargin(uid, scan, somc, _rupee_up(elm_raw), _rupee_up(addon_raw))
+        elm, addons = self.rule_elm(legs, price, date, und_paise)
+        return UnderlyingMargin(uid, scan, somc, elm, addons, step=step_of(p))
+
+    # ── ELM and the expiry-day add-on from the dated rules (shared with the staircase's B2, MEZ 4.9) ──
+
+    def _chain(self, row: dict):  # noqa: ANN202
+        return self._e.ctx.chain(row["underlying"], row["expiry"]) if row.get("underlying") else None
+
+    @staticmethod
+    def _forward(row: dict, chain, und_paise: int | None) -> int:  # noqa: ANN001
+        """An option's forward: the chain's (M4.4), else the underlying's price, else its strike (paise)."""
+        return (chain.forward_paise if chain is not None and chain.forward_paise is not None
+                else und_paise if und_paise is not None else row["strike_paise"])
+
+    def exposure_notionals(self, legs: list[tuple[dict, int]], price, und_paise: int | None  # noqa: ANN001
+                           ) -> list[tuple[dict, int]]:
+        """(row, notional paise) of the legs that carry exposure margin: futures |units| × their price (else the
+        underlying's; none while neither is known), sold options |units| × the underlying's price (else the
+        option's forward). Bought options carry none."""
+        out = []
+        for row, units in legs:
+            if row["kind"] == "FUT":
+                f_paise = price(row["id"]) or und_paise
+                if f_paise is not None:
+                    out.append((row, f_paise * abs(units)))
+            elif units < 0:
+                base = und_paise if und_paise is not None else int(self._forward(row, self._chain(row), und_paise))
+                out.append((row, base * abs(units)))
+        return out
+
+    def rule_elm(self, legs: list[tuple[dict, int]], price, date: str,  # noqa: ANN001
+                 und_paise: int | None) -> tuple[int, int]:
+        """(ELM, expiry-day add-on) in paise, each rounded up to the rupee: the row's `elm_pct` on every notional,
+        and the X-9 add-on on short index options expiring today."""
+        p = self.params(legs[0][0], date)
+        addon = _row(self.addon_rows, date, {})
+        elm_raw = addon_raw = 0                         # paise × ppb
+        for row, notional in self.exposure_notionals(legs, price, und_paise):
+            elm_raw += p["elm_pct_ppb"] * notional
+            if row["kind"] != "FUT":
+                expires_today = (row.get("actual_expiry") or row["expiry"]) == date
+                if expires_today and addon is not None and row.get("underlying_class") == "INDEX":
+                    addon_raw += addon["pct_ppb"] * notional
+        return _rupee_up(elm_raw), _rupee_up(addon_raw)
 
     def requirement(self, legs, inst, price, date: str) -> int:  # noqa: ANN001
         return sum(b.total for b in self.breakdown(legs, inst, price, date))
