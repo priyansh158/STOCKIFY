@@ -217,7 +217,7 @@ struct MarginDailyRow {  // margin_daily.csv (M4.8)
     Date trade_date = 0;
     InstrumentId underlying = 0;
     std::string model;
-    std::string step;  // the staircase step that priced it (MEZ 4.9): B3/B4 for spanlite
+    std::string step;  // the staircase step that priced it (MEZ 4.9): B1..B5 for staircase / span_exact, B3/B4 spanlite
     Paise scan = 0, somc = 0, elm = 0, addons = 0, total = 0;
 };
 
@@ -379,7 +379,7 @@ class Engine {
     std::string mark_kind_;  // ltp | mid
     TimeNs latency_ns_ = 0;
     Costs costs_;
-    std::unique_ptr<MarginModel> margin_;  // flat (T0) or spanlite (T1, M4.8), per run.margin.model
+    std::unique_ptr<MarginModel> margin_;  // flat (T0), spanlite (T1, M4.8), staircase / span_exact (MEZ 4.10)
     std::shared_ptr<Strategy> strategy_;
     Context ctx_;
     Pcg32 strategy_rng_;

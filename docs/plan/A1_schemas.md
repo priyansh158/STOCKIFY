@@ -305,10 +305,10 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
 
 <!-- <block name="margin-models" same-as-pattern='\x60(?P<value>[a-z_]+)\x60'> -->
-- `margin.model` choices, in this order: `flat` (the default), `spanlite`, `span_exact`, `staircase`.
+- `margin.model` choices, in this order: `flat`, `spanlite`, `span_exact`, `staircase` (the default, MEZ 4.10).
 <!-- </block> -->
 
-The last two read NSE's SPAN files from the bundle (§6.2); the default stays `flat` until the engines run them. The oracle runs both (MEZ 4.9, `stockify/fno/staircase.py`): `staircase` picks per underlying per check the first step that can price all its legs (B1 exact SPAN + the NSE ELM file's %, no X-9 add-on; B2 exact SPAN + the dated rule ELM and X-9 add-on; B3 / B4 SPAN-lite with an adopted / the placeholder row; B5 flat) and labels the run `margin:<step>` and `margin_steps:<step>=<days>`; `span_exact` is B1/B2 only and fails the run naming the contract it cannot price, in the SPAN file in force or in the day's archived ELM file (a future or sold option without its %; with no ELM file for the day it uses the rule ELM, B2). B1 needs no % for bought options and never substitutes a missing price (the future's own, the index for sold options): that underlying is B2. The pre-trade check prices each underlying before and after the order at one step, the lower of the two. A bundle without a `span` section is labelled `margin_span:no_section`. The C++ engine still refuses them until Task 7.
+The last two read NSE's SPAN files from the bundle (§6.2); both engines run them (the oracle since MEZ 4.9, `stockify/fno/staircase.py`; the C++ engine since MEZ 4.10, `engine/src/margin/staircase.cpp` and `span_exact.cpp`, byte-identical), so the staircase is the default; goldens stay pinned to `flat` (`golden.build_bundle`): `staircase` picks per underlying per check the first step that can price all its legs (B1 exact SPAN + the NSE ELM file's %, no X-9 add-on; B2 exact SPAN + the dated rule ELM and X-9 add-on; B3 / B4 SPAN-lite with an adopted / the placeholder row; B5 flat) and labels the run `margin:<step>` and `margin_steps:<step>=<days>`; `span_exact` is B1/B2 only and fails the run naming the contract it cannot price, in the SPAN file in force or in the day's archived ELM file (a future or sold option without its %; with no ELM file for the day it uses the rule ELM, B2). B1 needs no % for bought options and never substitutes a missing price (the future's own, the index for sold options): that underlying is B2. The pre-trade check prices each underlying before and after the order at one step, the lower of the two. A bundle without a `span` section is labelled `margin_span:no_section`.
 
 ### 6.2 `bundle.json` (D-22)
 
@@ -384,9 +384,9 @@ calculation does not read them.
 `elm[D]` is present when D's contract-wise ELM file is archived (D's file applies to D): per underlying,
 `"<kind>|<expiry>|<strike_paise>"` (futures: empty strike) to the ELM **per cent** as a decimal string, for the
 bundle's derivatives the file lists. Keyed by underlying because the same kind, expiry and strike exist on several
-underlyings. A contract listed twice with different %, or with 0 %, is absent (missing). The oracle implements
-these models (MEZ 4.9, §6.1); until the C++ engine does (Task 7), it refuses `span_exact` and `staircase` ("margin
-model … is not supported yet"); it never falls back to flat.
+underlyings. A contract listed twice with different %, or with 0 %, is absent (missing). Both engines implement
+these models (MEZ 4.9 oracle, MEZ 4.10 engine, §6.1); an unknown model is refused ("margin model … is not supported
+yet"), never a fallback to flat.
 
 (Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
 

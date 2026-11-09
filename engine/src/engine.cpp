@@ -10,6 +10,7 @@
 #include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/margin/spanlite.hpp"
+#include "stocksim/margin/staircase.hpp"
 #include "stocksim/pricing/black76.hpp"
 
 namespace stocksim {
@@ -47,16 +48,19 @@ Engine::Engine(Bundle bundle)
     last_day_end_ = calendar_.last_day_end();
     const Json& margin_cfg = require(run, "margin", "run");
     const std::string margin_model = require_string(margin_cfg, "model", "run.margin");
+    auto host = [this] {
+        return SpanLiteHost{[this] { return now_; },
+                            [this](const std::string& und, const std::string& expiry) { return ctx_.chain(und, expiry); },
+                            [this](InstrumentId iid, Date d) { return spec(iid, d); },
+                            [this](const std::string& label) { labels_.insert(label); },
+                            [this](const std::string& d) { return rate_on(bundle_.root, d); }};
+    };
     if (margin_model == "spanlite") {
-        margin_ = std::make_unique<SpanLiteMargin>(
-            bundle_.root,
-            SpanLiteHost{[this] { return now_; },
-                         [this](const std::string& und, const std::string& expiry) { return ctx_.chain(und, expiry); },
-                         [this](InstrumentId iid, Date d) { return spec(iid, d); },
-                         [this](const std::string& label) { labels_.insert(label); },
-                         [this](const std::string& d) { return rate_on(bundle_.root, d); }});
+        margin_ = std::make_unique<SpanLiteMargin>(bundle_.root, host());
     } else if (margin_model == "flat") {
         margin_ = std::make_unique<FlatMargin>(bundle_.root);
+    } else if (margin_model == "staircase" || margin_model == "span_exact") {  // MEZ 4.10: B1..B5 / B1-B2 only
+        margin_ = std::make_unique<StaircaseMargin>(bundle_.root, host(), margin_model, margin_model == "span_exact");
     } else {  // never a silent fallback to flat (CAM 4.3)
         throw RunError("run.margin: margin model '" + margin_model + "' is not supported yet");
     }

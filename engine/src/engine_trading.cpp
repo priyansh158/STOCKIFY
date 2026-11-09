@@ -131,8 +131,6 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
             legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
         }
     }
-    const Paise before =
-        margin_->requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date);
     // after_legs = legs + [(o, NRML, signed qty)], combined per (instrument, product) in first-seen order
     std::vector<MarginLeg> combined;
     auto add = [&](const MarginLeg& leg) {
@@ -148,8 +146,9 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
         add(leg);
     }
     add(MarginLeg{o.instrument, Product::NRML, o.qty * o.sign()});
-    const Paise after = margin_->requirement(
-        combined, instruments_,
+    // before and after (the staircase prices each underlying at one step for both, MEZ 4.9)
+    const auto [before, after] = margin_->pair(
+        legs, combined, instruments_, [this](InstrumentId i) { return ref_price(i); },
         [&](InstrumentId i) { return i == o.instrument ? std::optional<Paise>(px) : ref_price(i); }, date);
     return std::max<Paise>(0, after - before);
 }

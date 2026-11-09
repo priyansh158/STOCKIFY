@@ -43,12 +43,23 @@ class SpanLiteMargin final : public MarginModel {
                                             const std::string& date) const override;
     std::string_view daily_model() const override { return "spanlite"; }
 
+    // Used by the staircase (MEZ 4.10) as the oracle's StaircaseMargin uses SpanLiteMargin.
+    using Legs = std::vector<std::pair<const Instrument*, Qty>>;
+    // The spanlite row for an instrument's underlying (one naming the underlying wins over its class), or nullptr.
+    const Json* find_params(const Instrument& row, const std::string& date) const;
+    // One underlying's SPAN-lite breakdown (spanlite._one).
+    UnderlyingMargin one(InstrumentId underlying, const Legs& legs,
+                         const std::function<std::optional<Paise>(InstrumentId)>& price,
+                         const std::string& date) const;
+    // (ELM, expiry-day add-on) in paise from the dated rules, each rounded up to the rupee (spanlite.rule_elm):
+    // the row's elm_pct on every exposure notional, the X-9 add-on on short index options expiring that day.
+    std::pair<Paise, Paise> rule_elm(const Legs& legs, const std::function<std::optional<Paise>(InstrumentId)>& price,
+                                     const std::string& date, std::optional<Paise> und) const;
+
  private:
     const Json& params(const Instrument& row, const std::string& date) const;
     double iv(const Instrument& row, const Context::ChainView* chain, const std::string& date) const;
-    UnderlyingMargin one(InstrumentId underlying, const std::vector<std::pair<const Instrument*, Qty>>& legs,
-                         const std::function<std::optional<Paise>(InstrumentId)>& price,
-                         const std::string& date) const;
+    std::optional<Context::ChainView> chain_of(const Instrument& row) const;
 
     Json rows_;
     Json addon_rows_;

@@ -234,9 +234,10 @@ class RunConfigModelTests(unittest.TestCase):
                 "fill_model": {"kind": "bar"}}
         return runconfig.load({**base, **kw})
 
-    def test_default_model_is_flat_until_engine_supports_staircase(self):
-        self.assertEqual(runconfig.DEFAULTS["margin"]["model"], "flat")
-        self.assertEqual(self.run_cfg()["margin"]["model"], "flat")
+    def test_default_model_is_staircase(self):
+        """MEZ 4.10: both engines run the staircase, so it is the default (goldens stay pinned to flat)."""
+        self.assertEqual(runconfig.DEFAULTS["margin"]["model"], "staircase")
+        self.assertEqual(self.run_cfg()["margin"]["model"], "staircase")
         for model in ("flat", "spanlite", "span_exact", "staircase"):
             self.assertEqual(self.run_cfg(margin={"model": model})["margin"]["model"], model)
         with self.assertRaisesRegex(runconfig.RunConfigError, "^margin.model"):
@@ -258,12 +259,6 @@ class GoldenPinTests(unittest.TestCase):
         g["run"] = {**g.get("run", {}), "margin": {"model": "spanlite"}}
         self.assertEqual(golden.build_bundle(g)["run"]["margin"]["model"], "spanlite")   # a named model is kept
 
-    def refused(self, impl: str, model: str) -> list[str]:
-        g = g01()
-        g["run"] = {**g.get("run", {}), "margin": {"model": model}}
-        g["expect"] = {"error": f"margin model {model!r} is not supported yet"}
-        return golden.run_one(g, impl)
-
     def test_oracle_runs_span_models(self):
         """MEZ 4.9: the oracle accepts both (G01 trades no derivatives, so nothing steps and it passes as is)."""
         for model in ("span_exact", "staircase"):
@@ -273,10 +268,13 @@ class GoldenPinTests(unittest.TestCase):
                 self.assertEqual(golden.run_one(g, "oracle"), [])
 
     @unittest.skipUnless(engine.available(), "stockify._engine is not built")
-    def test_engine_refuses_span_models_until_they_exist(self):
+    def test_engine_runs_span_models(self):
+        """MEZ 4.10: the engine runs both too (it refused them until then)."""
         for model in ("span_exact", "staircase"):
             with self.subTest(model=model):
-                self.assertEqual(self.refused("engine", model), [])
+                g = g01()
+                g["run"] = {**g.get("run", {}), "margin": {"model": model}}
+                self.assertEqual(golden.run_one(g, "engine"), [])
 
 
 class ResolveBundleSpanTests(SandboxedDBTest):

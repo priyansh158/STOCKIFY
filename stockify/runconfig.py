@@ -18,8 +18,8 @@ from stockify import numerics, paths
 SCHEMA = "stockify.run/1"
 FILL_KINDS = ("bar", "snapshot_ltp", "snapshot_quote", "eod_close")
 SLIPPAGE_KINDS = ("none", "fixed_ticks", "random_ticks", "bps")
-# span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines refuse them until they
-# implement them, so the default stays flat until then.
+# span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines run them (MEZ 4.9 oracle,
+# MEZ 4.10 engine), so the staircase is the default; goldens stay pinned to flat (golden.build_bundle).
 # <block name="margin-models" same-as="docs/plan/A1_schemas.md:margin-models" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 MARGIN_MODELS = ("flat", "spanlite", "span_exact", "staircase")
 # </block>
@@ -28,7 +28,7 @@ DEFAULTS = {
     "price_basis": None,
     "latency_ms": 0,
     "costs": {"broker": "zerodha", "allow_unverified": False, "auto_square_off_fee": True, "dp_charges": True},
-    "margin": {"model": "flat"},
+    "margin": {"model": "staircase"},
     "policies": {"preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": False},
     "mark": "ltp",
     "seed": 0,

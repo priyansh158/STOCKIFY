@@ -18,6 +18,7 @@ seeds 4000–4199 (`tests/stockify/test_engine_fuzz.py`, which imports the world
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import math
 import random
@@ -39,6 +40,97 @@ COMPARED = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "posit
 
 
 # ── Worlds ───────────────────────────────────────────────────────────────────
+
+# MEZ 4.10: synthetic NSE SPAN sections are cut from the trimmed real 2026-11-09 i1 file (the oracle's own tests'
+# fixture), its dates moved so that its NIFTY 2026-11-23 expiry lands on the world's.
+FIXTURE_SPAN = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "span" / "nsccl.20261109.i1.trim.spn"
+_FIXTURE_ANCHOR = date(2026, 11, 23)
+_SPAN_KINDS = ("FUT", "CE", "PE")
+
+
+@functools.lru_cache(maxsize=1)
+def _fixture_nifty():  # noqa: ANN202
+    from stockify.fno.span_file import parse_span
+    return parse_span(FIXTURE_SPAN, {"NIFTY"}).commodities["NIFTY"]
+
+
+def _world_key(row: dict) -> tuple:
+    return row["kind"], row["expiry"], None if row["kind"] == "FUT" else row["strike_paise"]
+
+
+def fixture_span_entry(underlying: str, rows: list[dict], anchor_expiry: str, created_ns: int,
+                       drop: frozenset = frozenset(), file: str = "span/2026/nsccl.fixture.i1.zip") -> dict:
+    """A bundle span entry (A1 §6.2, bundle._span_commodity's shape) for `underlying`, from the fixture's NIFTY with
+    every date moved by (anchor_expiry - 2026-11-23). The world's derivatives of that underlying (`rows`, golden or
+    bundle instrument dicts) map to the fixture's contracts by (kind, moved expiry, strike); a contract the fixture
+    lacks, or a world key in `drop`, is absent (missing, never zero)."""
+    from stockify import bundle as bundle_mod
+    shift = date.fromisoformat(anchor_expiry) - _FIXTURE_ANCHOR
+
+    def fwd(text: str | None) -> str | None:
+        return None if text is None else (date.fromisoformat(text) + shift).isoformat()
+
+    keys = set()
+    for r in rows:
+        if r.get("underlying") == underlying and r["kind"] in _SPAN_KINDS and _world_key(r) not in drop:
+            k = _world_key(r)
+            keys.add((k[0], (date.fromisoformat(k[1]) - shift).isoformat(), k[2]))
+    cc = bundle_mod._span_commodity(_fixture_nifty(), keys)
+    for c in cc["contracts"]:
+        c["expiry"] = fwd(c["expiry"])
+    for x in cc["series"]:
+        x["expiry"], x["settle_date"] = fwd(x["expiry"]), fwd(x["settle_date"])
+    for name in ("scan_tiers", "intra_tiers", "inter_tiers", "som_tiers"):
+        for t in cc[name]:
+            t["start"], t["end"] = fwd(t["start"]), fwd(t["end"])
+    for sp in cc["calendar_spreads"]:
+        for leg in sp["legs"]:
+            leg["expiry"] = fwd(leg["expiry"])
+    return {"created_ns": created_ns, "file": file, "sha256": "0" * 64, "scan_points": [],
+            "commodities": {underlying: cc}}
+
+
+def fixture_elm(underlying: str, rows: list[dict], pct: str, drop: frozenset = frozenset()) -> dict:
+    """One day's bundle elm section (A1 §6.2): `pct` per cent for each of the underlying's derivatives not in `drop`."""
+    out = {}
+    for r in rows:
+        if r.get("underlying") == underlying and r["kind"] in _SPAN_KINDS and _world_key(r) not in drop:
+            k = _world_key(r)
+            out[f"{k[0]}|{k[1]}|{'' if k[2] is None else k[2]}"] = pct
+    return {underlying: out}
+
+
+def _staircase_sections(rng: random.Random, days: list[date], instruments: list[dict], expiry: str) -> dict:
+    """A staircase world's span / span_skipped / elm (from `rng` only): per day the usual previous-evening file, none,
+    a late one (nothing in force before it), one lacking a strike, or two (the later lacking a strike); per day an
+    ELM file with every %, one lacking a leg, or none."""
+    span, elm = {}, {}
+    idx = [r for r in instruments if r.get("underlying") == "IDX"]
+    options = [_world_key(r) for r in idx if r["kind"] != "FUT"]
+    for d in days:
+        evening = timeutil.ist_ns(d - timedelta(days=1), "20:26")
+        late = timeutil.ist_ns(d, rng.choice(["09:45", "11:30", "13:00"]))
+        drop = frozenset([rng.choice(options)])
+        k = rng.randrange(6)
+        if k <= 1:
+            entries = [fixture_span_entry("IDX", idx, expiry, evening)]
+        elif k == 2:
+            entries = []
+        elif k == 3:
+            entries = [fixture_span_entry("IDX", idx, expiry, late)]
+        elif k == 4:
+            entries = [fixture_span_entry("IDX", idx, expiry, evening, drop)]
+        else:
+            entries = [fixture_span_entry("IDX", idx, expiry, evening),
+                       fixture_span_entry("IDX", idx, expiry, late, drop, file="span/2026/nsccl.fixture.i2.zip")]
+        span[d.isoformat()] = entries
+        j = rng.randrange(4)
+        if j <= 1:
+            elm[d.isoformat()] = fixture_elm("IDX", idx, rng.choice(["2", "3.5", "5"]))
+        elif j == 2:
+            elm[d.isoformat()] = fixture_elm("IDX", idx, "2", frozenset([rng.choice([_world_key(r) for r in idx])]))
+    return {"span": span, "span_skipped": {}, "elm": elm}
+
 
 def _real_charges() -> dict:
     """The shipped Zerodha rows, with the loader's VERIFY dates resolved (A1 §7.2)."""
@@ -127,6 +219,18 @@ def fuzz_world(seed: int) -> dict:
                                        "stt_each_side_pct_of_value": "0.001"}
     if rng.random() < 0.5:
         bundle["sqoff_fee_paise"] = 5000
+    # MEZ 4.10: some worlds run the margin staircase over synthetic NSE SPAN / ELM sections. Drawn from their own
+    # RNG after every other draw, so the worlds without it are exactly as before.
+    stair = random.Random(seed * 104_729 + 4010)
+    if stair.random() < 0.35:
+        run["margin"] = {"model": "staircase"}
+        lite = stair.choice(["none", "placeholder", "calibrated"])   # what the steps below SPAN find: B5 / B4 / B3
+        bundle.pop("spanlite_placeholder", None)
+        if lite != "none":
+            bundle["spanlite_placeholder"] = True
+        if lite == "calibrated":
+            bundle["spanlite_calibration_id"] = "fuzz-adopted"
+        bundle.update(_staircase_sections(stair, days, instruments, expiry))
     price = {1: 250_000, 2: 100_000, 3: 2_500_000, 4: 2_502_000, 5: 15_000, 6: 14_000, 7: 251_000}
     tick = {1: 5, 2: 5, 3: 5, 4: 10, 5: 5, 6: 5, 7: 10}
     if delivery:

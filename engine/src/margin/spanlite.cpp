@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <tuple>
 
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
@@ -40,7 +41,7 @@ SpanLiteMargin::SpanLiteMargin(const Json& bundle_root, SpanLiteHost host)
                       : Json::array();
 }
 
-const Json& SpanLiteMargin::params(const Instrument& row, const std::string& date) const {  // spanlite.params
+const Json* SpanLiteMargin::find_params(const Instrument& row, const std::string& date) const {  // spanlite.params
     const Json* found = nullptr;
     if (row.underlying) {
         found = row_in_force(rows_, date, {{"underlying", *row.underlying}});
@@ -48,10 +49,57 @@ const Json& SpanLiteMargin::params(const Instrument& row, const std::string& dat
     if (found == nullptr) {
         found = row_in_force(rows_, date, {{"underlying_class", row.underlying_class.value_or("INDEX")}});
     }
+    return found;
+}
+
+const Json& SpanLiteMargin::params(const Instrument& row, const std::string& date) const {
+    const Json* found = find_params(row, date);
     if (found == nullptr) {
         throw RunError("no spanlite margin row for " + row.underlying.value_or("?") + " on " + date);
     }
     return *found;
+}
+
+std::optional<Context::ChainView> SpanLiteMargin::chain_of(const Instrument& row) const {  // spanlite._chain
+    if (!row.underlying) {
+        return std::nullopt;
+    }
+    return host_.chain(*row.underlying, iso_date(row.expiry.value_or(0)));
+}
+
+std::pair<Paise, Paise> SpanLiteMargin::rule_elm(const Legs& legs,
+                                                 const std::function<std::optional<Paise>(InstrumentId)>& price,
+                                                 const std::string& date, std::optional<Paise> und) const {
+    const Json& p = params(*legs.front().first, date);
+    const std::int64_t elm_ppb = p.at("elm_pct_ppb").get<std::int64_t>();
+    const Json* addon = row_in_force(addon_rows_, date);
+    const Date day = parse_iso_date(date);
+    Int128 elm_raw = 0, addon_raw = 0;  // paise × ppb
+    for (const auto& [row, units] : legs) {  // exposure_notionals: futures, then sold options; bought: none
+        const Qty size = units < 0 ? -units : units;
+        if (row->kind == "FUT") {
+            const std::optional<Paise> own = price(row->id);
+            const std::optional<Paise> f = own && *own != 0 ? own : und;  // `price(iid) or underlying`
+            if (f) {
+                elm_raw += Int128::mul(*f, size) * elm_ppb;
+            }
+        } else if (units < 0) {
+            Paise base = 0;
+            if (und) {
+                base = *und;
+            } else {  // the option's forward: the chain's, else (no underlying) its strike; int() truncates
+                const std::optional<Context::ChainView> chain = chain_of(*row);
+                base = chain && chain->forward ? static_cast<Paise>(*chain->forward) : row->strike.value_or(0);
+            }
+            const Int128 notional = Int128::mul(base, size);
+            elm_raw += notional * elm_ppb;
+            if (row->last_day() == day && addon != nullptr &&
+                row->underlying_class == std::optional<std::string>("INDEX")) {
+                addon_raw += notional * addon->at("pct_ppb").get<std::int64_t>();
+            }
+        }
+    }
+    return {rupee_up(elm_raw), rupee_up(addon_raw)};
 }
 
 double SpanLiteMargin::iv(const Instrument& row, const Context::ChainView* chain, const std::string& date) const {
@@ -101,7 +149,7 @@ std::vector<UnderlyingMargin> SpanLiteMargin::breakdown(const std::vector<Margin
     return out;
 }
 
-UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pair<const Instrument*, Qty>>& legs,
+UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const Legs& legs,
                                      const std::function<std::optional<Paise>(InstrumentId)>& price,
                                      const std::string& date) const {
     const Json& p = params(*legs.front().first, date);
@@ -110,7 +158,6 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
     const double vsr = ppb_field(p, "vsr_pct");
     const double ext_mult = static_cast<double>(p.at("extreme_multiple").get<std::int64_t>());
     const double ext_weight = ppb_field(p, "extreme_weight");
-    const std::int64_t elm_ppb = p.at("elm_pct_ppb").get<std::int64_t>();
     const std::optional<Paise> und = price(uid);
     const double rate = host_.rate(date);
     const Date day = parse_iso_date(date);
@@ -124,8 +171,6 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
     };
     std::vector<Valued> valued;
     std::int64_t somc_lots = 0;
-    Int128 elm_raw = 0, addon_raw = 0;
-    const Json* addon = row_in_force(addon_rows_, date);
     for (const auto& [row, units] : legs) {
         const Qty size = units < 0 ? -units : units;
         if (row->kind == "FUT") {
@@ -135,13 +180,9 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
                 continue;  // nothing to value it at yet
             }
             valued.push_back(Valued{units, true, static_cast<double>(*f) / 100.0, 0.0, 0.0, 0.0, false});
-            elm_raw += Int128::mul(checked_mul(elm_ppb, *f), size);
             continue;
         }
-        std::optional<Context::ChainView> chain;
-        if (row->underlying) {
-            chain = host_.chain(*row->underlying, iso_date(row->expiry.value_or(0)));
-        }
+        const std::optional<Context::ChainView> chain = chain_of(*row);
         const double f_paise = chain && chain->forward ? *chain->forward
                                : und                    ? static_cast<double>(*und)
                                                         : static_cast<double>(row->strike.value_or(0));
@@ -153,12 +194,6 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
             const Spec* spec = host_.spec(row->id, day);
             const Qty lot = spec != nullptr ? spec->lot : 1;
             somc_lots += ceil_div(size, lot);
-            const Paise base = und ? *und : static_cast<Paise>(f_paise);
-            const Int128 notional = Int128::mul(base, size);
-            elm_raw += notional * elm_ppb;
-            if (row->last_day() == day && addon != nullptr && row->underlying_class == std::optional<std::string>("INDEX")) {
-                addon_raw += notional * addon->at("pct_ppb").get<std::int64_t>();
-            }
         }
     }
 
@@ -211,8 +246,7 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
     out.underlying = uid;
     out.scan = checked_mul(static_cast<std::int64_t>(std::ceil(worst)), 100);
     out.somc = ceil_to(checked_mul(p.at("somc_per_lot_paise").get<std::int64_t>(), somc_lots), 100);
-    out.elm = rupee_up(elm_raw);
-    out.addons = rupee_up(addon_raw);
+    std::tie(out.elm, out.addons) = rule_elm(legs, price, date, und);
     // The staircase step (MEZ 4.9, spanlite.step_of): B4 for the shipped placeholder rows, else B3 (adopted).
     const bool placeholder = p.contains("calibration_id") && p.at("calibration_id").is_string() &&
                              p.at("calibration_id").get<std::string>() == "placeholder";

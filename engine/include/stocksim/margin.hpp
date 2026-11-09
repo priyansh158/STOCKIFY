@@ -11,6 +11,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "stocksim/instruments.hpp"
@@ -56,6 +57,16 @@ class MarginModel {
                                                     const std::function<std::optional<Paise>(InstrumentId)>& /*price*/,
                                                     const std::string& /*date*/) const {
         return {};
+    }
+    // The pre-trade check's (requirement before, requirement after): before priced at price_before, after at
+    // price_after. The staircase overrides it to price each underlying at one step for both (MEZ 4.9).
+    virtual std::pair<Paise, Paise> pair(const std::vector<MarginLeg>& before, const std::vector<MarginLeg>& after,
+                                         const InstrumentTable& instruments,
+                                         const std::function<std::optional<Paise>(InstrumentId)>& price_before,
+                                         const std::function<std::optional<Paise>(InstrumentId)>& price_after,
+                                         const std::string& date) const {
+        const Paise b = requirement(before, instruments, price_before, date);
+        return {b, requirement(after, instruments, price_after, date)};
     }
     virtual std::string_view daily_model() const { return {}; }  // the `model` column; empty: no rows
     // Labels the model used while running (D-60: delivery_margin_approx), merged into the run's; none by default.

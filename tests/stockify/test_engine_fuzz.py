@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import collections
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,30 @@ def m4_features(run: Path) -> set[str]:
     if any(c["kind"] == "settlement" and int(c["brokerage"]) > 0 and int(c["stt"]) == 0 for c in rows("charges.csv")):
         got.add("expiry brokerage without exercise STT")
     return got  # 200 seeds in the regular run (A3 P-04); the weekly job uses 5,000
+
+
+STAIRCASE_STEPS = ("B1_span_nse_elm", "B2_span_rule_elm", "B3_spanlite_calibrated", "B4_spanlite_placeholder",
+                   "B5_flat")
+
+
+def _rows(path: Path) -> list[dict]:
+    import csv
+    with path.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def run_labels(run: Path) -> list[str]:
+    return sorted(json.loads((run / "manifest.json").read_text(encoding="utf-8"))["labels"])
+
+
+def staircase_steps(run: Path) -> dict[str, int]:
+    """A staircase run's margin_steps:<step>=<days> labels as {step: days} (MEZ 4.10)."""
+    out = {}
+    for x in run_labels(run):
+        if x.startswith("margin_steps:"):
+            step, days = x.split(":", 1)[1].split("=")
+            out[step] = int(days)
+    return out
 
 
 def causality_problems(run_dir: Path, pack: Path) -> list[str]:
@@ -144,6 +169,8 @@ def causality_problems(run_dir: Path, pack: Path) -> list[str]:
 class DifferentialFuzzTests(unittest.TestCase):
     def test_p04_oracle_and_engine_agree_on_random_worlds(self):
         reached = collections.Counter()
+        steps, rows_by_step = collections.Counter(), collections.Counter()
+        stair_worlds = 0
         for seed in SEEDS:
             with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="fuzz-") as tmp:
                 folder = Path(tmp)
@@ -155,9 +182,26 @@ class DifferentialFuzzTests(unittest.TestCase):
                 assert_same_artifacts(self, folder / "oracle", folder / "engine")
                 self.assertEqual(causality_problems(folder / "engine", folder / f"FUZZ{seed}.evt"), [])
                 reached.update(m4_features(folder / "oracle"))
+                labels = [run_labels(folder / impl) for impl in ("oracle", "engine")]
+                self.assertEqual(labels[0], labels[1])
+                for step, days in staircase_steps(folder / "oracle").items():
+                    steps[step] += days
+                for r in _rows(folder / "oracle" / "margin_daily.csv"):
+                    if r["model"] == "staircase":
+                        rows_by_step[r["step"]] += 1
+                stair_worlds += json.loads((folder / "oracle" / "bundle.json").read_text(encoding="utf-8"))[
+                    "run"]["margin"]["model"] == "staircase"
         # every M4 behaviour the world can produce is reached on some seeds, so P-04 covers it (RD 4.20)
         for feature in M4_FEATURES:
             self.assertGreater(reached[feature], 0, f"no seed reached {feature}: {dict(reached)}")
+        # MEZ 4.10: staircase worlds reach every step, in checks (margin_steps labels) and in margin_daily rows
+        self.assertGreater(stair_worlds, 20)
+        for step in STAIRCASE_STEPS:
+            self.assertGreater(steps[step], 0, f"no staircase world used {step}: {dict(steps)}")
+        for step in ("B1_span_nse_elm", "B2_span_rule_elm"):
+            self.assertGreater(rows_by_step[step], 0, f"no margin_daily row at {step}: {dict(rows_by_step)}")
+        print(f"\nP-04 staircase coverage over {stair_worlds} worlds: run-days per step {dict(sorted(steps.items()))}, "
+              f"margin_daily rows per step {dict(sorted(rows_by_step.items()))}", file=sys.stderr)
 
     def test_dt01_the_same_engine_run_twice_is_byte_identical(self):
         for seed in list(SEEDS)[:12]:

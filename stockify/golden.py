@@ -184,6 +184,9 @@ def build_bundle(g: dict) -> dict:
         for r in rows:
             for f in ("psr_pct", "vsr_pct", "extreme_weight", "elm_pct", "default_iv"):
                 r[f"{f}_ppb"] = numerics.to_ppb(r[f])
+        if "spanlite_calibration_id" in b:          # an adopted row instead of the placeholder (staircase B3)
+            for r in rows:
+                r["calibration_id"] = b["spanlite_calibration_id"]
         margin["spanlite"] = rows
     if "expiry_addon" in b:                          # the expiry-day ELM on short index options (X-9)
         margin["expiry_day_short_index_option_addon"] = [{"applies": {}, "effective_from": "2015-01-01",
@@ -208,11 +211,15 @@ def build_bundle(g: dict) -> dict:
     if sqoff is not None:
         charges["components"]["auto_square_off_fee"] = [{"applies": {}, "effective_from": "2015-01-01",
                                                          "per_order_paise": sqoff, "plus_gst": b.get("sqoff_plus_gst", True)}]
-    return {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
-            "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
-            "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
-            "packs": [], "strategy": _bundle_strategy(run["strategy"]),
-            "labels": [], "sod_state": None}
+    out = {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
+           "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
+           "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
+           "packs": [], "strategy": _bundle_strategy(run["strategy"]),
+           "labels": [], "sod_state": None}
+    for key in ("span", "span_skipped", "elm"):     # NSE SPAN / ELM sections as written (A1 §6.2; MEZ 4.10 fuzz)
+        if key in b:
+            out[key] = copy.deepcopy(b[key])
+    return out
 
 
 # ── Events → pack ────────────────────────────────────────────────────────────

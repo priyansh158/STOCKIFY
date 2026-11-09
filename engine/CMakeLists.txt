@@ -88,7 +88,9 @@ add_library(stocksim_core STATIC
   src/metrics.cpp
   src/artifacts.cpp
   src/pricing/black76.cpp
-  src/margin/spanlite.cpp)
+  src/margin/spanlite.cpp
+  src/margin/span_exact.cpp
+  src/margin/staircase.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -124,7 +126,8 @@ add_executable(stocksim_tests
   tests/test_bundle.cpp
   tests/test_packs.cpp
   tests/test_session.cpp
-  tests/test_black76.cpp)
+  tests/test_black76.cpp
+  tests/test_span_exact.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_strategies stocksim_core)
 target_compile_definitions(stocksim_tests PRIVATE STOCKSIM_FIXTURES_DIR="${REPO_ROOT}/tests/fixtures")
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
