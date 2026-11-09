@@ -517,7 +517,7 @@ def _span_entry(path: str, root: Path, keys: dict[str, set[tuple]]) -> dict:
 def span_section(instruments_rows: list[dict], days: list[dict],
                  skipped: dict[str, list[dict]] | None = None) -> dict[str, list[dict]]:
     """bundle["span"]: per run day, every NSE SPAN file usable that day in created order, without lookahead
-    (`nse_margin_files.usable_files`: the previous trading day's `.s`, then D's `i1`..`i4`, never D's `.s`; each
+    (`nse_margin_files.usable_files`: the previous NSE session's `.s`, then D's `i1`..`i4`, never D's `.s`; each
     applies from its own created_ns). Each keeps the bundle's underlyings only, with the contracts the bundle trades
     and all their parameter blocks. A day with no usable file has an empty list (the margin model steps down).
     A file that cannot be read, whose business date is not its name's, or whose created time is not plausible

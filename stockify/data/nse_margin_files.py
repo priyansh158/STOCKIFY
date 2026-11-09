@@ -388,8 +388,8 @@ def _checked_created_ns(created) -> int | None:  # noqa: ANN001
 
 def previous_eod(day: date, *, max_days: int = 30) -> tuple[str, int] | None:
     """The archived end-of-day (`.s`) file of the latest trading day before `day`, looking back at most `max_days`
-    trading days. `max_days=1` is strict: only the previous F&O trading day's `.s` (the bundle, CAM 4.3). The
-    validator keeps the default: it asks which file Kite had, and a gap in the archive is not a gap at NSE."""
+    trading days. The validator uses it with the default: it asks which file Kite had, and a gap in the archive is
+    not a gap at NSE. Bundles use `opening_eod` instead (CAM 4.4)."""
     d = day
     for _ in range(max_days):
         d = calendar.previous_trading_day(SEGMENT, d)
@@ -426,8 +426,8 @@ def opening_eod(day: date, *, max_empty: int = OPENING_MAX_EMPTY_DAYS,
 
 def usable_files(day: date, skipped: list | None = None) -> list[tuple[str, int]]:
     """Every SPAN file a backtest may use during trade date `day`, as (path, created_ns) in created order, without
-    lookahead (spec §5.1, CAM 4.3): the previous F&O trading day's `.s` when archived (only that day's: an older one
-    is never used), then D's `i1`..`i4`. D's own `.s` never: it is published after the close. Each file applies from
+    lookahead (spec §5.1, CAM 4.3): the previous NSE session's `.s` when archived (`opening_eod`; never an older one),
+    then D's `i1`..`i4`. D's own `.s` never: it is published after the close. Each file applies from
     its own `created_ns`; the file in force at t is the last one created at or before t, and before the first one
     nothing is (a late `i1` does not move earlier). The previous trading day is found by `opening_eod`: days with no
     archived file at all (holidays the calendar lacks) are stepped over. With `skipped`, archived files left out for
