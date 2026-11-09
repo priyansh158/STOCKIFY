@@ -730,7 +730,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 | B4 SPAN-lite, placeholder | 405 | ₹14,150.14 | ₹1,22,315.33 | 26.20 % |
 | B5 flat | 405 | ₹1,84,640.10 | ₹5,33,187.44 | 296.05 % |
 
-B3 is unscored: no calibrated row is adopted yet (two wait in `spanlite_pending`). Four groups show an inversion (B5 closer than B4): NIFTY and BANKNIFTY futures, and single options. SPAN error is at most ₹1.00 everywhere.
+B3 was unscored when this table was taken: no calibrated row was adopted yet. It is adopted since (D-74); the scorecard now shows B3 with a median error of ₹360.39 over the same 405 answers. Four groups show an inversion (B5 closer than B4): NIFTY and BANKNIFTY futures, and single options. SPAN error is at most ₹1.00 everywhere.
 
 **P-04 per-step coverage** (200 seeds, 4000–4199, oracle and engine agree on every seed; 76 staircase/span_exact worlds; strict `span_exact` runs: 20 priced, 2 failed alike on both):
 

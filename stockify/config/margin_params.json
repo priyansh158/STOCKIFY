@@ -42,19 +42,7 @@
       "calibration_id": "placeholder",
       "source": "placeholder until M4.9 calibration against Kite (owner, market hours); not NSE's risk parameters",
       "verified": false
-    }
-  ],
-  "expiry_day_short_index_option_addon": [
-    {
-      "applies": {},
-      "effective_from": "2024-11-20",
-      "pct": "0.02",
-      "basis": "underlying_price_x_qty",
-      "source": "X-9 (rule and scope confirmed 2026-11-07; notional = underlying price x quantity, Zerodha's formula)",
-      "verified": false
-    }
-  ],
-  "spanlite_pending": [
+    },
     {
       "applies": {
         "underlying": "NIFTY"
@@ -70,11 +58,10 @@
       "elm_pct": "0.02",
       "default_iv": "0.15",
       "calibration_id": "calibration-2026-11-09",
-      "source": "calibration 2026-11-09 (refit offline, target span + exposure + additional)",
+      "source": "calibration 2026-11-09 (refit offline, target span + exposure + additional; D-62, D-63), adopted by the owner 2026-11-09 (D-74)",
       "samples": 200,
       "mean_relative_error": "0.0205",
-      "verified": false,
-      "pending_review": true
+      "verified": false
     },
     {
       "applies": {
@@ -91,11 +78,21 @@
       "elm_pct": "0.02",
       "default_iv": "0.15",
       "calibration_id": "calibration-2026-11-09",
-      "source": "calibration 2026-11-09 (refit offline, target span + exposure + additional)",
+      "source": "calibration 2026-11-09 (refit offline, target span + exposure + additional; D-62, D-63), adopted by the owner 2026-11-09 (D-74)",
       "samples": 200,
       "mean_relative_error": "0.0844",
-      "verified": false,
-      "pending_review": true
+      "verified": false
     }
-  ]
+  ],
+  "expiry_day_short_index_option_addon": [
+    {
+      "applies": {},
+      "effective_from": "2024-11-20",
+      "pct": "0.02",
+      "basis": "underlying_price_x_qty",
+      "source": "X-9 (rule and scope confirmed 2026-11-07; notional = underlying price x quantity, Zerodha's formula)",
+      "verified": false
+    }
+  ],
+  "spanlite_pending": []
 }

@@ -69,6 +69,8 @@ Files: `engine/src/margin/spanlite.cpp`, `stockify/fno/spanlite.py`. Parameters:
 
 ## M4.9 Calibration against Kite (M)
 
+> **Update (2026-11-09):** the first real calibration ran (NIFTY and BANKNIFTY, 200 samples each) and the owner adopted both refitted rows into `spanlite` (D-74); `spanlite_pending` is empty. Average error against Kite: NIFTY 16.9 % to 2.1 %, BANKNIFTY 22.2 % to 8.4 %. The monthly re-run box below stays open.
+
 > **Status (2026-11-08):** the tool is built and tested against a fake Kite client (IWB 4.1); the ticked boxes below mean the tool does each step. **No real calibration has run yet**: the first one needs the owner, a Kite login and market hours (first good day Wed 11 Nov 2026 IST; 9 Nov is an expiry day, 10 Nov a holiday), and the 🛑 owner review of its error report before any row is adopted. Until then SPAN-lite runs on the labelled placeholder rows.
 
 Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Table: `margin_calibration` (A1 §4).
