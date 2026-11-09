@@ -105,6 +105,7 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
                                      const std::string& date) const {
     const Json& p = params(*legs.front().first, date);
     const double psr = ppb_field(p, "psr_pct");
+    const double psr_fut = p.contains("psr_futures_pct_ppb") ? ppb_field(p, "psr_futures_pct") : psr;  // D-62
     const double vsr = ppb_field(p, "vsr_pct");
     const double ext_mult = static_cast<double>(p.at("extreme_multiple").get<std::int64_t>());
     const double ext_weight = ppb_field(p, "extreme_weight");
@@ -180,7 +181,7 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
         double pnl = 0.0;
         for (std::size_t i = 0; i < valued.size(); ++i) {
             const Valued& v = valued[i];
-            const double shifted = v.f * (1.0 + s.move * psr);
+            const double shifted = v.f * (1.0 + s.move * (v.future ? psr_fut : psr));
             if (v.future) {
                 pnl += static_cast<double>(v.units) * (shifted - v.f);
             } else {

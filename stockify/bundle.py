@@ -383,8 +383,8 @@ def resolve_bundle(cfg: dict) -> dict:
         raise BundleError(f"no trading days between {start} and {end}")
     charges = _dated_section(loader.load_json("charges.json"), start, end)
     margin = _dated_section(loader.load_json("margin_params.json"), start, end)
-    _ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "vsr_pct", "extreme_weight", "elm_pct",
-                         "default_iv"))
+    _ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "psr_futures_pct", "vsr_pct", "extreme_weight",
+                         "elm_pct", "default_iv"))
     pricing = _dated_section(loader.load_json("pricing.json"), start, end)
     _ppb_fields(pricing, ("rate",))
     labels = [f"fill:{cfg['fill_model']['kind']}", f"margin:{cfg['margin']['model']}(approx)"]

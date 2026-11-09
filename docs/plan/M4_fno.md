@@ -75,7 +75,7 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 
 - [x] Sample portfolios from the current chain: single legs across moneyness and expiries, straddles, strangles, verticals, iron flies and condors, futures, futures hedged with options.
 - [x] For each, call `POST /margins/basket?consider_positions=false` (K-10; ≤ 10 requests/s, K-8) and store Kite's `initial`, `final` and per-order components with the market snapshot used; compute T0 and T1 for the same snapshot.
-- [x] Fit PSR and VSR (and `somc_per_lot`) per underlying by minimising relative error on `final`. Report median and 90th-percentile absolute relative error by portfolio type.
+- [x] Fit PSR and VSR (and `somc_per_lot`) per underlying by minimising relative error on `final` span + exposure + additional (not `final.total`, which counts bought premium; D-62), and futures' own move `psr_futures_pct` (D-62). Refit offline from stored samples with `--refit --date`. Report median and 90th-percentile absolute relative error by portfolio type.
 - [x] Write the fitted values as a **new dated row** in `margin_params.json` with `source: "calibration <date>"`. 🛑 The owner reviews the error report before the row is adopted.
 - [ ] Re-run monthly and after any NSE margin circular (e.g. X-11), keeping history.
 

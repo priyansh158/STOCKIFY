@@ -129,6 +129,25 @@ class SpanLiteParityTests(unittest.TestCase):
         # (expiring options settle before DAY_END, so the add-on shows in the funds lines, which match, not in the
         # day rows; the oracle-run test below checks it was charged)
 
+    def test_a_futures_price_move_agrees_exactly_and_changes_only_futures(self):
+        """D-62: `psr_futures_pct` moves futures by their own range; oracle and engine agree byte for byte, and a
+        world with no future gives the same margins with or without it."""
+        from stockify import numerics
+        fut_only = {"psr_futures_pct": "0.0886", "psr_futures_pct_ppb": numerics.to_ppb("0.0886")}
+        for seed, with_future in ((4816, True), (4817, True), (4818, False)):
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="spanlite-fut-") as tmp:
+                folder = Path(tmp)
+                g = spanlite_world(seed, with_future)
+                run_both(g, folder, spanlite_bundle(g, **fut_only))
+                assert_same_artifacts(self, folder / "oracle", folder / "engine")
+                self.assertEqual((folder / "oracle" / "margin_daily.csv").read_bytes(),
+                                 (folder / "engine" / "margin_daily.csv").read_bytes())
+                (folder / "plain").mkdir()
+                run_both(g, folder / "plain", spanlite_bundle(g))
+                same = (folder / "oracle" / "events_log.txt").read_bytes() == \
+                    (folder / "plain" / "oracle" / "events_log.txt").read_bytes()
+                self.assertEqual(same, not with_future)       # the funds lines move only when a future is held
+
     def test_flat_runs_write_no_margin_rows(self):
         with tempfile.TemporaryDirectory(prefix="spanlite-flat-") as tmp:
             folder = Path(tmp)

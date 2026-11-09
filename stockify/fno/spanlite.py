@@ -5,7 +5,9 @@ Per underlying, the NRML futures and options (long options too: they offset risk
     scenarios: price moves m ∈ {0, +⅓, −⅓, +⅔, −⅔, +1, −1} × PSR, each with every leg's IV moved by ±VSR
                (relative: σ·(1 ± VSR)), 14 in all; plus two extreme moves ±extreme_multiple × PSR at an unchanged
                IV, whose losses count at extreme_weight (16 scenarios, as classic SPAN; D-57)
-    a leg:     future → units × F·m·PSR; option → units × (Black-76 at F·(1 + m·PSR), σ' − Black-76 at F, σ),
+    a leg:     future → units × F·m·PSR_fut, where PSR_fut is `psr_futures_pct` when the row has it, else PSR
+               (D-62: Kite's SPAN on futures is ~9.4 % of notional on 2026-11-09, more than options imply);
+               option → units × (Black-76 at F·(1 + m·PSR), σ' − Black-76 at F, σ),
                where F is the leg's own forward (the M4.4 chain forward of its expiry; else the underlying)
     scan     = max(0, worst scenario loss)
     SOMC     = somc_per_lot_paise × short option lots
@@ -115,6 +117,7 @@ class SpanLiteMargin:
         e = self._e
         p = self.params(legs[0][0], date)
         psr, vsr = p["psr_pct_ppb"] / PPB, p["vsr_pct_ppb"] / PPB
+        psr_fut = p["psr_futures_pct_ppb"] / PPB if "psr_futures_pct_ppb" in p else psr   # D-62
         ext_mult, ext_weight = float(p["extreme_multiple"]), p["extreme_weight_ppb"] / PPB
         und_paise = price(uid)
         rate = B.rate_on(e.bundle["pricing"].get("risk_free", []), date)
@@ -156,7 +159,7 @@ class SpanLiteMargin:
         for move, vol, weight in scenarios:
             pnl = 0.0
             for (units, fut, f, k, t, s, c), v0 in zip(valued, base):
-                shifted = f * (1.0 + move * psr)
+                shifted = f * (1.0 + move * (psr_fut if fut else psr))
                 if fut:
                     pnl += units * (shifted - f)
                 else:

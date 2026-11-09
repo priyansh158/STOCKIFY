@@ -347,8 +347,21 @@ def _cmd_run(args) -> int:
 
 
 def _cmd_margin_calibrate(args) -> int:
-    import kite_client
     from stockify.fno import calibrate
+    if args.refit:                                      # IWB 4.5: offline, from stored samples; never calls Kite
+        if not args.date:
+            print("--refit needs --date YYYY-MM-DD (the IST trade date of the stored calibration)", file=sys.stderr)
+            return 2
+        try:
+            report, params = calibrate.refit(args.underlying, args.date)
+        except calibrate.CalibrationError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(report)
+        print(f"refitted row replaces {args.date}'s pending row in {params} (spanlite_pending; not used until you move "
+              "it into spanlite)", file=sys.stderr)
+        return 0
+    import kite_client
     if not kite_client.is_enabled():
         print("Kite is not set up here (no API key, or kiteconnect is not installed).", file=sys.stderr)
         return 2
@@ -572,6 +585,10 @@ def main(argv: list[str] | None = None) -> int:
     mc.add_argument("--seed", type=int, default=0, help="which portfolios are drawn (default 0)")
     mc.add_argument("--skip-expiring", action="store_true",
                     help="leave out contracts whose last trading day is today and take the next two expiries (use on an expiry day)")
+    mc.add_argument("--refit", action="store_true",
+                    help="fit again from the samples stored for --date, offline (no Kite call); replaces that day's "
+                         "pending row")
+    mc.add_argument("--date", help="with --refit: the IST trade date of the stored calibration, YYYY-MM-DD")
     mc.set_defaults(func=_cmd_margin_calibrate)
 
     tl = sub.add_parser("tools", help="maintenance tools")

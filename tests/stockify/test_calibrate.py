@@ -25,7 +25,7 @@ E1, E2, E3 = "2026-11-11", "2026-11-17", "2026-11-23"      # trading days (10 an
 HEADER = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,"
           "instrument_type,segment,exchange")
 SPOT = 25_000.0
-TRUE = {"psr": 0.08, "vsr": 0.30, "somc": 300_000}
+TRUE = {"psr": 0.08, "vsr": 0.30, "somc": 300_000, "psr_fut": 0.11}   # futures move further than options (D-62)
 TOKEN = "fake-access-token-do-not-store"
 
 
@@ -80,9 +80,15 @@ class FakeKite:
         by_sym = {r["tradingsymbol"]: i for i, r in self.snapshot.rows.items()}
         legs = [(by_sym[o["tradingsymbol"]], o["quantity"] * (1 if o["transaction_type"] == "BUY" else -1))
                 for o in orders]
-        row = CAL.with_params(self.base, TRUE["psr"], TRUE["vsr"], TRUE["somc"])
-        final = self.pricer.t1(CAL.Portfolio("x", legs), row)[0] / 100
-        return {"initial": {"total": final * 1.1}, "final": {"total": final}, "orders": [{"total": 0}] * len(orders)}
+        row = CAL.with_params(self.base, TRUE["psr"], TRUE["vsr"], TRUE["somc"], TRUE["psr_fut"])
+        [b] = self.pricer.t1(CAL.Portfolio("x", legs), row)[1] or [None]
+        span, exposure = (max(b.scan, b.somc) / 100, (b.elm + b.addons) / 100) if b else (0.0, 0.0)
+        # as Kite does: the premium of bought options is in `total` too (it is paid upfront), but not in span/exposure
+        premium = sum(self.snapshot.mark(i) * u for i, u in legs if u > 0 and self.snapshot.rows[i]["kind"] != "FUT") / 100
+        final = {"span": span, "exposure": exposure, "additional": 0, "option_premium": premium,
+                 "total": span + exposure + premium}
+        return {"initial": dict(final, span=span * 1.3, total=final["total"] + span * 0.3), "final": final,
+                "orders": [{"total": 0}] * len(orders)}
 
 
 def redirect_quiet():  # noqa: ANN201
@@ -235,7 +241,8 @@ class CalibrationTests(SandboxedDBTest):
                 rows = store.margin_calibrations("NIFTY")[before:]
                 self.assertTrue(rows)
                 for r in rows:
-                    self.assertEqual(json.loads(r["market_json"])["snapshot"],
+                    got = json.loads(r["market_json"])["snapshot"]
+                    self.assertEqual({k: got[k] for k in ("skip_expiring", "expiries", "skipped")},
                                      {"skip_expiring": True, "expiries": [E2, E3], "skipped": [E1]})
 
     def test_the_cli_passes_skip_expiring(self):
@@ -256,6 +263,98 @@ class CalibrationTests(SandboxedDBTest):
             self.assertEqual(cli.main(["margin", "calibrate", "--underlying", "NIFTY", "--samples", "5"]), 0)
             self.assertFalse(seen["skip_expiring"])
         self.assertEqual(self.kite.calls, [])                               # nothing reached the fake Kite
+
+    def test_the_target_leaves_out_the_premium_of_bought_options(self):
+        """IWB 4.5: Kite's final.total includes option_premium (paid as cash in a run); the fit target does not."""
+        answer = {"final": {"span": 19750, "exposure": 64893.4, "additional": 0, "option_premium": 33741.5,
+                            "total": 118384.9}}                       # the live hedged future of 2026-11-09
+        self.assertEqual(CAL.kite_target(answer), 8_464_340)
+        self.assertEqual(CAL.kite_target({"final": {"span": 0, "exposure": 0, "option_premium": 2600,
+                                                    "total": 2600}}), 0)
+        self.assertEqual(CAL.kite_target({}), 0)
+
+    def calibrated(self) -> tuple[CAL.Snapshot, Path, Path]:
+        snap = self.snapshot()
+        tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+        params = tmp / "margin_params.json"
+        from stockify.config import loader
+        shutil.copy(Path(loader.__file__).with_name("margin_params.json"), params)
+        report, _ = CAL.calibrate(self.kite, "NIFTY", 32, seed=4, day=DAY, sleep=self.sleeps.append, snapshot=snap,
+                                  params_path=params)
+        return snap, params, report
+
+    def mine(self, params: Path) -> dict:
+        doc = json.loads(params.read_text(encoding="utf-8"))
+        [row] = [r for r in doc["spanlite_pending"]
+                 if r["applies"].get("underlying") == "NIFTY" and r["effective_from"] == DAY]
+        return row
+
+    def test_the_fit_finds_a_bigger_futures_move_and_the_rows_record_the_target(self):
+        snap, params, report = self.calibrated()
+        row = self.mine(params)
+        self.assertLess(abs(float(row["psr_futures_pct"]) - TRUE["psr_fut"]), 0.005)
+        self.assertLess(abs(float(row["psr_pct"]) - TRUE["psr"]), 0.01)
+        for r in store.margin_calibrations("NIFTY"):
+            got = json.loads(r["market_json"])["snapshot"]
+            self.assertEqual((got["target"], got["target_paise"]),
+                             (CAL.TARGET, CAL.kite_target(json.loads(r["kite_json"]))))
+            self.assertEqual(len(got["quotes"]), len(snap.quotes))     # the whole snapshot, for exact refits
+        text = report.read_text(encoding="utf-8")
+        self.assertIn("without the premium of bought options", text)
+        self.assertIn("for futures", text)
+
+    def test_refit_offline_from_the_stored_rows(self):
+        """--refit rebuilds the snapshot from refdata and the stored rows, fits again and replaces the pending row;
+        it takes no client at all. Rows from before IWB 4.5 (only their legs' quotes) refit too."""
+        snap, params, _ = self.calibrated()
+        live = self.mine(params)
+        calls = len(self.kite.calls)
+        report, written = CAL.refit("NIFTY", DAY, params_path=params)
+        self.assertEqual(len(self.kite.calls), calls)
+        self.assertEqual(written, params)
+        row = self.mine(params)                                         # still one row for the day: replaced
+        self.assertIn("refit offline", row["source"])
+        for k in ("psr_pct", "psr_futures_pct", "vsr_pct", "somc_per_lot_paise"):
+            self.assertEqual(row[k], live[k], k)                        # exact snapshot: the same fit
+        self.assertEqual(report.name, f"NIFTY-{DAY}-refit.md")
+        text = report.read_text(encoding="utf-8")
+        self.assertIn("Refitted offline", text)
+        self.assertIn("the full snapshot", text)
+        rebuilt, _, how = CAL.snapshot_from_rows("NIFTY", DAY, CAL.stored_run("NIFTY", DAY))
+        self.assertEqual((how, rebuilt.quotes, rebuilt.expiries), ("exact", snap.quotes, snap.expiries))
+        # strip the full quotes, as rows written before IWB 4.5 are
+        conn = store._connect()
+        for r in store.margin_calibrations("NIFTY"):
+            m = json.loads(r["market_json"])
+            m["snapshot"] = {k: v for k, v in m["snapshot"].items() if k not in ("quotes", "target", "target_paise")}
+            conn.execute("UPDATE margin_calibration SET market_json=? WHERE sample_id=?",
+                         (json.dumps(m, sort_keys=True), r["sample_id"]))
+        conn.commit()
+        rebuilt, _, how = CAL.snapshot_from_rows("NIFTY", DAY, CAL.stored_run("NIFTY", DAY))
+        self.assertEqual(how, "legs_only")
+        self.assertLess(len(rebuilt.quotes), len(snap.quotes))
+        report, _ = CAL.refit("NIFTY", DAY, params_path=params)
+        self.assertIn("only the legs of each sample", report.read_text(encoding="utf-8"))
+        self.assertLess(abs(float(self.mine(params)["psr_pct"]) - TRUE["psr"]), 0.01)
+        with self.assertRaisesRegex(CAL.CalibrationError, "no stored calibration samples"):
+            CAL.refit("NIFTY", "2026-11-11", params_path=params)
+
+    def test_the_cli_refit_never_touches_kite(self):
+        from unittest import mock
+        from stockify import __main__ as cli
+        import kite_client
+        seen = {}
+
+        def fake(und, day, **kw):  # noqa: ANN001, ANN202
+            seen.update(und=und, day=day)
+            return Path("r.md"), Path("p.json")
+        with mock.patch.object(kite_client, "get_client", side_effect=AssertionError("no Kite")), \
+                mock.patch.object(kite_client, "is_enabled", side_effect=AssertionError("no Kite")), \
+                mock.patch.object(CAL, "refit", side_effect=fake), redirect_quiet():
+            self.assertEqual(cli.main(["margin", "calibrate", "--underlying", "BANKNIFTY", "--refit", "--date", DAY]),
+                             0)
+            self.assertEqual(seen, {"und": "BANKNIFTY", "day": DAY})
+            self.assertEqual(cli.main(["margin", "calibrate", "--underlying", "NIFTY", "--refit"]), 2)
 
     def test_no_kite_when_not_logged_in(self):
         from stockify import __main__ as cli

@@ -9,8 +9,10 @@ During market hours, with a fresh Kite login (the owner's run; tests use a fake 
 3. ask Kite's basket margin for each (`client.basket_order_margins(orders, consider_positions=False)`,
    `POST /margins/basket`, K-10; ≤ 10 requests/s, K-8) and store Kite's answer with the snapshot, our T0 (flat)
    and our T1 (SPAN-lite with the current parameters) in lab.sqlite → margin_calibration;
-4. fit PSR, VSR and somc_per_lot (coordinate search) to minimise the mean absolute relative error of T1 against
-   Kite's `final`; report the median and 90th-percentile error per portfolio type;
+4. fit PSR, VSR and somc_per_lot (coordinate search), then futures' own price move (D-62), to minimise the mean
+   absolute relative error of T1 against Kite's final span + exposure + additional (`kite_target`: not `total`,
+   which counts bought premium); report the median and 90th-percentile error per portfolio type. `--refit` does
+   4–5 again offline from the samples stored for a day (`refit`);
 5. write the fit as a new dated row under `margin_params.json` → `spanlite_pending` (no model reads that key):
    🛑 the owner reviews the report and moves the row into `spanlite` to adopt it. Never automatic.
 
@@ -33,7 +35,11 @@ from stockify import numerics
 TYPES = ("single", "straddle", "strangle", "vertical", "iron_fly", "iron_condor", "future", "hedged_future")
 QUOTE_INTERVAL_S = 1.0          # K-8: quote endpoint 1 request/s
 MARGIN_INTERVAL_S = 0.1         # K-8: other endpoints 10 requests/s
-BOUNDS = {"psr": (0.01, 0.25), "vsr": (0.0, 0.8), "somc": (0, 2_000_000)}   # somc in paise per lot
+BOUNDS = {"psr": (0.01, 0.25), "vsr": (0.0, 0.8), "somc": (0, 2_000_000),     # somc in paise per lot
+          "psr_fut": (0.01, 0.25)}
+FUTURE_KINDS = ("future",)   # the samples psr_futures is fitted from (D-62). Not hedged futures: Kite's SPAN on
+                              # those credits the bought option (one BANKNIFTY pair on 2026-11-09 has SPAN 0), which
+                              # no price move reproduces; fitting to them pulls the futures move off plain futures.
 
 
 class CalibrationError(RuntimeError):
@@ -113,11 +119,8 @@ def _pick(underlying: str, found: list[str], kinds: tuple[str, ...], day: str, n
     return [e for e in found if e not in skipped][:n], skipped
 
 
-def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep=time.sleep,  # noqa: ANN001
-                   now_ns=None, skip_expiring: bool = False) -> Snapshot:  # noqa: ANN001
-    """With `skip_expiring`, contracts whose last trading day is `day` are left out and the next ones taken
-    (IWB 4.2: on an expiry day the expiring options and the expiry-day add-on would skew the fit)."""
-    from stockify import timeutil
+def _underlying_row(underlying: str) -> tuple[int, bool]:
+    """(instrument id of the index or stock, whether it is an index)."""
     from stockify.data import instruments, refdata
     conn = refdata._connect()
     index_rows = {r["key"]: r["index_symbol"] for r in conn.execute("SELECT key, index_symbol FROM index_underlyings")}
@@ -129,21 +132,37 @@ def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep
         index_id = instruments.find("NSE", underlying)
     if index_id is None:
         raise CalibrationError(f"{underlying}: no index or stock row in refdata")
-    cls = "INDEX" if is_index else "STOCK"
+    return index_id, is_index
+
+
+def _row_for(iid: int, kind: str, underlying: str, index_id: int, is_index: bool, day: str) -> dict:
+    """A bundle-shaped instrument row (with "lot") for the snapshot, from refdata."""
+    from stockify.data import instruments
+    info = instruments.get(iid)
+    spec = instruments.spec_at(iid, day) or {}
+    expiry = info.get("expiry")
+    group = "FO_OPT" if kind in ("CE", "PE") else "FO_FUT" if kind == "FUT" else "CM"
+    last = info.get("actual_expiry") or expiry
+    return {"id": iid, "kind": kind, "exchange": info["exchange"], "tradingsymbol": info["tradingsymbol"],
+            "underlying": underlying if kind != "INDEX" else None,
+            "underlying_id": index_id if iid != index_id else None,
+            "underlying_class": "INDEX" if is_index else "STOCK",
+            "expiry": expiry, "actual_expiry": info.get("actual_expiry"),
+            "strike_paise": info.get("strike_paise"), "lot": spec.get("lot_size") or 1,
+            "last_trading_ns": _last_trading_ns(last, group) if last else None}
+
+
+def build_snapshot(client, underlying: str, day: str, *, strikes: int = 8, sleep=time.sleep,  # noqa: ANN001
+                   now_ns=None, skip_expiring: bool = False) -> Snapshot:  # noqa: ANN001
+    """With `skip_expiring`, contracts whose last trading day is `day` are left out and the next ones taken
+    (IWB 4.2: on an expiry day the expiring options and the expiry-day add-on would skew the fit)."""
+    from stockify import timeutil
+    from stockify.data import instruments
+    index_id, is_index = _underlying_row(underlying)
     rows: dict[int, dict] = {}
 
     def add(iid: int, kind: str) -> None:
-        info = instruments.get(iid)
-        spec = instruments.spec_at(iid, day) or {}
-        expiry = info.get("expiry")
-        group = "FO_OPT" if kind in ("CE", "PE") else "FO_FUT" if kind == "FUT" else "CM"
-        last = info.get("actual_expiry") or expiry
-        rows[iid] = {"id": iid, "kind": kind, "exchange": info["exchange"], "tradingsymbol": info["tradingsymbol"],
-                     "underlying": underlying if kind != "INDEX" else None,
-                     "underlying_id": index_id if iid != index_id else None, "underlying_class": cls,
-                     "expiry": expiry, "actual_expiry": info.get("actual_expiry"),
-                     "strike_paise": info.get("strike_paise"), "lot": spec.get("lot_size") or 1,
-                     "last_trading_ns": _last_trading_ns(last, group) if last else None}
+        rows[iid] = _row_for(iid, kind, underlying, index_id, is_index, day)
 
     add(index_id, "INDEX" if is_index else "EQ")
     fut_exp, fut_skipped = _pick(underlying, instruments.expiries(underlying, "FUT", day), ("FUT",), day, 1,
@@ -292,8 +311,8 @@ def _config_params() -> tuple[dict, dict]:
     from stockify import bundle as B
     from stockify.config import loader
     margin = {k: v for k, v in loader.load_json("margin_params.json").items() if k != "schema"}
-    B._ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "vsr_pct", "extreme_weight", "elm_pct",
-                           "default_iv"))
+    B._ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "psr_futures_pct", "vsr_pct",
+                           "extreme_weight", "elm_pct", "default_iv"))
     pricing = {k: v for k, v in loader.load_json("pricing.json").items() if k == "risk_free"}
     B._ppb_fields(pricing, ("rate",))
     return margin, pricing
@@ -334,11 +353,31 @@ def class_row(margin: dict, snap: Snapshot) -> dict:
     return dict(max(named or rows, key=lambda r: r["effective_from"]))
 
 
-def with_params(row: dict, psr: float, vsr: float, somc: int) -> dict:
+def with_params(row: dict, psr: float, vsr: float, somc: int, psr_fut: float | None = None) -> dict:
+    """The row with these settings; psr_fut (D-62) sets `psr_futures_pct`, None leaves the row's own (or none)."""
     out = dict(row)
     out.update(psr_pct=f"{psr:.4f}", vsr_pct=f"{vsr:.4f}", somc_per_lot_paise=int(somc))
     out.update(psr_pct_ppb=numerics.to_ppb(out["psr_pct"]), vsr_pct_ppb=numerics.to_ppb(out["vsr_pct"]))
+    if psr_fut is not None:
+        out.update(psr_futures_pct=f"{psr_fut:.4f}", psr_futures_pct_ppb=numerics.to_ppb(f"{psr_fut:.4f}"))
     return out
+
+
+def _golden(f, a: float, b: float, steps: int = 18) -> float:  # noqa: ANN001
+    """The x in [a, b] minimising f (golden-section search, one new evaluation per step)."""
+    phi = (math.sqrt(5) - 1) / 2
+    x1, x2 = b - phi * (b - a), a + phi * (b - a)
+    f1, f2 = f(x1), f(x2)
+    for _ in range(steps):
+        if f1 <= f2:
+            b, x2, f2 = x2, x1, f1
+            x1 = b - phi * (b - a)
+            f1 = f(x1)
+        else:
+            a, x1, f1 = x1, x2, f2
+            x2 = a + phi * (b - a)
+            f2 = f(x2)
+    return (a + b) / 2
 
 
 # ── 4. Fit and report ────────────────────────────────────────────────────────
@@ -351,42 +390,52 @@ class Sample:
     t1_paise: int
 
 
+TARGET = "span + exposure + additional"
+TARGET_WORDS = ("Kite's margin without the premium of bought options (span + exposure + additional): Kite's "
+                "`final.total` also counts that premium, which a run pays as cash, not as margin")
+
+
+def kite_target(answer: dict) -> int:
+    """What SPAN-lite is fitted to (IWB 4.5): Kite's final span + exposure + additional, in paise. Not `final.total`,
+    which adds `option_premium` (the premium of bought legs, debited as cash in a run, never part of SPAN-lite)."""
+    final = answer.get("final") or {}
+    total = sum((Decimal(str(final.get(k) or 0)) for k in ("span", "exposure", "additional")), Decimal(0))
+    return int((total * 100).to_integral_value())
+
+
 def _rel(model: int, kite: int) -> float:
     return abs(model - kite) / kite
 
 
-def fit(pricer: Pricer, samples: list[Sample], base: dict, rounds: int = 3) -> tuple[dict, float]:
-    """Coordinate search (golden section on each of PSR, VSR, SOMC in turn) of the mean relative error on final."""
+def fit(pricer: Pricer, samples: list[Sample], base: dict, rounds: int = 3,
+        futures: bool = True) -> tuple[dict, float]:
+    """Coordinate search (golden section on each of PSR, VSR, SOMC in turn) of the mean relative error against Kite's
+    target (`kite_target`). Then, with `futures` and any future samples, the futures price move `psr_futures` (D-62)
+    alone, on the FUTURE_KINDS samples; it is kept only if it lowers their error by more than 5 %."""
     usable = [s for s in samples if s.final_paise > 0]
     if not usable:
         raise CalibrationError("no sample with a positive Kite margin to fit")
-    cur = {"psr": base["psr_pct_ppb"] / 1e9, "vsr": base["vsr_pct_ppb"] / 1e9, "somc": base["somc_per_lot_paise"]}
+    cur = {"psr": base["psr_pct_ppb"] / 1e9, "vsr": base["vsr_pct_ppb"] / 1e9, "somc": base["somc_per_lot_paise"],
+           "psr_fut": None}
 
-    def err(c: dict) -> float:
-        row = with_params(base, c["psr"], c["vsr"], round(c["somc"]))
-        return sum(_rel(pricer.t1(s.portfolio, row)[0], s.final_paise) for s in usable) / len(usable)
+    def err(c: dict, group: list[Sample] = usable) -> float:
+        row = with_params(base, c["psr"], c["vsr"], round(c["somc"]), c["psr_fut"])
+        return sum(_rel(pricer.t1(s.portfolio, row)[0], s.final_paise) for s in group) / len(group)
 
     best = err(cur)
-    phi = (math.sqrt(5) - 1) / 2
     for _ in range(rounds):
         for key in ("psr", "vsr", "somc"):
-            a, b = BOUNDS[key]
-            x1, x2 = b - phi * (b - a), a + phi * (b - a)
-            f1, f2 = err({**cur, key: x1}), err({**cur, key: x2})
-            for _ in range(18):                              # golden section, one new evaluation per step
-                if f1 <= f2:
-                    b, x2, f2 = x2, x1, f1
-                    x1 = b - phi * (b - a)
-                    f1 = err({**cur, key: x1})
-                else:
-                    a, x1, f1 = x1, x2, f2
-                    x2 = a + phi * (b - a)
-                    f2 = err({**cur, key: x2})
-            cand = {**cur, key: (a + b) / 2}
+            cand = {**cur, key: _golden(lambda x: err({**cur, key: x}), *BOUNDS[key])}
             e = err(cand)
             if e < best:
                 cur, best = cand, e
-    return with_params(base, cur["psr"], cur["vsr"], round(cur["somc"])), best
+    fut = [s for s in usable if s.portfolio.kind in FUTURE_KINDS]
+    if futures and fut:
+        same = err(cur, fut)
+        cand = {**cur, "psr_fut": _golden(lambda x: err({**cur, "psr_fut": x}, fut), *BOUNDS["psr_fut"])}
+        if err(cand, fut) < same * 0.95:
+            cur, best = cand, err(cand)
+    return with_params(base, cur["psr"], cur["vsr"], round(cur["somc"]), cur["psr_fut"]), best
 
 
 def _quantile(xs: list[float], q: float) -> float:
@@ -423,12 +472,17 @@ def report_text(snap: Snapshot, table: dict, base: dict, fitted: dict, before: f
     lines = [f"# SPAN-lite calibration: {snap.underlying}, {snap.day}", "",
              "How close our margin estimates came to Kite's, for the same portfolios priced at the same moment. ",
              "\"Within 5 %\" means our number was no more than 5 % above or below Kite's.", "",
+             f"- Fitted to {TARGET_WORDS}.",
              f"- Expiries priced: {', '.join(snap.expiries) or 'none'}"
              + (f"; contracts expiring today left out (--skip-expiring): {', '.join(snap.skipped) or 'none'}."
                 if snap.skip_expiring else "; contracts expiring today were not left out."),
-             f"- Settings now: price move {base['psr_pct']}, volatility move {base['vsr_pct']}, minimum "
+             f"- Settings now: price move {base['psr_pct']}"
+             + (f" ({base['psr_futures_pct']} for futures)" if "psr_futures_pct" in base else "")
+             + f", volatility move {base['vsr_pct']}, minimum "
              f"₹{base['somc_per_lot_paise'] / 100:,.0f} per short lot; off by {before * 100:.1f} % on average.",
-             f"- Fitted settings: price move {fitted['psr_pct']}, volatility move {fitted['vsr_pct']}, minimum "
+             f"- Fitted settings: price move {fitted['psr_pct']}"
+             + (f" ({fitted['psr_futures_pct']} for futures)" if "psr_futures_pct" in fitted else "")
+             + f", volatility move {fitted['vsr_pct']}, minimum "
              f"₹{fitted['somc_per_lot_paise'] / 100:,.0f} per short lot; off by {after * 100:.1f} % on average.",
              "", "| Portfolios | How many | Flat model: half within / 9 in 10 within | SPAN-lite now | SPAN-lite fitted |",
              "|---|---|---|---|---|"]
@@ -445,9 +499,10 @@ def report_text(snap: Snapshot, table: dict, base: dict, fitted: dict, before: f
 
 
 def pending_row(fitted: dict, snap: Snapshot, n: int, after: float) -> dict:
-    keep = ("psr_pct", "vsr_pct", "extreme_multiple", "extreme_weight", "somc_per_lot_paise", "elm_pct", "default_iv")
+    keep = ("psr_pct", "psr_futures_pct", "vsr_pct", "extreme_multiple", "extreme_weight", "somc_per_lot_paise",
+            "elm_pct", "default_iv")
     return {"applies": {"underlying": snap.underlying}, "effective_from": snap.day,
-            **{k: fitted[k] for k in keep}, "calibration_id": f"calibration-{snap.day}",
+            **{k: fitted[k] for k in keep if k in fitted}, "calibration_id": f"calibration-{snap.day}",
             "source": f"calibration {snap.day}", "samples": n, "mean_relative_error": f"{after:.4f}",
             "verified": False, "pending_review": True}
 
@@ -484,12 +539,14 @@ def calibrate(client, underlying: str, n: int, *, seed: int = 0, day: str | None
     for p in sample_portfolios(snap, n, seed):
         sleep(MARGIN_INTERVAL_S)
         answer = client.basket_order_margins(kite_orders(snap, p), consider_positions=False)
-        final = _paise((answer.get("final") or {}).get("total")) or 0
+        final = kite_target(answer)
         t0 = pricer.t0(p)
         t1, rows = pricer.t1(p, base)
         samples.append(Sample(p, final, t0, t1))
-        market = {str(i): snap.quotes.get(i) for i, _ in p.legs} | {"underlying": snap.quotes[snap.index_id],
-                                                                     "snapshot": snap.choice()}
+        market = {str(i): snap.quotes.get(i) for i, _ in p.legs} | {
+            "underlying": snap.quotes[snap.index_id],
+            "snapshot": snap.choice() | {"target": TARGET, "target_paise": final,
+                                         "quotes": {str(i): q for i, q in sorted(snap.quotes.items())}}}
         store.add_margin_calibration({
             "wall_ns": snap.wall_ns, "underlying": underlying,
             "portfolio_json": json.dumps({"kind": p.kind, "legs": kite_orders(snap, p)}, sort_keys=True),
@@ -507,3 +564,95 @@ def calibrate(client, underlying: str, n: int, *, seed: int = 0, day: str | None
     report.write_text(text, encoding="utf-8")
     written = write_pending(pending_row(fitted, snap, len(samples), after), params_path)
     return report, written
+
+
+
+# ── Refit offline from stored samples (IWB 4.5) ─────────────────────────────
+
+def stored_run(underlying: str, day: str) -> list[dict]:
+    """The margin_calibration rows of the last calibration of `underlying` on IST trade date `day`."""
+    from stockify import store, timeutil
+    rows = [r for r in store.margin_calibrations(underlying)
+            if timeutil.ns_to_ist(r["wall_ns"]).date().isoformat() == day]
+    if not rows:
+        raise CalibrationError(f"no stored calibration samples for {underlying} on {day}")
+    last = max(r["wall_ns"] for r in rows)
+    return [r for r in rows if r["wall_ns"] == last]
+
+
+def snapshot_from_rows(underlying: str, day: str, rows: list[dict]) -> tuple[Snapshot, list[Sample], str]:
+    """Rebuild the snapshot and samples of a stored run, offline: instruments from refdata, quotes from the rows.
+
+    Rows written from IWB 4.5 on carry every quote of the snapshot ("quotes"), so the rebuild is exact. Earlier
+    rows carry only their own legs' quotes; their union stands in for the chain (the forward and the ATM-IV
+    fallback can then differ a little from the live run), and the third value says which it was."""
+    from stockify.data import instruments
+    index_id, is_index = _underlying_row(underlying)
+    snap_rows: dict[int, dict] = {index_id: _row_for(index_id, "INDEX" if is_index else "EQ", underlying, index_id,
+                                                     is_index, day)}
+    quotes: dict[int, dict] = {}
+    choice: dict = {}
+    exact = True
+    parsed = []
+    for r in sorted(rows, key=lambda r: r["sample_id"]):
+        market = json.loads(r["market_json"])
+        choice = market.get("snapshot") or choice
+        if "quotes" in (market.get("snapshot") or {}):
+            for k, q in market["snapshot"]["quotes"].items():
+                quotes[int(k)] = q
+        else:
+            exact = False
+            for k, q in market.items():
+                if k.isdigit():
+                    quotes[int(k)] = q
+        quotes[index_id] = market["underlying"]
+        doc = json.loads(r["portfolio_json"])
+        legs = []
+        for o in doc["legs"]:
+            iid = instruments.find(o["exchange"], o["tradingsymbol"])
+            if iid is None:
+                raise CalibrationError(f"{o['tradingsymbol']} is not in refdata")
+            if iid not in snap_rows:
+                snap_rows[iid] = _row_for(iid, instruments.get(iid)["kind"], underlying, index_id, is_index, day)
+            legs.append((iid, o["quantity"] * (1 if o["transaction_type"] == "BUY" else -1)))
+        parsed.append((Portfolio(doc["kind"], legs), json.loads(r["kite_json"]), r["t0_paise"]))
+    for iid in quotes:
+        if iid not in snap_rows:
+            info = instruments.get(iid)
+            if info is not None:
+                snap_rows[iid] = _row_for(iid, info["kind"], underlying, index_id, is_index, day)
+    futures = sorted(i for i, r in snap_rows.items() if r["kind"] == "FUT")
+    expiries = choice.get("expiries") or sorted({r["expiry"] for r in snap_rows.values() if r["kind"] in ("CE", "PE")})
+    snap = Snapshot(underlying, day, rows[0]["wall_ns"], index_id, snap_rows,
+                    {i: q for i, q in quotes.items() if i in snap_rows}, futures, list(expiries),
+                    bool(choice.get("skip_expiring")), list(choice.get("skipped") or []))
+    samples = [Sample(p, kite_target(answer), 0, 0) for p, answer, _ in parsed]
+    return snap, samples, "exact" if exact else "legs_only"
+
+
+def refit(underlying: str, day: str, *, params_path: Path | None = None) -> tuple[Path, Path]:
+    """`margin calibrate --refit`: fit again from the stored samples of `day`, with no Kite call at all; replaces that
+    day's pending row and writes `<underlying>-<day>-refit.md` beside the live run's report."""
+    from stockify import paths
+    snap, samples, how = snapshot_from_rows(underlying, day, stored_run(underlying, day))
+    margin, pricing = _config_params()
+    base = class_row(margin, snap)
+    pricer = Pricer(snap, margin, pricing)
+    for s in samples:
+        s.t0_paise = pricer.t0(s.portfolio)
+        s.t1_paise = pricer.t1(s.portfolio, base)[0]
+    usable = [s for s in samples if s.final_paise > 0]
+    before = sum(_rel(s.t1_paise, s.final_paise) for s in usable) / len(usable) if usable else float("nan")
+    fitted, after = fit(pricer, samples, base)
+    t1_fit = {n_: pricer.t1(s.portfolio, fitted)[0] for n_, s in enumerate(samples)}
+    text = report_text(snap, error_table(samples, t1_fit), base, fitted, before, after)
+    text = text.replace("\n\n", f"\n\nRefitted offline from the {len(samples)} samples stored for that day (no Kite "
+                        f"call); quotes: {'the full snapshot' if how == 'exact' else 'only the legs of each sample'}."
+                        "\n\n", 1)
+    out_dir = paths.lab_dir() / "margin_calibration"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = out_dir / f"{underlying}-{day}-refit.md"
+    report.write_text(text, encoding="utf-8")
+    row = pending_row(fitted, snap, len(samples), after)
+    row["source"] = f"calibration {day} (refit offline, target {TARGET})"
+    return report, write_pending(row, params_path)

@@ -635,3 +635,25 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Weak spot, open: futures stay 8–14 % off even fitted, and futures hedged with options 26 % (NIFTY), so one price-move setting cannot serve both options and futures. A model gap, not a settings gap: likely a separate futures scan/ELM treatment. To look at before adopting for futures strategies.
 - The volatility move differs a lot between the two indices (0.15 vs 0.46), which suggests one day does not pin it down. A second calibration on another day (the next good one: Wed 11 Nov IST, needs the owner's Kite login Tue 16:30–19:30 PST) would show whether the settings are stable.
 - The two fitted rows are committed under `spanlite_pending` (verified: false). No model reads them. 🛑 Adoption waits for the owner's review of the reports.
+
+## SPAN-lite refit from the first live calibration (IWB 4.5, D-62)
+
+- Target: `calibrate.kite_target` = Kite's final span + exposure + additional (paise). `final.total` adds
+  `option_premium`, the premium of bought legs, which a run debits as cash; long single options therefore have
+  target 0 and drop out of the fit (13 of 200 samples per index on 2026-11-09). Each new margin_calibration row's
+  market_json `snapshot` holds `target`, `target_paise` and every quote of the snapshot (`quotes`).
+- `margin calibrate --refit --date D` (`calibrate.refit`): no Kite client at all. It rebuilds the snapshot from
+  refdata and the stored rows (`snapshot_from_rows`), fits again, writes `<und>-<D>-refit.md` beside the live report
+  (the live one is kept) and replaces that day's pending row. Rows from before IWB 4.5 carry only their own legs'
+  quotes (27 instruments per index on 2026-11-09); rebuilt from those, SPAN-lite at the live settings equals the
+  stored T1 on 140/200 (NIFTY) and 159/200 (BANKNIFTY) samples and is within 0.09 % on the rest (the 17-Nov
+  synthetic forward uses fewer strikes).
+- `psr_futures_pct` (D-62), oracle `spanlite.py` and engine `spanlite.cpp`: futures legs move by it, options by
+  `psr_pct`; absent = `psr_pct`, so placeholders, goldens and fuzz are unchanged. Byte parity checked with it set
+  (test_spanlite_parity). Fitted on plain futures after PSR/VSR/SOMC (`FUTURE_KINDS`).
+- Tried and dropped: `extreme_multiple` 2 or 2.5 instead of 3 (options need a bigger PSR, futures get worse: 17–19 %).
+- Refit 2026-11-09 (pending, not adopted): NIFTY psr 0.0951, futures 0.0886, vsr 0.3222, ₹3,157/lot, mean error 3.9 %;
+  BANKNIFTY psr 0.0963, futures 0.0881, vsr 0.5646, ₹3,033/lot, 7.4 %. The minimum per lot binds on ~60 samples
+  per index, so it is determined.
+- Known gap: hedged futures (NIFTY 7.5 %, BANKNIFTY 51.8 % off). Kite's SPAN credits the bought option's value; one
+  BANKNIFTY long future + long ITM put has SPAN 0. SPAN-lite has no such credit (exact SPAN, M4.10, would).

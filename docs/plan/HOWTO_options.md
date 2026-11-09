@@ -128,7 +128,8 @@ It is simple and predictable, but it charges a hedged position (an iron fly) alm
 this whole position lose in a bad day?":
 
 - It moves the price up and down by up to a set range (PSR) and the volatility up and down by a set share (VSR), 14
-  scenarios in all, plus two extreme moves of 3 × PSR counted at 35 %.
+  scenarios in all, plus two extreme moves of 3 × PSR counted at 35 %. Futures can have their own, separate range
+  (`psr_futures_pct`, D-62): Kite charges futures a bigger share of their value than options imply.
 - It revalues every leg in every scenario (Black-76, at each option's own volatility) and takes the worst loss.
 - A floor for short options: at least `somc_per_lot` per lot sold.
 - Plus exposure margin: 2 % of the contract value for index futures and short options (3.5 % for stocks), and the
@@ -332,6 +333,19 @@ The report's header lists the expiries priced and the ones left out, and so does
 
 Running it again the same day replaces that day's pending row; rows from other days are kept.
 
+The fit compares SPAN-lite with Kite's margin **without** the premium of bought options. Kite's "total" also counts
+that premium, because the broker takes it upfront. In a run that premium is paid as cash when the order fills, so
+it is not margin.
+
+**Fitting again without Kite.** To refit a day that is already stored, for example after the model changes, run:
+
+```
+.\.venv\Scripts\python.exe -m stockify margin calibrate --underlying NIFTY --refit --date 2026-11-09
+```
+
+It makes no Kite call. It rebuilds the market from the stored samples, fits again, writes
+`NIFTY-<date>-refit.md` beside the live report, and replaces that day's pending row.
+
 ## 6. Reviewing and adopting the fitted settings
 
 The fitted settings are **not used** until you move them into place. No margin model reads `spanlite_pending`.
@@ -348,7 +362,7 @@ The fitted settings are **not used** until you move them into place. No margin m
    {
      "applies": { "underlying": "NIFTY" },
      "effective_from": "2026-11-11",
-     "psr_pct": "…", "vsr_pct": "…", "extreme_multiple": 3, "extreme_weight": "0.35",
+     "psr_pct": "…", "psr_futures_pct": "…", "vsr_pct": "…", "extreme_multiple": 3, "extreme_weight": "0.35",
      "somc_per_lot_paise": …, "elm_pct": "0.02", "default_iv": "0.15",
      "calibration_id": "calibration-2026-11-11",
      "source": "calibration 2026-11-11", "samples": 200, "mean_relative_error": "…",
