@@ -197,6 +197,15 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const std::vector<std::pa
                                        [](const Valued& v) { return v.units > 0 && !v.future; });
     if (long_options_only) {
         worst = 0.0;  // MEZ 4.5: only bought options, whose premium the run already paid in cash
+    } else if (p.contains("net_option_value") && p.at("net_option_value").is_boolean() &&
+               p.at("net_option_value").get<bool>()) {  // D-63: bought options credit, sold options charge
+        double nov = 0.0;
+        for (std::size_t i = 0; i < valued.size(); ++i) {
+            if (!valued[i].future) {
+                nov += static_cast<double>(valued[i].units) * base[i];
+            }
+        }
+        worst = std::max(0.0, worst - nov);
     }
     UnderlyingMargin out;
     out.underlying = uid;

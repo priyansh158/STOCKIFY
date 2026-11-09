@@ -148,6 +148,23 @@ class SpanLiteParityTests(unittest.TestCase):
                     (folder / "plain" / "oracle" / "events_log.txt").read_bytes()
                 self.assertEqual(same, not with_future)       # the funds lines move only when a future is held
 
+    def test_net_option_value_agrees_exactly(self):
+        """D-63: with `net_option_value`, oracle and engine still agree byte for byte, and the margins change."""
+        from stockify import numerics
+        nov = {"net_option_value": True, "psr_futures_pct": "0.0886", "psr_futures_pct_ppb": numerics.to_ppb("0.0886")}
+        for seed, with_future in ((4819, True), (4820, False), (4821, True)):
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="spanlite-nov-") as tmp:
+                folder = Path(tmp)
+                g = spanlite_world(seed, with_future)
+                run_both(g, folder, spanlite_bundle(g, **nov))
+                assert_same_artifacts(self, folder / "oracle", folder / "engine")
+                self.assertEqual((folder / "oracle" / "margin_daily.csv").read_bytes(),
+                                 (folder / "engine" / "margin_daily.csv").read_bytes())
+                (folder / "plain").mkdir()
+                run_both(g, folder / "plain", spanlite_bundle(g))
+                self.assertNotEqual((folder / "oracle" / "events_log.txt").read_bytes(),
+                                    (folder / "plain" / "oracle" / "events_log.txt").read_bytes())
+
     def test_flat_runs_write_no_margin_rows(self):
         with tempfile.TemporaryDirectory(prefix="spanlite-flat-") as tmp:
             folder = Path(tmp)

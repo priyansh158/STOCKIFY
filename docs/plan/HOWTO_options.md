@@ -130,6 +130,9 @@ this whole position lose in a bad day?":
 - It moves the price up and down by up to a set range (PSR) and the volatility up and down by a set share (VSR), 14
   scenarios in all, plus two extreme moves of 3 × PSR counted at 35 %. Futures can have their own, separate range
   (`psr_futures_pct`, D-62): Kite charges futures a bigger share of their value than options imply.
+- Settings with `net_option_value` (D-63, as SPAN does) take the options' current value off that loss: options
+  you bought count in your favour, options you sold count against you.
+- Options you only bought need no SPAN-lite margin: you paid their premium in cash, and that is all they can lose.
 - It revalues every leg in every scenario (Black-76, at each option's own volatility) and takes the worst loss.
 - A floor for short options: at least `somc_per_lot` per lot sold.
 - Plus exposure margin: 2 % of the contract value for index futures and short options (3.5 % for stocks), and the

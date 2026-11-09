@@ -672,3 +672,35 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   other type's error unchanged. Expectations that moved: none. No golden stores SPAN-lite values (the fuzz worlds
   use the placeholders but compare oracle with engine; test_api_m4 reads a hand-written CSV); the parity tests,
   the comparison test and the how-to example (short options only) are unchanged.
+
+## Net option value in SPAN-lite (MEZ 4.4, D-63)
+
+- `net_option_value: true` in a spanlite row: scan = max(0, worst loss − Σ units × base option value), oracle and
+  engine alike (same summation order; parity tested with it set). The calibration fits this form (`NET_OPTION_VALUE`)
+  and the pending rows carry it.
+- Forms tested offline on the stored 2026-11-09 samples, each refitted (median |error| vs Kite span + exposure):
+
+  | Form | NIFTY hedged | BANKNIFTY hedged | Options NIFTY / BANKNIFTY | Futures |
+  |---|---|---|---|---|
+  | none (D-62) | 7.5 % low | 51.8 % high | 1.4–7.6 % / 1.3–6.1 % | 0.1 / 0.0 % |
+  | A: max(scan − bought value, SOMC) | 34 % low | 0.1 % | ≈ none | same |
+  | B: max(max(scan, SOMC) − bought value, 0) | 34 % low | 0.1 % | flies, condors, spreads up to 14 % | same |
+  | C: net option value (adopted for the fit) | 7.1 % low | 65.7 % high | 0.1–3.2 % / 0.1–1.4 % | same |
+  | C with one PSR (no futures move) | 34 % low | 0.1 % | as C | 8–14 % low |
+
+- Evidence that no single credit rule fits hedged futures (Kite's span per unit of quantity, 2026-11-09):
+
+  | Pair | Future | Strike | Premium | Kite span / unit | Ours (C) scan − bought value / unit |
+  |---|---|---|---|---|---|
+  | BANKNIFTY long fut + long 59200 PE | 59,104.00 | 59,200 | ₹870.22 | ₹0.0 | ₹778.0 |
+  | BANKNIFTY short fut + long 59200 CE | 59,104.00 | 59,200 | ₹743.12 | ₹369.4 | ₹969.1 |
+  | NIFTY short fut + long 17-Nov 24950 CE | 24,954.50 | 24,950 | ₹262.00 | ₹151.9 | ₹239.8 |
+  | NIFTY long fut + long 17-Nov 24950 PE | 24,954.50 | 24,950 | ₹277.00 | ₹257.2 | ₹203.9 |
+
+  The bought put gets a full credit on BANKNIFTY and almost none on NIFTY; any form that fixes one index's pairs
+  breaks the other's. Hedged futures stay not modelled (D-62's open item).
+- Refit 2026-11-09 with MEZ 4.5 and D-63 (pending, not adopted):
+  NIFTY psr 0.0799, futures 0.0886, vsr 0.5061, ₹1.73/lot, mean 2.1 %;
+  BANKNIFTY psr 0.0735, futures 0.0881, vsr 0.3096, ₹1.73/lot, mean 8.4 % (7.4 % before: hedged futures 51.8 → 65.7 %).
+  BANKNIFTY's 90th percentile on straddles and strangles rose (6.4 → 8.0 %, 5.0 → 8.4 %) while their medians fell
+  to 0.1 %.

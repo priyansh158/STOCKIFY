@@ -37,6 +37,7 @@ QUOTE_INTERVAL_S = 1.0          # K-8: quote endpoint 1 request/s
 MARGIN_INTERVAL_S = 0.1         # K-8: other endpoints 10 requests/s
 BOUNDS = {"psr": (0.01, 0.25), "vsr": (0.0, 0.8), "somc": (0, 2_000_000),     # somc in paise per lot
           "psr_fut": (0.01, 0.25)}
+NET_OPTION_VALUE = True        # fits are for the D-63 form: bought options credit their value, sold ones charge it
 FUTURE_KINDS = ("future",)   # the samples psr_futures is fitted from (D-62). Not hedged futures: Kite's SPAN on
                               # those credits the bought option (one BANKNIFTY pair on 2026-11-09 has SPAN 0), which
                               # no price move reproduces; fitting to them pulls the futures move off plain futures.
@@ -484,6 +485,8 @@ def report_text(snap: Snapshot, table: dict, base: dict, fitted: dict, before: f
              + (f" ({fitted['psr_futures_pct']} for futures)" if "psr_futures_pct" in fitted else "")
              + f", volatility move {fitted['vsr_pct']}, minimum "
              f"₹{fitted['somc_per_lot_paise'] / 100:,.0f} per short lot; off by {after * 100:.1f} % on average.",
+             *([("- The fitted settings credit bought options' value and charge sold options' value against the "
+                 "worst loss (net option value, D-63), as SPAN does.")] if fitted.get("net_option_value") else []),
              "", "| Portfolios | How many | Flat model: half within / 9 in 10 within | SPAN-lite now | SPAN-lite fitted |",
              "|---|---|---|---|---|"]
 
@@ -499,7 +502,8 @@ def report_text(snap: Snapshot, table: dict, base: dict, fitted: dict, before: f
 
 
 def pending_row(fitted: dict, snap: Snapshot, n: int, after: float) -> dict:
-    keep = ("psr_pct", "psr_futures_pct", "vsr_pct", "extreme_multiple", "extreme_weight", "somc_per_lot_paise",
+    keep = ("psr_pct", "psr_futures_pct", "net_option_value", "vsr_pct", "extreme_multiple", "extreme_weight",
+            "somc_per_lot_paise",
             "elm_pct", "default_iv")
     return {"applies": {"underlying": snap.underlying}, "effective_from": snap.day,
             **{k: fitted[k] for k in keep if k in fitted}, "calibration_id": f"calibration-{snap.day}",
@@ -555,7 +559,7 @@ def calibrate(client, underlying: str, n: int, *, seed: int = 0, day: str | None
             "t1_breakdown_json": json.dumps([b.__dict__ for b in rows], sort_keys=True)})
     usable = [s for s in samples if s.final_paise > 0]
     before = sum(_rel(s.t1_paise, s.final_paise) for s in usable) / len(usable) if usable else float("nan")
-    fitted, after = fit(pricer, samples, base)
+    fitted, after = fit(pricer, samples, {**base, "net_option_value": NET_OPTION_VALUE})
     t1_fit = {n_: pricer.t1(s.portfolio, fitted)[0] for n_, s in enumerate(samples)}
     text = report_text(snap, error_table(samples, t1_fit), base, fitted, before, after)
     out_dir = paths.lab_dir() / "margin_calibration"
@@ -643,7 +647,7 @@ def refit(underlying: str, day: str, *, params_path: Path | None = None) -> tupl
         s.t1_paise = pricer.t1(s.portfolio, base)[0]
     usable = [s for s in samples if s.final_paise > 0]
     before = sum(_rel(s.t1_paise, s.final_paise) for s in usable) / len(usable) if usable else float("nan")
-    fitted, after = fit(pricer, samples, base)
+    fitted, after = fit(pricer, samples, {**base, "net_option_value": NET_OPTION_VALUE})
     t1_fit = {n_: pricer.t1(s.portfolio, fitted)[0] for n_, s in enumerate(samples)}
     text = report_text(snap, error_table(samples, t1_fit), base, fitted, before, after)
     text = text.replace("\n\n", f"\n\nRefitted offline from the {len(samples)} samples stored for that day (no Kite "

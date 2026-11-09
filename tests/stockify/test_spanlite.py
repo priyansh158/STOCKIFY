@@ -106,6 +106,31 @@ class SpanLiteTests(unittest.TestCase):
         [hedged] = m.breakdown([(10, "NRML", 75), (2, "NRML", -75)], rows.__getitem__, prices, DAY)
         self.assertGreater(hedged.scan, 0)
 
+    def test_net_option_value_by_hand(self):
+        """D-63: scan = max(0, worst loss − Σ units × base value): a sold option adds its value, a bought one
+        credits it; without the field the scan is today's."""
+        ce, pe = option(10, "CE", 25_000), option(11, "PE", 24_800)
+        rows = {10: ce, 11: pe}
+        t, r, f = B.year_fraction(NOW, LAST), 0.065, 25_000.0
+        legs = [(10, "NRML", -75), (11, "NRML", 75)]
+        plain, _ = model([ce, pe], {10: 0.12, 11: 0.13})
+        [p] = plain.breakdown(legs, rows.__getitem__, price_of({1: SPOT}), DAY)
+        nov, _ = model([ce, pe], {10: 0.12, 11: 0.13}, net_option_value=True)
+        [b] = nov.breakdown(legs, rows.__getitem__, price_of({1: SPOT}), DAY)
+        v_ce, v_pe = B.price(True, f, 25_000.0, t, r, 0.12), B.price(False, f, 24_800.0, t, r, 0.13)
+        worst = 0.0
+        for mv, vol, w in [(m, v, 1.0) for m in (0, 1 / 3, -1 / 3, 2 / 3, -2 / 3, 1, -1) for v in (1, -1)] + \
+                [(3, 0, 0.35), (-3, 0, 0.35)]:
+            pnl = -75 * (B.price(True, f * (1 + mv * 0.06), 25_000.0, t, r, 0.12 * (1 + vol * 0.25)) - v_ce)
+            pnl += 75 * (B.price(False, f * (1 + mv * 0.06), 24_800.0, t, r, 0.13 * (1 + vol * 0.25)) - v_pe)
+            worst = max(worst, -pnl * w)
+        self.assertEqual(p.scan, math.ceil(worst) * 100)
+        self.assertEqual(b.scan, math.ceil(max(0.0, worst - (-75 * v_ce + 75 * v_pe))) * 100)
+        self.assertGreater(b.scan, p.scan)                         # the sold call is worth more than the bought put
+        self.assertEqual((b.somc, b.elm), (p.somc, p.elm))
+        [alone] = nov.breakdown([(11, "NRML", 75)], rows.__getitem__, price_of({1: SPOT}), DAY)
+        self.assertEqual(alone.scan, 0)                            # MEZ 4.5 still holds
+
     def test_long_and_short_futures_cancel(self):
         m, _ = model([FUT], {})
         [b] = m.breakdown([(2, "NRML", 75), (2, "NRML", -75)], lambda i: FUT, price_of({1: SPOT, 2: SPOT}), DAY)

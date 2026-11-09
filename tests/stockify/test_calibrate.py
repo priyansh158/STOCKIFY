@@ -80,7 +80,8 @@ class FakeKite:
         by_sym = {r["tradingsymbol"]: i for i, r in self.snapshot.rows.items()}
         legs = [(by_sym[o["tradingsymbol"]], o["quantity"] * (1 if o["transaction_type"] == "BUY" else -1))
                 for o in orders]
-        row = CAL.with_params(self.base, TRUE["psr"], TRUE["vsr"], TRUE["somc"], TRUE["psr_fut"])
+        row = CAL.with_params({**self.base, "net_option_value": True}, TRUE["psr"], TRUE["vsr"], TRUE["somc"],
+                              TRUE["psr_fut"])                    # the truth is the D-63 form
         [b] = self.pricer.t1(CAL.Portfolio("x", legs), row)[1] or [None]
         span, exposure = (max(b.scan, b.somc) / 100, (b.elm + b.addons) / 100) if b else (0.0, 0.0)
         # as Kite does: the premium of bought options is in `total` too (it is paid upfront), but not in span/exposure

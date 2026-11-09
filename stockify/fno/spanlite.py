@@ -11,6 +11,9 @@ Per underlying, the NRML futures and options (long options too: they offset risk
                where F is the leg's own forward (the M4.4 chain forward of its expiry; else the underlying)
     scan     = max(0, worst scenario loss); 0 when the underlying's legs are all bought options (MEZ 4.5: their
                loss cannot exceed their value, which the run already paid in cash; Kite's SPAN is 0 for them)
+               with `net_option_value: true` in the row (D-63, textbook SPAN's net option value): scan =
+               max(0, worst loss − Σ units × option value at the base), so bought options credit their value and
+               sold options charge theirs (values: Black-76 at each leg's forward and IV, as the scenarios use)
     SOMC     = somc_per_lot_paise × short option lots
     ELM      = elm_pct × notional, for futures (F × |units|) and short options (underlying × |units|)
     add-on   = the expiry-day add-on on short index options expiring that day: pct × underlying × |units| (X-9)
@@ -168,6 +171,12 @@ class SpanLiteMargin:
             worst = max(worst, -pnl * weight)
         if valued and all(units > 0 and not fut for (units, fut, *_) in valued):
             worst = 0.0                                 # MEZ 4.5: only bought options, premium paid in cash
+        elif p.get("net_option_value") is True:         # D-63
+            nov = 0.0
+            for (units, fut, *_), v0 in zip(valued, base):
+                if not fut:
+                    nov += units * v0
+            worst = max(0.0, worst - nov)
         scan = int(math.ceil(worst)) * 100              # rupees → paise, rounded up to the rupee
         somc = numerics.ceil_to(p["somc_per_lot_paise"] * somc_lots, 100)
         return UnderlyingMargin(uid, scan, somc, _rupee_up(elm_raw), _rupee_up(addon_raw))

@@ -506,7 +506,7 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
 
 ### 7.6 `margin_params.json`
 
-`flat` (dated: `index_pct`, `stock_pct`; assumption defaults `"0.12"` / `"0.20"`), `spanlite` (per underlying, dated: `psr_pct`, optional `psr_futures_pct` (D-62: futures' price move; absent = `psr_pct`), `vsr_pct`, `extreme_multiple` 3, `extreme_weight` `"0.35"`, `somc_per_lot_paise`, `elm_pct`, `default_iv`, `source`, `calibration_id`), `expiry_day_short_index_option_addon` (dated: `pct` `"0.02"`, `basis` — ⚠ X-9).
+`flat` (dated: `index_pct`, `stock_pct`; assumption defaults `"0.12"` / `"0.20"`), `spanlite` (per underlying, dated: `psr_pct`, optional `psr_futures_pct` (D-62: futures' price move; absent = `psr_pct`), optional `net_option_value` (D-63: boolean; true = scan net of the options' value), `vsr_pct`, `extreme_multiple` 3, `extreme_weight` `"0.35"`, `somc_per_lot_paise`, `elm_pct`, `default_iv`, `source`, `calibration_id`), `expiry_day_short_index_option_addon` (dated: `pct` `"0.02"`, `basis` — ⚠ X-9).
 
 ### 7.7 `pricing.json`
 
