@@ -186,8 +186,49 @@ from tests.stockify.test_bundle import BundleTest  # noqa: E402  — the M2.1 of
 
 
 class SpanLiteBundleTests(BundleTest):
+    def fut_run(self, **kw) -> dict:
+        return self.resolve(margin={"model": "spanlite"}, data={"packs": [{"spec": {
+            "dataset": "bars", "interval": "day", "instruments": [{"ids": [self.fut]}],
+            "from": "2025-12-22", "to": "2025-12-31"}}]}, **kw)
+
+    def with_rows(self, extra: list[dict]):  # noqa: ANN201
+        """loader.load_json with extra spanlite rows in margin_params.json (as after an adoption)."""
+        from unittest import mock
+        from stockify.config import loader
+        real = loader.load_json
+
+        def load(name, config_dir=None):  # noqa: ANN001, ANN202
+            doc = real(name, config_dir)
+            if name == "margin_params.json":
+                doc["spanlite"] = doc["spanlite"] + [dict(r) for r in extra]
+            return doc
+        return mock.patch.object(loader, "load_json", side_effect=load)
+
+    def test_the_label_names_only_the_rows_the_run_can_use(self):
+        """MEZ 4.3: a row naming the underlying replaces the class placeholder from its date; the label follows."""
+        def nifty(day: str, cid: str) -> dict:
+            return {"applies": {"underlying": "NIFTY"}, "effective_from": day, "psr_pct": "0.08", "vsr_pct": "0.3",
+                    "extreme_multiple": 3, "extreme_weight": "0.35", "somc_per_lot_paise": 300000,
+                    "elm_pct": "0.02", "default_iv": "0.15", "calibration_id": cid, "source": "calibration",
+                    "verified": False}
+        spanlite_labels = lambda b: [x for x in b["labels"] if x.startswith("margin_spanlite:")]  # noqa: E731
+        for extra, want in (
+                ([], ["margin_spanlite:placeholder"]),
+                ([nifty("2025-01-01", "calibration-a")], ["margin_spanlite:calibration-a"]),       # only the fit
+                ([nifty("2025-12-26", "calibration-a")], ["margin_spanlite:calibration-a+placeholder"]),  # mid-run
+                ([nifty("2026-01-05", "calibration-a")], ["margin_spanlite:placeholder"]),          # not yet
+                ([nifty("2025-01-01", "calibration-a"), nifty("2025-12-29", "calibration-b")],
+                 ["margin_spanlite:calibration-a+calibration-b"]),
+                ([dict(nifty("2025-01-01", "calibration-a"), applies={"underlying": "BANKNIFTY"})],
+                 ["margin_spanlite:placeholder"])):                                               # another index
+            with self.subTest(extra=[(r["applies"], r["effective_from"]) for r in extra]), self.with_rows(extra):
+                b = self.fut_run()
+                self.assertEqual(spanlite_labels(b), want)
+        b = self.resolve(margin={"model": "spanlite"})                                  # RELIANCE only: no F&O
+        self.assertEqual(spanlite_labels(b), ["margin_spanlite:none"])
+
     def test_a_spanlite_config_resolves_with_placeholder_rows_and_label(self):
-        b = self.resolve(margin={"model": "spanlite"})
+        b = self.fut_run()
         self.assertEqual(b["run"]["margin"]["model"], "spanlite")
         self.assertIn("margin_spanlite:placeholder", b["labels"])
         self.assertIn("margin:spanlite(approx)", b["labels"])

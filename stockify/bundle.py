@@ -354,6 +354,23 @@ def _scan_packs(pack_rows: list[dict]) -> tuple[set[int], dict[int, str], date, 
 
 # ── Resolve ──────────────────────────────────────────────────────────────────
 
+def _spanlite_calibrations(rows: list[dict], instruments_rows: list[dict], days: list[dict]) -> list[str]:
+    """The calibration ids of the SPAN-lite rows a run can use (MEZ 4.3): for each derivative's underlying and each
+    run day, the row SpanLiteMargin.params picks (one naming the underlying wins over its class). ["none"] when the
+    run has no derivatives, so a run that only used a fitted row is not labelled with the placeholders."""
+    from stockify.fno.spanlite import _row
+    used: set[str] = set()
+    unds = sorted({(r["underlying"], r["underlying_class"]) for r in instruments_rows
+                   if r["kind"] in ("FUT", "CE", "PE", "FUT_CONT") and r.get("underlying_class")})
+    for und, cls in unds:
+        for d in days:
+            found = (_row(rows, d["date"], {"underlying": und}) if und else None) \
+                or _row(rows, d["date"], {"underlying_class": cls})
+            if found is not None:
+                used.add(found.get("calibration_id", "?"))
+    return sorted(used) or ["none"]
+
+
 def resolve_bundle(cfg: dict) -> dict:
     """The bundle for a validated run config (`runconfig.load`)."""
     from stockify.config import loader
@@ -371,10 +388,10 @@ def resolve_bundle(cfg: dict) -> dict:
     pricing = _dated_section(loader.load_json("pricing.json"), start, end)
     _ppb_fields(pricing, ("rate",))
     labels = [f"fill:{cfg['fill_model']['kind']}", f"margin:{cfg['margin']['model']}(approx)"]
-    if cfg["margin"]["model"] == "spanlite":     # M4.8: the parameters' calibration, e.g. "placeholder" (I-14)
-        calibrations = sorted({r.get("calibration_id", "?") for r in margin.get("spanlite", [])}) or ["none"]
-        labels.append("margin_spanlite:" + "+".join(calibrations))
     instruments_rows = resolve_instruments(ids, start, end, days, traded, labels)
+    if cfg["margin"]["model"] == "spanlite":     # M4.8: the parameters' calibration, e.g. "placeholder" (I-14)
+        labels.append("margin_spanlite:" + "+".join(_spanlite_calibrations(margin.get("spanlite", []),
+                                                                          instruments_rows, days)))
     if cfg["fill_model"]["kind"] == "eod_close":
         labels.append("eod_approx")
     if cfg["fill_model"]["kind"] == "snapshot_ltp":

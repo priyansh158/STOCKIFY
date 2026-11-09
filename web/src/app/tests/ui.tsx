@@ -39,6 +39,7 @@ function labelText(label: string): { text: string; warn: boolean } {
   if (fixed[label]) return fixed[label];
   if (label.startsWith("margin_spanlite:")) {
     const calib = label.slice("margin_spanlite:".length);
+    if (calib === "none") return { text: "no SPAN-like settings needed", warn: false };
     return { text: calib.includes("placeholder") ? "margin settings not yet calibrated" : `margin settings ${calib}`,
              warn: calib.includes("placeholder") };
   }
@@ -61,6 +62,9 @@ export function labelMeaning(label: string): string {
     short_delivery: "A short stock F&O position ended in delivering shares that were not held; a real account would face an auction penalty.",
   };
   if (fixed[label]) return fixed[label];
+  if (label === "margin_spanlite:none") {
+    return "The run had no futures or options, so the SPAN-like margin's settings were never needed.";
+  }
   if (label.startsWith("margin_spanlite:")) {
     return label.includes("placeholder")
       ? "The SPAN-like margin's risk settings are placeholders until they are calibrated against Kite, so margin amounts are rough."

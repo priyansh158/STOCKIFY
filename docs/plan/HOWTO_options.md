@@ -152,6 +152,7 @@ Labels are printed after a run's summary and shown on its page in `/tests`. They
 | `margin:spanlite(approx)` | margin is a SPAN-like estimate (price and volatility scenarios plus exposure margin), not the exchange's own figures |
 | `margin_spanlite:placeholder` | the SPAN-lite settings are placeholders, not yet calibrated against Kite, so margin amounts are rough |
 | `margin_spanlite:calibration-<date>` | the SPAN-lite settings fitted to Kite's margins on that date (section 6) |
+| `margin_spanlite:none` | the run chose SPAN-lite but had no futures or options, so no SPAN-lite settings were used |
 | `margin_spanlite:iv_fallback` | for at least one option, the margin had to assume a volatility because none could be read from its quotes (its last one today, else the ATM option's, else `default_iv`: 15 % for indices, 30 % for stocks) |
 | `delivery_margin_approx` | the extra margin brokers block before stock F&O delivery was applied approximately |
 | `settlement_fallback` | NSE had not published a final settlement price for an expiry, so the last market price was used |
@@ -363,9 +364,12 @@ The fitted settings are **not used** until you move them into place. No margin m
 
 5. **Commit the change.** Old runs stay reproducible either way: each run's `bundle.json` keeps the settings it used.
 
-New SPAN-lite runs then carry `margin_spanlite:calibration-2026-11-11`. While the placeholder rows are still in
-the file, the label also lists them (`margin_spanlite:calibration-2026-11-11+placeholder`), because it names every
-setting in the file, not only the ones a run's dates used.
+New SPAN-lite runs on NIFTY from that date then carry `margin_spanlite:calibration-2026-11-11`, and the run's page
+no longer warns that the settings are uncalibrated. The label names only the settings a run could use, for its
+underlyings and its days:
+
+- a run that starts before the row's date and ends after it carries `margin_spanlite:calibration-2026-11-11+placeholder`;
+- a run on BANKNIFTY, or on any other underlying without its own row, still carries `margin_spanlite:placeholder`.
 
 Re-run the calibration about once a month, and after any NSE margin circular. Each run adds a new pending row with
 its own date, and the history stays in `lab.sqlite`.

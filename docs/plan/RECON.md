@@ -617,3 +617,13 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Found: the `margin_spanlite:` label names every SPAN-lite row in the file, so after an adoption it still reads
   `…+placeholder` (and the UI still warns "not yet calibrated") even for runs that only used the fitted row.
   Documented as is; changing it changes labels in goldens and both implementations.
+
+## SPAN-lite label names only the rows a run can use (MEZ 4.3)
+
+- `bundle._spanlite_calibrations`: for each derivative's underlying and each run day, the row SpanLiteMargin.params
+  picks (a row naming the underlying wins over its class); the label joins their calibration ids. A spanlite run
+  with no futures or options is labelled `margin_spanlite:none` (before: `placeholder`). Labels are sorted at the end
+  of resolve_bundle, so where the label is appended does not matter.
+- Expectations changed: only test_spanlite's bundle test, which resolved a RELIANCE-only run and expected
+  `placeholder`; it now resolves the NIFTY future. No golden carries this label (goldens build their own bundles),
+  and the web fixture's `margin_spanlite:placeholder` stays valid. The /tests page explains `none`.
