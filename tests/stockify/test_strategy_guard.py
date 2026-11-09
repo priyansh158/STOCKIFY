@@ -105,6 +105,48 @@ class StrategyGuardTest(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
                 S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
 
+    def test_round4_chains_from_allowed_modules_are_resolved(self):
+        for code in (
+                # the round-3 re-review's probes
+                "import enum as e\nx = e.bltns.eval('1')", "import enum as e\nx = e.bltns.exec('1')",
+                "import enum as e\nx = e.bltns.open('f')", "import enum as e\nx = e.bltns.compile",
+                "import enum as e\nx = e.bltns.getattr", "import re as r\nx = r.enum.bltns.eval('1')",
+                "import dataclasses as d\nx = d.types", "import dataclasses\nx = dataclasses.types.FunctionType",
+                "from datetime import datetime as D\nx = D.now()", "from datetime import datetime\nf = datetime.now\nx = f()",
+                # (a) modules off the allowlist, (b) dangerous builtins, (c) unresolvable steps
+                "from stockify import strategy as S\nx = S.numerics", "import functools as f\nx = f.reprlib",
+                "import enum as e\nx = e.nonexistent_attribute", "import collections as c\nx = c.abc.Callable",
+                "import enum as e\nx = e.types",
+                # computed access to a module's names
+                "import enum as e\nx = e.bltns['ev' + 'al']", "import math as m\nx = m['pi']",
+                # names refused on any object
+                "def f(o):\n  return o.exec", "def f(o):\n  return o.eval", "def f(o):\n  return o.compile",
+                "def f(o):\n  return o.bltns", "def f(o):\n  return o.builtins",
+                # the wall clock on anything but ctx
+                "def f(clock):\n  return clock.now()", "def f(o):\n  return o.today()", "def f(o):\n  return o.utcnow()",
+                "def f(o):\n  return o.time_ns()", "def f(o):\n  return o.monotonic()",
+                "def f(o):\n  return o.perf_counter()", "def f(self):\n  return self.ctx.now()",
+                "from datetime import datetime\nx = datetime.fromtimestamp()",
+                "from datetime import datetime\nx = datetime.fromtimestamp(0)",
+                "from datetime import datetime as ctx\nx = ctx.now()"):
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
+
+    def test_round4_legitimate_chains_and_ctx_clock_pass(self):
+        S.check_source("from __future__ import annotations\nfrom typing import Optional\n"
+                       "from datetime import date, datetime, timezone\n"
+                       "from decimal import Decimal, ROUND_CEILING\nimport math\nfrom stockify import timeutil\n"
+                       "from stockify import strategy as S\n"
+                       "class A(S.Strategy):\n"
+                       "    x: Optional[int] = None\n"
+                       "    def on_bar(self, ctx, bar):\n"
+                       "        if ctx.today() != self.day and ctx.now() > 0:\n"
+                       "            d = timeutil.ns_to_ist(bar.start_ns).date()\n"
+                       "            p = bar.open + bar.close + math.floor(1.5)\n"
+                       "            t = datetime.fromtimestamp(0, tz=timezone.utc)\n"
+                       "            q = Decimal('1').quantize(Decimal('1'), rounding=ROUND_CEILING)\n",
+                       "stockify.strategies.probe", "stockify.strategies")
+
     def test_round3_ordinary_names_still_import(self):
         S.check_source("from decimal import ROUND_CEILING, Decimal\nfrom datetime import date, timedelta\n"
                        "from collections import deque, defaultdict\nfrom typing import Any\nfrom math import sqrt\n"

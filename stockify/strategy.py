@@ -335,7 +335,120 @@ def check_source(source: str, name: str = "<strategy>", package: str = "") -> li
                 refuse(node, f"the attribute .{attr}")
             if attr in BANNED_ATTR_NAMES:
                 refuse(node, f"the attribute .{attr}")
+    _check_chains(tree, package, own, refuse)
     return local
+
+
+# ── Attribute chains rooted at an imported module (LCB 5.6) ──────────────────
+#
+# Names bound by an import of an allowlisted (trusted) module are resolved over the real objects, attribute by
+# attribute, so `import enum as e; e.bltns.eval` is refused because `e.bltns` IS builtins, whatever it is called.
+_ANY_OBJECT_ATTRS = {"exec", "eval", "compile", "bltns", "builtins"}
+# The wall clock (I-2): refused on any object but the strategy context (`ctx.now()`, `ctx.today()` are the API).
+_CLOCK_ATTRS = {"now", "today", "utcnow", "time_ns", "monotonic", "perf_counter"}
+_OWN = object()                                     # a name bound to the strategy's own package: not resolved
+
+
+def _danger(obj: object) -> str | None:
+    import builtins
+    import types
+    if isinstance(obj, types.ModuleType) and obj.__name__ not in ALLOWED_IMPORTS:
+        return f"the module {obj.__name__}"
+    if isinstance(obj, (types.FrameType, types.CodeType)):
+        return "a frame or code object"
+    for f in (builtins.eval, builtins.exec, builtins.compile, builtins.open, builtins.__import__, builtins.getattr,
+              builtins.setattr, builtins.delattr, builtins.globals, builtins.locals, builtins.vars,
+              builtins.breakpoint, builtins.input, importlib.import_module):
+        if obj is f:
+            return f"the builtin {f.__name__}"
+    return None
+
+
+def _bindings(tree: ast.AST, package: str, own: str) -> dict[str, object]:
+    """Names bound by imports: the real object for allowlisted modules, `_OWN` for the strategy's own package."""
+    out: dict[str, object] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                bound = a.asname or a.name.split(".")[0]
+                target = a.name if a.asname else a.name.split(".")[0]
+                if own and (a.name == own or a.name.startswith(own + ".")):
+                    out[bound] = _OWN
+                elif target in ALLOWED_IMPORTS:
+                    out[bound] = importlib.import_module(target)
+        elif isinstance(node, ast.ImportFrom):
+            for module, names in _imports(node, package):
+                for a in node.names:
+                    if a.name == "*":
+                        continue
+                    bound = a.asname or a.name
+                    qualified = f"{module}.{a.name}"
+                    if own and (module == own or module.startswith(own + ".") or qualified.startswith(own + ".")):
+                        out[bound] = _OWN
+                    elif qualified in ALLOWED_IMPORTS:
+                        out[bound] = importlib.import_module(qualified)
+                    elif module in ALLOWED_IMPORTS:
+                        mod = importlib.import_module(module)
+                        out[bound] = vars(mod).get(a.name)       # missing: the import itself fails later
+    return out
+
+
+def _chain(node: ast.Attribute) -> tuple[ast.AST, list[str]]:
+    names: list[str] = []
+    cur: ast.AST = node
+    while isinstance(cur, ast.Attribute):
+        names.append(cur.attr)
+        cur = cur.value
+    return cur, names[::-1]
+
+
+def _check_chains(tree: ast.AST, package: str, own: str, refuse) -> None:  # noqa: ANN001
+    bound = _bindings(tree, package, own)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node.attr in _ANY_OBJECT_ATTRS:
+                refuse(node, f"the attribute .{node.attr}")
+            if node.attr in _CLOCK_ATTRS and not (isinstance(node.value, ast.Name) and node.value.id == "ctx"
+                                                  and "ctx" not in bound):
+                refuse(node, f".{node.attr} (the wall clock; use ctx.now() / ctx.today())")
+            root, names = _chain(node)
+            if not (isinstance(root, ast.Name) and root.id in bound) or bound[root.id] is _OWN:
+                continue
+            obj = bound[root.id]
+            what = _danger(obj)
+            for attr in names:
+                if what:
+                    break
+                if attr == "open":
+                    what = "open"
+                    break
+                try:
+                    obj = getattr(obj, attr)
+                except Exception:                    # noqa: BLE001 — anything unresolvable is refused
+                    what = f"{root.id}.{'.'.join(names)} (it cannot be resolved)"
+                    break
+                what = _danger(obj)
+            if what:
+                refuse(node, f"{root.id}.{'.'.join(names)} reaching {what}")
+        elif isinstance(node, ast.Subscript):
+            base = node.value
+            root, names = _chain(base) if isinstance(base, ast.Attribute) else (base, [])
+            if isinstance(root, ast.Name) and root.id in bound and bound[root.id] is not _OWN:
+                import types
+                obj = bound[root.id]
+                try:
+                    for attr in names:
+                        obj = getattr(obj, attr)
+                except Exception:                    # noqa: BLE001 — the Attribute check above refuses it
+                    continue
+                if isinstance(obj, (types.ModuleType, dict, types.MappingProxyType)):
+                    refuse(node, f"indexing into {root.id}{'.' if names else ''}{'.'.join(names)} "
+                                 "(computed access to a module's names)")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "fromtimestamp" and (not node.args or (
+                    len(node.args) < 2 and not any(k.arg == "tz" for k in node.keywords))):
+            # no time is the wall clock; no tz reads the machine's local zone (I-4)
+            refuse(node, "a fromtimestamp call without a time and an explicit tz")
 
 
 def _module_source(module_name: str) -> tuple[str, str]:

@@ -115,7 +115,13 @@ Things to know when you write your own (the full API is A2 §4):
   - format strings that reach a private attribute (`'{0.__class__}'.format(x)`);
   - calls to `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`, `breakpoint`, `open`, `input`,
     `__import__`, `exec`, `eval` and `compile`, and the names `__builtins__`, `__loader__` and `__spec__`;
-  - `datetime.now()`, `datetime.today()`, `datetime.utcnow()` and `date.today()`, however they are reached.
+  - the wall clock: the attributes `now`, `today`, `utcnow`, `time_ns`, `monotonic` and `perf_counter` on anything
+    but the strategy context (`ctx.now()` and `ctx.today()` are the API), and `fromtimestamp` without a time and an explicit `tz`;
+  - the attributes `exec`, `eval`, `compile`, `bltns` and `builtins` on any object;
+  - attribute chains that start at an imported module are followed over the real objects (LCB 5.6): reaching a
+    module that is not on the list (`enum.bltns` is builtins, `dataclasses.types`), a dangerous builtin (`eval`,
+    `open`, `getattr`, …) or a frame or code object is refused, and so is a step that does not resolve or indexing
+    into a module's names. `bar.open` is fine: `open` is refused only along such a chain.
 
   The paper daemon runs strategies in a process that holds a live Kite token, so a strategy must never be able to
   reach it. The source is parsed **before** the module is imported, so a refused file's top-level code never runs;
