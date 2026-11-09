@@ -19,7 +19,7 @@ class StoreTests(SandboxedDBTest):
             "sessions", "session_days", "session_timeline", "session_orders",
             "session_order_events", "session_fills", "session_charges",
             "session_positions_eod", "session_equity", "margin_live", "parity_results",
-            "margin_calibration", "recorder_status", "schema_meta",
+            "margin_calibration", "recorder_status", "schema_meta", "schema_version", "session_commands",
         }
         self.assertEqual(set(store.table_names()), expected)
 
