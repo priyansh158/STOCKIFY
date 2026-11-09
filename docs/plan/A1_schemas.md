@@ -380,8 +380,8 @@ close. **Each entry applies from its own `created_ns`: the file in force at t is
 `created_ns <= t`. Before the first entry nothing is in force (the underlying steps down); an entry is never applied
 earlier than its `created_ns`**, so a late `i1` (created after 09:15 on D) leaves the previous `.s` in force until
 then. A day with no usable file has `[]`. A file that cannot be read, whose business date differs from the date
-in its name, or whose created time (manifest, else header) is not plausible for that business date B (from B−2
-12:00 to B+1 06:00 IST, L-4), is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are
+in its name, or whose created time (manifest, else header) is not plausible for that business date B (from 12:00 IST on the day
+before the previous trading day of B to B+1 06:00 IST, L-4), is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are
 absent), and the run is labelled `margin_span:skipped_files`. Parsed entries are cached under `$LAB/cache/span`
 (`paths.span_cache_dir`), keyed by the file's SHA-256, its archive path, the wanted contracts and a format version;
 a cache file that cannot be read or whose key or entry hash does not match is rebuilt, so the bundle is the same

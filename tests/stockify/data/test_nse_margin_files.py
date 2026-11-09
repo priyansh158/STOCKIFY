@@ -400,7 +400,7 @@ class BodyCapTests(MarginFilesTest):
 
 
 class CreatedPlausibilityTests(MarginFilesTest):
-    """L-4: a file's created time must lie in [D-2 12:00, D+1 06:00] IST for its business day D."""
+    """L-4: a file's created time must lie in [12:00 the day before the previous trading day, D+1 06:00] IST."""
 
     def fetch(self, suffix: str, created: str) -> M.DayResult:
         name = f"nsccl.20261109.{suffix}.zip"
@@ -408,15 +408,36 @@ class CreatedPlausibilityTests(MarginFilesTest):
                            suffixes=(suffix,))
 
     def test_the_window_edges_are_accepted(self):
-        self.assertEqual(self.fetch("i1", "202611071200").stored, ["nsccl.20261109.i1.zip"])
+        self.assertEqual(self.fetch("i1", "202611051200").stored, ["nsccl.20261109.i1.zip"])
         self.assertEqual(self.fetch("s", "202611100600").stored, ["nsccl.20261109.s.zip"])
 
     def test_a_created_time_outside_the_window_is_rejected(self):
-        for suffix, created in (("i1", "202611071159"), ("i3", "202611100601"), ("i2", "202501010000")):
+        for suffix, created in (("i1", "202611051159"), ("i3", "202611100601"), ("i2", "202501010000")):
             with self.subTest(created=created):
                 res = self.fetch(suffix, created)
                 self.assertEqual(res.rejected, [f"nsccl.20261109.{suffix}.zip"])
                 self.assertFalse((paths.nse_margin_dir("span") / "2026" / f"nsccl.20261109.{suffix}.zip").exists())
+
+    def _ns(self, created: str) -> int:
+        return M._created_ns(created)
+
+    def test_a_mondays_i1_made_on_friday_night_or_early_saturday_is_accepted(self):
+        # Real i1 stamps read from NSE's files (IST), CAM 4.5.
+        for d, created in ((date(2026, 6, 1), "202605292247"), (date(2025, 1, 6), "202501040159"),
+                           (date(2026, 10, 26), "202610240125"), (date(2026, 11, 2), "202610310013")):
+            with self.subTest(day=d):
+                self.assertTrue(M.plausible(d, self._ns(created)))
+
+    def test_a_tuesday_after_a_monday_holiday_accepts_a_file_made_on_the_friday_before(self):
+        # 2026-01-26 (Mon) is Republic Day: Tuesday 27 Jan's previous trading day is Fri 23 Jan.
+        self.assertTrue(M.plausible(date(2026, 1, 27), self._ns("202601232300")))
+
+    def test_the_window_still_rejects_what_is_too_early_or_too_late(self):
+        mon = date(2026, 11, 9)
+        self.assertFalse(M.plausible(mon, self._ns("202611041200")))      # Wednesday 12:00
+        self.assertFalse(M.plausible(mon, self._ns("202610261200")))      # two weeks before
+        self.assertFalse(M.plausible(mon, self._ns("202611100700")))      # D+1 07:00
+        self.assertTrue(M.plausible(mon, self._ns("202611051200")))       # Thursday 12:00, the edge
 
     def test_an_archived_file_with_an_implausible_created_time_is_not_used(self):
         self.archived(DAY, "i2", "202611091130")

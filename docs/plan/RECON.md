@@ -756,8 +756,11 @@ B3 is unscored: no calibrated row is adopted yet (two wait in `spanlite_pending`
   one data row). A bad body is rejected and never archived, so it can no longer block the right file for good.
 - **Body cap:** `nse_files.Http` streams every body and stops at `max_bytes` (default 64 MiB; real SPAN zips are
   ~10 MB). Over the cap is an error and nothing is archived.
-- **Created time plausibility (L-4):** a SPAN file of business day B must say it was created between B−2 12:00 and
-  B+1 06:00 IST. Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
+- **Created time plausibility (L-4):** a SPAN file of business day B must say it was created between 12:00 IST on the day
+  before the previous trading day of B (a Monday: Thursday 12:00) and B+1 06:00 IST. The first ruling, B−2 12:00, was
+  wrong (CAM 4.5): NSE makes a Monday's i1 on Friday night or early Saturday. Real stamps (IST): 2026-06-01 i1
+  202605292247 (Fri 22:47); 2025-01-06 i1 202501040159 (Sat 01:59); 2026-10-26 i1 202610240125 (Sat 01:25);
+  2026-11-02 i1 202610310013 (Sat 00:13). The extra day covers a weekday holiday the calendar lacks (pre-2024). Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
   `span_skipped`. Not yet checked against the real 2009–2026 archive (this round did not open the lab). **Controller /
   owner check (read-only):**
   `.\.venv\Scripts\python.exe -c "from datetime import date; from stockify.data import calendar as c, nse_margin_files as m; bad=[]; [m.in_force_files(d, bad) for d in c.trading_days('FO', date(2009,1,1), date(2026,11,6))]; print(len(bad)); print(bad[:20])"`

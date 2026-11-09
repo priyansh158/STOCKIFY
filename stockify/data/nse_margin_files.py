@@ -11,7 +11,7 @@ NSE sometimes answers 200 with an HTML page: a body that is not a zip (SPAN) or 
 Every file is checked whole before it is archived (M-1): a SPAN zip must pass every CRC (`ZipFile.testzip`) and hold
 exactly one `.spn`; an ELM gzip must decompress to the end as UTF-8 CSV rows of one width (at least 7 columns, an
 optional header line, at least one data row). A SPAN file's `<created>` time must also be plausible for the business
-day D in its name: between D-2 12:00 and D+1 06:00 IST (L-4); an archived file whose created time is not is never used.
+day D in its name: between 12:00 IST on the day before D's previous trading day and D+1 06:00 IST (L-4); an archived file whose created time is not is never used.
 
 Layout under `$LAB/nse/margin` (through `stockify.paths`):
 
@@ -58,9 +58,10 @@ ELM_MIN_COLUMNS = 7                      # instrument, symbol, expiry, strike, C
 # An ELM % as NSE writes it (M-3): a plain bounded decimal, no sign, no exponent. Anything else is unusable, in the
 # bundle (read_elm) and in both margin models (staircase._elm_ppb, staircase.cpp elm_ppb).
 ELM_PCT = re.compile(r"[0-9]{1,3}(\.[0-9]{1,8})?")        # ASCII digits only: \d takes any Unicode digit
-# The plausible created time of a SPAN file of business day D (L-4 ruling): from D-2 12:00 to D+1 06:00 IST. An i1
-# is created the evening before D (a Sunday for a Monday), the .s on D's evening.
-CREATED_FROM = (-2, "12:00")
+# The plausible created time of a SPAN file of business day D (L-4 ruling, CAM 4.5): from 12:00 IST on the calendar
+# day before D's previous trading day to D+1 06:00 IST. NSE makes a Monday's i1 on the Friday night or early Saturday
+# (22:47 Fri .. 01:59 Sat seen); the extra day covers a weekday holiday the calendar does not know (pre-2024).
+CREATED_FROM = (-1, "12:00")           # days relative to the previous trading day of D
 CREATED_UNTIL = (1, "06:00")
 
 
@@ -195,7 +196,8 @@ def elm_problem(body: bytes) -> str | None:
 
 def plausible(day: date, created_ns: int) -> bool:
     """Whether a SPAN file of business day `day` may have been created at `created_ns` (L-4)."""
-    lo = timeutil.ist_ns(day + timedelta(days=CREATED_FROM[0]), CREATED_FROM[1])
+    prev = calendar.previous_trading_day(SEGMENT, day)
+    lo = timeutil.ist_ns(prev + timedelta(days=CREATED_FROM[0]), CREATED_FROM[1])
     hi = timeutil.ist_ns(day + timedelta(days=CREATED_UNTIL[0]), CREATED_UNTIL[1])
     return lo <= created_ns <= hi
 
