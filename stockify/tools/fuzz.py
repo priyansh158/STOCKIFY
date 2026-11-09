@@ -113,6 +113,13 @@ def fuzz_world(seed: int) -> dict:
         bundle["charges"] = _real_charges()
     if alt.random() < 0.5:                       # M4.7: the expiry-day ELM on short index options (X-9)
         bundle["expiry_addon"] = "0.02"
+    if alt.random() < 0.35:                      # M4.8: SPAN-lite with the shipped placeholder rows
+        run["margin"] = {"model": "spanlite"}
+        bundle["spanlite_placeholder"] = True
+    if alt.random() < 0.5:                       # VOL 4.5: CAS stocks squared off at 15:12 on their CAS day (Z-5)
+        bundle["mis_cutoff"]["CM_CAS"] = "15:12"
+    if alt.random() < 0.25:                      # a small account: margin shortfalls to trade out of (A4 §6.5)
+        run["capital_paise"] = 1_500_000
     if delivery:                                 # M4.7: the Z-4 delivery-margin schedule (D-60)
         bundle["delivery_schedule"] = True
     if delivery and "charges" not in bundle:
@@ -251,6 +258,44 @@ class RandomTrader(Strategy):
             ctx.log("info", f"cancel {oid} -> {ctx.cancel(oid)}")
         elif k < 80:
             ctx.log("info", f"funds {ctx.funds()!r} positions {ctx.positions()!r}")
+        elif k < 88:
+            self._chain(ctx)
+        elif k < 93:
+            self._shortfall_close(ctx)
+
+    def _chain(self, ctx) -> None:  # noqa: ANN001
+        """Read an option chain (M4.4: forward, ATM, IVs and Greeks, all logged so both sides must agree to the
+        last bit) and sometimes trade one of its legs."""
+        r = ctx.rng()
+        under = self._pick(r, ["IDX", "AAA"])
+        expiries = ctx.expiries(under, "OPT")
+        if not expiries:
+            return
+        c = ctx.chain(under, expiries[0])
+        legs = " ".join(f"{x['kind']}{x['strike_paise']}:{x.get('iv_mid')!r}/{x.get('delta')!r}/{x.get('iv_reason')}"
+                        for x in c)
+        ctx.log("info", f"chain {under} {expiries[0]} fwd={c.forward_paise!r} {c.forward_source} "
+                        f"atm={c.atm_strike_paise} {legs}")
+        if c and r.below(2) == 0:
+            x = c[r.below(len(c))]
+            spec = ctx.spec(x["instrument_id"]) or {"lot": 1}
+            oid = ctx.place(x["instrument_id"], self._pick(r, ["BUY", "SELL"]), spec["lot"] * (1 + r.below(2)),
+                            self._pick(r, ["NRML", "NRML", "MIS"]), "MARKET", protection=self._pick(r, ["AUTO", 5000]))
+            self.placed.append(oid)
+            ctx.log("info", f"chain-trade {oid} {x['instrument_id']} -> {ctx.order(oid).status}")
+
+    def _shortfall_close(self, ctx) -> None:  # noqa: ANN001
+        """With funds below zero, close a position: an order that only reduces is never refused R_MARGIN."""
+        if ctx.funds().available >= 0:
+            return
+        pos = ctx.positions()
+        if not pos:
+            return
+        p = pos[ctx.rng().below(len(pos))]
+        oid = ctx.place(p.instrument, "SELL" if p.qty > 0 else "BUY", abs(p.qty), p.product, "MARKET")
+        self.placed.append(oid)
+        o = ctx.order(oid)
+        ctx.log("info", f"shortfall-close {oid} {p.instrument} {p.product} -> {o.status} {o.reason}")
 
     def _maybe(self, ctx) -> None:  # noqa: ANN001
         if ctx.rng().below(100) < self.p_act:

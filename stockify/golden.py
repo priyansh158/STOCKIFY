@@ -177,6 +177,13 @@ def build_bundle(g: dict) -> dict:
     margin = {"flat": [{"applies": {}, "effective_from": "2015-01-01",
                         "index_pct_ppb": numerics.to_ppb(b.get("margin_index", "0.12")),
                         "stock_pct_ppb": numerics.to_ppb(b.get("margin_stock", "0.20"))}]}
+    if b.get("spanlite_placeholder"):                # the shipped SPAN-lite rows (M4.8; placeholders until M4.9)
+        from stockify.config import loader
+        rows = copy.deepcopy(loader.load_json("margin_params.json")["spanlite"])
+        for r in rows:
+            for f in ("psr_pct", "vsr_pct", "extreme_weight", "elm_pct", "default_iv"):
+                r[f"{f}_ppb"] = numerics.to_ppb(r[f])
+        margin["spanlite"] = rows
     if "expiry_addon" in b:                          # the expiry-day ELM on short index options (X-9)
         margin["expiry_day_short_index_option_addon"] = [{"applies": {}, "effective_from": "2015-01-01",
                                                           "pct_ppb": numerics.to_ppb(b["expiry_addon"])}]
