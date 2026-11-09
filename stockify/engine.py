@@ -90,6 +90,9 @@ def run_bundle(bundle: dict, pack_paths: list, folder, strategy=None, manifest: 
     on_disk = json.loads((folder / "bundle.json").read_text(encoding="utf-8"))
     (folder / "run.json").write_text(json.dumps(on_disk["run"], indent=2, sort_keys=True) + "\n", encoding="utf-8",
                                      newline="\n")
+    if on_disk.get("sod_state") is not None or on_disk.get("next_days"):
+        # VOL 5.3 (Task 6) teaches the C++ engine both; until then it must not run such a bundle as a fresh one
+        raise NotImplementedError("the C++ engine does not yet apply sod_state or next_days (A1 §6.4, VOL 5.3)")
     e = mod.Engine(str(folder / "bundle.json"))
     try:
         for p in pack_paths:

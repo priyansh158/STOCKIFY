@@ -38,7 +38,8 @@ class FlatMargin:
         self.flat = bundle["margin_params"].get("flat", [])
         self.addon = bundle["margin_params"].get("expiry_day_short_index_option_addon", [])
         self.schedule = bundle["broker_policy"].get("delivery_margin_schedule", [])
-        self.days = [d["date"] for d in bundle["days"]]
+        # the bundle's days and its next_days (VOL 5.2): a one-day paper bundle counts trading days as the whole run does
+        self.days = [d["date"] for d in bundle["days"] + list(bundle.get("next_days") or [])]
         self.labels: set[str] = set()               # added to the run's labels (D-60: delivery_margin_approx)
         self.mis_rows = bundle["broker_policy"].get("mis_margin_pct", [])
 

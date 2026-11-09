@@ -105,6 +105,10 @@ class Engine:
         self._check_instruments(bundle["instruments"])
         self.days = bundle["days"]
         self.day_by_date = {d["date"]: d for d in self.days}
+        # next_days (A1 §6.2, VOL 5.2): trading days after the bundle's own, never processed; consulted only for where
+        # an order queued after today's session activates (A4 §3.10) and for trading-day counts (D-60)
+        self.cal_days = self.days + list(bundle.get("next_days") or [])
+        self.cal_day_ends = [d["day_end_ns"] for d in self.cal_days]
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
@@ -155,8 +159,56 @@ class Engine:
         self.event_no = 0
         self.delivering = False
         self.open_changes: list[tuple[int, bool]] = []   # (t, any position open) transitions, for exposure
+        # Day-to-day state (VOL 5.2, A4 §1.10): see stockify.oracle.sod_state
+        self.carried: list = []                        # internal events passed over after the last DAY_END
+        self.prior_final: set[int] = set()             # final orders loaded from sod_state (not this day's output)
+        self.charge_row_base = 0                       # charges.csv rows written on earlier days
+        self.state_date: str | None = None             # the last trading day whose DAY_END ran
+        self.strategy_enabled = True                   # Task 7 (D-70) fills these three
+        self.pause_reasons: set[str] = set()
+        self.queued_notifications: list = []
+        self.started = False
+        self.resumed = False
         from stockify.oracle.context import Context
         self.ctx = Context(self)
+        if bundle.get("sod_state") is not None:        # applied here, so no caller can forget it
+            if not isinstance(bundle["sod_state"], dict):
+                raise RunError("bundle: sod_state must be an object or null")
+            self._load_state(bundle["sod_state"])
+
+    # ── Day-to-day state (A1 §6.4) ────────────────────────────────────────────
+
+    def _load_state(self, state: dict) -> None:
+        from stockify.oracle import sod_state
+        if self.started:
+            raise RunError("sod_state must be loaded before the first event")
+        if self.resumed:
+            raise RunError("sod_state is already loaded")
+        try:
+            sod_state.restore(self, state)
+        except (sod_state.StateError, KeyError, TypeError, ValueError) as e:
+            raise RunError(str(e)) from e
+        self.resumed = True
+
+    def load_sod_state(self, text: str) -> None:
+        """A start-of-day state (eod_state() of the previous day); before the first event only."""
+        from stockify.oracle import sod_state
+        if self.started:
+            raise RunError("sod_state must be loaded before the first event")
+        try:
+            state = sod_state.loads(text)
+        except sod_state.StateError as e:
+            raise RunError(str(e)) from e
+        self._load_state(state)
+
+    def eod_state(self) -> str:
+        """The state for the next day's sod_state, as canonical JSON (A1 §6.4)."""
+        from stockify.oracle import sod_state
+        return sod_state.dumps(sod_state.capture(self))
+
+    def day_orders(self) -> dict:
+        """This day's orders: all but the final ones loaded from sod_state (orders.csv, metrics)."""
+        return {k: o for k, o in self.book.orders.items() if k not in self.prior_final}
 
     # ── Time and phases ──────────────────────────────────────────────────────
 
@@ -188,7 +240,7 @@ class Engine:
 
     def next_continuous_start(self, iid: int, t: int) -> int | None:
         import bisect
-        for day in self.days[bisect.bisect_left(self.day_ends, t):]:
+        for day in self.cal_days[bisect.bisect_left(self.cal_day_ends, t):]:
             g = self.group_of(iid, day["date"])
             for p in day["groups"][g]:
                 if p["phase"] == "CONTINUOUS" and p["start_ns"] >= t:
@@ -523,9 +575,14 @@ class Engine:
     def live_orders(self) -> list[Order]:
         """Orders that are not final, in id order (finished ones are skipped once)."""
         orders = self.book.orders
-        while self.min_live < self.next_order and orders[self.min_live].status in FINAL:
-            self.min_live += 1
-        return [orders[i] for i in range(self.min_live, self.next_order) if orders[i].status not in FINAL]
+        while self.min_live < self.next_order and (self.min_live not in orders or orders[self.min_live].status in FINAL):
+            self.min_live += 1                          # ids absent after a sod_state load were final
+        out = []
+        for i in range(self.min_live, self.next_order):
+            o = orders.get(i)
+            if o is not None and o.status not in FINAL:
+                out.append(o)
+        return out
 
     def _activate_due(self, t: int) -> None:
         due = sorted((o for o in self.live_orders() if o.status == "PENDING" and o.t_activate <= t),
@@ -1196,6 +1253,7 @@ class Engine:
         self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))
+        self.state_date = d
 
     def _next_date(self, d: str) -> str:
         return _date.fromordinal(_date.fromisoformat(d).toordinal() + 1).isoformat()
@@ -1225,12 +1283,14 @@ class Engine:
     # ── Main loop ────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        self.started = True
         self._schedule_days()
         first = [self.internal[0][0][0]] + ([self.records[0][0][0]] if self.records else [])
         self.now = min(first)                     # on_start sees the earliest time of the run
         self._reseed_for(self.now)
-        self.strategy.on_start(self.ctx)
-        self._deliver()
+        if not self.resumed:                      # a resumed day ran strategy.load_state instead (A4 §1.10)
+            self.strategy.on_start(self.ctx)
+            self._deliver()
         i = 0
         last_day_end = self.days[-1]["day_end_ns"]
         while i < len(self.records) or self.internal:
@@ -1238,7 +1298,8 @@ class Engine:
             nxt_int = self.internal[0] if self.internal else None
             if nxt_int is not None and (nxt_in is None or nxt_int[0] < nxt_in[0]):
                 key, kind, payload = heapq.heappop(self.internal)
-                if key[0] > last_day_end:                 # timers after the last day never fire
+                if key[0] > last_day_end:                 # timers after the last day never fire here;
+                    self.carried.append((key, kind, payload))   # a paper session's next day gets them (sod_state)
                     continue
                 self.now, self.key = key[0], key
                 self._reseed_for(self.now)

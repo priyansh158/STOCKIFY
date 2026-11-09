@@ -46,6 +46,7 @@ SCHEMAS = {
     "kite_limits.json": "stockify.kite_limits/1",
     "notify.json": "stockify.notify/1",
     "research.json": "stockify.research/1",
+    "paper.json": "stockify.paper/1",
 }
 
 CSV_HEADERS = {

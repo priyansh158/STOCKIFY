@@ -45,6 +45,12 @@ class RunConfigError(ValueError):
     pass
 
 
+def seed_mode(cfg: dict) -> str:
+    """A validated config's seed mode: "run" or "per_day". The normalised form leaves the default out, so read it
+    through here, never as cfg["seed_mode"] (VOL 5.1)."""
+    return cfg.get("seed_mode", "run")
+
+
 def _need(cond: bool, where: str, msg: str) -> None:
     if not cond:
         raise RunConfigError(f"{where}: {msg}")

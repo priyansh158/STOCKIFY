@@ -73,7 +73,7 @@ def run_bundle(bundle: dict, pack_paths: list, folder: Path, strategy=None, mani
     engine.run()
     risk_free = bundle["pricing"].get("risk_free", [])
     m = metrics.compute(capital=run_cfg["capital_paise"], equity=engine.equity, fills=engine.book.fills,
-                        orders=engine.book.orders, charges=engine.book.charges, risk_free=risk_free,
+                        orders=engine.day_orders(), charges=engine.book.charges, risk_free=risk_free,
                         rejects=engine.rejects, participation_ppm=engine.participation_used,
                         exposure=engine.exposure(), closes=engine.settle_closes)
     hashes = artifacts.write(folder, engine, m, {

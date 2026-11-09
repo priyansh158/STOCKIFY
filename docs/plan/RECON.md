@@ -951,3 +951,25 @@ Whether `/margins/orders` honours `consider_positions` is unverified (Kite docum
 for Task 21).
 
 **Live pending (owner).** Two live KiteTicker connections observed and a third refused (item 9 above, Task 30).
+
+## 2026-11-09 — VOL 5.2 recon (Task 5, oracle day-to-day state)
+
+**BASE** `513ace1`. What the oracle held across days, and so what `sod_state` (A1 §6.4) had to carry, found by reading
+`stockify/oracle/runner.py` and proved by mutation (each removed part breaks the split-equals-whole tests):
+- Internal events after the last `DAY_END` were popped and dropped (`runner.py` main loop), so a timer due overnight,
+  on a weekend, or a daily bar built from ticks (bucket end = next day 09:15) was lost in a one-day run. They are now
+  kept (`Engine.carried`) and handed over in firing order.
+- `next_continuous_start` and the D-60 delivery schedule (`FlatMargin._offset`) look at days after the current one; a
+  one-day bundle rejected every order queued overnight (`R_SESSION`). Hence `bundle.next_days`.
+- `ctx.order(id)` sees every order of the run, final ones too (`book.orders`); `live_orders()` indexed every id from
+  `min_live`. Final orders are carried (`final_orders`) and `live_orders()` skips absent ids.
+- `charges.csv` numbered rows from 1 per run (`artifacts.py`); it now continues from `counters.charge_row`.
+- `underlying_last` (reference prices, §7.2 fallback), `fsp_seen`, `dp_done`, the market's `s0`/`s1`, book and band,
+  and the positions' insertion order (iteration order of settlement and margin legs) all affect later days.
+- The weekend timer of the Task 4 review (M3) draws from the previous day's stream position in a whole run; carrying
+  both PCG32 states reproduces it without changing any whole run (goldens 17/17, oracle/engine parity unchanged).
+
+**Size note.** One bar row is 69.9 bytes of canonical JSON (measured: 8,085 realistic NIFTY-future minute rows,
+565,002 bytes). One minute-bar series on an F&O instrument (385 bars a day, 21 days) is about **0.57 MB per
+instrument-month**; a 5-second series about 6.8 MB; 20 minute-bar instruments about 11 MB a month, so the 64 MB
+warning (`paper.json` → `sod_state_warn_mb`) comes after about 6 months. Nothing is trimmed (C-2).

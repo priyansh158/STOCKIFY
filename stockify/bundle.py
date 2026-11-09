@@ -25,7 +25,7 @@ import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
-from stockify import numerics, paths, timeutil
+from stockify import numerics, paths, runconfig, timeutil
 
 log = logging.getLogger("stockify.bundle")
 
@@ -157,7 +157,7 @@ def day_seed(seed: int, day: date) -> int:
 def apply_seed_mode(cfg: dict, days: list[dict]) -> list[dict]:
     """With `seed_mode: per_day`, each day gets `seed` = day_seed(run seed, date): the only source of that day's
     seed for both engines. With the default ("run") the days are returned untouched."""
-    if cfg.get("seed_mode", "run") == "per_day":
+    if runconfig.seed_mode(cfg) == "per_day":
         for d in days:
             d["seed"] = day_seed(cfg["seed"], date.fromisoformat(d["date"]))
     return days

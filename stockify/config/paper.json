@@ -1,0 +1,4 @@
+{
+  "schema": "stockify.paper/1",
+  "sod_state_warn_mb": 64
+}
