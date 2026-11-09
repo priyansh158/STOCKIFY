@@ -156,7 +156,15 @@ class CalibrationTests(SandboxedDBTest):
         # the fit finds the "true" settings far better than the placeholders do
         text = report.read_text(encoding="utf-8")
         doc = json.loads(params.read_text(encoding="utf-8"))
-        [pending] = doc["spanlite_pending"]
+        # the shipped file may already hold pending rows from real calibrations: pick this run's row, and check the
+        # others (other underlyings or days) are kept as they were
+        shipped = json.loads(Path(loader.__file__).with_name("margin_params.json").read_text(encoding="utf-8"))
+        mine = [r for r in doc["spanlite_pending"]
+                if r["applies"].get("underlying") == "NIFTY" and r["effective_from"] == DAY]
+        others = [r for r in shipped.get("spanlite_pending", [])
+                  if not (r["applies"].get("underlying") == "NIFTY" and r["effective_from"] == DAY)]
+        self.assertEqual([r for r in doc["spanlite_pending"] if r not in mine], others)
+        [pending] = mine
         self.assertTrue(pending["pending_review"])
         self.assertFalse(pending["verified"])
         self.assertEqual((pending["source"], pending["effective_from"]), (f"calibration {DAY}", DAY))
