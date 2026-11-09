@@ -69,6 +69,8 @@ Files: `engine/src/margin/spanlite.cpp`, `stockify/fno/spanlite.py`. Parameters:
 
 ## M4.9 Calibration against Kite (M)
 
+> **Status (2026-11-08):** the tool is built and tested against a fake Kite client (IWB 4.1); the ticked boxes below mean the tool does each step. **No real calibration has run yet**: the first one needs the owner, a Kite login and market hours (first good day Wed 11 Nov 2026 IST; 9 Nov is an expiry day, 10 Nov a holiday), and the 🛑 owner review of its error report before any row is adopted. Until then SPAN-lite runs on the labelled placeholder rows.
+
 Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Table: `margin_calibration` (A1 §4).
 
 - [x] Sample portfolios from the current chain: single legs across moneyness and expiries, straddles, strangles, verticals, iron flies and condors, futures, futures hedged with options.
