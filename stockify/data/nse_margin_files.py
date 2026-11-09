@@ -8,6 +8,10 @@ ELM: the reports API, "F&O-Contract wise ELM file", a gzip of `F_AEL_OPT_CONTRAC
 cookie warm-up on the derivatives reports page and only a rolling window of recent dates exists.
 
 NSE sometimes answers 200 with an HTML page: a body that is not a zip (SPAN) or gzip (ELM) is rejected, never kept.
+Every file is checked whole before it is archived (M-1): a SPAN zip must pass every CRC (`ZipFile.testzip`) and hold
+exactly one `.spn`; an ELM gzip must decompress to the end as UTF-8 CSV rows of one width (at least 7 columns, an
+optional header line, at least one data row). A SPAN file's `<created>` time must also be plausible for the business
+day D in its name: between D-2 12:00 and D+1 06:00 IST (L-4); an archived file whose created time is not is never used.
 
 Layout under `$LAB/nse/margin` (through `stockify.paths`):
 
@@ -28,6 +32,7 @@ import logging
 import os
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
@@ -48,6 +53,15 @@ SEGMENT = "FO"
 ELM_WINDOW_DAYS = 120
 _CREATED = re.compile(rb"<created>(\d{12})</created>")
 _HEADER_BYTES = 1 << 16
+ELM_MAX_BYTES = 256 * 1024 * 1024        # an ELM CSV larger than this once unpacked is refused (6 Nov 2026: ~8 MB)
+ELM_MIN_COLUMNS = 7                      # instrument, symbol, expiry, strike, CE | PE | XX, 0, ELM % (S-7)
+# An ELM % as NSE writes it (M-3): a plain bounded decimal, no sign, no exponent. Anything else is unusable, in the
+# bundle (read_elm) and in both margin models (staircase._elm_ppb, staircase.cpp elm_ppb).
+ELM_PCT = re.compile(r"\d{1,3}(\.\d{1,8})?")
+# The plausible created time of a SPAN file of business day D (L-4 ruling): from D-2 12:00 to D+1 06:00 IST. An i1
+# is created the evening before D (a Sunday for a Monday), the .s on D's evening.
+CREATED_FROM = (-2, "12:00")
+CREATED_UNTIL = (1, "06:00")
 
 
 def span_name(day: date, suffix: str) -> str:
@@ -77,9 +91,8 @@ def _elm_path(day: date):  # noqa: ANN202
 
 
 def _year_dir(kind: str, day: date):  # noqa: ANN202
-    d = paths.nse_margin_dir(kind) / f"{day:%Y}"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """The year folder, not created here (reading the archive creates nothing): `_atomic_write` creates it."""
+    return paths.nse_margin_dir(kind) / f"{day:%Y}"
 
 
 def _manifest_path(day: date):  # noqa: ANN202
@@ -96,6 +109,7 @@ def read_manifest(day: date) -> dict:
 def _atomic_write(path, data: bytes) -> None:  # noqa: ANN001
     """Write next to the target and rename over it: a crash leaves no half-written archive file.
     A leftover `<name>.tmp` is never read as an archive file (only exact names are) and is overwritten next time."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
@@ -122,6 +136,68 @@ def span_created(body: bytes) -> str | None:
         return None
     m = _CREATED.search(head)
     return m.group(1).decode() if m else None
+
+
+def span_check(body: bytes) -> str | None:
+    """`span_created` of a SPAN zip that is whole: one `.spn` member, not oversized, every CRC right (M-1). None
+    for anything else: such a body is never archived."""
+    from stockify.fno.span_file import MAX_MEMBER_BYTES
+    created = span_created(body)
+    if created is None:
+        return None
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as z:
+            spn = [i for i in z.infolist() if i.filename.lower().endswith(".spn")]
+            if len(spn) != 1 or spn[0].file_size > MAX_MEMBER_BYTES or z.testzip() is not None:
+                return None
+    except (zipfile.BadZipFile, NotImplementedError, OSError, EOFError, zlib.error, ValueError):
+        return None
+    return created
+
+
+class ElmFileError(ValueError):
+    """An ELM gzip that does not unpack to the end as UTF-8 text, or is too large."""
+
+
+def elm_text(body: bytes) -> str:
+    """The whole CSV text of an ELM gzip; ElmFileError for a truncated, corrupt, oversized or non-UTF-8 one."""
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(body)) as g:
+            raw = g.read(ELM_MAX_BYTES + 1)
+    except (OSError, EOFError, zlib.error) as e:
+        raise ElmFileError(f"not a whole gzip: {type(e).__name__}: {e}") from e
+    if len(raw) > ELM_MAX_BYTES:
+        raise ElmFileError(f"unpacks to more than {ELM_MAX_BYTES} bytes")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ElmFileError(f"not UTF-8: {e}") from e
+
+
+def elm_problem(body: bytes) -> str | None:
+    """Why an ELM body cannot be archived, or None when it can (M-1): it must unpack (`elm_text`) to CSV rows of
+    one width, at least ELM_MIN_COLUMNS, with at least one data row (a row whose ELM % column is a plain decimal;
+    other rows, such as a header line, are allowed)."""
+    try:
+        text = elm_text(body)
+    except ElmFileError as e:
+        return str(e)
+    rows = [line.split(",") for line in text.splitlines() if line.strip()]
+    if not rows:
+        return "no rows"
+    widths = {len(r) for r in rows}
+    if len(widths) != 1 or min(widths) < ELM_MIN_COLUMNS:
+        return f"rows of {sorted(widths)} columns, not one width of at least {ELM_MIN_COLUMNS}"
+    if not any(re.fullmatch(r"\d+(\.\d+)?", r[ELM_MIN_COLUMNS - 1].strip()) for r in rows):
+        return "no data row"
+    return None
+
+
+def plausible(day: date, created_ns: int) -> bool:
+    """Whether a SPAN file of business day `day` may have been created at `created_ns` (L-4)."""
+    lo = timeutil.ist_ns(day + timedelta(days=CREATED_FROM[0]), CREATED_FROM[1])
+    hi = timeutil.ist_ns(day + timedelta(days=CREATED_UNTIL[0]), CREATED_UNTIL[1])
+    return lo <= created_ns <= hi
 
 
 def _created_ns(created: str) -> int:
@@ -184,9 +260,14 @@ def _fetch_span(day: date, suffix: str, http, res: DayResult, manifest: dict) ->
     if status == 404:
         res.missing.append(name)
         return
-    created = span_created(body) if status == 200 else None
+    created = span_check(body) if status == 200 else None
     if created is None:
-        log.warning("%s: HTTP %s, not a SPAN zip (%d bytes); not archived", name, status, len(body))
+        log.warning("%s: HTTP %s, not a whole SPAN zip (%d bytes); not archived", name, status, len(body))
+        res.rejected.append(name)
+        return
+    created_ns = _checked_created_ns(created)
+    if created_ns is None or not plausible(day, created_ns):
+        log.warning("%s: created %s is not plausible for business day %s; not archived", name, created, day)
         res.rejected.append(name)
         return
     _keep(res, manifest, name, _span_path(day, suffix), url, body, created)
@@ -208,6 +289,11 @@ def _fetch_elm(day: date, http, res: DayResult, manifest: dict) -> None:  # noqa
         return
     if status != 200 or not body.startswith(b"\x1f\x8b"):
         log.warning("%s: HTTP %s, not a gzip body (%d bytes); not archived", name, status, len(body))
+        res.rejected.append(name)
+        return
+    problem = elm_problem(body)
+    if problem is not None:
+        log.warning("%s: %s; not archived", name, problem)
         res.rejected.append(name)
         return
     _keep(res, manifest, name, _elm_path(day), url, body, None)
@@ -261,17 +347,31 @@ def elm_window(http: nse_files.Http | None = None, *, today: date | None = None,
 
 # ── Reading the archive (consumed by the SPAN margin model) ──────────────────
 
-def in_force_files(day: date) -> list[tuple[str, int]]:
-    """Archived SPAN files of trade date `day` as (path, created_ns), oldest first."""
+def _any_archived(day: date) -> bool:
+    return any(_span_path(day, s).exists() for s in SPAN_SUFFIXES)
+
+
+def in_force_files(day: date, skipped: list | None = None) -> list[tuple[str, int]]:
+    """Archived SPAN files of trade date `day` as (path, created_ns), oldest first. A file without a readable
+    created time, or whose created time is not plausible for `day` (L-4), is not used; with `skipped`, it is
+    recorded there as (path, reason)."""
     out, manifest = [], read_manifest(day)
     for suffix in SPAN_SUFFIXES:
         path = _span_path(day, suffix)
         if not path.exists():
             continue
-        created_ns = _checked_created_ns(manifest.get(span_name(day, suffix), {}).get("created"))
+        row = manifest.get(span_name(day, suffix))
+        created_ns = _checked_created_ns(row.get("created") if isinstance(row, dict) else None)
         if created_ns is None:                                 # no (valid) manifest row: read the header
             created_ns = _checked_created_ns(span_created(path.read_bytes()))
-        if created_ns is not None:                             # neither readable: the file is not used
+        if created_ns is None:                                 # neither readable: the file is not used
+            if skipped is not None:
+                skipped.append((str(path), "no readable created time"))
+        elif not plausible(day, created_ns):
+            if skipped is not None:
+                skipped.append((str(path), f"created {timeutil.ns_to_ist(created_ns):%Y-%m-%d %H:%M} IST is not "
+                                           f"plausible for business day {day} (L-4)"))
+        else:
             out.append((str(path), created_ns))
     return sorted(out, key=lambda t: t[1])
 
@@ -299,14 +399,44 @@ def previous_eod(day: date, *, max_days: int = 30) -> tuple[str, int] | None:
     return None
 
 
-def usable_files(day: date) -> list[tuple[str, int]]:
+OPENING_MAX_EMPTY_DAYS = 5
+
+
+def opening_eod(day: date, *, max_empty: int = OPENING_MAX_EMPTY_DAYS,
+                skipped: list | None = None) -> tuple[str, int] | None:
+    """The end-of-day file a backtest opens trade date `day` with (CAM 4.4, I-2 ruling): walk back over F&O
+    calendar trading days that have NO archived SPAN file of any suffix, at most `max_empty` of them, and stop at the
+    first day that has any file: its `.s` if archived (and usable), else nothing. The 2009-2026 backfill finished
+    with no errors, so a day without any file is one NSE never published: a holiday the calendar does not hold
+    (before 2024 it holds none). A day with intraday files but no `.s` gives nothing (never an older file)."""
+    d = day
+    for _ in range(max_empty + 1):
+        d = calendar.previous_trading_day(SEGMENT, d)
+        if not _any_archived(d):
+            continue
+        found: list = []
+        for path, created_ns in in_force_files(d, found):
+            if path.endswith(".s.zip"):
+                return path, created_ns
+        if skipped is not None:
+            skipped.extend(x for x in found if x[0].endswith(".s.zip"))
+        return None
+    return None
+
+
+def usable_files(day: date, skipped: list | None = None) -> list[tuple[str, int]]:
     """Every SPAN file a backtest may use during trade date `day`, as (path, created_ns) in created order, without
     lookahead (spec §5.1, CAM 4.3): the previous F&O trading day's `.s` when archived (only that day's: an older one
     is never used), then D's `i1`..`i4`. D's own `.s` never: it is published after the close. Each file applies from
     its own `created_ns`; the file in force at t is the last one created at or before t, and before the first one
-    nothing is (a late `i1` does not move earlier)."""
-    own = [(p, c) for p, c in in_force_files(day) if not p.endswith(".s.zip")]
-    opener = previous_eod(day, max_days=1)
+    nothing is (a late `i1` does not move earlier). The previous trading day is found by `opening_eod`: days with no
+    archived file at all (holidays the calendar lacks) are stepped over. With `skipped`, archived files left out for
+    a bad created time are recorded there as (path, reason)."""
+    found: list = []
+    own = [(p, c) for p, c in in_force_files(day, found) if not p.endswith(".s.zip")]
+    if skipped is not None:
+        skipped.extend(x for x in found if not x[0].endswith(".s.zip"))
+    opener = opening_eod(day, skipped=skipped)
     if opener is not None:
         own = [opener] + own
     return sorted(own, key=lambda t: t[1])
@@ -323,34 +453,37 @@ def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, tuple], Decima
     A contract key is (kind, expiry "YYYY-MM-DD", strike paise | None), as `stockify.fno.span_file` keys contracts.
     Rows: instrument, symbol, expiry DD-MMM-YYYY, strike (rupees; -1 for futures), CE | PE | XX, 0, ELM %.
     The file is untrusted data: a malformed row is skipped, and a contract listed twice with different % maps to None
-    (unusable, so its legs report it missing instead of taking either value); so is a 0 %. The % keeps the file's
-    digits."""
+    (unusable, so its legs report it missing instead of taking either value); so is a 0 %, and a % that is not a
+    plain bounded decimal (ELM_PCT, M-3). A strike must be a whole number of paise (L-6). The % keeps the file's
+    digits. A file that does not unpack to the end as UTF-8 raises ElmFileError (the bundle skips it, M-1)."""
+    from stockify import numerics
     path = paths.nse_margin_dir("elm") / f"{day:%Y}" / elm_name(day)
     if not path.exists():
         return None
     out = {}
-    with gzip.open(path, "rt", encoding="utf-8", newline="") as f:
-        for line in f:
-            p = [c.strip() for c in line.split(",")]
-            if len(p) < 7 or p[1] not in underlyings:
+    for line in elm_text(path.read_bytes()).splitlines():
+        p = [c.strip() for c in line.split(",")]
+        if len(p) < ELM_MIN_COLUMNS or p[1] not in underlyings:
+            continue
+        try:
+            dd, mon, yyyy = p[2].split("-")
+            expiry = date(int(yyyy), _MONTH[mon.upper()], int(dd)).isoformat()
+            if p[4] == "XX":
+                key = ("FUT", expiry, None)
+            elif p[4] in ("CE", "PE"):
+                key = (p[4], expiry, numerics.to_paise(p[3]))
+            else:
                 continue
-            try:
-                dd, mon, yyyy = p[2].split("-")
-                expiry = date(int(yyyy), _MONTH[mon.upper()], int(dd)).isoformat()
-                if p[4] == "XX":
-                    key = ("FUT", expiry, None)
-                elif p[4] in ("CE", "PE"):
-                    key = (p[4], expiry, int(Decimal(p[3]) * 100))
-                else:
-                    continue
-                pct = Decimal(p[6])
-                if not pct.is_finite() or pct <= 0:          # NSE's ELM % is never 0: a 0 is missing
-                    continue
-            except (ValueError, KeyError, ArithmeticError):
+            if not ELM_PCT.fullmatch(p[6]):
                 continue
-            k = (p[1], key)
-            if k in out and out[k] != pct:
-                out[k] = None
-            elif k not in out:
-                out[k] = pct
+            pct = Decimal(p[6])
+            if pct <= 0:                                     # NSE's ELM % is never 0: a 0 is missing
+                continue
+        except (ValueError, KeyError, ArithmeticError):
+            continue
+        k = (p[1], key)
+        if k in out and out[k] != pct:
+            out[k] = None
+        elif k not in out:
+            out[k] = pct
     return out

@@ -144,9 +144,17 @@ class SpanSectionTests(SandboxedDBTest):
         self.assertIsNone(in_force(day, ns(DAY, "09:15")))                      # missing, never moved earlier
 
     def test_an_older_eod_is_never_used(self):
-        # I-3: D-1's .s missing, D-3's present: the slot stays empty.
+        # I-3: D-1 has files but no .s, D-3's .s is present: the slot stays empty (never a stale file).
         archive_span(date(2026, 11, 4), "s", "202611041655")
+        archive_span(PREV, "i4", "202611061400")
         self.assertEqual(bundle.span_section(ROWS, DAYS), {DAY.isoformat(): []})
+
+    def test_days_without_any_file_are_stepped_over(self):
+        # I-2 ruling: a trading day with no archived file at all is a day NSE published nothing (a holiday the
+        # calendar lacks): the .s before it opens D.
+        archive_span(date(2026, 11, 4), "s", "202611041655")
+        day = bundle.span_section(ROWS, DAYS)[DAY.isoformat()]
+        self.assertEqual([f["file"] for f in day], ["span/2026/nsccl.20261104.s.zip"])
 
     def test_an_unreadable_file_is_skipped_and_recorded(self):
         # I-2: a truncated i2 (its header is readable, the XML is not) and a misfiled i3 (business date of D+1).

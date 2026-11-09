@@ -99,11 +99,19 @@ def url_for(src: Source, day: date, cfg: dict | None = None) -> str:
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 
-class Http:
-    """Throttled GET with retries. `session` needs `.get(url, timeout=)` and
-    `.headers`; `clock` is a daemon Clock (tests pass a ManualClock)."""
+# The largest body `Http.get` reads (M-4). Real files are far below it: a SPAN zip is about 10 MB, the F&O
+# bhavcopy and the ELM gzip a few MB. A larger answer (or one that inflates past it) is an error, never kept.
+DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024
+_CHUNK = 1 << 16
 
-    def __init__(self, session=None, clock=None, cfg: dict | None = None):  # noqa: ANN001
+
+class Http:
+    """Throttled GET with retries. `session` needs `.get(url, timeout=, stream=)` and
+    `.headers`; `clock` is a daemon Clock (tests pass a ManualClock). Bodies are streamed and
+    counted after any Content-Encoding is decoded: more than `max_bytes` raises NseError."""
+
+    def __init__(self, session=None, clock=None, cfg: dict | None = None,  # noqa: ANN001
+                 max_bytes: int = DEFAULT_MAX_BODY_BYTES):
         self.cfg = (cfg or config())["http"]
         if session is None:
             import requests
@@ -117,6 +125,7 @@ class Http:
         self._last_mono: int | None = None
         self._warmed = False
         self.requests = 0
+        self.max_bytes = max_bytes
 
     def _throttle(self) -> None:
         gap = int(self.cfg["min_interval_ms"]) * 1_000_000
@@ -137,8 +146,10 @@ class Http:
         except Exception as e:                               # cookies are a courtesy, not a requirement
             log.debug("warm-up request failed: %s", e)
 
-    def get(self, url: str) -> tuple[int, bytes]:
-        """(http status, body). 404 returns at once; errors and 5xx are retried."""
+    def get(self, url: str, *, max_bytes: int | None = None) -> tuple[int, bytes]:
+        """(http status, body). 404 returns at once; errors and 5xx are retried; a body over `max_bytes`
+        (default: the Http's) raises NseError at once (a retry would get the same answer)."""
+        cap = self.max_bytes if max_bytes is None else max_bytes
         self._warm_up()
         tries = int(self.cfg["retries"])
         backoff = int(self.cfg["backoff_ms"]) * 1_000_000
@@ -148,14 +159,45 @@ class Http:
                 self.clock.sleep_until(self.clock.now_ns() + backoff * (2 ** (attempt - 1)))
             self._throttle()
             try:
-                r = self.session.get(url, timeout=float(self.cfg["timeout_s"]))
+                r = self.session.get(url, timeout=float(self.cfg["timeout_s"]), stream=True)
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
                 continue
-            if r.status_code < 500:
-                return r.status_code, r.content
-            last_error = f"HTTP {r.status_code}"
+            if r.status_code >= 500:
+                _close(r)
+                last_error = f"HTTP {r.status_code}"
+                continue
+            try:
+                return r.status_code, _read_capped(r, cap, url)
+            except NseError:
+                raise
+            except Exception as e:                             # the connection broke mid-body: retried
+                last_error = f"{type(e).__name__}: {e}"
+            finally:
+                _close(r)
         raise NseError(f"{url}: {last_error} after {tries} attempts")
+
+
+def _close(r) -> None:  # noqa: ANN001
+    close = getattr(r, "close", None)
+    if close is not None:
+        close()
+
+
+def _read_capped(r, cap: int, url: str) -> bytes:  # noqa: ANN001
+    """The decoded body, reading at most `cap` + one chunk before giving up."""
+    chunks = getattr(r, "iter_content", None)
+    if chunks is None:                                         # a plain response object (no streaming)
+        body = r.content
+        if len(body) > cap:
+            raise NseError(f"{url}: body over {cap} bytes")
+        return body
+    buf = bytearray()
+    for chunk in chunks(_CHUNK):
+        buf += chunk
+        if len(buf) > cap:
+            raise NseError(f"{url}: body over {cap} bytes")
+    return bytes(buf)
 
 
 # ── Raw files ────────────────────────────────────────────────────────────────

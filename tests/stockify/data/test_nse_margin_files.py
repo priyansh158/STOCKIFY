@@ -308,6 +308,154 @@ class DaemonJobTests(MarginFilesTest):
         self.assertNotIn(("margin_files", DAY), scheduler.missed_jobs(wake, self.state))
 
 
+def crc_bad_zip(day: date, suffix: str, created: str) -> bytes:
+    """A SPAN zip whose header (first 64 KiB) is fine but whose member fails its CRC further on (M-1)."""
+    body = span_zip_stored(day, suffix, created, pad=200_000)
+    i = body.rindex(b"ZZZZ")                                  # a byte in the padding, far past the header
+    return body[:i] + b"Y" + body[i + 1:]
+
+
+def span_zip_stored(day: date, suffix: str, created: str, *, pad: int = 0, extra: str | None = None) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        z.writestr(zipfile.ZipInfo(f"nsccl.{day:%Y%m%d}.{suffix}.spn", date_time=(2026, 11, 9, 0, 0, 0)),
+                   f'<?xml version="1.0"?><spanFile><fileFormat>4.00</fileFormat><created>{created}</created>'
+                   f"<pointInTime/><!--{'Z' * pad}--></spanFile>")
+        if extra:
+            z.writestr(zipfile.ZipInfo(extra, date_time=(2026, 11, 9, 0, 0, 0)), "x")
+    return buf.getvalue()
+
+
+class FullValidationTests(MarginFilesTest):
+    """M-1: a file is checked whole before it is archived; a bad one is rejected and never kept."""
+
+    def fetch_elm(self, body: bytes) -> M.DayResult:
+        return M.fetch_day(DAY, FakeHttp({"api/reports": (200, body)}), span=False)
+
+    def assert_elm_rejected(self, body: bytes) -> None:
+        res = self.fetch_elm(body)
+        self.assertEqual(res.rejected, [M.elm_name(DAY)])
+        self.assertFalse((paths.nse_margin_dir("elm") / "2026" / M.elm_name(DAY)).exists())
+        self.assertNotIn(M.elm_name(DAY), M.read_manifest(DAY))
+
+    def test_a_gzip_magic_with_garbage_is_rejected(self):
+        self.assert_elm_rejected(b"\x1f\x8b" + b"garbage")
+
+    def test_a_truncated_elm_gzip_is_rejected(self):
+        whole = gzip.compress(b"OPTIDX,NIFTY,23-NOV-2026,25000,CE,0,2\n" * 2000, mtime=0)
+        self.assert_elm_rejected(whole[: len(whole) // 2])
+
+    def test_a_non_utf8_elm_is_rejected(self):
+        self.assert_elm_rejected(gzip.compress(b"OPTIDX,NIFTY,23-NOV-2026,25000,CE,0,2\n\xff\xfe,1,2\n", mtime=0))
+
+    def test_an_elm_csv_of_the_wrong_shape_is_rejected(self):
+        self.assert_elm_rejected(gzip.compress(b"<html>not a csv</html>\n", mtime=0))
+        self.assert_elm_rejected(gzip.compress(b"OPTIDX,NIFTY,23-NOV-2026,25000,CE,0,2\nOPTIDX,NIFTY\n", mtime=0))
+        self.assert_elm_rejected(gzip.compress(b"", mtime=0))
+
+    def test_an_elm_csv_with_a_header_row_is_kept(self):
+        body = gzip.compress(b"INSTRUMENT,SYMBOL,EXPIRY,STRIKE,TYPE,X,ELM\nOPTIDX,NIFTY,23-NOV-2026,25000,CE,0,2\n",
+                             mtime=0)
+        self.assertEqual(self.fetch_elm(body).stored, [M.elm_name(DAY)])
+
+    def test_a_span_zip_with_a_bad_crc_after_the_header_is_rejected(self):
+        body = crc_bad_zip(DAY, "i2", "202611091130")
+        self.assertEqual(M.span_created(body[:]), "202611091130")       # the header alone looks fine
+        res = M.fetch_day(DAY, FakeHttp({"nsccl.20261109.i2.zip": (200, body)}), elm=False, suffixes=("i2",))
+        self.assertEqual(res.rejected, ["nsccl.20261109.i2.zip"])
+        self.assertFalse((paths.nse_margin_dir("span") / "2026" / "nsccl.20261109.i2.zip").exists())
+
+    def test_a_span_zip_needs_exactly_one_spn_member(self):
+        two = io.BytesIO()
+        with zipfile.ZipFile(two, "w") as z:
+            for n in ("a.spn", "b.spn"):
+                z.writestr(zipfile.ZipInfo(n, date_time=(2026, 11, 9, 0, 0, 0)),
+                           "<spanFile><created>202611091130</created></spanFile>")
+        res = M.fetch_day(DAY, FakeHttp({"nsccl.20261109.i2.zip": (200, two.getvalue())}), elm=False,
+                          suffixes=("i2",))
+        self.assertEqual(res.rejected, ["nsccl.20261109.i2.zip"])
+
+    def test_a_whole_good_span_zip_is_kept(self):
+        body = span_zip_stored(DAY, "i2", "202611091130", pad=200_000)
+        res = M.fetch_day(DAY, FakeHttp({"nsccl.20261109.i2.zip": (200, body)}), elm=False, suffixes=("i2",))
+        self.assertEqual(res.stored, ["nsccl.20261109.i2.zip"])
+
+
+class BodyCapTests(MarginFilesTest):
+    """M-4: a body over the cap is an error, never archived."""
+
+    def test_an_oversized_body_is_an_error_and_not_archived(self):
+        from stockify.daemon.clock import ManualClock
+        from stockify.data import nse_files
+        from tests.stockify.data.test_nse_files import FakeSession
+        body = span_zip(DAY, "s", "202611091655")
+        clock = ManualClock(timeutil.ist_ns(DAY, "17:30"))
+        session = FakeSession({"nsccl.20261109.s.zip": [(200, body)]}, clock)
+        http = nse_files.Http(session=session, clock=clock, max_bytes=len(body) - 1)
+        res = M.fetch_day(DAY, http, elm=False, suffixes=("s",))
+        self.assertEqual(res.errors, ["nsccl.20261109.s.zip"])
+        self.assertFalse((paths.nse_margin_dir("span") / "2026" / "nsccl.20261109.s.zip").exists())
+        http = nse_files.Http(session=session, clock=clock, max_bytes=len(body))
+        self.assertEqual(M.fetch_day(DAY, http, elm=False, suffixes=("s",)).stored, ["nsccl.20261109.s.zip"])
+
+
+class CreatedPlausibilityTests(MarginFilesTest):
+    """L-4: a file's created time must lie in [D-2 12:00, D+1 06:00] IST for its business day D."""
+
+    def fetch(self, suffix: str, created: str) -> M.DayResult:
+        name = f"nsccl.20261109.{suffix}.zip"
+        return M.fetch_day(DAY, FakeHttp({name: (200, span_zip(DAY, suffix, created))}), elm=False,
+                           suffixes=(suffix,))
+
+    def test_the_window_edges_are_accepted(self):
+        self.assertEqual(self.fetch("i1", "202611071200").stored, ["nsccl.20261109.i1.zip"])
+        self.assertEqual(self.fetch("s", "202611100600").stored, ["nsccl.20261109.s.zip"])
+
+    def test_a_created_time_outside_the_window_is_rejected(self):
+        for suffix, created in (("i1", "202611071159"), ("i3", "202611100601"), ("i2", "202501010000")):
+            with self.subTest(created=created):
+                res = self.fetch(suffix, created)
+                self.assertEqual(res.rejected, [f"nsccl.20261109.{suffix}.zip"])
+                self.assertFalse((paths.nse_margin_dir("span") / "2026" / f"nsccl.20261109.{suffix}.zip").exists())
+
+    def test_an_archived_file_with_an_implausible_created_time_is_not_used(self):
+        self.archived(DAY, "i2", "202611091130")
+        manifest = M.read_manifest(DAY)
+        manifest["nsccl.20261109.i2.zip"]["created"] = "202611011130"      # backdated: would apply too early
+        M._write_manifest(DAY, manifest)
+        skipped: list = []
+        self.assertEqual(M.in_force_files(DAY, skipped), [])
+        self.assertEqual([Path_name(p) for p, _ in skipped], ["nsccl.20261109.i2.zip"])
+        self.assertIn("not plausible", skipped[0][1])
+
+
+class OpeningFileTests(MarginFilesTest):
+    """I-2: the bundle's opening `.s` steps back over days with no archived file at all (NSE published nothing:
+    a holiday the calendar does not know before 2024), at most 5 of them; a day with any file stops the walk."""
+
+    def test_a_holiday_gap_uses_the_end_of_day_file_before_it(self):
+        self.archived(date(2023, 1, 25), "s", "202301251700")              # 26 Jan 2023: Republic Day, no files
+        files = M.usable_files(date(2023, 1, 27))
+        self.assertEqual([Path_name(p) for p, _ in files], ["nsccl.20230125.s.zip"])
+
+    def test_a_previous_day_with_only_intraday_files_gives_nothing(self):
+        self.archived(date(2023, 1, 25), "s", "202301251700")
+        self.archived(date(2023, 1, 26), "i1", "202301252000")              # a file, but no .s: never older ones
+        self.assertEqual(M.usable_files(date(2023, 1, 27)), [])
+
+    def test_more_than_five_empty_days_give_nothing(self):
+        # 2023-03-01 (Wed) .s; 2..9 Mar has 6 weekdays; the run day is 10 Mar.
+        self.archived(date(2023, 3, 1), "s", "202303011700")
+        self.assertEqual(M.usable_files(date(2023, 3, 10)), [])
+        self.assertEqual(M.opening_eod(date(2023, 3, 10)), None)
+        self.archived(date(2023, 3, 2), "s", "202303021700")                # now 5 empty weekdays: 3, 6, 7, 8, 9
+        self.assertEqual(Path_name(M.opening_eod(date(2023, 3, 10))[0]), "nsccl.20230302.s.zip")
+
+    def test_reading_the_archive_creates_no_year_folders(self):
+        M.usable_files(date(2015, 6, 10))
+        self.assertFalse((paths.nse_margin_dir("span") / "2015").exists())
+
+
 def Path_name(p) -> str:  # noqa: N802
     return p.replace("\\", "/").rsplit("/", 1)[-1]
 

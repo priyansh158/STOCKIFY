@@ -69,20 +69,33 @@ class SleepDecisionTests(unittest.TestCase):
         return scheduler.should_sleep(ist(self.day, hhmm), d, self.state, idle_s=idle_s, stay_awake=stay)
 
     def test_blocked_until_compaction_is_done(self):
+        self.state.mark("margin_files", self.day)
         self.assertEqual(self.decide(), (False, "compaction for 2026-11-09 not done"))
         self.state.mark("compaction", self.day)
         self.assertEqual(self.decide(), (True, "ok"))
 
+    def test_the_margin_files_keep_the_laptop_up_until_done_or_22_00(self):
+        """M-3: the day's SPAN and ELM files are fetched the same evening, not once the next morning."""
+        self.state.mark("compaction", self.day)
+        self.assertEqual(self.decide("16:31"), (False, "margin_files for 2026-11-09 not done (window until 22:00 IST)"))
+        self.assertEqual(self.decide("21:59")[0], False)
+        self.assertEqual(self.decide("22:00"), (True, "ok"))                 # the window is over: sleep anyway
+        self.state.mark("margin_files", self.day)
+        self.assertEqual(self.decide("16:31"), (True, "ok"))
+
     def test_not_before_16_00_ist(self):
         self.state.mark("compaction", self.day)
+        self.state.mark("margin_files", self.day)
         self.assertFalse(self.decide("15:59")[0])
 
     def test_owner_activity_postpones(self):
         self.state.mark("compaction", self.day)
+        self.state.mark("margin_files", self.day)
         self.assertEqual(self.decide(idle_s=300)[0], False)
 
     def test_stay_awake_flag_and_disabled_config(self):
         self.state.mark("compaction", self.day)
+        self.state.mark("margin_files", self.day)
         self.assertEqual(self.decide(stay=True), (False, "stay_awake flag present"))
         cfg = scheduler.schedule()
         cfg["sleep_after_close"]["enabled"] = False
@@ -159,6 +172,32 @@ class RunDaemonTests(unittest.TestCase):
         code, calls, _ = self.run_from(ist(date(2026, 11, 9), "17:00"))
         self.assertEqual((code, calls), (exitcodes.SLEEP, []))
         self.assertTrue(scheduler.State().done("compaction", date(2026, 11, 9)))
+
+    def test_the_margin_files_are_fetched_the_same_evening_every_30_min_until_22_00(self):
+        from unittest.mock import patch
+        from stockify.data import nse_margin_files as M
+        day = date(2026, 11, 9)
+        state = scheduler.State()
+        for d in cal.trading_days("FO", date(2026, 11, 1), date(2026, 11, 6)):
+            state.mark("margin_files", d)                            # earlier days done: only 9 Nov is due
+        clock = ManualClock(ist(day, "17:00"))
+        calls = []
+
+        def fetch_day(d):
+            calls.append((d, clock.now_ns()))
+            return M.DayResult(d, stored=[M.span_name(d, "i1")], missing=[M.span_name(d, "s")])
+
+        with patch.object(M, "fetch_day", side_effect=fetch_day):
+            code = self.daemon.run_daemon(power=self.power, clock=clock, recorder=lambda: exitcodes.OK)
+        self.assertEqual(code, exitcodes.SLEEP)
+        self.assertEqual({d for d, _ in calls}, {day})
+        calls = [t for _, t in calls]
+        self.assertTrue(all(timeutil.ns_to_ist(t).date() == day for t in calls))     # the same evening
+        self.assertLessEqual(calls[0], ist(day, "17:35"))
+        self.assertTrue(all(b - a >= 30 * MIN for a, b in zip(calls, calls[1:])), [local(c) for c in calls])
+        self.assertGreaterEqual(len(calls), 8, [local(c) for c in calls])
+        self.assertGreaterEqual(calls[-1], ist(day, "22:00"))                          # the last try gives up
+        self.assertTrue(scheduler.State().done("margin_files", day))
 
     def test_token_problem_is_passed_to_the_launcher(self):
         code, calls, _ = self.run_from(ist(date(2026, 11, 9), "06:05"), record_code=exitcodes.TOKEN_EXPIRED)
