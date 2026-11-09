@@ -130,7 +130,7 @@ void Engine::schedule_days() {  // runner._schedule_days
             }
         }
         for (const auto& [seg, t] : day.mis_cutoff) {
-            if (t && (seg == "CM" || seg == "FO")) {
+            if (t && (seg == "CM" || seg == "CM_CAS" || seg == "FO")) {
                 InternalEvent ms{EventKey{*t, kRankMisSqoff, 0, 0}, InternalKind::MisSqoff};
                 ms.segment = seg;
                 ms.date = day.date;
@@ -629,8 +629,7 @@ void Engine::mis_sqoff(const InternalEvent& ev) {  // runner._mis_sqoff
         if (p.product != Product::MIS || p.q == 0) {
             continue;
         }
-        const std::string_view g = group_of(p.instrument, ev.date);
-        if ((g.substr(0, 2) == "FO" ? "FO" : "CM") != ev.segment) {
+        if (cutoff_key(group_of(p.instrument, ev.date)) != ev.segment) {
             continue;
         }
         PlaceRequest r;

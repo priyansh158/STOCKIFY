@@ -276,9 +276,8 @@ std::optional<Reason> Engine::validate(Order& o, bool system, Reason start, Reas
                     break;
                 }
                 const std::string_view g = group_of(o.instrument, d);
-                const std::string seg = g.substr(0, 2) == "FO" ? "FO" : "CM";
                 const DaySchedule* day = calendar_.day(d);
-                const std::optional<TimeNs> cutoff = day != nullptr ? day->cutoff(seg) : std::nullopt;
+                const std::optional<TimeNs> cutoff = day != nullptr ? day->cutoff(cutoff_key(g)) : std::nullopt;
                 if (o.product == Product::MIS && cutoff && now_ >= *cutoff) {
                     return code;
                 }

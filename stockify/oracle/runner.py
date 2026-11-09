@@ -86,6 +86,14 @@ class Market:
 
 # ── The engine ───────────────────────────────────────────────────────────────
 
+
+def _cutoff_key(group: str) -> str:
+    """The MIS cut-off an instrument follows (A4 §6.3): FO for derivatives, CM_CAS for a CAS stock on its CAS day
+    (Z-5), CM otherwise."""
+    if group.startswith("FO"):
+        return "FO"
+    return "CM_CAS" if group == "CM_CAS" else "CM"
+
 class Engine:
     def __init__(self, bundle: dict, records: list[tuple], strategy, *, log_lines: list | None = None):  # noqa: ANN001
         self.bundle = bundle
@@ -215,7 +223,7 @@ class Engine:
                 if close:
                     self.push(max(close), SEG_CLOSE, "SEG_CLOSE", (g, day["date"]))
             for seg, t in day["mis_cutoff_ns"].items():
-                if t is not None and seg in ("CM", "FO"):
+                if t is not None and seg in ("CM", "CM_CAS", "FO"):
                     self.push(t, MIS_SQOFF, "MIS_SQOFF", (seg, day["date"]))
             self.push(day["day_end_ns"], DAY_END, "DAY_END", day["date"])
 
@@ -390,8 +398,7 @@ class Engine:
                     return code
             elif code == "R_SESSION" and not system:
                 g = self.group_of(o.instrument_id, d)
-                seg = "FO" if g.startswith("FO") else "CM"
-                cutoff = self.day_by_date[d]["mis_cutoff_ns"].get(seg) if d in self.day_by_date else None
+                cutoff = self.day_by_date[d]["mis_cutoff_ns"].get(_cutoff_key(g)) if d in self.day_by_date else None
                 if o.product == "MIS" and cutoff is not None and self.now >= cutoff:
                     return code
                 if self.policies["preopen"] == "reject" and self.phase_at(g, self.now) != "CONTINUOUS":
@@ -1101,8 +1108,7 @@ class Engine:
         for (iid, prod), p in sorted(self.book.ledger.positions.items()):
             if prod != "MIS" or not p.q:
                 continue
-            g = self.group_of(iid, d)
-            if ("FO" if g.startswith("FO") else "CM") != seg:
+            if _cutoff_key(self.group_of(iid, d)) != seg:
                 continue
             side = "SELL" if p.d > 0 else "BUY"
             self.place(iid, side, p.q, "MIS", "MARKET", tag="AUTO_SQOFF", system=True)

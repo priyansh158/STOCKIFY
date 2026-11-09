@@ -15,7 +15,8 @@ Defaults (all overridable in the YAML under `bundle:`):
 
 * sessions: CM PREOPEN 09:00–09:15, CONTINUOUS 09:15–15:30, POSTCLOSE 15:40–16:00;
   FO_FUT CONTINUOUS 09:15–15:30; FO_OPT CONTINUOUS 09:15–15:30; CM_CAS = CM.
-* `mis_cutoff`: none (no square-off) unless given, e.g. `{CM: "15:20", FO: "15:25"}`.
+* `mis_cutoff`: none (no square-off) unless given, e.g. `{CM: "15:20", FO: "15:25"}`; `CM_CAS`
+  (CAS stocks on their CAS days, Z-5) defaults to the CM time.
 * charges `zero`: every component zero; or explicit rows in the A1 §7.2 format.
 * policy: protection 200 bp, MIS margin CM 20 % / FO 100 %, no CNC sale hold-back.
 * margin: flat index 12 %, stock 20 %. Pricing: stale 5000 ms, risk-free 0.
@@ -100,7 +101,8 @@ def _days(g: dict) -> list[dict]:
         cuts = cut.get(d, cut) if isinstance(cut.get(d), dict) else cut
         out.append({"date": d, "groups": groups,
                     "mis_cutoff_ns": {"CM": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
-                                      "CM_CAS": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
+                                      "CM_CAS": timeutil.ist_ns(day, cuts.get("CM_CAS", cuts.get("CM")))
+                                      if "CM_CAS" in cuts or "CM" in cuts else None,
                                       "FO": timeutil.ist_ns(day, cuts["FO"]) if "FO" in cuts else None},
                     "day_end_ns": timeutil.ist_ns(day, "23:59:59") + 999_999_999})
     return out

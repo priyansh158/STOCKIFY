@@ -115,6 +115,12 @@ def _cutoff(policy: dict, group: str, d: date) -> int | None:
     return timeutil.ist_ns(d, max(rows, key=lambda r: r["effective_from"])["time"])
 
 
+def _cas_cutoff(policy: dict, d: date) -> int | None:
+    """CAS stocks on their CAS days (Z-5: 15:12 since CAS began); before a CM_CAS row, the CM time."""
+    t = _cutoff(policy, "CM_CAS", d)
+    return t if t is not None else _cutoff(policy, "CM", d)
+
+
 def _day_end_ns(d: date) -> int:
     return timeutil.ist_ns(d, "23:59:59") + 999_999_999
 
@@ -128,7 +134,7 @@ def resolve_days(start: date, end: date, policy: dict) -> list[dict]:
             groups = {g: [{"phase": p.phase, "start_ns": p.start_ns, "end_ns": p.end_ns}
                           for p in calendar.phases(g, d)] for g in GROUPS}
             days.append({"date": d.isoformat(), "groups": groups,
-                         "mis_cutoff_ns": {"CM": _cutoff(policy, "CM", d), "CM_CAS": _cutoff(policy, "CM", d),
+                         "mis_cutoff_ns": {"CM": _cutoff(policy, "CM", d), "CM_CAS": _cas_cutoff(policy, d),
                                            "FO": _cutoff(policy, "FO", d)},
                          "day_end_ns": _day_end_ns(d)})
         d += timedelta(days=1)
