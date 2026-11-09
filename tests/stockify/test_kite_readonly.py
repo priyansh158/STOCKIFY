@@ -27,13 +27,14 @@ METHODS = re.compile(r"\b(place_order|modify_order|cancel_order|exit_order|place
                      r"convert_position)\b")
 ROUTES = re.compile(r"['\"](order\.(place|modify|cancel)|gtt\.(place|modify|delete)|mf\.(order|sip)\.[a-z]+|"
                     r"portfolio\.positions\.convert)['\"]")
-URLS = re.compile(r"['\"]/(orders|gtt|mf/orders|mf/sips)\b")
+URLS = re.compile(r"['\"]/(orders|gtt|mf/orders|mf/sips)\b", re.IGNORECASE)
 # Composed or absolute order paths: an order segment that starts a path (string start, `}`, quote, host).
-ORDER_PATHS = re.compile(r"(^|[^A-Za-z0-9_.-]|kite\.trade)/(orders|gtt|mf/orders|mf/sips|portfolio/positions)\b")
+ORDER_PATHS = re.compile(r"(^|[^A-Za-z0-9_.-]|kite\.trade)/(orders|gtt|mf/orders|mf/sips|portfolio/positions)\b",
+                         re.IGNORECASE)
 # Order segments joined piecewise ("/".join(["", "orders"])), and the GTT/SIP words on their own.
 ORDER_SEGMENTS = re.compile(r"join\(.*['\"](orders|gtt|mf|portfolio)['\"]|['\"](gtt|sips|triggers)['\"]")
 METHOD_PIECES = re.compile(r"['\"](place|modify|cancel|exit|delete|convert)_['\"]")
-KITE_HOST = re.compile(r"kite\.trade|\bapi\.kite\b")
+KITE_HOST = re.compile(r"kite\.trade|\bapi\.kite\b", re.IGNORECASE)
 SDK_IMPORT = re.compile(r"^\s*(import|from)\s+kiteconnect\b")
 SDK_STRING = re.compile(r"['\"]kiteconnect(\.[\w.]+)?['\"]")
 DENY_BEGIN, DENY_END = "# ORDER-DENY-LIST BEGIN", "# ORDER-DENY-LIST END"
@@ -43,6 +44,11 @@ def tracked_sources() -> list[Path]:
     cmd = ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py", "*.ps1"]
     out = subprocess.run(cmd, cwd=REPO, capture_output=True, check=True).stdout.decode("utf-8")
     return [REPO / p for p in out.split("\0") if p and not p.startswith(("tests/", ".venv/"))]
+
+
+def requests_adapter_type() -> type:
+    import requests.adapters
+    return requests.adapters.BaseAdapter
 
 
 class StrippedClientTest(unittest.TestCase):
@@ -226,6 +232,51 @@ class RealSdkTest(unittest.TestCase):
                 kc.reqsession.get_adapter(prefix + "api.kite.trade/").send(prepared)
         self.assertEqual(self.wire, [])
 
+    def test_method_override_headers_and_keys_are_refused(self):
+        kc = self._client()
+        s = kc.reqsession
+        probes = [
+            lambda: s.request("GET", "https://api.kite.trade/user/profile", headers={"X-HTTP-Method-Override": "POST"}),
+            lambda: s.request("POST", "https://api.kite.trade/session/token",
+                              headers={"x-http-method-override": "DELETE"}),
+            lambda: s.request("GET", "https://api.kite.trade/user/profile", headers={"X-HTTP-Method": "PUT"}),
+            lambda: s.request("POST", "https://api.kite.trade/margins/basket", headers={"X-METHOD-OVERRIDE": "DELETE"}),
+            lambda: s.request("GET", "https://api.kite.trade/user/profile?_method=POST"),
+            lambda: s.request("GET", "https://api.kite.trade/user/profile", params={"_Method": "DELETE"}),
+            lambda: s.request("POST", "https://api.kite.trade/margins/basket", data={"_method": "DELETE"}),
+            lambda: s.request("POST", "https://api.kite.trade/margins/basket", json={"_method": "PUT"}),
+            lambda: s.request("POST", "https://api.kite.trade/margins/basket", json=[{"_method": "PUT"}]),
+        ]
+        for i, probe in enumerate(probes):
+            with self.subTest(i=i), self.assertRaises(kite_client.OrderRouteForbidden):
+                probe()
+        self.assertEqual(self.wire, [])
+
+    def test_a_longer_prefix_mount_makes_every_request_refuse(self):
+        import requests.adapters
+        kc = self._client()
+        kc.reqsession.mount("https://api.kite.trade/", requests.adapters.HTTPAdapter())
+        for call in (lambda: kc.reqsession.request("POST", "https://api.kite.trade/orders/regular"),
+                     lambda: kc.reqsession.request("GET", "https://api.kite.trade/user/profile"),
+                     lambda: kc.profile()):
+            with self.assertRaises(kite_client.OrderRouteForbidden):
+                call()
+        self.assertEqual(self.wire, [])
+
+    def test_a_replaced_prefix_mount_makes_every_request_refuse(self):
+        import requests.adapters
+        kc = self._client()
+        kc.reqsession.mount("http://", requests.adapters.HTTPAdapter())   # the https guard notices
+        with self.assertRaises(kite_client.OrderRouteForbidden):
+            kc.profile()
+        self.assertEqual(self.wire, [])
+
+    def test_the_inner_transport_is_not_an_attribute(self):
+        kc = self._client()
+        guard = kc.reqsession.get_adapter("https://api.kite.trade/")
+        self.assertTrue(guard.paper_only)
+        self.assertFalse(any(isinstance(v, requests_adapter_type()) for v in vars(guard).values()))
+
     def test_allowlisted_calls_pass_with_the_exact_query(self):
         kc = self._client()
         kc.basket_order_margins([{"tradingsymbol": "NIFTY"}])
@@ -366,7 +417,8 @@ class SourceScanTest(unittest.TestCase):
     # check's list of modules it refuses (LCB 5.3).
     OWN_API_LINES = {"server/routers/tests.py": {'@router.get("/api/tests/{run_id}/orders", '
                                                  'response_model=list[dict[str, Any]])'},
-                     "stockify/strategy.py": {'"kite_client", "kiteconnect", "ctypes", "importlib", "builtins"}'}}
+                     "stockify/strategy.py": {'BANNED_ATTR_NAMES = {"importlib", "sys", "modules", "kite_client", '
+                                              '"kiteconnect", "os", "subprocess", "socket",'}}
 
     def _scan(self, patterns, allowed_files=()) -> list[str]:  # noqa: ANN001
         matches = []
@@ -407,7 +459,9 @@ class SourceScanTest(unittest.TestCase):
     def test_the_patterns_catch_composed_urls(self):
         for text in ('requests.post("https://api.kite.trade/orders/regular")', 'f"{root}/orders/{variety}"',
                      "root + '/gtt/triggers'", '"/".join(["", "orders", v])', "'/mf/sips/' + sip",
-                     'url = "/portfolio/positions"', 'getattr(k, "place_" + "order")'):
+                     'url = "/portfolio/positions"', 'getattr(k, "place_" + "order")',
+                     'requests.post("https://API.KITE.TRADE/orders/regular", headers=h, data=d)',
+                     'requests.post("https://Api.Kite.Trade/Orders/regular")'):
             with self.subTest(text=text):
                 self.assertTrue(any(p.search(text) for p in (URLS, ORDER_PATHS, ORDER_SEGMENTS, METHOD_PIECES,
                                                              KITE_HOST)))
@@ -429,8 +483,12 @@ class SourceScanTest(unittest.TestCase):
 
     def test_only_kite_client_builds_a_kiteconnect_or_touches_its_internals(self):
         pattern = re.compile(r"\bKiteConnect\b|\._routes\b|\breqsession\b|\bkiteconnect\.connect\b|"
-                             r"\btype\([^()]*(\([^()]*\))?[^()]*\)\s*\(")
+                             r"\btype\([^()]*(\([^()]*\))?[^()]*\)\s*\(|\.__class__\s*\(|\btype\(\s*[\w.]*get_client")
         self.assertEqual(self._scan([pattern], allowed_files=("kite_client.py",)), [])
+        for text in ("kite_client.get_client().__class__(api_key=k)", "type(kite_client.get_client())",
+                     "type(get_client())(api_key=k)"):
+            with self.subTest(text=text):
+                self.assertTrue(pattern.search(text))
 
     def test_private_request_methods_only_in_the_two_kite_modules(self):
         pattern = re.compile(r"\._(post|put|delete|request)\s*\(")

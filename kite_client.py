@@ -269,13 +269,40 @@ def _url_forbidden(url: object, method: str) -> bool:
     return False
 
 
-def check_prepared_request(method: object, url: object) -> None:
-    """The transport check: GET passes; anything else must be a named write, sent in its plain form."""
+_METHOD_OVERRIDE_HEADERS = ("x-http-method-override", "x-http-method", "x-method-override")
+
+
+def _has_method_key(text: object) -> bool:
+    """Whether a query string or body carries a `_method` key (form or JSON object), case-insensitively."""
+    import json
+    from urllib.parse import parse_qsl
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    if not text:
+        return False
+    text = str(text)
+    if any(k.strip().lower() == "_method" for k, _ in parse_qsl(text, keep_blank_values=True)):
+        return True
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    items = data if isinstance(data, list) else [data]
+    return any(isinstance(d, dict) and any(str(k).strip().lower() == "_method" for k in d) for d in items)
+
+
+def check_prepared_request(method: object, url: object, headers: object = None, body: object = None) -> None:
+    """The transport check: GET passes; anything else must be a named write, sent in its plain form.
+    A method override (the X-HTTP-Method-Override family of headers, or a `_method` key) is refused on any request."""
+    from urllib.parse import urlsplit
     verb = str(method or "").upper()
+    names = {str(k).strip().lower() for k in (headers or {})}
+    if names & set(_METHOD_OVERRIDE_HEADERS) or _has_method_key(urlsplit(str(url or "")).query)             or _has_method_key(body):
+        raise OrderRouteForbidden(f"Kite request {verb} {_url_path(url)} carries a method override: refused "
+                                  "(STOCKIFY is paper only)")
     path = _normalised_path(url)
     if verb == "GET" and path is not None:
         return
-    from urllib.parse import urlsplit
     raw = urlsplit(str(url or "")).path.lower()
     if path is None or (verb, path) not in _WRITE_ALLOWLIST or raw != path:
         raise OrderRouteForbidden(f"Kite request {verb} {_url_path(url)} is not allowed: STOCKIFY is paper only "
@@ -400,28 +427,49 @@ def _mount_guard(session) -> None:  # noqa: ANN001
     """Mount the checking transport on a requests.Session, wrapping whatever adapter it had."""
     if not (callable(getattr(session, "mount", None)) and callable(getattr(session, "get_adapter", None))):
         return
-    import requests.adapters
-
-    class _PaperOnlyAdapter(requests.adapters.BaseAdapter):
-        """Checks every prepared request (`check_prepared_request`) before the real adapter may send it."""
-
-        paper_only = True
-
-        def __init__(self, inner):  # noqa: ANN001
-            super().__init__()
-            self.inner = inner
-
-        def send(self, request, **kwargs):  # noqa: ANN001, ANN201
-            check_prepared_request(request.method, request.url)
-            return self.inner.send(request, **kwargs)
-
-        def close(self) -> None:
-            self.inner.close()
-
     for prefix in ("https://", "http://"):
         inner = session.get_adapter(prefix + "api.kite.trade/")
         if not getattr(inner, "paper_only", False):
-            session.mount(prefix, _PaperOnlyAdapter(inner))
+            session.mount(prefix, _paper_only_adapter(session, inner))
+    if not getattr(session.send, "paper_only", False):
+        inner_send = session.send
+
+        def send(request, **kwargs):  # noqa: ANN001, ANN202
+            # Session.request, redirects and direct calls all come through here, before an adapter is chosen.
+            _check_mounts(session)
+            check_prepared_request(request.method, request.url, request.headers, request.body)
+            return inner_send(request, **kwargs)
+        send.paper_only = True
+        session.send = send
+
+
+def _check_mounts(session) -> None:  # noqa: ANN001
+    """Refuse once the session's mounts are anything but the two guarded prefixes: a longer prefix such as
+    `https://api.kite.trade/` would otherwise route around the guard (requests picks the longest match)."""
+    mounts = dict(getattr(session, "adapters", {}) or {})
+    if set(mounts) != {"https://", "http://"} or not all(getattr(a, "paper_only", False) for a in mounts.values()):
+        raise OrderRouteForbidden("the Kite session's transports were changed: refusing every request "
+                                  "(STOCKIFY is paper only)")
+
+
+def _paper_only_adapter(session, inner):  # noqa: ANN001, ANN202
+    """A transport that checks each prepared request before `inner` (held only in this closure) may send it,
+    and refuses everything once the session's mounts change (`_check_mounts`)."""
+    import requests.adapters
+
+    class _PaperOnlyAdapter(requests.adapters.BaseAdapter):
+        paper_only = True
+        __slots__ = ()
+
+        def send(self, request, **kwargs):  # noqa: ANN001, ANN201
+            _check_mounts(session)
+            check_prepared_request(request.method, request.url, request.headers, request.body)
+            return inner.send(request, **kwargs)
+
+        def close(self) -> None:
+            inner.close()
+
+    return _PaperOnlyAdapter()
 
 
 # ── KiteConnect instance ──────────────────────────────────────────────────────

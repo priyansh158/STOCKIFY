@@ -99,13 +99,24 @@ Things to know when you write your own (the full API is A2 §4):
   `socket`, `requests`, `threading`, `sqlite3` and the like, or call `open`, `eval`, `exec`, `datetime.now()` or
   `date.today()`. Use `ctx.now()`, `ctx.today()`, `ctx.rng()` and `ctx.log()` instead. This is what makes a run
   reproducible.
-- **No network, no Kite, nothing past Python (LCB 5.3).** The same check refuses imports of `kite_client`,
-  `kiteconnect`, `stockify.kite_readonly`, `stockify.kitecheck`, `requests`, `httpx`, `urllib`, `socket`, `http`,
-  `subprocess`, `ctypes`, `importlib` and `builtins`, and any use of `__import__`, `__builtins__`, `exec`, `eval` or
-  `compile`. The paper daemon runs strategies in a process that holds a live Kite token, so a strategy must never be
-  able to reach it. The source is parsed **before** the module is imported, so a refused file's top-level code never
-  runs; modules the strategy imports from its own package (such as `stockify/strategies/_option_legs.py`) are checked
-  the same way. This guards against accidents; it is not a sandbox.
+- **Imports come from an allowlist (LCB 5.3, 5.4).** A strategy module may import only `__future__`, `datetime`,
+  `decimal`, `re`, `math`, `dataclasses`, `typing`, `enum`, `collections`, `itertools`, `functools`, `statistics`,
+  `stockify.strategy`, `stockify.engine`, `stockify.timeutil`, and modules of its own package (for the reference
+  strategies, `stockify.strategies.*`; a platform package such as `stockify.tools` does not count). The check also
+  refuses:
+  - attributes starting with `_` other than on `self`/`cls` (and dunders such as `self.__class__` even there); the
+    one exception is the context's instrument table `ctx._rows()`, which the option helpers read;
+  - attributes named `importlib`, `sys`, `modules`, `kite_client`, `kiteconnect`, `os`, `subprocess`, `socket` or
+    `time` (allowed modules hold some of these: `stockify.timeutil.time` is the wall clock);
+  - calls to `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`, `breakpoint`, `open`, `input`,
+    `__import__`, `exec`, `eval` and `compile`, and the names `__builtins__`, `__loader__` and `__spec__`;
+  - `datetime.now()`, `datetime.today()`, `datetime.utcnow()` and `date.today()`, however they are reached.
+
+  The paper daemon runs strategies in a process that holds a live Kite token, so a strategy must never be able to
+  reach it. The source is parsed **before** the module is imported, so a refused file's top-level code never runs;
+  modules the strategy imports from its own package (such as `stockify/strategies/_option_legs.py`) are checked the
+  same way. Defining `__init__` or other dunder methods in a class is fine; private helper methods on `self`
+  (`self._new_day(...)`) are fine. This guards against accidents; it is not a sandbox.
 - To make your own, put the file in `stockify/strategies/` and name it in the config as
   `"stockify.strategies.<module>:<Class>"`. The `PARAMS` list is only a description, for the strategy catalogue
   and the `/tests` form (labels, types, defaults, help text); the strategy itself reads `ctx.params`.

@@ -14,8 +14,18 @@ from __future__ import annotations
 
 from stockify.strategy import Strategy
 
-REPLAYED = ("subscribe_ticks", "subscribe_bars", "schedule_at", "schedule_every", "cancel_timer", "place", "modify",
-            "cancel")
+# Each replayed call, by name: an explicit table, since the load check refuses getattr (LCB 5.4).
+_CALLS = {
+    "subscribe_ticks": lambda ctx: ctx.subscribe_ticks,
+    "subscribe_bars": lambda ctx: ctx.subscribe_bars,
+    "schedule_at": lambda ctx: ctx.schedule_at,
+    "schedule_every": lambda ctx: ctx.schedule_every,
+    "cancel_timer": lambda ctx: ctx.cancel_timer,
+    "place": lambda ctx: ctx.place,
+    "modify": lambda ctx: ctx.modify,
+    "cancel": lambda ctx: ctx.cancel,
+}
+REPLAYED = tuple(_CALLS)
 
 
 class Replay(Strategy):
@@ -30,7 +40,7 @@ class Replay(Strategy):
         for method, args, kwargs in self.by_k.get(self.k, []):
             if method not in REPLAYED:
                 raise ValueError(f"replay: {method} is not a replayed context call")
-            getattr(ctx, method)(*args, **kwargs)
+            _CALLS[method](ctx)(*args, **kwargs)
 
     def _next(self, ctx) -> None:  # noqa: ANN001
         self.k += 1

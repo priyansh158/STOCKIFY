@@ -51,9 +51,67 @@ class StrategyGuardTest(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
                 S.check_source(code)
 
+    def test_rereview_n5_reproductions_are_refused(self):
+        for code in (
+                # Kite through modules a strategy may import
+                'from stockify import strategy as S\nS.importlib.import_module("kite" "connect").KiteConnect',
+                'import sys\nsys.modules["kiteconnect"].KiteConnect',
+                "import stockify.data.instruments as m\nm.kite_client", "import stockify.daemon as d\nd.kite_client",
+                "import server.routers.kite", "import kite_ticker_worker",
+                "import stockify\nstockify.kite_readonly.client()", "import stockify.strategy\nstockify.kite_readonly",
+                'import pkgutil\npkgutil.resolve_name("kiteconnect:KiteConnect")',
+                "().__class__.__base__.__subclasses__()", 'globals()["S"]', 'locals()', 'vars()',
+                'import sys\ngetattr(sys, "mod" + "ules")', "x = __loader__", "y = __spec__.loader", "breakpoint()",
+                'setattr(ctx, "x", 1)', "from stockify import strategy as S\nS.sys",
+                # file, process and network access
+                'import _io\n_io.open("f")', 'import codecs\ncodecs.open("f")', 'import nt\nnt.system("x")',
+                "import _socket", "import ssl", "import smtplib", "import xmlrpc.client", "import webbrowser",
+                "import runpy", "import code", "import zipimport", "import pickle", "import os.path",
+                # the wall clock through allowed modules
+                "from stockify import timeutil\ntimeutil.time.time()", "from stockify import engine\nengine.sys",
+                "import datetime\ndatetime.datetime.now()", "from datetime import datetime\ndatetime.now()",
+                "from datetime import date\ndate.today()",
+                # private attributes off self
+                "ctx._engine", "bar.__dict__", "self.__class__", "self.__dict__", "S._secret"):
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                S.check_source(code)
+
+    def test_the_allowlist(self):
+        self.assertEqual(S.ALLOWED_IMPORTS, frozenset({
+            "__future__", "datetime", "decimal", "re", "math", "dataclasses", "typing", "enum", "collections",
+            "itertools", "functools", "statistics", "stockify.strategy", "stockify.engine", "stockify.timeutil"}))
+
     def test_platform_imports_strategies_use_still_pass(self):
-        S.check_source("from decimal import Decimal\nfrom datetime import date\nimport re\nimport math\n"
-                       "from stockify import strategy as S, timeutil\nfrom stockify.strategy import Strategy\n")
+        S.check_source("from __future__ import annotations\nfrom decimal import ROUND_CEILING, Decimal\n"
+                       "from datetime import date\nimport re\nimport math\nimport statistics\n"
+                       "from collections import deque\nfrom dataclasses import dataclass\nfrom typing import Any\n"
+                       "from stockify import strategy as S, timeutil\nfrom stockify.strategy import Strategy\n"
+                       "class A(Strategy):\n    def __init__(self):\n        self._n = 0\n"
+                       "    def on_bar(self, ctx, bar):\n        self._step(ctx)\n        rows = ctx._rows()\n"
+                       "        ctx.now()\n        ctx.today()\n")
+
+    def test_platform_and_other_packages_are_not_an_own_package(self):
+        self.assertEqual(S.own_package("stockify.tools.replay", "stockify.tools"), "")
+        self.assertEqual(S.own_package("stockify.foo", "stockify"), "")
+        self.assertEqual(S.own_package("stockify.strategies.x", "stockify.strategies"), "stockify.strategies")
+        with self.assertRaises(S.StrategyCodeError):
+            S.check_source("from stockify.tools import capture_charges", "stockify.tools.replay", "stockify.tools")
+        with self.assertRaises(S.StrategyCodeError):
+            S.check_source("from stockify.data import instruments", "stockify.strategies.x", "stockify.strategies")
+
+    def test_only_the_margin_wrapper_may_call_getattr(self):
+        code = "def f(ctx, name):\n    return getattr(ctx, name)\n"
+        S.check_source(code, "stockify.strategies._margin_watch", "stockify.strategies")
+        with self.assertRaises(S.StrategyCodeError):
+            S.check_source(code, "stockify.strategies.mine", "stockify.strategies")
+
+    def test_every_strategy_the_repo_loads_by_ref_still_loads(self):
+        for ref in ("stockify.strategies._margin_watch:MarginWatch", "stockify.tools.replay:Replay",
+                    "tests.stockify.run_fixtures:FailOnSecondBar", "stockify.strategies.iron_fly:IronFly",
+                    "stockify.strategies.short_straddle_stop:ShortStraddleStop",
+                    "stockify.strategies.eod_short_straddle:EodShortStraddle"):
+            with self.subTest(ref=ref):
+                self.assertIsInstance(S.load(ref), S.Strategy)
 
     def test_source_is_checked_before_the_module_runs(self):
         ref = self._module("bad", """

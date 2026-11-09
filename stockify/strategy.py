@@ -185,62 +185,115 @@ def is_nan(x: float) -> bool:
 
 # ── Load-time checks (A2 §4.4) ───────────────────────────────────────────────
 #
-# A guard against accidents, not a sandbox: Python code that wants to escape a
-# static check can (attribute tricks, a helper module outside the strategy's
-# package). The check exists so that an ordinary strategy cannot read the wall
-# clock, draw its own randomness, touch files, processes or the network, or
-# reach Kite: the paper daemon runs strategies in a process that holds a live
-# Kite token (LCB 5.3). The source is checked BEFORE the module is imported, so
-# its top-level code never runs unchecked; strategy helper modules it imports
-# from its own package are checked too.
+# A guard against accidents, not a sandbox: Python code determined to escape a
+# static check can. The check exists so that an ordinary strategy cannot read
+# the wall clock, draw its own randomness, touch files, processes or the
+# network, or reach Kite: the paper daemon runs strategies in a process that
+# holds a live Kite token (LCB 5.3, 5.4). Imports come from an allowlist; the
+# source is checked BEFORE the module is imported, so its top-level code never
+# runs unchecked; helper modules it imports from its own package are checked
+# the same way.
 
-BANNED_MODULES = {"time", "random", "secrets", "os", "subprocess", "socket", "requests", "httpx", "shutil",
-                  "pathlib", "io", "urllib", "http", "threading", "multiprocessing", "asyncio", "sqlite3",
-                  # Kite and anything that reaches past Python (LCB 5.3)
-                  "kite_client", "kiteconnect", "ctypes", "importlib", "builtins"}
-BANNED_QUALIFIED = {"stockify.kite_readonly", "stockify.kitecheck"}
-BANNED_CALLS = {"open", "eval", "exec", "compile", "__import__", "input"}
-BANNED_NAMES = {"__import__", "__builtins__", "exec", "eval", "compile"}   # even when not called directly
-BANNED_ATTRS = {("datetime", "now"), ("datetime", "today"), ("datetime", "utcnow"), ("date", "today")}
+ALLOWED_IMPORTS = frozenset({
+    "__future__", "datetime", "decimal", "re", "math", "dataclasses", "typing", "enum", "collections", "itertools",
+    "functools", "statistics", "stockify.strategy", "stockify.engine", "stockify.timeutil",
+})
+# A strategy may also import from its own package, except a platform package (where "own package" would be all
+# of stockify): stockify.strategies.* is the one stockify package strategies live in.
+_PLATFORM = "stockify"
+_STRATEGY_PACKAGE = "stockify.strategies"
+BANNED_CALLS = {"getattr", "setattr", "delattr", "globals", "locals", "vars", "breakpoint", "open", "input",
+                "__import__", "exec", "eval", "compile"}
+BANNED_NAMES = {"__import__", "__builtins__", "__loader__", "__spec__", "exec", "eval", "compile", "globals",
+                "locals", "vars", "breakpoint", "getattr", "setattr", "delattr"}
+# Attribute names that hand over a module or the module table (`stockify.timeutil` holds `time`, the engine `sys`).
+BANNED_ATTR_NAMES = {"importlib", "sys", "modules", "kite_client", "kiteconnect", "os", "subprocess", "socket",
+                     "time"}
+# `_`-prefixed attributes other than on `self`/`cls`: only these, by name. `ctx._rows()` is the context's instrument
+# table, read by the option helpers in stockify/strategies (_option_legs.py, _script.py).
+ALLOWED_PRIVATE_ATTRS = {"_rows"}
+# Platform strategy modules, reviewed here, that may call getattr: MarginWatch forwards its wrapped context.
+GETATTR_MODULES = {"stockify.strategies._margin_watch"}
+_CLOCK_CALLS = {"now", "today", "utcnow"}
 
 
 class StrategyCodeError(ValueError):
     pass
 
 
-def _imports(node: ast.AST, package: str) -> list[str]:
-    """The fully qualified modules an import statement names (relative imports resolved against `package`)."""
+def _imports(node: ast.AST, package: str) -> list[tuple[str, list[str]]]:
+    """(module, the names it binds) per import; relative imports resolved against `package`."""
     if isinstance(node, ast.Import):
-        return [a.name for a in node.names]
+        return [(a.name, []) for a in node.names]
     base = node.module or ""
     if node.level:
         parts = package.split(".") if package else []
         parts = parts[:len(parts) - (node.level - 1)] if node.level > 1 else parts
         base = ".".join(p for p in (*parts, base) if p)
-    return [base] + [f"{base}.{a.name}" if base else a.name for a in node.names if a.name != "*"]
+    return [(base, [a.name for a in node.names])]
+
+
+def own_package(module_name: str, package: str) -> str:
+    """The package a strategy may import from: its own, unless that is the platform's (then stockify.strategies)."""
+    if package == _STRATEGY_PACKAGE or package.startswith(_STRATEGY_PACKAGE + "."):
+        return package
+    if package == _PLATFORM or package.startswith(_PLATFORM + "."):
+        return ""
+    return package
+
+
+def _allowed(module: str, own: str) -> bool:
+    return module in ALLOWED_IMPORTS or bool(own) and (module == own or module.startswith(own + "."))
 
 
 def check_source(source: str, name: str = "<strategy>", package: str = "") -> list[str]:
-    """Refuse wall-clock, randomness, file, process, network and Kite access. Returns the modules it imports."""
+    """Refuse imports outside the allowlist and wall-clock, file, process, network and Kite access.
+    Returns the modules the source imports from its own package (to be checked in turn)."""
     tree = ast.parse(source, filename=name)
-    imported: list[str] = []
+    own = own_package(name, package)
+    may_getattr = name in GETATTR_MODULES
+    local: list[str] = []
+
+    def refuse(node: ast.AST, what: str) -> None:
+        raise StrategyCodeError(f"{name}:{getattr(node, 'lineno', '?')}: {what} is not allowed in strategies")
+
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            for m in _imports(node, package):
-                imported.append(m)
-                if m.split(".")[0] in BANNED_MODULES or any(m == q or m.startswith(q + ".") for q in BANNED_QUALIFIED):
-                    raise StrategyCodeError(f"{name}:{node.lineno}: import of {m!r} is not allowed in strategies")
+            for module, names in _imports(node, package):
+                if isinstance(node, ast.ImportFrom) and not _allowed(module, own):
+                    qualified = [f"{module}.{n}" for n in names if n != "*"]
+                    if not qualified or not all(_allowed(q, own) for q in qualified):
+                        refuse(node, f"import from {module!r}")
+                    module_names = qualified
+                elif not _allowed(module, own):
+                    refuse(node, f"import of {module!r}")
+                elif isinstance(node, ast.Import) and "." in module and not _allowed(module.split(".")[0], own) and not any(
+                        a.asname for a in node.names if a.name == module):
+                    refuse(node, f"'import {module}' (it binds {module.split('.')[0]!r}; use 'from ... import')")
+                else:
+                    module_names = [module] + ([f"{module}.{n}" for n in names if n != "*"]
+                                               if isinstance(node, ast.ImportFrom) else [])
+                local.extend(m for m in module_names if own and (m == own or m.startswith(own + ".")))
         elif isinstance(node, ast.Call):
             f = node.func
-            if isinstance(f, ast.Name) and f.id in BANNED_CALLS:
-                raise StrategyCodeError(f"{name}:{node.lineno}: {f.id}() is not allowed in strategies")
-            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and (f.value.id, f.attr) in BANNED_ATTRS:
-                raise StrategyCodeError(f"{name}:{node.lineno}: {f.value.id}.{f.attr}() is not allowed; use ctx.now()")
+            if isinstance(f, ast.Name) and f.id in BANNED_CALLS and not (f.id == "getattr" and may_getattr):
+                refuse(node, f"{f.id}()")
+            if isinstance(f, ast.Attribute) and f.attr in _CLOCK_CALLS:
+                base = f.value
+                last = base.id if isinstance(base, ast.Name) else base.attr if isinstance(base, ast.Attribute) else ""
+                if last in ("datetime", "date"):
+                    refuse(node, f"{last}.{f.attr}(); use ctx.now()")
         elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
-            raise StrategyCodeError(f"{name}:{node.lineno}: {node.id} is not allowed in strategies")
-        elif isinstance(node, ast.Attribute) and node.attr in ("__import__", "__builtins__"):
-            raise StrategyCodeError(f"{name}:{node.lineno}: .{node.attr} is not allowed in strategies")
-    return imported
+            if not (node.id == "getattr" and may_getattr):
+                refuse(node, node.id)
+        elif isinstance(node, ast.Attribute):
+            attr = node.attr
+            on_self = isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")
+            if attr.startswith("__") or (attr.startswith("_") and not on_self and attr not in ALLOWED_PRIVATE_ATTRS):
+                refuse(node, f"the attribute .{attr}")
+            if attr in BANNED_ATTR_NAMES:
+                refuse(node, f"the attribute .{attr}")
+    return local
 
 
 def _module_source(module_name: str) -> tuple[str, str]:
@@ -281,7 +334,7 @@ def check_module(module_name: str) -> None:
         seen.add(name)
         source, package = _module_source(name)
         for m in check_source(source, name, package):
-            if package and m.startswith(package + ".") and m not in seen and _find_spec(m) is not None:
+            if m not in seen and _find_spec(m) is not None:
                 pending.append(m)
 
 
