@@ -421,6 +421,48 @@ class SpanParityTests(unittest.TestCase):
                     self.assertTrue({"B1_span_nse_elm", "B3_spanlite_calibrated"} <= set(steps), steps)
         self.assertEqual(set(reached), set(STEPS))
 
+    def test_an_elm_pct_outside_the_plain_form_is_unusable_alike(self):
+        """M-3: an ELM % must be a plain bounded decimal (1-3 integer digits, at most 8 fraction digits, no sign or
+        exponent). "1E1" is 10 % as a Decimal, but neither implementation uses it: B2, byte for byte."""
+        from stockify.fno.staircase import _elm_ppb
+        for pct, ppb in (("2", 20_000_000), ("3.5", 35_000_000), ("100", 1_000_000_000), ("0.00000001", None),
+                         ("1E1", None), ("+2", None), (" 2", None), ("1000", None), ("2.123456789", None),
+                         ("1E+999999999", None), ("2.", None), (".5", None), ("0", None)):
+            with self.subTest(pct=pct):
+                self.assertEqual(_elm_ppb(pct), ppb)
+        for pct in ("1E1", "+2", "0002"):
+            with self.subTest(bundle_pct=pct), tempfile.TemporaryDirectory(prefix="staircase-elm-form-") as tmp:
+                folder = Path(tmp)
+                g = staircase_world(4911)
+                b = staircase_bundle(g, elm1=pct, elm2=pct)
+                (folder / "bad").mkdir()
+                (folder / "missing").mkdir()
+                self.assertEqual(run_pair(g, b, folder / "bad"), (None, None))
+                self.assert_same(folder / "bad")
+                self.assertIn("B2_span_rule_elm", step_counts(folder / "bad" / "engine"))
+                for day in b["elm"].values():                     # the same day with every % missing instead
+                    for und in day:
+                        day[und] = {}
+                self.assertEqual(run_pair(g, b, folder / "missing"), (None, None))
+                for impl in ("oracle", "engine"):
+                    self.assertEqual((folder / "bad" / impl / "margin_daily.csv").read_bytes(),
+                                     (folder / "missing" / impl / "margin_daily.csv").read_bytes())
+
+    def test_no_derivatives_label_alike(self):
+        """I-1(a): a bundle whose span and elm sections are empty ({}), labelled margin_span:no_derivatives, runs alike
+        on both implementations; neither adds margin_span:no_section."""
+        with tempfile.TemporaryDirectory(prefix="staircase-noderiv-") as tmp:
+            folder = Path(tmp)
+            g = staircase_world(4913)
+            b = staircase_bundle(g)
+            b.update(span={}, span_skipped={}, elm={}, elm_skipped={})
+            b["labels"] = sorted(set(b["labels"]) | {"margin_span:no_derivatives"})
+            self.assertEqual(run_pair(g, b, folder), (None, None))
+            self.assert_same(folder)
+            labels = labels_of(folder / "engine")
+            self.assertIn("margin_span:no_derivatives", labels)
+            self.assertNotIn("margin_span:no_section", labels)
+
     def test_no_span_section_is_labelled_alike(self):
         with tempfile.TemporaryDirectory(prefix="staircase-nosection-") as tmp:
             folder = Path(tmp)

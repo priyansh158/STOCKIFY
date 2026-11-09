@@ -57,7 +57,7 @@ ELM_MAX_BYTES = 256 * 1024 * 1024        # an ELM CSV larger than this once unpa
 ELM_MIN_COLUMNS = 7                      # instrument, symbol, expiry, strike, CE | PE | XX, 0, ELM % (S-7)
 # An ELM % as NSE writes it (M-3): a plain bounded decimal, no sign, no exponent. Anything else is unusable, in the
 # bundle (read_elm) and in both margin models (staircase._elm_ppb, staircase.cpp elm_ppb).
-ELM_PCT = re.compile(r"\d{1,3}(\.\d{1,8})?")
+ELM_PCT = re.compile(r"[0-9]{1,3}(\.[0-9]{1,8})?")        # ASCII digits only: \d takes any Unicode digit
 # The plausible created time of a SPAN file of business day D (L-4 ruling): from D-2 12:00 to D+1 06:00 IST. An i1
 # is created the evening before D (a Sunday for a Monday), the .s on D's evening.
 CREATED_FROM = (-2, "12:00")

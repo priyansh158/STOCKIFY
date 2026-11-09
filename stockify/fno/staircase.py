@@ -79,8 +79,11 @@ def _key(row: dict) -> tuple | None:
 
 
 def _elm_ppb(pct: str | None) -> int | None:
-    """An ELM per-cent decimal string ("2", "3.5") as an exact ppb fraction; None when absent or unusable."""
-    if pct is None:
+    """An ELM per-cent decimal string ("2", "3.5") as an exact ppb fraction; None when absent or unusable: not a
+    plain bounded decimal (`nse_margin_files.ELM_PCT`, M-3: 1-3 integer digits, at most 8 fraction digits, no sign,
+    space or exponent; the engine's elm_ppb applies the same form), not positive, or not a whole number of ppb."""
+    from stockify.data.nse_margin_files import ELM_PCT
+    if not isinstance(pct, str) or not ELM_PCT.fullmatch(pct):
         return None
     try:
         value = Decimal(pct)

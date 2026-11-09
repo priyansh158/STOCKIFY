@@ -50,11 +50,35 @@ std::optional<span::ContractKey> key_of(const Instrument& row) {
 // paise × 10⁹ → paise, rounded up to the whole rupee (spanlite._rupee_up).
 Paise rupee_up(const Int128& paise_ppb) { return ceil_to(paise_ppb.ceil_div(kPpb).to_int64(), 100); }
 
+// Whether `s` is an ELM % in its plain bounded form (nse_margin_files.ELM_PCT, M-3): 1-3 ASCII digits, optionally
+// '.' and 1-8 more; no sign, space or exponent.
+bool plain_elm_pct(std::string_view s) {
+    const auto digits = [&s](std::size_t from) {
+        std::size_t i = from;
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+            ++i;
+        }
+        return i - from;
+    };
+    const std::size_t n_int = digits(0);
+    if (n_int < 1 || n_int > 3) {
+        return false;
+    }
+    if (n_int == s.size()) {
+        return true;
+    }
+    if (s[n_int] != '.') {
+        return false;
+    }
+    const std::size_t n_frac = digits(n_int + 1);
+    return n_frac >= 1 && n_frac <= 8 && n_int + 1 + n_frac == s.size();
+}
+
 // An ELM per-cent string ("2", "3.5") as an exact ppb fraction (staircase._elm_ppb); nullopt when absent or
-// unusable (not a finite positive decimal, or not a whole number of ppb). Beyond int64 is std::overflow_error, as
-// the oracle's OverflowError. Bundles carry strings; any other JSON value is unusable here.
+// unusable (not in the plain bounded form, not positive, or not a whole number of ppb). Beyond int64 is
+// std::overflow_error, as the oracle's OverflowError. Bundles carry strings; any other JSON value is unusable here.
 std::optional<std::int64_t> elm_ppb(const Json& pct) {
-    if (!pct.is_string()) {
+    if (!pct.is_string() || !plain_elm_pct(pct.get_ref<const std::string&>())) {
         return std::nullopt;
     }
     const std::optional<span::SpanDecimal> value = span::SpanDecimal::parse(pct.get<std::string>());
