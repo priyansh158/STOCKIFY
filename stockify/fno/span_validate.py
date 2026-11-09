@@ -5,21 +5,32 @@ trade date offline (no Kite call, no network) and compares with Kite's `final.sp
 
 * Legs: each order's tradingsymbol is mapped through refdata (`instruments.find` / `instruments.get`, as the
   calibration's offline refit does) to the SPAN contract key (kind, expiry, strike paise); units are signed.
-* SPAN file: the archived file of the day with the latest `created` at or before the row's `wall_ns` (no lookahead).
-  None in force -> the sample is a miss, never a guess.
+* SPAN file: the archived file of the day with the latest `created` at or before the row's `wall_ns` (no lookahead);
+  if none of the day's files is in force yet, the previous trading day's end-of-day `.s` (spec §5.1). None at all ->
+  the sample is a miss, never a guess. D's own `.s` stays a candidate here: validation asks which file Kite used at
+  `wall_ns`, and after hours that is D's end-of-day file. The rule "D's own .s is never used for D's trades" binds
+  backtests (B1, Task 5), not this comparison.
 * SPAN: `span_requirement` (the code's composition, net option value included) and, for comparison only, the same
   without net option value: max(scan + intra spread - inter credit, SOM, 0).
 * Exposure (spec §5.1, B1): the day's contract-wise ELM file %, applied as NSE and Kite apply it:
   futures |units| x the futures price; sold options short units x the underlying's price; bought options none.
   Prices are the stored snapshot's LTPs (paise), the only prices a row holds. Kite prices each answer at the moment
-  it was asked, so the snapshot price can drift from Kite's; the convention check below is independent of that:
-  Kite's per-order exposure / (units x ELM %) must be one price per sample (all option legs alike, all futures legs
-  alike) on the 0.05 tick.
+  it was asked, so the snapshot price can drift from Kite's; the convention check below is independent of that.
+  Kite's per-order exposure / (units x ELM %) is the price Kite used. A sample passes the check when: all option legs
+  imply one price, on the 0.05 tick, within 0.2 % of the snapshot index price and nearer the index than the run's
+  nearest future (so the index, not the future, is shown to be the base); every futures leg implies a price within
+  0.2 % of its own future's snapshot price and nearer it than the index; and the orders add up to `final.exposure`
+  within ₹0.01. With no future anywhere in the run the index cannot be told from the future: the check fails.
+* A Kite figure missing from the stored answer is a miss (None), never ₹0.
 * Gate (spec §7): SPAN within ₹50 or 0.5 % of Kite's (whichever is larger) on at least 95 % of the samples, and
   exposure within ₹1 on at least 95 %.
 
+Money is exact `Decimal` rupees throughout, not `stockify.numerics`: its float-margin helper ceils to whole rupees, and
+a ₹1 comparison needs the paise. Nothing here becomes an engine amount.
+
 The lab is only read: the store and refdata are opened read-only (`mode=ro`) for the run; the report
-`$LAB/margin_calibration/span-validate-<date>.md` is the one file written (by the CLI).
+`$LAB/margin_calibration/span-validate-<date>.md` is the one file written (by the CLI; the archive's path helpers may
+create empty year folders, as everywhere in the archive code).
 """
 from __future__ import annotations
 
@@ -40,6 +51,8 @@ SPAN_REL_TOL = Decimal("0.005")     # 0.5 %
 EXPOSURE_TOL = Decimal(1)           # rupees
 GATE_SHARE = 95                     # per cent of samples
 TICK = Decimal("0.05")              # rupees: NSE's index and futures tick
+NEAR = Decimal("0.002")             # 0.2 %: how far Kite's live price may sit from the snapshot (9 Nov: <= 0.08 %)
+SUM_TOL = Decimal("0.01")           # rupees: per-order exposures must add up to final.exposure
 _KITE_PLACES = Decimal("0.000001")  # Kite answers in floats; 6 places keeps its 3-decimal values, drops float noise
 COMPOSITIONS = ("with_nov", "no_nov")
 
@@ -61,8 +74,14 @@ def file_in_force(files: list[tuple[str, int]], wall_ns: int) -> tuple[str, int]
     return best
 
 
-def _kite(value) -> Decimal:  # noqa: ANN001
-    return Decimal(repr(float(value or 0))).quantize(_KITE_PLACES)
+def _kite(value) -> Decimal | None:  # noqa: ANN001
+    """Kite's float as an exact Decimal (6 places); None when the answer does not carry it."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(repr(float(value))).quantize(_KITE_PLACES)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
 
 
 # ── Read-only access to the lab's databases ──────────────────────────────────
@@ -95,9 +114,11 @@ _MONTH = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, 
           "NOV": 11, "DEC": 12}
 
 
-def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, ContractKey], Decimal] | None:
+def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, ContractKey], Decimal | None] | None:
     """{(underlying, contract key): ELM %} from the archived `F_AEL_OPT_CONTRACTS_<day>` file; None if not archived.
-    Rows: instrument, symbol, expiry DD-MMM-YYYY, strike (rupees; -1 for futures), CE | PE | XX, 0, ELM %."""
+    Rows: instrument, symbol, expiry DD-MMM-YYYY, strike (rupees; -1 for futures), CE | PE | XX, 0, ELM %.
+    The file is untrusted data: a malformed row is skipped, and a contract listed twice with different % maps to None
+    (unusable, so its legs report it missing instead of taking either value)."""
     from stockify import paths
     from stockify.data import nse_margin_files as mf
     path = paths.nse_margin_dir("elm") / f"{day:%Y}" / mf.elm_name(day)
@@ -109,13 +130,25 @@ def read_elm(day: date, underlyings: set[str]) -> dict[tuple[str, ContractKey], 
             p = [c.strip() for c in line.split(",")]
             if len(p) < 7 or p[1] not in underlyings:
                 continue
-            dd, mon, yyyy = p[2].split("-")
-            expiry = date(int(yyyy), _MONTH[mon.upper()], int(dd)).isoformat()
-            if p[4] == "XX":
-                key: ContractKey = ("FUT", expiry, None)
-            else:
-                key = (p[4], expiry, int(Decimal(p[3]) * 100))
-            out[(p[1], key)] = Decimal(p[6])
+            try:
+                dd, mon, yyyy = p[2].split("-")
+                expiry = date(int(yyyy), _MONTH[mon.upper()], int(dd)).isoformat()
+                if p[4] == "XX":
+                    key: ContractKey = ("FUT", expiry, None)
+                elif p[4] in ("CE", "PE"):
+                    key = (p[4], expiry, int(Decimal(p[3]) * 100))
+                else:
+                    continue
+                pct = Decimal(p[6])
+                if not pct.is_finite() or pct < 0:
+                    continue
+            except (ValueError, KeyError, ArithmeticError):
+                continue
+            k = (p[1], key)
+            if k in out and out[k] != pct:
+                out[k] = None
+            elif k not in out:
+                out[k] = pct
     return out
 
 
@@ -128,8 +161,8 @@ class Sample:
     kind: str                       # portfolio type
     wall_ns: int
     legs: list[tuple[str, int]]     # (tradingsymbol, signed units)
-    kite_span: Decimal
-    kite_exposure: Decimal
+    kite_span: Decimal | None       # None: the stored answer lacks it (a miss)
+    kite_exposure: Decimal | None
     file: str | None = None         # the SPAN file used (name)
     result: SpanResult | None = None
     our_span: Decimal | None = None
@@ -147,10 +180,11 @@ class Sample:
 
     def span_within(self, composition: str) -> bool:
         ours = self.span_for(composition)
-        return ours is not None and span_ok(ours, self.kite_span)
+        return ours is not None and self.kite_span is not None and span_ok(ours, self.kite_span)
 
     def exposure_within(self) -> bool:
-        return self.our_exposure is not None and exposure_ok(self.our_exposure, self.kite_exposure)
+        return (self.our_exposure is not None and self.kite_exposure is not None
+                and exposure_ok(self.our_exposure, self.kite_exposure))
 
 
 @dataclass
@@ -189,7 +223,7 @@ class ValidationReport:
     def worst(self, n: int = 10, composition: str = "with_nov") -> list[Sample]:
         def miss(s: Sample) -> Decimal:
             ours = s.span_for(composition)
-            return Decimal("Infinity") if ours is None else abs(ours - s.kite_span)
+            return Decimal("Infinity") if ours is None or s.kite_span is None else abs(ours - s.kite_span)
         return sorted(self.samples, key=lambda s: (-miss(s), s.sample_id))[:n]
 
 
@@ -213,16 +247,38 @@ def _price(quote: dict | None) -> Decimal | None:
     return None if ltp is None else Decimal(int(ltp)) / 100  # paise -> rupees, exact
 
 
-def _exposure(s: Sample, legs, market: dict, elm: dict | None, kite_orders: dict[str, Decimal]) -> None:  # noqa: ANN001
+def _near(price: Decimal, ref: Decimal | None, other: Decimal | None) -> bool:
+    """`price` is within 0.2 % of `ref` and strictly nearer `ref` than `other` (both needed: None fails)."""
+    if ref is None or other is None:
+        return False
+    return abs(price - ref) <= ref * NEAR and abs(price - ref) < abs(price - other)
+
+
+def _on_tick(price: Decimal) -> bool:
+    return (price / TICK) == (price / TICK).to_integral_value()
+
+
+def _exposure(s: Sample, legs, market: dict, elm: dict | None, kite_orders: dict[str, Decimal],  # noqa: ANN001
+              fut_ref: Decimal | None) -> None:
+    """Our exposure from the ELM file, and the check of Kite's convention (see the module docstring).
+    `fut_ref`: the snapshot price of the run's nearest future, the price an option base must be told apart from."""
     if elm is None:
         s.note("no ELM file archived for the day")
         return
-    total, implied, problems = Decimal(0), {}, []
+    total, problems = Decimal(0), []
+    opt_implied: list[Decimal] = []
+    fut_implied: list[tuple[Decimal, Decimal | None]] = []  # (implied, the leg's own future price)
+    convention = True
     spot = _price(market.get("underlying"))
     for sym, units, iid, key in legs:
         pct = elm.get((s.underlying, key)) if key else None
+        kite = kite_orders.get(sym)
         if pct is None:
+            if key and key[0] != "FUT" and units > 0 and not kite:
+                continue                                       # a bought option: no exposure either way
             problems.append(f"{sym}: not in the ELM file")
+            if kite:
+                convention = False
             continue
         if key[0] == "FUT":
             price = _price(market.get(str(iid)))
@@ -234,17 +290,49 @@ def _exposure(s: Sample, legs, market: dict, elm: dict | None, kite_orders: dict
                 problems.append(f"{sym}: no price in the snapshot")
                 continue
             total += notional_units * price * pct / 100  # units x rupees/unit x % = rupees
-        kite = kite_orders.get(sym)
-        if kite:
-            implied.setdefault("FUT" if key[0] == "FUT" else "OPT", []).append(kite / abs(units) / pct * 100)
+        if kite and pct:
+            implied = kite / abs(units) / pct * 100     # rupees / units / % = rupees per unit: Kite's price
+            if key[0] == "FUT":
+                fut_implied.append((implied, price))
+            else:
+                opt_implied.append(implied)
     if problems:
         s.note("; ".join(problems))
     else:
         s.our_exposure = total
-    if implied:
-        s.kite_implied_prices = {g: v[0] for g, v in implied.items() if len(set(v)) == 1}
-        s.convention_ok = len(s.kite_implied_prices) == len(implied) and all(
-            (p / TICK) == (p / TICK).to_integral_value() for p in s.kite_implied_prices.values())
+    if not (opt_implied or fut_implied):
+        return
+    if opt_implied:
+        if len(set(opt_implied)) == 1:
+            s.kite_implied_prices["OPT"] = opt_implied[0]
+            p = opt_implied[0]
+            if fut_ref is None:
+                s.note("no futures price in the run to tell the index from the future")
+            convention = convention and _on_tick(p) and _near(p, spot, fut_ref)
+        else:
+            convention = False
+    if fut_implied:
+        if len({p for p, _ in fut_implied}) == 1:
+            s.kite_implied_prices["FUT"] = fut_implied[0][0]
+        convention = convention and all(_on_tick(p) and _near(p, own, spot) for p, own in fut_implied)
+    orders_total = sum(kite_orders.values(), Decimal(0))
+    convention = convention and s.kite_exposure is not None and abs(orders_total - s.kite_exposure) <= SUM_TOL
+    s.convention_ok = convention
+
+
+def _futures_reference(rows: list[tuple]) -> dict[tuple[str, int], Decimal]:
+    """Per run (underlying, wall_ns): the snapshot price of the nearest-expiry future any row of the run holds.
+    Every row of a run carries the same snapshot, so a future priced in one row prices it for all."""
+    best: dict[tuple[str, int], tuple[str, Decimal]] = {}
+    for r, _doc, _kite, market, legs in rows:
+        for _sym, _units, iid, key in legs:
+            if key is None or key[0] != "FUT":
+                continue
+            price = _price(market.get(str(iid)))
+            run = (r["underlying"], r["wall_ns"])
+            if price is not None and (run not in best or key[1] < best[run][0]):
+                best[run] = (key[1], price)
+    return {run: price for run, (_, price) in best.items()}
 
 
 def validate(day: date, underlyings: list[str]) -> ValidationReport:
@@ -252,30 +340,42 @@ def validate(day: date, underlyings: list[str]) -> ValidationReport:
     from stockify import store, timeutil
     from stockify.data import nse_margin_files as mf
     wanted = set(underlyings)
-    files = mf.in_force_files(day)
+    files = mf.in_force_files(day)   # D's own .s included on purpose: see the module docstring
     elm = read_elm(day, wanted)
     parsed: dict[str, SpanFile] = {}
+    previous: list = []              # [previous_eod(day)], looked up once, only when needed
     samples = []
     with read_only():
-        rows = [r for u in underlyings for r in store.margin_calibrations(u)
-                if timeutil.ns_to_ist(r["wall_ns"]).date() == day]
-        for r in sorted(rows, key=lambda r: r["sample_id"]):
-            doc, kite, market = json.loads(r["portfolio_json"]), json.loads(r["kite_json"]), json.loads(r["market_json"])
+        stored = [r for u in underlyings for r in store.margin_calibrations(u)
+                  if timeutil.ns_to_ist(r["wall_ns"]).date() == day]
+        rows = [(r, json.loads(r["portfolio_json"]), json.loads(r["kite_json"]), json.loads(r["market_json"]),
+                 None) for r in sorted(stored, key=lambda r: r["sample_id"])]
+        rows = [(r, doc, kite, market, _legs(doc)) for r, doc, kite, market, _ in rows]
+        fut_refs = _futures_reference(rows)
+        for r, doc, kite, market, legs in rows:
             final = kite.get("final") or {}
-            legs = _legs(doc)
             s = Sample(r["sample_id"], r["underlying"], doc.get("kind", "?"), r["wall_ns"],
                        [(sym, u) for sym, u, _, _ in legs], _kite(final.get("span")), _kite(final.get("exposure")))
             samples.append(s)
+            for name, value in (("span", s.kite_span), ("exposure", s.kite_exposure)):
+                if value is None:
+                    s.note(f"Kite's answer has no final.{name}")
             kite_orders: dict[str, Decimal] = {}
             for o in kite.get("orders") or []:
-                kite_orders[o.get("tradingsymbol")] = kite_orders.get(o.get("tradingsymbol"), Decimal(0)) + _kite(
-                    o.get("exposure"))
+                value = _kite(o.get("exposure"))
+                if value is not None:
+                    kite_orders[o.get("tradingsymbol")] = kite_orders.get(o.get("tradingsymbol"), Decimal(0)) + value
             unknown = [sym for sym, _, _, key in legs if key is None]
             if unknown:
                 s.note(f"not in refdata: {', '.join(unknown)}")
                 continue
-            _exposure(s, legs, market, elm, kite_orders)
+            _exposure(s, legs, market, elm, kite_orders, fut_refs.get((r["underlying"], r["wall_ns"])))
             chosen = file_in_force(files, r["wall_ns"])
+            if chosen is None:                         # spec §5.1: none of D's files yet -> the previous day's .s
+                if not previous:
+                    previous.append(mf.previous_eod(day))
+                if previous[0] is not None and previous[0][1] <= r["wall_ns"]:
+                    chosen = previous[0]
             if chosen is None:
                 s.note("no SPAN file in force at the row's time")
                 continue
@@ -326,20 +426,23 @@ def report_text(rep: ValidationReport) -> str:
              f"- SPAN with net option value (the code's composition): {_frac(*g['span'])}",
              f"- SPAN without net option value (for comparison): {_frac(*g['span_no_nov'])}",
              f"- Exposure within ₹1 at the snapshot's prices: {_frac(*g['exposure'])}",
-             f"- Kite's exposure convention (per-order exposure / (units × ELM %) is one price on the 0.05 tick): "
+             f"- Kite's exposure convention (per-order exposure / (units × ELM %) is one price on the 0.05 tick, "
+             f"within 0.2 % of the snapshot index for sold options and nearer it than the future, within 0.2 % of the "
+             f"future for futures and nearer it than the index, orders adding up to the total): "
              f"{_frac(*g['convention'])} of the samples Kite charged exposure on", ""]
     n_conv, total_conv = g["convention"]
     if not g["exposure_passed"] and total_conv and n_conv == total_conv:
-        lines += ["Every Kite exposure is the ELM % times one price on the tick (the underlying for sold options, the "
-                  "future for futures), but that price is the live one when each answer was asked, not the snapshot "
-                  "price the row stores: the convention matches, the stored price does not. See \"Kite's implied "
-                  "price\" below.", ""]
+        lines += ["Every Kite exposure checked is the ELM % times one price on the tick, and that price is nearer the "
+                  "index for sold options and nearer the future for futures (checked against the snapshot), but it is "
+                  "the live price when each answer was asked, not the snapshot price the row stores: the convention "
+                  "matches, the stored price does not. See \"Kite's implied price\" below.", ""]
     lines += [
              "| Underlying | Portfolio | Samples | SPAN within (with NOV) | SPAN within (no NOV) | Exposure within ₹1 |"
              " Worst SPAN miss |",
              "|---|---|---|---|---|---|---|"]
     for (und, kind), group in rep.groups().items():
-        worst = max((abs(s.our_span - s.kite_span) for s in group if s.our_span is not None), default=None)
+        worst = max((abs(s.our_span - s.kite_span) for s in group if s.our_span is not None
+                     and s.kite_span is not None), default=None)
         lines.append(f"| {und} | {WORDS.get(kind, kind)} | {len(group)} | {_frac(*rep.span_within('with_nov', group))}"
                      f" | {_frac(*rep.span_within('no_nov', group))} | {_frac(*rep.exposure_within(group))} | "
                      f"{_r(worst)} |")

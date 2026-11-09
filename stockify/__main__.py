@@ -449,7 +449,7 @@ def _cmd_margin_span_validate(args) -> int:
         text = text.encode(encoding, errors="replace").decode(encoding)
     print(text)
     print(report, file=sys.stderr)
-    return 0
+    return 0 if rep.gate()["passed"] else 1             # the report is written either way; 1 = the gate failed
 
 
 def _cmd_compare_strategies(args) -> int:
