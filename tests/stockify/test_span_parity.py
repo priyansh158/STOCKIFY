@@ -68,6 +68,15 @@ def _cases() -> list[tuple[str, str, list[tuple[tuple, int]]]]:
         ("weight 3: spreads not exact", "NIFTY_W3", [(f23, 65), (f29, -65)]),
         ("som binds", "NIFTY_SOM", [(ce(n23, 2500000), -65), (ce(n23, 2520000), 65), (pe(n17, 2475000), -65)]),
         ("cvf 2: refused", "NIFTY_CVF2", [(ce(n23, 2500000), -65)]),
+        # scan tiers split so the 23-Nov and 29-Dec expiries are scanned apart (each tier floored at 0, then summed)
+        ("split tiers: calendar", "NIFTY_SPLIT", [(f23, 65), (f29, -65)]),
+        ("split tiers: options and the far future", "NIFTY_SPLIT", [(ce(n17, 2500000), -65), (f29, 65)]),
+        ("split tiers: one tier gains in every scenario", "NIFTY_SPLIT_GAIN", [(f23, -65), (f29, 65)]),
+        ("half-open tier: refused", "NIFTY_HALF", [(f23, 65)]),
+        ("weight 0: refused", "NIFTY_W0", [(f23, 65), (f29, -65)]),
+        ("charge method S: refused", "NIFTY_CMS", [(f23, 65), (f29, -65)]),
+        ("risk value not a decimal: refused", "NIFTY_BADRA", [(f23, 65)]),
+        ("risk value NaN: refused", "NIFTY_NANRA", [(f23, 65)]),
     ]
 
 
@@ -86,7 +95,28 @@ def _commodities() -> dict[str, dict]:
     som["som_tiers"][0]["rates"]["1"] = "2412.5"
     cvf = copy.deepcopy(out["NIFTY"])
     cvf["cvf"]["OOP"] = "2.00"
-    out.update(NIFTY_W08=w08, NIFTY_W3=w3, NIFTY_SOM=som, NIFTY_CVF2=cvf)
+    split = copy.deepcopy(out["NIFTY"])
+    split["scan_tiers"] = [{"number": 1, "start": "2026-11-17", "end": "2026-11-23", "rates": {}},
+                           {"number": 2, "start": "2026-12-29", "end": "2031-06-24", "rates": {}}]
+    gain = copy.deepcopy(split)
+    for c in gain["contracts"]:
+        if (c["kind"], c["expiry"]) == ("FUT", "2026-12-29"):        # a long gains in every scenario
+            c["risk_array"] = ["-" + v.lstrip("-") for v in c["risk_array"]]
+    half = copy.deepcopy(split)
+    half["scan_tiers"][1]["end"] = None
+    w0, cms = copy.deepcopy(out["NIFTY"]), copy.deepcopy(out["NIFTY"])
+    for sp in w0["calendar_spreads"]:
+        for leg in sp["legs"]:
+            leg["weight"] = "0"
+    for sp in cms["calendar_spreads"]:
+        sp["charge_method"] = "S"
+    bad, nan = copy.deepcopy(out["NIFTY"]), copy.deepcopy(out["NIFTY"])
+    for cc, value in ((bad, "abc"), (nan, "NaN")):
+        for c in cc["contracts"]:
+            if (c["kind"], c["expiry"]) == ("FUT", "2026-11-23"):
+                c["risk_array"][4] = value
+    out.update(NIFTY_W08=w08, NIFTY_W3=w3, NIFTY_SOM=som, NIFTY_CVF2=cvf, NIFTY_SPLIT=split, NIFTY_SPLIT_GAIN=gain,
+               NIFTY_HALF=half, NIFTY_W0=w0, NIFTY_CMS=cms, NIFTY_BADRA=bad, NIFTY_NANRA=nan)
     return out
 
 
@@ -125,7 +155,24 @@ class SpanVectorTests(unittest.TestCase):
         self.assertTrue(any(float(c["long_option_value"]) > 0 for c in done))
         self.assertTrue(any(float(c["span"]) == 0 for c in done))
         self.assertTrue(any("missing" in c for c in cases))
-        self.assertEqual(sum("error" in c for c in cases), 2)
+        self.assertEqual(sum("error" in c for c in cases), 7)
+
+    def test_split_tier_vector_floors_each_tier(self):
+        """I-2: with the far future in its own tier gaining in every scenario, flooring per tier (the oracle) gives
+        the near tier's worst loss; flooring after the sum would give less, and one tier would be wrong."""
+        from decimal import Decimal
+        v = oracle_vectors()
+        case = next(c for c in v["cases"] if c["name"] == "split tiers: one tier gains in every scenario")
+        ra = {(c["kind"], c["expiry"]): [Decimal(x) for x in c["risk_array"]]
+              for c in v["commodities"]["NIFTY_SPLIT_GAIN"]["contracts"] if c["kind"] == "FUT"}
+        near = [-65 * x for x in ra[("FUT", "2026-11-23")]]
+        far = [65 * x for x in ra[("FUT", "2026-12-29")]]
+        self.assertLess(max(far), 0)
+        self.assertEqual(Decimal(case["scan"]), max(max(near), 0) + 0)
+        self.assertLess(max(max(a + b for a, b in zip(near, far)), 0), Decimal(case["scan"]))
+        plain = next(c for c in v["cases"] if c["name"] == "calendar futures")
+        split = next(c for c in v["cases"] if c["name"] == "split tiers: calendar")
+        self.assertGreater(Decimal(split["scan"]), Decimal(plain["scan"]))     # apart, the hedge no longer nets
 
 
 # ── Worlds on both implementations ──────────────────────────────────────────
@@ -151,10 +198,13 @@ def staircase_world(seed: int) -> dict:
 
 def staircase_bundle(g: dict, model: str = "staircase", *, d1: str = "normal", d2: str = "normal",
                      elm1: str | None = "2", elm2: str | None = "3.5", drop: frozenset = frozenset(),
-                     calibration_id: str = "test", spanlite: bool = True) -> dict:
+                     calibration_id: str = "test", spanlite: bool = True, elm_drop: frozenset = frozenset(),
+                     split: bool = False, skipped: bool = False) -> dict:
     """The world's bundle with span / elm sections from the fixture. Per day `normal` (the previous evening's file),
     `late` (created 12:00 IST: nothing in force before), `none` ([]) or `drop` (lacking the keys in `drop`);
-    `elm1` / `elm2` the day's ELM % (None: no ELM file that day)."""
+    `elm1` / `elm2` the day's ELM % (None: no ELM file that day), lacking the keys in `elm_drop`. `split`: the scan
+    tiers split so the expiring contracts (EXPIRY) are tier 1 and the far future tier 2. `skipped`: a day-1 file
+    recorded as skipped (A1 §6.2), with its label."""
     g = copy.deepcopy(g)
     g["run"]["margin"] = {"model": model}
     b = spanlite_bundle(g, calibration_id=calibration_id)
@@ -170,8 +220,16 @@ def staircase_bundle(g: dict, model: str = "staircase", *, d1: str = "normal", d
                      "none": [],
                      "drop": [fixture_span_entry("NIFTY", rows, EXPIRY, evening, drop)]}[how]
         if pct is not None:
-            elm[day] = fixture_elm("NIFTY", rows, pct)
+            elm[day] = fixture_elm("NIFTY", rows, pct, elm_drop)
+        if split:
+            for entry in span[day]:
+                entry["commodities"]["NIFTY"]["scan_tiers"] = [
+                    {"number": 1, "start": EXPIRY, "end": EXPIRY, "rates": {}},
+                    {"number": 2, "start": "2026-08-05", "end": "2031-06-24", "rates": {}}]
     b.update(span=span, span_skipped={}, elm=elm)
+    if skipped:
+        b["span_skipped"] = {D1: [{"file": "span/2026/nsccl.20260803.i2.zip", "reason": "SpanFileError: test"}]}
+        b["labels"] = sorted(set(b["labels"]) | {"margin_span:skipped_files"})
     return b
 
 
@@ -246,6 +304,7 @@ class SpanParityTests(unittest.TestCase):
         missing = frozenset([("CE", EXPIRY, STRIKES[-1]), ("PE", EXPIRY, STRIKES[0])])
         seen: dict[str, int] = {}
         orders = 0
+        dropped_steps: set[str] = set()
         for seed in (4910, 4911, 4912, 4913):
             for model, over in (("span_exact", {}), ("staircase", {}), ("staircase", {"d1": "drop", "drop": missing})):
                 with self.subTest(seed=seed, model=model, **{k: str(v) for k, v in over.items()}), \
@@ -262,8 +321,11 @@ class SpanParityTests(unittest.TestCase):
                                          max(int(r["scan"]), int(r["somc"])) + int(r["elm"]) + int(r["addons"]))
                     log = (folder / "oracle" / "events_log.txt").read_text(encoding="utf-8")
                     orders += log.count(" order ")
+                    if over:
+                        dropped_steps |= set(step_counts(folder / "oracle"))
         self.assertGreater(seen.get("B1_span_nse_elm", 0), 0, seen)
         self.assertGreater(orders, 100)
+        self.assertIn("B3_spanlite_calibrated", dropped_steps)   # a missing strike stepped its underlying down
 
     def test_span_exact_fails_alike_where_it_cannot_price(self):
         """No file in force on day 2 / a strike missing from the file: both implementations fail, naming it."""
@@ -279,12 +341,59 @@ class SpanParityTests(unittest.TestCase):
                 self.assertIn(text, str(oe))
                 self.assertEqual(str(ee), str(oe))
 
+    def test_span_exact_elm_file_paths(self):
+        """I-1: strict span_exact and the day's ELM file. The file lacks a charged leg's % (the near future): both
+        implementations fail alike, naming the leg. No ELM file at all: both price at B2 (exact SPAN + rule ELM),
+        byte for byte. The staircase on the lacking file steps that underlying to B2 instead."""
+        fut = frozenset([("FUT", EXPIRY, None)])
+        with tempfile.TemporaryDirectory(prefix="span-exact-elm-") as tmp:
+            g = staircase_world(4911)
+            oe, ee = run_pair(g, staircase_bundle(g, "span_exact", elm_drop=fut), Path(tmp))
+            self.assertIsNotNone(oe)
+            self.assertIsNotNone(ee)
+            self.assertIn(f"span_exact: NIFTY FUT {EXPIRY} has no ELM % in the ELM file for", str(oe))
+            self.assertEqual(str(ee), str(oe))
+        with tempfile.TemporaryDirectory(prefix="span-exact-noelm-") as tmp:
+            folder = Path(tmp)
+            g = staircase_world(4911)
+            self.assertEqual(run_pair(g, staircase_bundle(g, "span_exact", elm1=None, elm2=None), folder),
+                             (None, None))
+            self.assert_same(folder)
+            self.assertEqual(set(step_counts(folder / "engine")), {"B2_span_rule_elm"})
+            rows = rows_of(folder / "engine")
+            self.assertTrue(rows)
+            self.assertEqual({r["step"] for r in rows}, {"B2_span_rule_elm"})
+        with tempfile.TemporaryDirectory(prefix="staircase-elmdrop-") as tmp:
+            folder = Path(tmp)
+            g = staircase_world(4911)
+            self.assertEqual(run_pair(g, staircase_bundle(g, elm_drop=fut), folder), (None, None))
+            self.assert_same(folder)
+            self.assertIn("B2_span_rule_elm", step_counts(folder / "engine"))
+
+    def test_split_scan_tiers_on_the_expiry_day(self):
+        """I-2: the expiring contracts in scan tier 1, the far future in tier 2, so an expiry-day calendar is scanned
+        per tier (each floored at 0, then summed): both models agree byte for byte, and the margins differ from the
+        same world with one tier."""
+        for model in ("staircase", "span_exact"):
+            with self.subTest(model=model), tempfile.TemporaryDirectory(prefix="span-split-") as tmp:
+                folder = Path(tmp)
+                g = staircase_world(4910)
+                b = staircase_bundle(g, model, split=True)
+                tiers = b["span"][D2][0]["commodities"]["NIFTY"]["scan_tiers"]
+                self.assertEqual([(t["start"], t["end"]) for t in tiers], [(EXPIRY, EXPIRY), ("2026-08-05", "2031-06-24")])
+                self.assertEqual(run_pair(g, b, folder), (None, None))
+                self.assert_same(folder)
+                (folder / "one").mkdir()
+                self.assertEqual(run_pair(g, staircase_bundle(g, model), folder / "one"), (None, None))
+                self.assertNotEqual((folder / "oracle" / "events_log.txt").read_bytes(),
+                                    (folder / "one" / "oracle" / "events_log.txt").read_bytes())
+
     def test_staircase_parity_steps(self):
         """Every step on both implementations, byte for byte, with the same margin_steps labels: B1 (file + ELM
         file), B2 (no ELM file), B3 / B4 (no file in force, an adopted / the placeholder SPAN-lite row), B5 (no
         SPAN-lite row either); a late file switches steps within the day."""
         variants = [
-            ("B1", {}),
+            ("B1", {"skipped": True}),
             ("B2", {"elm1": None, "elm2": None}),
             ("B3", {"d1": "none", "d2": "none"}),
             ("B4", {"d1": "none", "d2": "none", "calibration_id": "placeholder"}),
@@ -306,6 +415,8 @@ class SpanParityTests(unittest.TestCase):
                     self.assertIn(f"margin:{step}", labels_of(folder / "engine"))
                 if name.startswith("B"):
                     self.assertIn(next(s for s in STEPS if s.startswith(name)), steps, steps)
+                if over.get("skipped"):                         # the bundle's label reaches both manifests
+                    self.assertIn("margin_span:skipped_files", labels_of(folder / "engine"))
                 if name == "late":                              # before 12:00 nothing in force, then B1
                     self.assertTrue({"B1_span_nse_elm", "B3_spanlite_calibrated"} <= set(steps), steps)
         self.assertEqual(set(reached), set(STEPS))

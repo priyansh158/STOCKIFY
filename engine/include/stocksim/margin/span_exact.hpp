@@ -95,6 +95,7 @@ struct ContractKey {
     friend bool operator==(const ContractKey&, const ContractKey&) = default;
 };
 [[nodiscard]] std::string key_name(const ContractKey& key);  // "CE 2026-11-17 2000000", "FUT 2026-11-23"
+[[nodiscard]] std::string key_repr(const ContractKey& key);  // Python's tuple repr: "('FUT', '2026-11-23', None)"
 
 // The bundle's decimal strings are kept as JSON values and converted when the oracle converts them (lazily), so
 // a malformed value the book never reads is never an error.

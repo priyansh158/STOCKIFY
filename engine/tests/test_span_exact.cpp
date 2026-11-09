@@ -112,6 +112,8 @@ TEST_CASE("exact SPAN agrees with the oracle's vectors") {
                 const Json& m = c.at("missing")[i];
                 CHECK(res.missing[i].kind == m[0].get<std::string>());
                 CHECK(res.missing[i].expiry == m[1].get<std::string>());
+                CHECK(res.missing[i].strike ==
+                      (m[2].is_null() ? std::optional<Paise>() : std::optional<Paise>(m[2].get<Paise>())));
             }
             CHECK_THROWS_AS((void)span::span_paise(res), span::SpanCalcError);
             continue;

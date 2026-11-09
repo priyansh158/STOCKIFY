@@ -39,7 +39,7 @@ any check used it.
 """
 from __future__ import annotations
 
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, Context, Decimal, InvalidOperation
 
 from stockify import numerics
 from stockify.fno.span_exact import SpanCalcError, SpanMissingError, span_paise, span_requirement
@@ -86,7 +86,8 @@ def _elm_ppb(pct: str | None) -> int | None:
         value = Decimal(pct)
         if not value.is_finite() or value <= 0:
             return None
-        return numerics.to_ppb(format(value.scaleb(-2), "f"))
+        exact = Context(prec=max(28, len(value.as_tuple().digits)))   # scaleb never rounds a long %
+        return numerics.to_ppb(format(value.scaleb(-2, exact), "f"))
     except (InvalidOperation, ValueError):
         return None
 

@@ -90,6 +90,24 @@ def fixture_span_entry(underlying: str, rows: list[dict], anchor_expiry: str, cr
             "commodities": {underlying: cc}}
 
 
+def fixture_stock_commodity(underlying: str, rows: list[dict], anchor_expiry: str) -> dict:
+    """A synthetic commodity for a stock underlying the fixture lacks (span_exact fuzz worlds): the fixture's moved
+    NIFTY parameters, and for each of the world's FUT / CE / PE rows of `underlying` the fixture's 23-Nov future or
+    25,000 call / put relabelled with that row's expiry and strike (made-up values, exact decimal strings)."""
+    template = [{"kind": "FUT", "underlying": "_", "expiry": anchor_expiry},
+                {"kind": "CE", "underlying": "_", "expiry": anchor_expiry, "strike_paise": 2_500_000},
+                {"kind": "PE", "underlying": "_", "expiry": anchor_expiry, "strike_paise": 2_500_000}]
+    cc = fixture_span_entry("_", template, anchor_expiry, 0)["commodities"]["_"]
+    by_kind = {c["kind"]: c for c in cc["contracts"]}
+    contracts = []
+    for r in rows:
+        if r.get("underlying") == underlying and r["kind"] in _SPAN_KINDS:
+            k = _world_key(r)
+            contracts.append({**copy.deepcopy(by_kind[k[0]]), "expiry": k[1], "strike_paise": k[2]})
+    cc["contracts"] = contracts
+    return cc
+
+
 def fixture_elm(underlying: str, rows: list[dict], pct: str, drop: frozenset = frozenset()) -> dict:
     """One day's bundle elm section (A1 §6.2): `pct` per cent for each of the underlying's derivatives not in `drop`."""
     out = {}
@@ -100,10 +118,14 @@ def fixture_elm(underlying: str, rows: list[dict], pct: str, drop: frozenset = f
     return {underlying: out}
 
 
-def _staircase_sections(rng: random.Random, days: list[date], instruments: list[dict], expiry: str) -> dict:
+def _staircase_sections(rng: random.Random, days: list[date], instruments: list[dict], expiry: str,
+                        split: bool = False, exact: bool = False) -> dict:
     """A staircase world's span / span_skipped / elm (from `rng` only): per day the usual previous-evening file, none,
     a late one (nothing in force before it), one lacking a strike, or two (the later lacking a strike); per day an
-    ELM file with every %, one lacking a leg, or none."""
+    ELM file with every %, one lacking a leg, or none. `split`: scan tier 1 holds only the index expiry (the
+    expiring contracts on the expiry day), tier 2 everything after it (the far future). `exact` (span_exact
+    worlds): the stock AAA gets a synthetic commodity and ELM % too, and most days have a full file and ELM file,
+    so many such worlds can be priced; the rest fail alike on both sides."""
     span, elm = {}, {}
     idx = [r for r in instruments if r.get("underlying") == "IDX"]
     options = [_world_key(r) for r in idx if r["kind"] != "FUT"]
@@ -111,7 +133,8 @@ def _staircase_sections(rng: random.Random, days: list[date], instruments: list[
         evening = timeutil.ist_ns(d - timedelta(days=1), "20:26")
         late = timeutil.ist_ns(d, rng.choice(["09:45", "11:30", "13:00"]))
         drop = frozenset([rng.choice(options)])
-        k = rng.randrange(6)
+        friendly = exact and rng.random() < 0.8
+        k = 0 if friendly else rng.randrange(6)
         if k <= 1:
             entries = [fixture_span_entry("IDX", idx, expiry, evening)]
         elif k == 2:
@@ -123,10 +146,22 @@ def _staircase_sections(rng: random.Random, days: list[date], instruments: list[
         else:
             entries = [fixture_span_entry("IDX", idx, expiry, evening),
                        fixture_span_entry("IDX", idx, expiry, late, drop, file="span/2026/nsccl.fixture.i2.zip")]
+        if exact:
+            for entry in entries:
+                entry["commodities"]["AAA"] = fixture_stock_commodity("AAA", instruments, expiry)
+        if split:
+            after = (date.fromisoformat(expiry) + timedelta(days=1)).isoformat()
+            for entry in entries:
+                entry["commodities"]["IDX"]["scan_tiers"] = [
+                    {"number": 1, "start": expiry, "end": expiry, "rates": {}},
+                    {"number": 2, "start": after, "end": "2031-06-24", "rates": {}}]
         span[d.isoformat()] = entries
-        j = rng.randrange(4)
+        j = 0 if friendly else rng.randrange(4)
         if j <= 1:
-            elm[d.isoformat()] = fixture_elm("IDX", idx, rng.choice(["2", "3.5", "5"]))
+            pct = rng.choice(["2", "3.5", "5"])
+            elm[d.isoformat()] = fixture_elm("IDX", idx, pct)
+            if exact:
+                elm[d.isoformat()].update(fixture_elm("AAA", instruments, pct))
         elif j == 2:
             elm[d.isoformat()] = fixture_elm("IDX", idx, "2", frozenset([rng.choice([_world_key(r) for r in idx])]))
     return {"span": span, "span_skipped": {}, "elm": elm}
@@ -222,20 +257,31 @@ def fuzz_world(seed: int) -> dict:
     # MEZ 4.10: some worlds run the margin staircase over synthetic NSE SPAN / ELM sections. Drawn from their own
     # RNG after every other draw, so the worlds without it are exactly as before.
     stair = random.Random(seed * 104_729 + 4010)
+    far_future = False
     if stair.random() < 0.35:
-        run["margin"] = {"model": "staircase"}
+        # span_exact sometimes: worlds it can price agree, and worlds where it cannot fail alike on both sides
+        exact = stair.random() < 0.3
+        run["margin"] = {"model": "span_exact" if exact else "staircase"}
+        if stair.random() < 0.5:                 # a far index future (the fixture's 29-Dec month): calendars
+            far_future = True
+            instruments.append({"id": 10, "kind": "FUT", "tradingsymbol": "IDXFUT2", "underlying": "IDX",
+                                "underlying_id": 3, "expiry": (days[1] + timedelta(days=36)).isoformat(),
+                                "specs": [{"from": "2015-01-01", "lot": 50, "tick_paise": 10}]})
         lite = stair.choice(["none", "placeholder", "calibrated"])   # what the steps below SPAN find: B5 / B4 / B3
         bundle.pop("spanlite_placeholder", None)
         if lite != "none":
             bundle["spanlite_placeholder"] = True
         if lite == "calibrated":
             bundle["spanlite_calibration_id"] = "fuzz-adopted"
-        bundle.update(_staircase_sections(stair, days, instruments, expiry))
+        bundle.update(_staircase_sections(stair, days, instruments, expiry, split=stair.random() < 0.5,
+                                          exact=exact))
     price = {1: 250_000, 2: 100_000, 3: 2_500_000, 4: 2_502_000, 5: 15_000, 6: 14_000, 7: 251_000}
     tick = {1: 5, 2: 5, 3: 5, 4: 10, 5: 5, 6: 5, 7: 10}
     if delivery:
         price.update({8: 6_000, 9: 5_000})
         tick.update({8: 5, 9: 5})
+    if far_future:
+        price[10], tick[10] = 2_515_000, 10
     events: list[dict] = []
     for day in days:
         def at(hhmm: str, d=day) -> int:  # noqa: ANN001

@@ -170,15 +170,23 @@ class DifferentialFuzzTests(unittest.TestCase):
     def test_p04_oracle_and_engine_agree_on_random_worlds(self):
         reached = collections.Counter()
         steps, rows_by_step = collections.Counter(), collections.Counter()
+        exact_runs = collections.Counter()
         stair_worlds = 0
         for seed in SEEDS:
             with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="fuzz-") as tmp:
                 folder = Path(tmp)
                 oracle_error, engine_error = run_both(seed, folder)
+                model = fuzz_world(seed)["run"].get("margin", {}).get("model")
                 if oracle_error or engine_error:
                     self.assertTrue(oracle_error is not None and engine_error is not None,
                                     f"seed {seed}: oracle {oracle_error!r} / engine {engine_error!r}")
+                    if model == "span_exact":           # the strict model fails alike, naming the same thing
+                        self.assertEqual(str(engine_error), str(oracle_error))
+                        self.assertTrue(str(oracle_error).startswith("span_exact: "), str(oracle_error))
+                        exact_runs["failed alike"] += 1
                     continue
+                if model == "span_exact":
+                    exact_runs["priced"] += 1
                 assert_same_artifacts(self, folder / "oracle", folder / "engine")
                 self.assertEqual(causality_problems(folder / "engine", folder / f"FUZZ{seed}.evt"), [])
                 reached.update(m4_features(folder / "oracle"))
@@ -187,21 +195,23 @@ class DifferentialFuzzTests(unittest.TestCase):
                 for step, days in staircase_steps(folder / "oracle").items():
                     steps[step] += days
                 for r in _rows(folder / "oracle" / "margin_daily.csv"):
-                    if r["model"] == "staircase":
+                    if r["model"] in ("staircase", "span_exact"):
                         rows_by_step[r["step"]] += 1
-                stair_worlds += json.loads((folder / "oracle" / "bundle.json").read_text(encoding="utf-8"))[
-                    "run"]["margin"]["model"] == "staircase"
+                stair_worlds += model in ("staircase", "span_exact")
         # every M4 behaviour the world can produce is reached on some seeds, so P-04 covers it (RD 4.20)
         for feature in M4_FEATURES:
             self.assertGreater(reached[feature], 0, f"no seed reached {feature}: {dict(reached)}")
         # MEZ 4.10: staircase worlds reach every step, in checks (margin_steps labels) and in margin_daily rows
         self.assertGreater(stair_worlds, 20)
+        self.assertGreater(exact_runs["priced"], 0, dict(exact_runs))
+        self.assertGreater(exact_runs["failed alike"], 0, dict(exact_runs))
         for step in STAIRCASE_STEPS:
             self.assertGreater(steps[step], 0, f"no staircase world used {step}: {dict(steps)}")
         for step in ("B1_span_nse_elm", "B2_span_rule_elm"):
             self.assertGreater(rows_by_step[step], 0, f"no margin_daily row at {step}: {dict(rows_by_step)}")
         print(f"\nP-04 staircase coverage over {stair_worlds} worlds: run-days per step {dict(sorted(steps.items()))}, "
-              f"margin_daily rows per step {dict(sorted(rows_by_step.items()))}", file=sys.stderr)
+              f"margin_daily rows per step {dict(sorted(rows_by_step.items()))}, span_exact runs "
+              f"{dict(sorted(exact_runs.items()))}", file=sys.stderr)
 
     def test_dt01_the_same_engine_run_twice_is_byte_identical(self):
         for seed in list(SEEDS)[:12]:
@@ -213,8 +223,13 @@ class DifferentialFuzzTests(unittest.TestCase):
                 ids = [i["id"] for i in bundle["instruments"]]
                 runs = []
                 for n in (1, 2):
-                    res = engine.run_bundle(bundle, [pack], folder / f"run{n}", strategy=RandomTrader(ids, 30),
-                                            report=False)
+                    try:
+                        res = engine.run_bundle(bundle, [pack], folder / f"run{n}", strategy=RandomTrader(ids, 30),
+                                                report=False)
+                    except Exception as exc:  # noqa: BLE001 — a span_exact world it cannot price: fails alike
+                        self.assertEqual(g["run"]["margin"]["model"], "span_exact", repr(exc))
+                        runs.append(repr(exc))
+                        continue
                     runs.append((folder / f"run{n}" / "determinism.json").read_bytes())
                     self.assertEqual(len(res.hashes), 9)
                 self.assertEqual(runs[0], runs[1])

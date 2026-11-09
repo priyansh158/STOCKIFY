@@ -35,10 +35,15 @@ def _tampered(path: Path) -> bytes:
 
 
 def _fills_of_1(world: dict) -> int:
+    """Fills of instrument 1 in the world's oracle run; 0 for a world the oracle refuses (a span_exact world it
+    cannot price, MEZ 4.10), which has no fills to plant a disagreement in."""
     with tempfile.TemporaryDirectory(prefix="fuzz-probe-") as tmp:
         folder = Path(tmp)
-        oracle_run(golden.build_bundle(world), [golden.build_pack(world, folder)], folder / "run",
-                   strategy=fuzz._strategy(world), report=False)
+        try:
+            oracle_run(golden.build_bundle(world), [golden.build_pack(world, folder)], folder / "run",
+                       strategy=fuzz._strategy(world), report=False)
+        except Exception:  # noqa: BLE001
+            return 0
         return sum(1 for r in golden._read_csv(folder / "run" / "fills.csv") if r["instrument_id"] == "1")
 
 

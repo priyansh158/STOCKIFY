@@ -223,7 +223,30 @@ std::strong_ordering operator<=>(const SpanDecimal& a, const SpanDecimal& b) {
     if (a.sign() != b.sign()) {
         return a.sign() <=> b.sign();
     }
-    return (a - b).sign() <=> 0;
+    if (a.is_zero()) {
+        return std::strong_ordering::equal;
+    }
+    // Same sign: compare magnitudes by their digits (no arithmetic, so no overflow). Normalised coefficients have
+    // no leading or trailing zeros, so the adjusted exponent (digits + exponent) orders magnitudes first.
+    std::string da = a.coef_.to_string(), db = b.coef_.to_string();
+    if (a.negative()) {
+        da.erase(0, 1);
+        db.erase(0, 1);
+    }
+    const std::int64_t adj_a = static_cast<std::int64_t>(da.size()) + a.exp_;
+    const std::int64_t adj_b = static_cast<std::int64_t>(db.size()) + b.exp_;
+    std::strong_ordering magnitude = adj_a <=> adj_b;
+    if (magnitude == std::strong_ordering::equal) {
+        const std::size_t n = std::max(da.size(), db.size());
+        da.resize(n, '0');
+        db.resize(n, '0');
+        const int c = da.compare(db);
+        magnitude = c <=> 0;
+    }
+    if (!a.negative()) {
+        return magnitude;
+    }
+    return 0 <=> (magnitude < 0 ? -1 : magnitude > 0 ? 1 : 0);
 }
 
 std::optional<SpanDecimal> SpanDecimal::divide_exact(const SpanDecimal& a, const SpanDecimal& b) {
@@ -326,6 +349,10 @@ Paise rupees_up_paise(const SpanDecimal& rupees) {
     return checked_mul(rupees.ceiling().to_int64(), kPaisePerRupee);  // whole rupees → paise
 }
 
+std::string key_repr(const ContractKey& key) {
+    return "('" + key.kind + "', '" + key.expiry + "', " + (key.strike ? std::to_string(*key.strike) : "None") + ")";
+}
+
 std::string key_name(const ContractKey& key) {
     return key.kind + " " + key.expiry + (key.strike ? " " + std::to_string(*key.strike) : std::string());
 }
@@ -391,15 +418,60 @@ Commodity commodity_from_bundle(const std::string& code, const Json& d) {
 
 namespace {
 
-// The oracle's _dec: a finite decimal string, else SpanCalcError naming it.
+// Python's repr() of a JSON scalar as the oracle holds it: 'text', None, True, 5.
+std::string py_repr(const Json& v) {
+    if (v.is_string()) {
+        return "'" + v.get<std::string>() + "'";
+    }
+    if (v.is_null()) {
+        return "None";
+    }
+    if (v.is_boolean()) {
+        return v.get<bool>() ? "True" : "False";
+    }
+    return v.dump();
+}
+
+std::string py_str(const Json& v) { return v.is_string() ? v.get<std::string>() : py_repr(v); }
+
+std::string py_repr(const std::optional<std::string>& v) { return v ? "'" + *v + "'" : "None"; }
+
+// A Decimal() text that parses but is not finite: [sign] Inf | Infinity | NaN[digits] | sNaN[digits].
+bool non_finite_text(std::string_view t) {
+    while (!t.empty() && (t.front() == ' ' || t.front() == '\t' || t.front() == '\n' || t.front() == '\r')) {
+        t.remove_prefix(1);
+    }
+    while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\n' || t.back() == '\r')) {
+        t.remove_suffix(1);
+    }
+    if (!t.empty() && (t.front() == '+' || t.front() == '-')) {
+        t.remove_prefix(1);
+    }
+    std::string low;
+    for (const char c : t) {
+        low.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+    }
+    if (low == "inf" || low == "infinity") {
+        return true;
+    }
+    for (const std::string_view nan : {std::string_view("snan"), std::string_view("nan")}) {
+        if (low.starts_with(nan)) {
+            return std::all_of(low.begin() + static_cast<std::ptrdiff_t>(nan.size()), low.end(),
+                               [](char c) { return c >= '0' && c <= '9'; });
+        }
+    }
+    return false;
+}
+
+// The oracle's _dec: a finite decimal string, else SpanCalcError naming it (its message texts).
 SpanDecimal dec(const Json& v, const std::string& what) {
     if (!v.is_string()) {
-        throw SpanCalcError(what + ": not a decimal: " + v.dump());
+        throw SpanCalcError(what + ": not a decimal: " + py_repr(v));
     }
     const std::string text = v.get<std::string>();
     const std::optional<SpanDecimal> value = SpanDecimal::parse(text);
     if (!value) {
-        throw SpanCalcError(what + ": not a finite decimal: '" + text + "'");
+        throw SpanCalcError(what + (non_finite_text(text) ? ": not finite: " : ": not a decimal: ") + py_repr(v));
     }
     return *value;
 }
@@ -452,7 +524,7 @@ SpanDecimal scan_risk(const Commodity& cc, const Book& book) {
         }
         const SpanDecimal u(units);
         for (std::size_t s = 0; s < kScenarios; ++s) {
-            losses[s] += u * dec(c.risk_array[s], key_name(key) + " ra[" + std::to_string(s + 1) + "]");  // rupees
+            losses[s] += u * dec(c.risk_array[s], key_repr(key) + " ra[" + std::to_string(s + 1) + "]");  // rupees
         }
     }
     SpanDecimal total;
@@ -465,7 +537,7 @@ SpanDecimal scan_risk(const Commodity& cc, const Book& book) {
 SpanDecimal intra_spread(const Commodity& cc, const Book& book) {
     std::map<std::string, SpanDecimal> delta;  // expiry → net delta, units of the underlying
     for (const auto& [key, units] : book) {
-        delta[key.expiry] += SpanDecimal(units) * dec(cc.contracts.at(key).composite_delta, key_name(key) + " delta");
+        delta[key.expiry] += SpanDecimal(units) * dec(cc.contracts.at(key).composite_delta, key_repr(key) + " delta");
     }
     auto delta_at = [&](const std::string& expiry) {
         const auto it = delta.find(expiry);
@@ -503,7 +575,7 @@ SpanDecimal intra_spread(const Commodity& cc, const Book& book) {
                 break;
             }
             if (weights[n].sign() <= 0) {
-                throw SpanCalcError(what + ": weight " + leg.weight.dump());
+                throw SpanCalcError(what + ": weight " + py_str(leg.weight));
             }
             const std::optional<SpanDecimal> spreads_n = SpanDecimal::divide_exact(d.abs(), weights[n]);
             if (!spreads_n) {
@@ -519,7 +591,7 @@ SpanDecimal intra_spread(const Commodity& cc, const Book& book) {
             continue;
         }
         if (spread->charge_method != std::optional<std::string>("F")) {
-            throw SpanCalcError(what + ": charge method " + spread->charge_method.value_or("None"));
+            throw SpanCalcError(what + ": charge method " + py_repr(spread->charge_method));
         }
         const Json* rate = rate_of(spread->rates);
         if (rate == nullptr) {
@@ -546,7 +618,7 @@ SpanDecimal short_option_minimum(const Commodity& cc, const Book& book) {
         return {};
     }
     if (cc.som_method != std::optional<std::string>("GROSS")) {
-        throw SpanCalcError(cc.code + ": short option minimum method " + cc.som_method.value_or("None"));
+        throw SpanCalcError(cc.code + ": short option minimum method " + py_repr(cc.som_method));
     }
     SpanDecimal som;  // rupees
     for (const auto& [key, units] : shorts) {
@@ -604,7 +676,7 @@ SpanResult span_requirement(const Commodity& cc, const std::vector<std::pair<Con
         if (key.kind == "FUT") {
             continue;
         }
-        const SpanDecimal value = SpanDecimal(units) * dec(cc.contracts.at(key).price, key_name(key) + " price");
+        const SpanDecimal value = SpanDecimal(units) * dec(cc.contracts.at(key).price, key_repr(key) + " price");
         if (units > 0) {
             out.long_option_value += value;
         } else {
@@ -621,9 +693,9 @@ Paise span_paise(const SpanResult& result) {
     if (!result.missing.empty()) {
         std::string names;
         for (const ContractKey& k : result.missing) {
-            names += (names.empty() ? "" : ", ") + key_name(k);
+            names += (names.empty() ? "" : ", ") + key_repr(k);
         }
-        throw SpanCalcError("no SPAN margin: missing " + names);
+        throw SpanCalcError("no SPAN margin: missing [" + names + "]");
     }
     return rupees_up_paise(result.span);
 }
