@@ -76,6 +76,49 @@ class StrategyGuardTest(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
                 S.check_source(code)
 
+    def test_round3_names_imported_from_allowed_modules_are_refused(self):
+        for code in (
+                # the re-review's probes (new_probe.py)
+                "from stockify.strategy import importlib as I\nK = I.import_module('kite'+'connect')",
+                "from stockify.timeutil import time as T\nx = T.time()",
+                "from stockify.engine import sys as Y\nx = Y.meta_path",
+                "from typing import sys as Y\nx = Y.meta_path",
+                "from stockify.engine import _engine as E",
+                "from stockify.strategy import ast",
+                "from stockify.strategy import importlib",
+                "class A:\n def f(self):\n  self.m = 1\n  self.__dict__",
+                "class A:\n @classmethod\n def f(cls):\n  return cls.__mro__",
+                "def f(o):\n  return o._foo",
+                "x = getattr(a, 'b')",
+                "x = '{0.__class__}'.format(1)",
+                "x = '{0[_secret]}'.format(d)",
+                "x = vars",
+                # (a) `*` and private names, (b) module-like names, (c) modules resolved by importing X
+                "from decimal import *", "from math import _x", "from datetime import os", "from re import inspect",
+                "from stockify.strategy import builtins", "from stockify.strategy import numerics",
+                "from collections import abc", "from stockify.strategies import *",
+                "from stockify.strategies._option_legs import _private",
+                # plain `import X.Y` when X.Y is not on the allowlist
+                "import collections.abc", "import datetime.sys", "import stockify.numerics as n",
+                # attributes that lead back to modules or frames
+                "import math\nmath.inspect", "def f(g):\n  return g.gi_frame.f_globals", "S.ast"):
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
+
+    def test_round3_ordinary_names_still_import(self):
+        S.check_source("from decimal import ROUND_CEILING, Decimal\nfrom datetime import date, timedelta\n"
+                       "from collections import deque, defaultdict\nfrom typing import Any\nfrom math import sqrt\n"
+                       "from stockify.strategy import Strategy, rupees\nfrom stockify.timeutil import ist_ns\n"
+                       "from stockify.strategies._option_legs import OptionLegs\n"
+                       "class A:\n def f(self):\n  self._x = 1\n  return ctx._rows()\n",
+                       "stockify.strategies.probe", "stockify.strategies")
+
+    def test_the_getattr_exception_needs_the_real_package(self):
+        code = "x = getattr(a, 'b')"
+        S.check_source(code, "stockify.strategies._margin_watch", "stockify.strategies")
+        with self.assertRaises(S.StrategyCodeError):
+            S.check_source(code, "stockify.strategies._margin_watch", "evil")
+
     def test_the_allowlist(self):
         self.assertEqual(S.ALLOWED_IMPORTS, frozenset({
             "__future__", "datetime", "decimal", "re", "math", "dataclasses", "typing", "enum", "collections",

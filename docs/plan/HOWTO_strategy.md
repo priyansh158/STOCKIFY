@@ -102,12 +102,17 @@ Things to know when you write your own (the full API is A2 §4):
 - **Imports come from an allowlist (LCB 5.3, 5.4).** A strategy module may import only `__future__`, `datetime`,
   `decimal`, `re`, `math`, `dataclasses`, `typing`, `enum`, `collections`, `itertools`, `functools`, `statistics`,
   `stockify.strategy`, `stockify.engine`, `stockify.timeutil`, and modules of its own package (for the reference
-  strategies, `stockify.strategies.*`; a platform package such as `stockify.tools` does not count). The check also
-  refuses:
+  strategies, `stockify.strategies.*`; a platform package such as `stockify.tools` does not count). Names imported
+  from those modules are checked too (LCB 5.5): no `*`, no `_`-prefixed names, no module-like names (`sys`,
+  `time`, `importlib`, `ast`, `inspect`, …), and nothing that is itself a module, so `from stockify.strategy import
+  importlib` is refused while `from decimal import Decimal` is fine. `import X.Y` must name an allowed module. The
+  check also refuses:
   - attributes starting with `_` other than on `self`/`cls` (and dunders such as `self.__class__` even there); the
     one exception is the context's instrument table `ctx._rows()`, which the option helpers read;
-  - attributes named `importlib`, `sys`, `modules`, `kite_client`, `kiteconnect`, `os`, `subprocess`, `socket` or
-    `time` (allowed modules hold some of these: `stockify.timeutil.time` is the wall clock);
+  - attributes named `importlib`, `sys`, `modules`, `kite_client`, `kiteconnect`, `os`, `subprocess`, `socket`,
+    `time`, `ast`, `inspect`, `builtins`, or a frame's `f_globals`/`f_back`/… (allowed modules hold some of these:
+    `stockify.timeutil.time` is the wall clock);
+  - format strings that reach a private attribute (`'{0.__class__}'.format(x)`);
   - calls to `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`, `breakpoint`, `open`, `input`,
     `__import__`, `exec`, `eval` and `compile`, and the names `__builtins__`, `__loader__` and `__spec__`;
   - `datetime.now()`, `datetime.today()`, `datetime.utcnow()` and `date.today()`, however they are reached.

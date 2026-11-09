@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import importlib
 import math
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -208,7 +209,9 @@ BANNED_NAMES = {"__import__", "__builtins__", "__loader__", "__spec__", "exec", 
                 "locals", "vars", "breakpoint", "getattr", "setattr", "delattr"}
 # Attribute names that hand over a module or the module table (`stockify.timeutil` holds `time`, the engine `sys`).
 BANNED_ATTR_NAMES = {"importlib", "sys", "modules", "kite_client", "kiteconnect", "os", "subprocess", "socket",
-                     "time"}
+                     "time", "ast", "inspect", "builtins",
+                     # frame and code objects lead back to globals (LCB 5.5)
+                     "f_globals", "f_locals", "f_builtins", "f_back", "gi_frame", "cr_frame", "ag_frame", "tb_frame"}
 # `_`-prefixed attributes other than on `self`/`cls`: only these, by name. `ctx._rows()` is the context's instrument
 # table, read by the option helpers in stockify/strategies (_option_legs.py, _script.py).
 ALLOWED_PRIVATE_ATTRS = {"_rows"}
@@ -242,6 +245,39 @@ def own_package(module_name: str, package: str) -> str:
     return package
 
 
+_FORMAT_ESCAPE = re.compile(r"\{[^{}]*[.\[]\s*_")      # str.format field reaching `._x` or `[_x]`
+_UNSAFE_FROM_NAMES = {"ast", "importlib", "sys", "time", "os", "builtins", "inspect"}
+
+
+def _bad_imported_name(module: str, names: list[str], own: str) -> str | None:
+    """The first name of `from module import names` that may not be imported (LCB 5.5), else None.
+
+    Everywhere: `*`, `_`-prefixed names and module-like names (BANNED_ATTR_NAMES, `ast`, `inspect`, …). From an
+    allowlisted platform or stdlib module (imported here for the check: they are trusted), also any name that is
+    itself a module or part of the import machinery. A strategy's own package is never imported for the check."""
+    for n in names:
+        if n == "*" or n.startswith("_") or n in BANNED_ATTR_NAMES or n in _UNSAFE_FROM_NAMES:
+            return n
+    if own and (module == own or module.startswith(own + ".")):
+        return None
+    import builtins
+    import importlib.util
+    import types
+    mod = importlib.import_module(module)
+    for n in names:
+        if n not in vars(mod):
+            if hasattr(mod, "__path__") and importlib.util.find_spec(f"{module}.{n}") is not None:
+                return n                                  # a submodule of an allowed package
+            continue                                      # the import itself will fail
+        obj = vars(mod)[n]
+        kind = getattr(type(obj), "__module__", "") or ""
+        if isinstance(obj, types.ModuleType) or kind.startswith(("importlib", "_frozen_importlib")) \
+                or any(obj is f for f in (builtins.__import__, importlib.import_module, builtins.exec,
+                                          builtins.eval, builtins.compile, builtins.open)):
+            return n
+    return None
+
+
 def _allowed(module: str, own: str) -> bool:
     return module in ALLOWED_IMPORTS or bool(own) and (module == own or module.startswith(own + "."))
 
@@ -251,7 +287,7 @@ def check_source(source: str, name: str = "<strategy>", package: str = "") -> li
     Returns the modules the source imports from its own package (to be checked in turn)."""
     tree = ast.parse(source, filename=name)
     own = own_package(name, package)
-    may_getattr = name in GETATTR_MODULES
+    may_getattr = name in GETATTR_MODULES and package == _STRATEGY_PACKAGE
     local: list[str] = []
 
     def refuse(node: ast.AST, what: str) -> None:
@@ -271,6 +307,10 @@ def check_source(source: str, name: str = "<strategy>", package: str = "") -> li
                         a.asname for a in node.names if a.name == module):
                     refuse(node, f"'import {module}' (it binds {module.split('.')[0]!r}; use 'from ... import')")
                 else:
+                    if isinstance(node, ast.ImportFrom):
+                        bad = _bad_imported_name(module, names, own)
+                        if bad:
+                            refuse(node, f"importing {bad!r} from {module!r}")
                     module_names = [module] + ([f"{module}.{n}" for n in names if n != "*"]
                                                if isinstance(node, ast.ImportFrom) else [])
                 local.extend(m for m in module_names if own and (m == own or m.startswith(own + ".")))
@@ -283,6 +323,8 @@ def check_source(source: str, name: str = "<strategy>", package: str = "") -> li
                 last = base.id if isinstance(base, ast.Name) else base.attr if isinstance(base, ast.Attribute) else ""
                 if last in ("datetime", "date"):
                     refuse(node, f"{last}.{f.attr}(); use ctx.now()")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _FORMAT_ESCAPE.search(node.value):
+            refuse(node, "a format string that reaches a private attribute ('{0.__class__}')")
         elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
             if not (node.id == "getattr" and may_getattr):
                 refuse(node, node.id)
