@@ -308,7 +308,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 - `margin.model` choices, in this order: `flat`, `spanlite`, `span_exact`, `staircase` (the default, MEZ 4.10).
 <!-- </block> -->
 
-The last two read NSE's SPAN files from the bundle (§6.2); both engines run them (the oracle since MEZ 4.9, `stockify/fno/staircase.py`; the C++ engine since MEZ 4.10, `engine/src/margin/staircase.cpp` and `span_exact.cpp`, byte-identical), so the staircase is the default; goldens stay pinned to `flat` (`golden.build_bundle`): `staircase` picks per underlying per check the first step that can price all its legs (B1 exact SPAN + the NSE ELM file's %, no X-9 add-on; B2 exact SPAN + the dated rule ELM and X-9 add-on; B3 / B4 SPAN-lite with an adopted / the placeholder row; B5 flat) and labels the run `margin:<step>` and `margin_steps:<step>=<days>`; `span_exact` is B1/B2 only and fails the run naming the contract it cannot price, in the SPAN file in force or in the day's archived ELM file (a future or sold option without its %; with no ELM file for the day it uses the rule ELM, B2). B1 needs no % for bought options and never substitutes a missing price (the future's own, the index for sold options): that underlying is B2. The pre-trade check prices each underlying before and after the order at one step, the lower of the two. A bundle without a `span` section is labelled `margin_span:no_section`.
+The last two read NSE's SPAN files from the bundle (§6.2); both engines run them (the oracle since MEZ 4.9, `stockify/fno/staircase.py`; the C++ engine since MEZ 4.10, `engine/src/margin/staircase.cpp` and `span_exact.cpp`, byte-identical), so the staircase is the default; goldens stay pinned to `flat` (`golden.build_bundle`): `staircase` picks per underlying per check the first step that can price all its legs (B1 exact SPAN + the NSE ELM file's %, no X-9 add-on; B2 exact SPAN + the dated rule ELM and X-9 add-on; B3 / B4 SPAN-lite with an adopted / the placeholder row; B5 flat) and labels the run `margin:<step>` and `margin_steps:<step>=<days>`; `span_exact` is B1/B2 only and fails the run naming the contract it cannot price, in the SPAN file in force or in the day's archived ELM file (a future or sold option without its %; with no ELM file for the day it uses the rule ELM, B2). B1 needs no % for bought options and never substitutes a missing price (the future's own, the index for sold options): that underlying is B2. The pre-trade check prices each underlying before and after the order at one step, the lower of the two. A bundle without a `span` section is labelled `margin_span:no_section`. The run's model label is `margin:staircase` or `margin:span_exact`, without the `(approx)` the other models carry: the `margin:<step>` labels say how exact each day was (CAM 4.4).
 
 ### 6.2 `bundle.json` (D-22)
 
@@ -359,18 +359,33 @@ bundle is unchanged, key for key):
                               "calendar_spreads": [ { "number": 1, "charge_method": "…", "rates": { "1": "…" },
                                                       "legs": [ { "expiry": "…", "side": "A", "weight": "…" } ] } ] } } } ] },
 "span_skipped": { "2026-11-09": [ { "file": "span/2026/nsccl.20261109.i2.zip", "reason": "SpanFileError: …" } ] },
-"elm": { "2026-11-09": { "NIFTY": { "CE|2026-11-23|2500000": "2", "FUT|2026-11-23|": "2" } } }
+"elm": { "2026-11-09": { "NIFTY": { "CE|2026-11-23|2500000": "2", "FUT|2026-11-23|": "2" } } },
+"elm_skipped": { "2026-11-10": [ { "file": "elm/2026/F_AEL_OPT_CONTRACTS_10112026.csv.gz",
+                                   "reason": "ElmFileError: not a whole gzip: …" } ] }
 ```
 
+A bundle whose instruments hold no dated future or option (FUT, CE, PE with an expiry) parses no file: `span`,
+`span_skipped`, `elm` and `elm_skipped` are all `{}` and the run is labelled `margin_span:no_derivatives` (CAM 4.4).
+Both engines then label it alike and never add `margin_span:no_section`; a leg without a SPAN contract (FUT_CONT)
+steps down to B3–B5 as always.
+
 `span[D]` lists every NSE SPAN file a backtest may use on run day D, in `created_ns` order, with no lookahead (spec
-§5.1): the previous F&O trading day's end-of-day `.s` when archived (that day's only: an older `.s` is never used),
-then D's `i1`..`i4` (`i1` is normally created the evening before). D's own `.s` is never listed: it comes after the
+§5.1): the end-of-day `.s` of the previous NSE session when archived, then D's `i1`..`i4` (`i1` is normally created
+the evening before). **The previous session (CAM 4.4, D-64 ruling 2):** walk back over F&O calendar trading days that
+have no archived SPAN file of any suffix, at most 5 of them, and stop at the first day that has any archived file;
+use its `.s` if archived, else nothing (a day with intraday files but no `.s` never hands D an older file; more than 5
+empty days give nothing). The 2009–2026 backfill ended with no errors, so a day without any file is one NSE never
+published: a holiday the calendar does not hold (it holds none before 2024). D's own `.s` is never listed: it comes after the
 close. **Each entry applies from its own `created_ns`: the file in force at t is the last entry with
 `created_ns <= t`. Before the first entry nothing is in force (the underlying steps down); an entry is never applied
 earlier than its `created_ns`**, so a late `i1` (created after 09:15 on D) leaves the previous `.s` in force until
-then. A day with no usable file has `[]`. A file that cannot be read, or whose business date differs from the date
-in its name, is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are absent), and the
-run is labelled `margin_span:skipped_files`.
+then. A day with no usable file has `[]`. A file that cannot be read, whose business date differs from the date
+in its name, or whose created time (manifest, else header) is not plausible for that business date B (from B−2
+12:00 to B+1 06:00 IST, L-4), is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are
+absent), and the run is labelled `margin_span:skipped_files`. Parsed entries are cached under `$LAB/cache/span`
+(`paths.span_cache_dir`), keyed by the file's SHA-256, its archive path, the wanted contracts and a format version;
+a cache file that cannot be read or whose key or entry hash does not match is rebuilt, so the bundle is the same
+with or without the cache.
 
 `file` is relative to `$LAB/nse/margin`, `sha256` is the archived zip's. Only the bundle's underlyings are kept, with
 only the contracts the bundle trades, but every parameter block (all series, tiers, spreads). **Absent means missing,
@@ -381,10 +396,16 @@ and spread `number`. A series field is `null` when the file gives the series a s
 `scan_points` (the 16 scenario definitions) is provenance: the risk arrays are already evaluated, so the exact SPAN
 calculation does not read them.
 
-`elm[D]` is present when D's contract-wise ELM file is archived (D's file applies to D): per underlying,
+`elm[D]` is present when D's contract-wise ELM file is archived and readable: per underlying,
 `"<kind>|<expiry>|<strike_paise>"` (futures: empty strike) to the ELM **per cent** as a decimal string, for the
 bundle's derivatives the file lists. Keyed by underlying because the same kind, expiry and strike exist on several
-underlyings. A contract listed twice with different %, or with 0 %, is absent (missing). Both engines implement
+underlyings. A contract listed twice with different %, with 0 %, with a strike that is not a whole number of paise,
+or with a % that is not a plain bounded decimal (1–3 integer digits, at most 8 fraction digits, no sign, space or
+exponent: `nse_margin_files.ELM_PCT`, M-3; both margin models apply the same form to the bundle's strings) is absent
+(missing). **D's file is assumed to apply from D's open (09:15); NSE's publish time for it is not verified (L-5,
+RECON).** An archived ELM file that cannot be read (truncated, corrupt or not UTF-8, M-1) is left out of `elm`, so
+that day's underlyings step to B2, and is recorded in `elm_skipped[D]` (`{file, reason}`, `file` relative to
+`$LAB/nse/margin`); the run is labelled `margin_elm:skipped_files`, by the bundle, so both engines carry it alike. Both engines implement
 these models (MEZ 4.9 oracle, MEZ 4.10 engine, §6.1); an unknown model is refused ("margin model … is not supported
 yet"), never a fallback to flat.
 
@@ -578,6 +599,11 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
             "token_dependent_retry": { "every_min": 5, "until": "09:10" },
             "day_end": "23:59:59" } }
 ```
+
+Catch-up jobs (`nse_fetch`, `margin_files`) are retried no more often than `retry_every_min` and judged against the
+daemon's clock. `margin_files` also holds sleep on its trade date until the day's `.s` and ELM file are archived or
+`until` passes (CAM 4.4), so it runs the same evening; only when the laptop was off does it run the next morning, where
+one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches it later).
 
 ### 7.9 `storage.json`
 

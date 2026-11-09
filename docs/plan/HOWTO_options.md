@@ -121,7 +121,8 @@ Margin is the money the broker blocks while a position is open. A run picks its 
 ### The staircase
 
 SPAN is the exchange's margin method, and NSE publishes its risk file every day. The staircase tries the steps from
-the top and takes the first one it can price. If a contract is missing, the whole underlying drops one step. It never
+the top and takes the first one it can price. If a contract is missing, the whole underlying steps down to the first
+step that can price every one of its legs (a contract missing from the SPAN file skips B1 and B2 together). It never
 charges ₹0 for a missing contract. Each day's step is saved in the `step` column of `margin_daily.csv` and shown in
 the UI with these words:
 
@@ -171,7 +172,8 @@ extra has not been tested against NSE.
 python -m stockify margin scorecard
 ```
 
-Its first rows read: B1 priced 405, median ₹14.17, 90th percentile ₹40.90, 0.01 % relative.
+Its first rows read: B1 priced 405, median ₹14.17, 90th percentile ₹40.90, median relative error 0.01 % (the 90th
+percentile relative error is 0.04 %).
 
 **Flat** (`margin_params.json` → `flat`) is a fixed share of each position's value:
 
@@ -214,6 +216,13 @@ Labels are printed after a run's summary and shown on its page in `/tests`. They
 |---|---|
 | `margin:flat(approx)` | margin is a fixed share of each position's value, not the exchange's SPAN calculation |
 | `margin:spanlite(approx)` | margin is a SPAN-like estimate (price and volatility scenarios plus exposure margin), not the exchange's own figures |
+| `margin:staircase` | margin from the staircase: NSE's own SPAN file where it can price a position, else the next step down; the step labels below say which steps were used |
+| `margin:span_exact` | margin from NSE's SPAN file only; the run stops if a position is missing from it |
+| `margin:<step>`, `margin_steps:<step>=<days>` | that staircase step priced at least one check, and on how many run days (steps B1–B5 above) |
+| `margin_span:no_derivatives` | the run traded no futures or options, so no NSE margin file was read |
+| `margin_span:no_section` | the bundle had no SPAN section at all (a hand-made bundle), so every check used a lower step |
+| `margin_span:skipped_files` | at least one archived SPAN file could not be used (unreadable, misnamed, or an implausible created time) and was skipped |
+| `margin_elm:skipped_files` | at least one archived ELM file could not be read, so those days used the dated exposure rule (B2) |
 | `margin_spanlite:placeholder` | the SPAN-lite settings are placeholders, not yet calibrated against Kite, so margin amounts are rough |
 | `margin_spanlite:calibration-<date>` | the SPAN-lite settings fitted to Kite's margins on that date (section 6) |
 | `margin_spanlite:none` | the run chose SPAN-lite but had no futures or options, so no SPAN-lite settings were used |

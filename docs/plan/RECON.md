@@ -744,5 +744,54 @@ B3 is unscored: no calibrated row is adopted yet (two wait in `spanlite_pending`
 
 **Known intermittent test failures** (each passes alone; watch them in full-suite runs):
 - `test_runs_launch`: `created_ns <= started_ns` can fail by 1 ms when two suites run at once.
-- `test_nse_margin_files` (the rejected list): failed once in a full run, 12/12 in isolation, not reproduced.
-- `test_nse_margin_files.FetchDayTests.test_complete_needs_end_of_day_and_elm`: failed once in a full run (zip files stamped with wall-clock time); the test was fixed in b232c8e.
+- (Explained and fixed in ENG 4.4: the `test_nse_margin_files` "rejected list" failure came from `gzip.compress`
+  stamping the wall-clock second into each test ELM body, so a test that built its routes twice saw a changed file
+  when a second boundary passed. Test archives now use `mtime=0` and fixed zip member times.)
+
+## 2026-11-09 — final fix round on the staircase branch (CAM 4.4, MEZ 4.12, ENG 4.4)
+
+**What the code does now (read before relying on the archive):**
+- **Fetch checks the whole file** (`nse_margin_files.span_check`, `elm_problem`): a SPAN zip must pass every CRC and
+  hold exactly one `.spn`; an ELM gzip must unpack to the end as UTF-8 CSV rows of one width (≥ 7 columns, at least
+  one data row). A bad body is rejected and never archived, so it can no longer block the right file for good.
+- **Body cap:** `nse_files.Http` streams every body and stops at `max_bytes` (default 64 MiB; real SPAN zips are
+  ~10 MB). Over the cap is an error and nothing is archived.
+- **Created time plausibility (L-4):** a SPAN file of business day B must say it was created between B−2 12:00 and
+  B+1 06:00 IST. Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
+  `span_skipped`. Not yet checked against the real 2009–2026 archive (this round did not open the lab). **Controller /
+  owner check (read-only):**
+  `.\.venv\Scripts\python.exe -c "from datetime import date; from stockify.data import calendar as c, nse_margin_files as m; bad=[]; [m.in_force_files(d, bad) for d in c.trading_days('FO', date(2009,1,1), date(2026,11,6))]; print(len(bad)); print(bad[:20])"`
+  If NSE re-stamped old `.s` files later than B+1 06:00, they show up here and the window needs a dated exception.
+- **The opening `.s` (I-2 ruling):** a bundle day D opens with the `.s` of the previous NSE session: walk back over
+  calendar trading days with no archived file of any suffix (at most 5) and stop at the first day with any file
+  (its `.s`, else nothing). Before 2024 the calendar has no holidays, so the day after each holiday (10–19 a year)
+  used to get no SPAN at all; it now gets the `.s` before the holiday.
+  - Known exception: 2021-10-11 has no file because NSE served a non-zip body (the one rejected backfill file), so
+    2021-10-12 opens with 2021-10-08's `.s` (one session stale) until that day's `.s` is fetched again.
+  - **Owner item:** add the 2009–2023 NSE holidays to `stockify/config/calendar/nse_holidays.csv` with cited
+    sources (the backfill's 212 missing weekdays are the candidate list). Then the walk-back is only a safety net.
+- **ELM % form (M-3):** both models use an ELM % only as 1–3 integer digits with at most 8 fraction digits (no sign,
+  space or exponent); `read_elm` keeps only such values. Strikes must be whole paise (L-6).
+- **An unreadable archived ELM file** is skipped and recorded in `elm_skipped` (label `margin_elm:skipped_files`);
+  that day steps to B2.
+- **ELM timing (L-5):** D's contract-wise ELM file is assumed to apply from D's open (09:15). NSE's publish time
+  for it is not verified (X-12 establishes only that it exists): if NSE publishes it after the session, B1's
+  exposure on D uses end-of-day information. Small (the ELM %), but recorded here and in A1 §6.2 until a fact row
+  pins the publish time.
+- **Daemon:** `margin_files` now holds sleep on its trade date until the `.s` and ELM are archived or 22:00, retrying
+  every 30 min (`retry_every_min`, now read), so the files are fetched the same evening. Before, the laptop hibernated
+  after compaction and the job ran once at the next 06:00 wake, where one failure ended it.
+
+**Bundle build time (I-1).**
+- Stock-only bundles under the default `staircase` now open no SPAN or ELM file: empty sections, label
+  `margin_span:no_derivatives`.
+- Parsed entries are cached in `$LAB/cache/span` (key: file SHA-256, archive path, wanted contracts, format version).
+  Measured on the trimmed fixture (80 KB `.spn`, 64 contracts), sandboxed, 20 run days × 3 files: cold
+  1.3–1.9 s, warm (all hits) 0.65 s; the fixture parses in ~20 ms, so the cache mostly pays off on real files. For
+  a real 54 MB file the parse is 2.3 s (above) and a cache hit costs about the SHA-256 of the ~10 MB zip (~3 ms
+  here) plus loading the entry (~5 ms for a 0.8 MB entry). A one-year NIFTY run therefore goes from about 10 min
+  (end-of-day files only) to seconds once its files are cached; the first run over a range still pays the parse.
+- **Bundle size, not changed this round:** about 350 bytes per contract per entry (fixture: NIFTY 42 contracts →
+  14.8 KB). A chain of ~2,000 bundle contracts gives ~0.7 MB per entry: ~175 MB for a year with one file a day, up to
+  ~0.9 GB with five a day, written into every run and re-run folder and loaded whole by the C++ engine. Owner
+  decision: de-duplicate entries by SHA, or keep only strikes near the money.

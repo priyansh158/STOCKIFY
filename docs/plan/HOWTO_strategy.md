@@ -201,8 +201,13 @@ holds their SHA-256 hashes. To prove it for a finished run:
 determinism.json reproduced byte for byte (orb_reliance_minute-ada883a0319e -> orb_reliance_minute-ada883a0319e-rerun)
 ```
 
-Exit code 0 means identical; 1 means something differs, which is a bug worth reporting. Running the same config
-again also gives identical `determinism.json` (in a new folder, `…-2`).
+Exit code 0 means identical; 1 means something differs ("not reproduced", followed by a `differs:` line per file),
+which is a bug worth reporting. Running the same config again also gives identical `determinism.json` (in a new
+folder, `…-2`).
+
+One expected difference: a run saved before D-64 has a `margin_daily.csv` without the `step` column. When that column
+is the only difference (every other file byte for byte, and each row the same once the step is left out), the re-run
+prints `reproduced (margin_daily.csv gained the step column, D-64)` and exits 0.
 
 ## 7. Port it to C++
 
