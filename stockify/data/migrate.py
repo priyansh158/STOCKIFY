@@ -42,33 +42,35 @@ def _files(store: str, base: Path | None = None) -> list[tuple[int, Path]]:
 
 def apply(conn: sqlite3.Connection, store: str, base: Path | None = None) -> int:
     """Apply pending migrations; return the resulting schema version."""
+    # A second process opening the same file waits for the first one's migration instead of failing.
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version ("
         " version INTEGER PRIMARY KEY, name TEXT NOT NULL, sha256 TEXT NOT NULL)"
     )
-    applied = {row[0]: (row[1], row[2]) for row in
-               conn.execute("SELECT version, name, sha256 FROM schema_version")}
     version = 0
     for number, path in _files(store, base):
         sql = path.read_text(encoding="utf-8")
         digest = hashlib.sha256(sql.encode("utf-8")).hexdigest()
-        if number in applied:
-            name, recorded = applied[number]
-            if recorded != digest:
-                raise MigrationError(
-                    f"{store} migration {path.name} changed after it was applied; "
-                    "add a new migration instead"
-                )
-            version = number
-            continue
+        # The write lock is taken first and "applied?" is read inside it, so two processes
+        # racing on an old file cannot both decide the same migration is pending.
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("BEGIN")
-            for statement in _statements(sql):
-                conn.execute(statement)
-            conn.execute(
-                "INSERT INTO schema_version (version, name, sha256) VALUES (?, ?, ?)",
-                (number, path.name, digest),
-            )
+            row = conn.execute(
+                "SELECT name, sha256 FROM schema_version WHERE version = ?", (number,)).fetchone()
+            if row is not None:
+                if row[1] != digest:
+                    raise MigrationError(
+                        f"{store} migration {path.name} changed after it was applied; "
+                        "add a new migration instead"
+                    )
+            else:
+                for statement in _statements(sql):
+                    conn.execute(statement)
+                conn.execute(
+                    "INSERT INTO schema_version (version, name, sha256) VALUES (?, ?, ?)",
+                    (number, path.name, digest),
+                )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

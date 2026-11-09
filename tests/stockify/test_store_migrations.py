@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -122,6 +123,62 @@ class LabMigrationTests(SandboxedDBTest):
         self.assertIn("session_commands", store.table_names())
         idx = [r[1] for r in conn.execute("PRAGMA index_list(session_timeline)")]
         self.assertIn("ix_timeline_session", idx)
+
+    def test_two_processes_opening_an_old_lab_at_once_migrate_it_once(self):
+        path = self._make_v1_lab()
+        barrier = threading.Barrier(2)
+        results, errors = [], []
+
+        def opener():
+            conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
+            try:
+                barrier.wait(timeout=10)
+                results.append(migrate.apply(conn, "lab"))
+            except Exception as exc:  # noqa: BLE001 — reported below
+                errors.append(exc)
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=opener) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [store.SCHEMA_VERSION] * 2)
+        conn = sqlite3.connect(str(path))
+        self.assertEqual([r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")],
+                         list(range(1, store.SCHEMA_VERSION + 1)))
+        cols = _columns(conn, "session_days")
+        self.assertEqual(cols.count("last_frame_no"), 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM margin_calibration").fetchone()[0], 3)
+        self.assertEqual(conn.execute("SELECT status FROM runs WHERE run_id = 'r1'").fetchone()[0], "done")
+        conn.close()
+
+    def test_schema_version_history_with_only_the_later_migration_recorded(self):
+        # 0002 recorded, 0001 missing: 0001 (idempotent) is applied, 0002 is skipped, not re-run.
+        path = self._make_v1_lab()
+        conn = sqlite3.connect(str(path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, sha256 TEXT NOT NULL)")
+        import hashlib
+        f = migrate.MIGRATIONS_DIR / "lab" / "0002_sessions.sql"
+        digest = hashlib.sha256(f.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+        conn.execute("INSERT INTO schema_version VALUES (2, ?, ?)", (f.name, digest))
+        conn.commit()
+        conn.close()
+        self.assertEqual(store.schema_version(), store.SCHEMA_VERSION)
+        rows = store._connect().execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+        self.assertEqual([r[0] for r in rows], [1, 2])
+
+    def test_schema_version_history_with_a_wrong_checksum_is_refused(self):
+        path = self._make_v1_lab()
+        conn = sqlite3.connect(str(path))
+        conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, sha256 TEXT NOT NULL)")
+        conn.execute("INSERT INTO schema_version VALUES (1, '0001_init.sql', 'bogus')")
+        conn.commit()
+        conn.close()
+        with self.assertRaises(migrate.MigrationError):
+            store._connect()
 
 
 class MigrationFileTests(unittest.TestCase):
