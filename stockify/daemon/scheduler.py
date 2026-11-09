@@ -10,7 +10,7 @@ trade date and are skipped on non-trading days:
 | session     | subscribe 08:58 → 15:45   | the recorder (`run_recorder`)                |
 | compaction  | 16:30                     | must finish before sleeping (M1.7)           |
 | nse_fetch   | 19:30 → 23:00             | catch-up: runs on the next wake if slept through (M1.3) |
-| margin_files | 17:20 → 22:00            | NSE's SPAN + ELM margin files (CAM 4.2); keeps the laptop up until done or 22:00, then catch-up |
+| margin_files | 17:20 → 22:00            | SPAN + ELM files (CAM 4.2); holds sleep until done or 22:00 |
 | prune       | after the session         | recorder_status rows older than 7 days       |
 
 Completed jobs are remembered in `$LAB/scheduler_state.json` so a restart or a

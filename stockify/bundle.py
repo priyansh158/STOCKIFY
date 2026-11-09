@@ -18,12 +18,16 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
+import os
 import zipfile
 import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
 from stockify import numerics, paths, timeutil
+
+log = logging.getLogger("stockify.bundle")
 
 SCHEMA = "stockify.bundle/1"
 GROUPS = ("CM", "CM_CAS", "FO_FUT", "FO_OPT")
@@ -376,6 +380,7 @@ def _spanlite_calibrations(rows: list[dict], instruments_rows: list[dict], days:
 # ── NSE SPAN files and ELM % (CAM 4.3) ──────────────────────────────────────
 
 SPAN_MODELS = ("span_exact", "staircase")     # the margin models that read NSE's SPAN files (spec §5.1)
+NO_DERIVATIVES_LABEL = "margin_span:no_derivatives"   # a SPAN model on a bundle without dated futures or options
 _DERIVATIVES = ("FUT", "CE", "PE")
 
 
@@ -430,20 +435,83 @@ def _scan_points(f) -> list[dict]:  # noqa: ANN001
             for _, sp in sorted(f.scan_points.items())]
 
 
-_UNREADABLE = (ValueError, OSError, EOFError, zlib.error, zipfile.BadZipFile)   # SpanFileError is a ValueError
+# What reading an archived file can raise when the file is bad (SpanFileError and ElmFileError are ValueErrors;
+# ArithmeticError covers OverflowError from an oversized number and decimal's InvalidOperation, M-2).
+_UNREADABLE = (ValueError, ArithmeticError, OSError, EOFError, zlib.error, zipfile.BadZipFile)
+
+# The on-disk cache of parsed entries (CAM 4.4, I-1): `_span_entry` of one archived file for one set of wanted
+# contracts. Keyed by the file's SHA-256, its archive path, the sorted wanted contracts and this format version
+# (bump it whenever `_span_entry`'s output changes). A cache file that cannot be read, or whose key or entry hash
+# does not match, is ignored and rebuilt.
+SPAN_CACHE_VERSION = 1
+
+
+def _cache_key(sha: str, rel: str, keys: dict[str, set[tuple]]) -> dict:
+    return {"version": SPAN_CACHE_VERSION, "sha256": sha, "file": rel,
+            "wanted": [[und, [list(k) for k in sorted(keys[und], key=_sort_key)]] for und in sorted(keys)]}
+
+
+def _cache_json(value) -> str:  # noqa: ANN001
+    """Stable JSON for the cache (C json: dumps_canonical is pure Python and would cost what the cache saves)."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _cache_sha(value) -> str:  # noqa: ANN001
+    return hashlib.sha256(_cache_json(value).encode("utf-8")).hexdigest()
+
+
+def _cache_path(key: dict) -> Path:
+    return paths.span_cache_dir() / (_cache_sha(key) + ".json")
+
+
+def _cache_read(key: dict) -> dict | None:
+    try:
+        data = json.loads(_cache_path(key).read_text(encoding="utf-8"))
+        entry = data["entry"]
+        if data["key"] != key or not isinstance(entry, dict) or data["entry_sha256"] != _cache_sha(entry):
+            return None
+        return entry
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _cache_write(key: dict, entry: dict) -> None:
+    """Best effort and atomic: a unique temporary file renamed over the target (a reader never sees half)."""
+    import tempfile
+    target = _cache_path(key)
+    text = _cache_json({"key": key, "entry": entry, "entry_sha256": _cache_sha(entry)})
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, prefix=target.stem + ".",
+                                         suffix=".tmp", delete=False) as f:
+            tmp = Path(f.name)
+            f.write(text)
+        os.replace(tmp, target)
+    except OSError as e:
+        log.warning("SPAN cache: could not write %s: %s", target.name, e)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def _span_entry(path: str, root: Path, keys: dict[str, set[tuple]]) -> dict:
-    """One file's bundle entry (without created_ns). Raises one of _UNREADABLE for a file that cannot be used."""
+    """One file's bundle entry (without created_ns), from the cache when it holds this file for these contracts.
+    Raises one of _UNREADABLE for a file that cannot be used (never cached)."""
     from stockify.fno.span_file import SpanFileError, parse_span
+    rel = Path(path).relative_to(root).as_posix()
+    sha = _file_sha(Path(path))
+    key = _cache_key(sha, rel, keys)
+    cached = _cache_read(key)
+    if cached is not None:
+        return cached
     f = parse_span(path, set(keys))
     named = Path(path).name.split(".")[1]                     # nsccl.<YYYYMMDD>.<suffix>.zip
     if f.business_date != f"{named[:4]}-{named[4:6]}-{named[6:]}":
         raise SpanFileError(f"business date {f.business_date or '?'} is not the date in the file name")
-    return {"file": Path(path).relative_to(root).as_posix(), "sha256": _file_sha(Path(path)),
-            "scan_points": _scan_points(f),
-            "commodities": {code: _span_commodity(cc, keys[code])
-                            for code, cc in sorted(f.commodities.items()) if code in keys}}
+    entry = {"file": rel, "sha256": sha, "scan_points": _scan_points(f),
+             "commodities": {code: _span_commodity(cc, keys[code])
+                             for code, cc in sorted(f.commodities.items()) if code in keys}}
+    _cache_write(key, entry)
+    return entry
 
 
 def span_section(instruments_rows: list[dict], days: list[dict],
@@ -452,16 +520,25 @@ def span_section(instruments_rows: list[dict], days: list[dict],
     (`nse_margin_files.usable_files`: the previous trading day's `.s`, then D's `i1`..`i4`, never D's `.s`; each
     applies from its own created_ns). Each keeps the bundle's underlyings only, with the contracts the bundle trades
     and all their parameter blocks. A day with no usable file has an empty list (the margin model steps down).
-    A file that cannot be read, or whose business date is not its name's, is left out; with `skipped`, it is
-    recorded there as {day: [{"file", "reason"}]}."""
+    A file that cannot be read, whose business date is not its name's, or whose created time is not plausible
+    (L-4), is left out; with `skipped`, it is recorded there as {day: [{"file", "reason"}]}. A bundle without dated
+    futures or options parses nothing: {} (resolve_bundle labels it `margin_span:no_derivatives`)."""
     from stockify.data import nse_margin_files as mf
     keys = _contract_keys(instruments_rows)
+    if not keys:
+        return {}
     root = paths.nse_margin_dir("span").parent
     parsed: dict[str, dict | str] = {}                        # path -> entry, or the reason it is unusable
     out = {}
     for d in days:
         files = []
-        for path, created_ns in mf.usable_files(date.fromisoformat(d["date"])):
+        bad: list = []
+        usable = mf.usable_files(date.fromisoformat(d["date"]), bad)
+        if skipped is not None:
+            for path, reason in bad:
+                skipped.setdefault(d["date"], []).append(
+                    {"file": Path(path).relative_to(root).as_posix(), "reason": reason})
+        for path, created_ns in usable:
             if path not in parsed:
                 try:
                     parsed[path] = _span_entry(path, root, keys)
@@ -478,16 +555,28 @@ def span_section(instruments_rows: list[dict], days: list[dict],
     return out
 
 
-def elm_section(instruments_rows: list[dict], days: list[dict]) -> dict[str, dict[str, dict[str, str]]]:
+def elm_section(instruments_rows: list[dict], days: list[dict],
+                skipped: dict[str, list[dict]] | None = None) -> dict[str, dict[str, dict[str, str]]]:
     """bundle["elm"]: per run day whose contract-wise ELM file is archived, {underlying:
     {"<kind>|<expiry>|<strike paise>": ELM % (per cent, decimal string)}} for the bundle's derivatives the file lists
-    (futures have an empty strike). D's file applies to D (spec §5.1). A contract the file lists twice with different
-    % is left out, as if missing."""
+    (futures have an empty strike). D's file applies to D from its open (spec §5.1; its publish time is not
+    verified, L-5). A contract the file lists twice with different % is left out, as if missing. An archived file
+    that cannot be read (truncated, corrupt, not UTF-8: M-1) is left out, so the day steps to B2; with `skipped`, it
+    is recorded there as {day: [{"file", "reason"}]}. Without dated futures or options: {}."""
     from stockify.data import nse_margin_files as mf
     keys = _contract_keys(instruments_rows)
+    if not keys:
+        return {}
     out = {}
     for d in days:
-        elm = mf.read_elm(date.fromisoformat(d["date"]), set(keys))
+        day_ = date.fromisoformat(d["date"])
+        try:
+            elm = mf.read_elm(day_, set(keys))
+        except _UNREADABLE as e:
+            if skipped is not None:
+                skipped.setdefault(d["date"], []).append(
+                    {"file": f"elm/{day_:%Y}/{mf.elm_name(day_)}", "reason": f"{type(e).__name__}: {e}"})
+            continue
         if elm is None:
             continue
         day = {}
@@ -516,7 +605,9 @@ def resolve_bundle(cfg: dict) -> dict:
                          "elm_pct", "default_iv"))
     pricing = _dated_section(loader.load_json("pricing.json"), start, end)
     _ppb_fields(pricing, ("rate",))
-    labels = [f"fill:{cfg['fill_model']['kind']}", f"margin:{cfg['margin']['model']}(approx)"]
+    model = cfg["margin"]["model"]               # the SPAN models say per step how exact they were (margin:<step>)
+    labels = [f"fill:{cfg['fill_model']['kind']}",
+              f"margin:{model}" if model in SPAN_MODELS else f"margin:{model}(approx)"]
     instruments_rows = resolve_instruments(ids, start, end, days, traded, labels)
     if cfg["margin"]["model"] == "spanlite":     # M4.8: the parameters' calibration, e.g. "placeholder" (I-14)
         labels.append("margin_spanlite:" + "+".join(_spanlite_calibrations(margin.get("spanlite", []),
@@ -541,11 +632,19 @@ def resolve_bundle(cfg: dict) -> dict:
     }
     if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
         skipped: dict[str, list[dict]] = {}
+        elm_skipped: dict[str, list[dict]] = {}
         out["span"] = span_section(instruments_rows, days, skipped)
         out["span_skipped"] = skipped
-        out["elm"] = elm_section(instruments_rows, days)
+        out["elm"] = elm_section(instruments_rows, days, elm_skipped)
+        out["elm_skipped"] = elm_skipped
+        extra = set()
+        if not _contract_keys(instruments_rows):   # I-1: nothing for SPAN to price, so no file was parsed
+            extra.add(NO_DERIVATIVES_LABEL)
         if skipped:
-            out["labels"] = sorted(set(out["labels"]) | {"margin_span:skipped_files"})
+            extra.add("margin_span:skipped_files")
+        if elm_skipped:
+            extra.add("margin_elm:skipped_files")
+        out["labels"] = sorted(set(out["labels"]) | extra)
     return out
 
 

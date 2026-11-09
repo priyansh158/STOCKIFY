@@ -68,6 +68,12 @@ def nse_margin_dir(kind: str) -> Path:
     return _dir(lab_dir() / "nse" / "margin" / kind)
 
 
+def span_cache_dir() -> Path:
+    """$LAB/cache/span: the bundle's parsed SPAN entries, one JSON per (file, wanted contracts) (CAM 4.4). Only a
+    cache: any file here may be deleted, and a bad one is rebuilt."""
+    return _dir(lab_dir() / "cache" / "span")
+
+
 def packs_dir() -> Path:
     return _dir(lab_dir() / "packs")
 
