@@ -173,6 +173,20 @@ class CalibrationTests(SandboxedDBTest):
         p = CAL.sample_portfolios(snap, 2, seed=0)[1]                 # a straddle
         self.assertEqual(pricer.t1(p, base)[0], CAL.Pricer(snap, CAL._config_params()[0], pricing).t1(p, base)[0])
 
+    def test_a_second_run_the_same_day_replaces_the_pending_row_and_the_config_still_loads(self):
+        from stockify.config import loader
+        tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+        shutil.copytree(loader.CONFIG_DIR, tmp, dirs_exist_ok=True)
+        row = {"applies": {"underlying": "NIFTY"}, "effective_from": DAY, "psr_pct": "0.07", "vsr_pct": "0.3",
+               "calibration_id": f"calibration-{DAY}", "source": f"calibration {DAY}", "verified": False,
+               "pending_review": True}
+        CAL.write_pending(row, tmp / "margin_params.json")
+        CAL.write_pending(dict(row, psr_pct="0.08"), tmp / "margin_params.json")
+        CAL.write_pending(dict(row, applies={"underlying": "BANKNIFTY"}), tmp / "margin_params.json")
+        doc = loader.load_json("margin_params.json", tmp)                    # refuses duplicate dated rows
+        self.assertEqual(sorted((r["applies"]["underlying"], r["psr_pct"]) for r in doc["spanlite_pending"]),
+                         [("BANKNIFTY", "0.07"), ("NIFTY", "0.08")])
+
     def test_no_kite_when_not_logged_in(self):
         from stockify import __main__ as cli
         import io

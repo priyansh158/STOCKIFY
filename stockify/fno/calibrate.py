@@ -420,11 +420,17 @@ def pending_row(fitted: dict, snap: Snapshot, n: int, after: float) -> dict:
 
 
 def write_pending(row: dict, path: Path | None = None) -> Path:
-    """Append the row to margin_params.json → spanlite_pending (kept, never read by a margin model)."""
+    """Add the row to margin_params.json → spanlite_pending (kept, never read by a margin model).
+
+    A later run on the same day for the same underlying replaces that day's row: the config loader refuses two rows
+    with the same `applies` and `effective_from`, and every earlier sample stays in lab.sqlite either way.
+    """
     from stockify.config import loader
     path = path or Path(loader.__file__).with_name("margin_params.json")
     doc = json.loads(path.read_text(encoding="utf-8"))
-    doc.setdefault("spanlite_pending", []).append(row)
+    rows = [r for r in doc.get("spanlite_pending", [])
+            if (r.get("applies"), r.get("effective_from")) != (row["applies"], row["effective_from"])]
+    doc["spanlite_pending"] = rows + [row]
     path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
 
