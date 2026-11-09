@@ -302,7 +302,8 @@ class Engine {
     void process_input(const Event& e);
     void push_internal(InternalEvent ev);
     void schedule_days();
-    void close_out();  // the final DAY_END after a last input past the last trading day (D-52)
+    void close_out();
+    void reseed_for(TimeNs t);  // seed_mode per_day: re-create both streams at a seeded day's first event  // the final DAY_END after a last input past the last trading day (D-52)
 
     void log(std::string_view level, std::string_view msg);
     void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9)
@@ -384,6 +385,8 @@ class Engine {
     Context ctx_;
     Pcg32 strategy_rng_;
     Book book_;
+    std::vector<std::pair<Date, std::uint64_t>> day_seeds_;  // (IST date, days[].seed), in day order (VOL 5.1)
+    std::size_t next_day_seed_ = 0;
     PackSource packs_;
     LiveBatchSource live_;
 

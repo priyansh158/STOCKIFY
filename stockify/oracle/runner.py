@@ -129,6 +129,8 @@ class Engine:
         capital = self.run_cfg["capital_paise"]
         self.book = Book(Ledger(capital, capital), {}, Pcg32(bundle["seed"], SLIPPAGE_STREAM))
         self.strategy_rng = Pcg32(bundle["seed"], STRATEGY_STREAM)
+        self.day_seeds = self._day_seeds(self.days)     # [(date, seed)] for seed_mode per_day (VOL 5.1)
+        self.next_day_seed = 0
         self.internal: list = []
         self.internal_seq = 0
         self.now = 0
@@ -211,6 +213,33 @@ class Engine:
                     raise RunError(at + f"lot must be positive, got {s['lot']}")
                 if s["tick_paise"] <= 0:
                     raise RunError(at + f"tick_paise must be positive, got {s['tick_paise']}")
+
+    @staticmethod
+    def _day_seeds(days: list[dict]) -> list[tuple[str, int]]:
+        """days[].seed, the only source of a day's seed (A4 §4.5): present when the run's seed_mode is per_day."""
+        out = []
+        for n, d in enumerate(days):
+            if "seed" not in d:
+                continue
+            v = d["seed"]
+            if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < 2 ** 64:
+                raise RunError(f"bundle: days[{n}].seed must be a non-negative 64-bit integer")
+            out.append((d["date"], v))
+        return out
+
+    def _reseed_for(self, t: int) -> None:
+        """Before the first event whose IST date is a seeded day: both streams re-created from that day's seed
+        (stream 1 slippage, stream 2 ctx.rng()), in place, so every holder of them sees the new sequence."""
+        if self.next_day_seed >= len(self.day_seeds):
+            return
+        d = self._date(t)
+        seed = None
+        while self.next_day_seed < len(self.day_seeds) and self.day_seeds[self.next_day_seed][0] <= d:
+            seed = self.day_seeds[self.next_day_seed][1]
+            self.next_day_seed += 1
+        if seed is not None:
+            self.book.rng.reseed(seed, SLIPPAGE_STREAM)
+            self.strategy_rng.reseed(seed, STRATEGY_STREAM)
 
     def spec(self, iid: int, d: str) -> dict | None:
         best = None
@@ -1199,6 +1228,7 @@ class Engine:
         self._schedule_days()
         first = [self.internal[0][0][0]] + ([self.records[0][0][0]] if self.records else [])
         self.now = min(first)                     # on_start sees the earliest time of the run
+        self._reseed_for(self.now)
         self.strategy.on_start(self.ctx)
         self._deliver()
         i = 0
@@ -1211,12 +1241,14 @@ class Engine:
                 if key[0] > last_day_end:                 # timers after the last day never fire
                     continue
                 self.now, self.key = key[0], key
+                self._reseed_for(self.now)
                 self._activate_due(self.now)
                 self._dispatch_internal(kind, payload)
             else:
                 key, rec = nxt_in
                 i += 1
                 self.now, self.key = key[0], key
+                self._reseed_for(self.now)
                 self._activate_due(self.now)
                 self._dispatch_input(rec)
         if self.now > last_day_end:                     # D-52: the final close-out (A4 §1.10)

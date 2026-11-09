@@ -52,3 +52,17 @@ TEST_CASE("a wrong or incomplete bundle fails with the field named") {
                          doctest::Contains("packs[0].price_basis"), FormatError);
     CHECK_THROWS_AS(load_bundle("does/not/exist/bundle.json"), FormatError);
 }
+
+TEST_CASE("days[].seed is read day for day (seed_mode per_day, VOL 5.1)") {
+    CHECK(parse_bundle(kMinimal).day_seeds.empty());
+    const Bundle b = parse_bundle(replace(kMinimal, "\"days\": []",
+                                          R"("days": [{"date": "2026-11-17", "seed": 18446744073709551615}, )"
+                                          R"({"date": "2026-11-18"}])"));
+    REQUIRE(b.day_seeds.size() == 2);
+    CHECK(b.day_seeds[0] == std::optional<std::uint64_t>(18446744073709551615ULL));
+    CHECK_FALSE(b.day_seeds[1].has_value());
+    CHECK_THROWS_WITH_AS(parse_bundle(replace(kMinimal, "\"days\": []", R"("days": [{"date": "x", "seed": -3}])")),
+                         doctest::Contains("days[0].seed"), FormatError);
+    CHECK_THROWS_WITH_AS(parse_bundle(replace(kMinimal, "\"days\": []", R"("days": [{"date": "x", "seed": "7"}])")),
+                         doctest::Contains("days[0].seed"), FormatError);
+}

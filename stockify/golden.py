@@ -147,6 +147,7 @@ def _bundle_strategy(s: dict) -> dict:
 
 
 def build_bundle(g: dict) -> dict:
+    from stockify import bundle as bundle_mod
     b = g["bundle"]
     run = {"schema": "stockify.run/1", "name": g["id"], "strategy": {"kind": "script", "actions": []},
            "data": {"packs": [{"sha256": "0" * 64}]}, "capital_paise": 10_000_000, "price_basis": "raw",
@@ -211,7 +212,8 @@ def build_bundle(g: dict) -> dict:
     if sqoff is not None:
         charges["components"]["auto_square_off_fee"] = [{"applies": {}, "effective_from": "2015-01-01",
                                                          "per_order_paise": sqoff, "plus_gst": b.get("sqoff_plus_gst", True)}]
-    out = {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
+    out = {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"],
+           "days": bundle_mod.apply_seed_mode(cfg, days),
            "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
            "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
            "packs": [], "strategy": _bundle_strategy(run["strategy"]),

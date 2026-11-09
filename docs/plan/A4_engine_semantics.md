@@ -180,7 +180,8 @@ It keeps DAY validity, so an unfilled remainder rests as a limit. Every fill of 
 - `next_u32()`: `old = state; state = old·6364136223846793005 + inc (mod 2⁶⁴); x = (((old >> 18) ^ old) >> 27) mod 2³²; r = old >> 59; return (x >> r) | (x << ((−r) & 31)) mod 2³²`.
 - `below(n)` (n ≥ 1): `threshold = (2³² − n) mod n`; repeat `v = next_u32()` until `v ≥ threshold`; return `v mod n`.
 - `next_u64() = (next_u32() << 32) | next_u32()` (high word drawn first); `random() = (next_u64() >> 11)·2⁻⁵³`.
-- Streams: `initstate` = the run seed, `initseq` = 1 for slippage, 2 for `ctx.rng()`. Paper sessions derive each day's seed as the first 8 bytes (little-endian) of SHA-256 of the ASCII string `stockify-seed:<session seed>:<YYYYMMDD>`, written into the day bundle.
+- Streams: `initstate` = the run seed, `initseq` = 1 for slippage, 2 for `ctx.rng()`.
+- **Per-day seeds** (`seed_mode`, VOL 5.1, D-66). With `seed_mode: run` (the default) both streams are seeded once from the run seed, as above. With `per_day`, each day's seed is the first 8 bytes (little-endian) of SHA-256 of the ASCII string `stockify-seed:<seed>:<YYYYMMDD>` (`<seed>` the run or session seed in decimal; `stockify.bundle.day_seed`), written into the bundle as `days[].seed`, the only source of a day's seed: neither engine derives it. Before the first event (or `on_start`) whose IST date is on or after a seeded day, both streams are re-created from that day's seed (`initseq` 1 and 2 as above); a day with no event of its own is passed over. So a run over a period draws, day by day, what one-day paper sessions draw. The top-level `seed` stays the run or session seed. Paper sessions (M5) run `per_day`.
 - Both implementations must produce identical sequences (A3 P-01). No standard-library distributions (C-9).
 
 **4.6 Price bands.** No fill outside the price band in force.

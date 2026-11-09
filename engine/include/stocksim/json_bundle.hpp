@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,6 +38,8 @@ struct StrategyRef {
 struct Bundle {
     std::string sha256;  // of the bundle file's bytes
     std::uint64_t seed = 0;
+    // days[i].seed, index for index with days (VOL 5.1): set when the run's seed_mode is per_day (A4 §4.5).
+    std::vector<std::optional<std::uint64_t>> day_seeds;
     std::vector<PackRef> packs;
     StrategyRef strategy;
     std::vector<std::string> labels;

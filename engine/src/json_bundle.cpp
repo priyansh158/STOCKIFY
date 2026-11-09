@@ -59,6 +59,23 @@ Bundle parse_bundle(std::string_view text) {
     }
     b.seed = seed.get<std::uint64_t>();
 
+    // days[].seed (seed_mode per_day, VOL 5.1) is the only source of a day's seed; the days themselves are
+    // read by SessionCalendar.
+    if (const auto days = r.find("days"); days != r.end() && days->is_array()) {
+        for (std::size_t i = 0; i < days->size(); ++i) {
+            const Json& d = (*days)[i];
+            const auto it = d.is_object() ? d.find("seed") : d.end();
+            if (!d.is_object() || it == d.end()) {
+                b.day_seeds.emplace_back(std::nullopt);
+                continue;
+            }
+            if (!it->is_number_unsigned()) {
+                throw FormatError("bundle: days[" + std::to_string(i) + "].seed must be a non-negative 64-bit integer");
+            }
+            b.day_seeds.emplace_back(it->get<std::uint64_t>());
+        }
+    }
+
     const Json& packs = require(r, "packs", "bundle");
     if (!packs.is_array()) {
         throw FormatError("bundle: packs is not a list");

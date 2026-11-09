@@ -18,6 +18,9 @@ from stockify import numerics, paths
 SCHEMA = "stockify.run/1"
 FILL_KINDS = ("bar", "snapshot_ltp", "snapshot_quote", "eod_close")
 SLIPPAGE_KINDS = ("none", "fixed_ticks", "random_ticks", "bps")
+# VOL 5.1 (D-66, A4 §4.5): "run" seeds both PCG32 streams once from `seed`; "per_day" re-creates them from each
+# trading day's own seed (bundle days[].seed), as paper sessions do, so day by day equals the whole period.
+SEED_MODES = ("run", "per_day")
 # span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines run them (MEZ 4.9 oracle,
 # MEZ 4.10 engine), so the staircase is the default; goldens stay pinned to flat (golden.build_bundle).
 # <block name="margin-models" same-as="docs/plan/A1_schemas.md:margin-models" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
@@ -149,6 +152,10 @@ def validate(raw: dict) -> dict:
     _choice(cfg["mark"], ("ltp", "mid"), "mark")
     _int(cfg["seed"], "seed", 0)
     _need(cfg["seed"] < 2 ** 64, "seed", "must fit in 64 bits")
+    # The default is left out of the normalised form, so a run config (and its bundle) without seed_mode, or
+    # with "run", is byte for byte what it was before VOL 5.1.
+    if _choice(cfg.pop("seed_mode", "run"), SEED_MODES, "seed_mode") == "per_day":
+        cfg["seed_mode"] = "per_day"
     if cfg["fill_model"]["kind"] == "eod_close":
         _need(cfg["price_basis"] == "raw", "price_basis", "eod_close runs use NSE files, basis raw")
     return cfg

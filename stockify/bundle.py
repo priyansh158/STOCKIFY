@@ -147,6 +147,22 @@ def resolve_days(start: date, end: date, policy: dict) -> list[dict]:
     return days
 
 
+def day_seed(seed: int, day: date) -> int:
+    """A trading day's PCG32 seed (A4 §4.5, VOL 5.1): the first 8 bytes, little-endian, of
+    sha256("stockify-seed:<seed>:<YYYYMMDD>")."""
+    digest = hashlib.sha256(f"stockify-seed:{seed}:{day:%Y%m%d}".encode("ascii")).digest()
+    return int.from_bytes(digest[:8], "little")
+
+
+def apply_seed_mode(cfg: dict, days: list[dict]) -> list[dict]:
+    """With `seed_mode: per_day`, each day gets `seed` = day_seed(run seed, date): the only source of that day's
+    seed for both engines. With the default ("run") the days are returned untouched."""
+    if cfg.get("seed_mode", "run") == "per_day":
+        for d in days:
+            d["seed"] = day_seed(cfg["seed"], date.fromisoformat(d["date"]))
+    return days
+
+
 def group_close_ns(day: dict, group: str) -> int | None:
     """End of the group's last CONTINUOUS or CAS phase (A4 §1.9)."""
     ends = [p["end_ns"] for p in day["groups"][group] if p["phase"] in ("CONTINUOUS", "CAS")]
@@ -641,7 +657,7 @@ def resolve_bundle(cfg: dict) -> dict:
     if not rows_in_range(policy.get("market_protection_auto_bp", []), start, end):
         raise BundleError("no market_protection_auto_bp row in force in range (broker_policy.json)")
     out = {
-        "schema": SCHEMA, "run": cfg, "seed": cfg["seed"], "days": days,
+        "schema": SCHEMA, "run": cfg, "seed": cfg["seed"], "days": apply_seed_mode(cfg, days),
         "instruments": instruments_rows,
         "charges": charges, "broker_policy": policy, "margin_params": margin, "pricing": pricing,
         "packs": pack_rows, "strategy": strategy_ref(cfg), "labels": sorted(set(labels)), "sod_state": None,

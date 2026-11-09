@@ -298,9 +298,12 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
   "policies": { "preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": false },
   "mark": "ltp",
   "seed": 42,
+  "seed_mode": "run",
   "unlock_holdout": null
 }
 ```
+
+`seed_mode` (VOL 5.1): `run` (the default) seeds both PCG32 streams once from `seed`; `per_day` re-creates them each trading day from that day's seed (A4 §4.5), as paper sessions do. The validated form leaves `run` out, so configs and bundles without it are unchanged byte for byte.
 
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
 
@@ -321,7 +324,7 @@ The last two read NSE's SPAN files from the bundle (§6.2); both engines run the
               "groups": { "CM":     [ { "phase": "PREOPEN", "start_ns": 0, "end_ns": 0 }, { "phase": "CONTINUOUS", "start_ns": 0, "end_ns": 0 } ],
                           "CM_CAS": [ "..." ], "FO_FUT": [ "..." ], "FO_OPT": [ "..." ] },
               "mis_cutoff_ns": { "CM": 0, "CM_CAS": 0, "FO": 0 },
-              "day_end_ns": 0 } ],
+              "day_end_ns": 0, "seed": 0 } ],
   "instruments": [ { "id": 1234, "exchange": "NFO", "kind": "CE", "tradingsymbol": "…",
                      "underlying_id": 1, "underlying_class": "INDEX", "session_group": "FO_OPT",
                      "expiry": "2026-11-03", "strike_paise": 2500000, "settlement": "cash",
@@ -410,7 +413,7 @@ that day's underlyings step to B2, and is recorded in `elm_skipped[D]` (`{file, 
 these models (MEZ 4.9 oracle, MEZ 4.10 engine, §6.1); an unknown model is refused ("margin model … is not supported
 yet"), never a fallback to flat.
 
-(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
+(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. A day's `seed` is present only when `run.seed_mode` is `per_day`: derived from the run's `seed` and the date as in A4 §4.5, the only source of that day's seed for both engines. Paper sessions get one bundle per day, `per_day`, with `sod_state` filled.
 
 ### 6.3 Run folder `runs/<run_id>/`
 

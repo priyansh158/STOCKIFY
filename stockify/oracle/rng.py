@@ -14,6 +14,10 @@ class Pcg32:
     __slots__ = ("state", "inc")
 
     def __init__(self, initstate: int, initseq: int):
+        self.reseed(initstate, initseq)
+
+    def reseed(self, initstate: int, initseq: int) -> None:
+        """pcg32_srandom_r in place: the generator becomes Pcg32(initstate, initseq)."""
         self.state = 0
         self.inc = ((initseq << 1) | 1) & MASK64
         self.next_u32()

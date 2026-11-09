@@ -46,6 +46,11 @@ Engine::Engine(Bundle bundle)
     mark_kind_ = require_string(run, "mark", "run");
     latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
+    for (std::size_t i = 0; i < bundle_.day_seeds.size() && i < calendar_.days().size(); ++i) {
+        if (bundle_.day_seeds[i]) {
+            day_seeds_.emplace_back(calendar_.days()[i].date, *bundle_.day_seeds[i]);
+        }
+    }
     const Json& margin_cfg = require(run, "margin", "run");
     const std::string margin_model = require_string(margin_cfg, "model", "run.margin");
     auto host = [this] {
@@ -168,6 +173,7 @@ void Engine::start(std::optional<EventKey> first_input) {
         first = first_input->t;
     }
     now_ = first.value_or(0);
+    reseed_for(now_);
     strategy_->on_start(ctx_);
     deliver();
 }
@@ -181,8 +187,27 @@ void Engine::process_internal_before(const std::optional<EventKey>& next_input) 
         }
         now_ = ev.key.t;
         key_ = ev.key;
+        reseed_for(now_);
         activate_due(now_);
         dispatch_internal(ev);
+    }
+}
+
+// runner._reseed_for (A4 §4.5, VOL 5.1): before the first event whose IST date is a seeded day, both streams are
+// re-created from that day's seed (stream 1 slippage, stream 2 ctx.rng()). Without days[].seed, nothing happens.
+void Engine::reseed_for(TimeNs t) {
+    if (next_day_seed_ >= day_seeds_.size()) {
+        return;
+    }
+    const Date d = date_of(t);
+    std::optional<std::uint64_t> seed;
+    while (next_day_seed_ < day_seeds_.size() && day_seeds_[next_day_seed_].first <= d) {
+        seed = day_seeds_[next_day_seed_].second;
+        ++next_day_seed_;
+    }
+    if (seed) {
+        book_.rng = Pcg32(*seed, kSlippageStream);
+        strategy_rng_ = Pcg32(*seed, kStrategyStream);
     }
 }
 
@@ -232,6 +257,7 @@ void Engine::run(EventSource& source) {
         const Event* e = source.next();
         now_ = e->t;
         key_ = e->key();
+        reseed_for(now_);
         activate_due(now_);
         process_input(*e);
     }
@@ -248,6 +274,7 @@ void Engine::push(std::span<const std::byte> batch) {
         const Event* e = live_.next();
         now_ = e->t;
         key_ = e->key();
+        reseed_for(now_);
         activate_due(now_);
         process_input(*e);
     }
