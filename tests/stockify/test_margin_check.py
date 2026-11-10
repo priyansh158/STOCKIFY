@@ -184,7 +184,7 @@ class ScorecardTests(ArchiveTest):
         self.assertEqual(row.steps["B2_span_rule_elm"].span, 15_474_300)
         self.assertIn("B4_spanlite_placeholder", row.steps)
         self.assertIn("B5_flat", row.steps)
-        self.assertNotIn("B3_spanlite_calibrated", row.steps)          # no calibrated row is adopted
+        self.assertIn("B3_spanlite_calibrated", row.steps)             # the 2026-11-09 calibration is adopted (D-74)
         text = MC.scorecard_text(card)
         self.assertIn("price drift", text)
         self.assertIn("B3", text)

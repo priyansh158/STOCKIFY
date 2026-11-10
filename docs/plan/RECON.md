@@ -730,7 +730,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 | B4 SPAN-lite, placeholder | 405 | ₹14,150.14 | ₹1,22,315.33 | 26.20 % |
 | B5 flat | 405 | ₹1,84,640.10 | ₹5,33,187.44 | 296.05 % |
 
-B3 is unscored: no calibrated row is adopted yet (two wait in `spanlite_pending`). Four groups show an inversion (B5 closer than B4): NIFTY and BANKNIFTY futures, and single options. SPAN error is at most ₹1.00 everywhere.
+B3 was unscored when this table was taken: no calibrated row was adopted yet. It is adopted since (D-74); the scorecard now shows B3 with a median error of ₹360.39 over the same 405 answers. Four groups show an inversion (B5 closer than B4): NIFTY and BANKNIFTY futures, and single options. SPAN error is at most ₹1.00 everywhere.
 
 **P-04 per-step coverage** (200 seeds, 4000–4199, oracle and engine agree on every seed; 76 staircase/span_exact worlds; strict `span_exact` runs: 20 priced, 2 failed alike on both):
 
@@ -984,3 +984,12 @@ warning (`paper.json` → `sod_state_warn_mb`) comes after about 6 months. Nothi
   its close on daily bars (D-44) and charged at the next midnight; an `eod_close` fill of an expiring contract
   published after midnight. `cnc_releases` (always empty after `DAY_END`), last prices (the market LTPs) and
   `event_no` (never read) are no longer carried.
+## 2026-11-09 - the engine is built with Control Flow Guard and SDL checks (ST 4.1)
+- `engine/CMakeLists.txt`: compile flags gain `/guard:cf /sdl` (in `STOCKSIM_CXX_FLAGS`, so every target and the
+  `flags_hash`); `add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA)` for the link. `/fp:precise` and `/W4 /WX` unchanged.
+- No new warnings or errors under `/sdl`; no code changes. `flags_hash` e910e917c8d189f4 -> 3052014b56f68721
+  (a build fingerprint; nothing in the tests or goldens pins it). `dumpbin /headers /loadconfig` shows "Control Flow
+  Guard", "Dynamic base", "High Entropy Virtual Addresses" and "CF instrumented" on `stocksim_run.exe`,
+  `stocksim_tests.exe` and `stockify/_engine.cp312-win_amd64.pyd`.
+- Speed, synthetic 600,000-event tick pack, median of 9: `noop_cpp` 488.6 -> 483.6 / 488.8 ms (two runs, within
+  noise); Python no-op 1812.6 -> 1827.7 / 1791.2 ms; Python SMA 673.9 -> 672.7 / 674.4 ms. No measurable change.

@@ -29,6 +29,16 @@ TRUE = {"psr": 0.08, "vsr": 0.30, "somc": 300_000, "psr_fut": 0.11}   # futures 
 TOKEN = "fake-access-token-do-not-store"
 
 
+def copy_params_without_adopted_fits(dst: Path) -> None:
+    """The shipped margin_params.json minus the adopted calibrated spanlite rows (calibration_id other than
+    "placeholder"). A test fits from the placeholders, as the first real calibration did, whatever real
+    calibrations the owner has since adopted (D-74)."""
+    from stockify.config import loader
+    doc = json.loads(Path(loader.__file__).with_name("margin_params.json").read_text(encoding="utf-8"))
+    doc["spanlite"] = [r for r in doc["spanlite"] if r.get("calibration_id") == "placeholder"]
+    dst.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+
 def dumps() -> dict[str, str]:
     nfo = [HEADER, "9001,1,NIFTY26NOVFUT,NIFTY,0,2026-11-26,0,0.1,75,FUT,NFO-FUT,NFO"]
     tok = 10_000
@@ -106,6 +116,15 @@ class CalibrationTests(SandboxedDBTest):
 
     def setUp(self):
         super().setUp()
+        # fits start from the placeholder rows whatever real calibrations the owner has adopted since (D-74)
+        from unittest import mock
+        from stockify.config import loader
+        cfg = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+        shutil.copytree(loader.CONFIG_DIR, cfg, dirs_exist_ok=True)
+        copy_params_without_adopted_fits(cfg / "margin_params.json")
+        patcher = mock.patch.object(loader, "CONFIG_DIR", cfg)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         instruments.sync(date(2026, 11, 9), dumps(), underlyings={"NIFTY": "NSE:NIFTY 50"})
         self.sleeps: list[float] = []
         self.kite = FakeKite()
@@ -151,7 +170,7 @@ class CalibrationTests(SandboxedDBTest):
         tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
         params = tmp / "margin_params.json"
         from stockify.config import loader
-        shutil.copy(Path(loader.__file__).with_name("margin_params.json"), params)
+        copy_params_without_adopted_fits(params)
         report, written = CAL.calibrate(self.kite, "NIFTY", 24, seed=1, day=DAY, sleep=self.sleeps.append,
                                         snapshot=snap, params_path=params)
         self.assertEqual(written, params)
@@ -165,7 +184,7 @@ class CalibrationTests(SandboxedDBTest):
         doc = json.loads(params.read_text(encoding="utf-8"))
         # the shipped file may already hold pending rows from real calibrations: pick this run's row, and check the
         # others (other underlyings or days) are kept as they were
-        shipped = json.loads(Path(loader.__file__).with_name("margin_params.json").read_text(encoding="utf-8"))
+        shipped = json.loads((loader.CONFIG_DIR / "margin_params.json").read_text(encoding="utf-8"))
         mine = [r for r in doc["spanlite_pending"]
                 if r["applies"].get("underlying") == "NIFTY" and r["effective_from"] == DAY]
         others = [r for r in shipped.get("spanlite_pending", [])
@@ -180,7 +199,7 @@ class CalibrationTests(SandboxedDBTest):
         self.assertIn("NOT used until you review", text)
         self.assertIn("short straddles", text)
         # the adopted rows are untouched: the fit is never used automatically
-        self.assertEqual(doc["spanlite"], json.loads(Path(loader.__file__).with_name("margin_params.json")
+        self.assertEqual(doc["spanlite"], json.loads((loader.CONFIG_DIR / "margin_params.json")
                                                      .read_text(encoding="utf-8"))["spanlite"])
         # nothing about the login is stored anywhere
         blob = json.dumps(rows) + text + params.read_text(encoding="utf-8")
@@ -232,7 +251,7 @@ class CalibrationTests(SandboxedDBTest):
                 tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
                 params = tmp / "margin_params.json"
                 from stockify.config import loader
-                shutil.copy(Path(loader.__file__).with_name("margin_params.json"), params)
+                copy_params_without_adopted_fits(params)
                 before = len(store.margin_calibrations("NIFTY"))
                 report, _ = CAL.calibrate(self.kite, "NIFTY", 8, seed=2, day=day, sleep=self.sleeps.append,
                                           snapshot=snap, params_path=params)
@@ -279,7 +298,7 @@ class CalibrationTests(SandboxedDBTest):
         tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
         params = tmp / "margin_params.json"
         from stockify.config import loader
-        shutil.copy(Path(loader.__file__).with_name("margin_params.json"), params)
+        copy_params_without_adopted_fits(params)
         report, _ = CAL.calibrate(self.kite, "NIFTY", 32, seed=4, day=DAY, sleep=self.sleeps.append, snapshot=snap,
                                   params_path=params)
         return snap, params, report

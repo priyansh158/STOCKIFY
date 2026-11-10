@@ -13,10 +13,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(STOCKSIM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 # Determinism (C-9): precise floating point, never /fp:fast.
-set(STOCKSIM_CXX_FLAGS /W4 /permissive- /utf-8 /fp:precise /EHsc)
+# Hardening (ST 4.1): Control Flow Guard and the SDL checks, on every target (and in the flags hash).
+set(STOCKSIM_CXX_FLAGS /W4 /permissive- /utf-8 /fp:precise /EHsc /guard:cf /sdl)
 if(STOCKSIM_WARNINGS_AS_ERRORS)
   list(APPEND STOCKSIM_CXX_FLAGS /WX)
 endif()
+
+# Link side: CFG needs /guard:cf at link time too; ASLR (/DYNAMICBASE) and 64-bit ASLR (/HIGHENTROPYVA) set explicitly.
+add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 

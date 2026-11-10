@@ -74,7 +74,7 @@ class HowtoOptionsTests(unittest.TestCase):
 
     def test_the_config_numbers_quoted_are_the_configs(self):
         margin = json.loads((loader.CONFIG_DIR / "margin_params.json").read_text(encoding="utf-8"))
-        index, stock = sorted(margin["spanlite"], key=lambda r: r["applies"]["underlying_class"])
+        index, stock = sorted((r for r in margin["spanlite"] if r["calibration_id"] == "placeholder"), key=lambda r: r["applies"]["underlying_class"])
         self.assertEqual((margin["flat"][-1]["index_pct"], margin["flat"][-1]["stock_pct"]), ("0.12", "0.20"))
         self.assertEqual((index["elm_pct"], stock["elm_pct"], index["default_iv"], stock["default_iv"]),
                          ("0.02", "0.035", "0.15", "0.30"))
