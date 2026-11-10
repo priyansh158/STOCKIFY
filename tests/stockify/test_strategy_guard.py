@@ -421,9 +421,43 @@ class StrategyGuardTest(unittest.TestCase):
         with self.assertRaisesRegex(S.StrategyCodeError, "socket"):
             golden.build_bundle(self._golden(ref))
         self.assertEqual(self._loaded(), [], "the strategy file ran before it was checked")
-        with self.assertRaisesRegex(S.StrategyCodeError, "socket"):
-            golden.run_one(self._golden(ref), "oracle")
+        # `golden run` reports the golden as failed and goes on (review I-2): a problem line, not a raise.
+        problems = golden.run_one(self._golden(ref), "oracle")
+        self.assertEqual(len(problems), 1)
+        self.assertRegex(problems[0], r"^strategy refused: .*socket")
         self.assertEqual(self._loaded(), [], "the strategy file ran before it was checked")
+
+    def test_a_refused_strategy_fails_its_golden_and_the_later_goldens_still_run(self):
+        bad = self._module("net2", "import socket\n" + GOOD) + ":Fine"
+        fine = self._module("fine2", GOOD) + ":Fine"
+        first, second = self._golden(bad), self._golden(fine)
+        second["expect"] = {"orders": [], "fills": []}
+        results = [golden.run_one(g, "oracle") for g in (first, second)]      # what `golden run` does
+        self.assertRegex(results[0][0], r"^strategy refused: .*socket")
+        self.assertEqual(results[1], [])
+        self.assertEqual(self._loaded(), [f"{self.pkg}.fine2"], "only the clean strategy was loaded, by the run")
+
+    def test_a_refused_variant_fails_alone_and_the_other_variants_still_run(self):
+        bad = self._module("net3", "import socket\n" + GOOD) + ":Fine"
+        fine = self._module("fine3", GOOD) + ":Fine"
+        g = self._golden(fine)
+        g["variants"] = [{"name": "bad", "strategy": {"ref": bad}},
+                         {"name": "ok", "expect": {"orders": [], "fills": []}},
+                         {"name": "documented", "strategy": {"ref": bad}, "expect": {"error": "socket"}}]
+        problems = golden.run_one(g, "oracle")
+        self.assertEqual(len(problems), 1)
+        self.assertRegex(problems[0], r"^\[bad\] strategy refused: .*socket")
+        self.assertEqual(self._loaded(), [f"{self.pkg}.fine3"])
+
+    def test_a_golden_may_expect_the_refusal_but_the_strategy_never_runs(self):
+        ref = self._module("net4", "import socket\n" + GOOD) + ":Fine"
+        g = self._golden(ref)
+        g["expect"] = {"error": "socket"}
+        self.assertEqual(golden.run_one(g, "oracle"), [])
+        g["expect"] = {"error": "something else"}
+        (problem,) = golden.run_one(g, "oracle")
+        self.assertRegex(problem, r"^strategy refused: .*socket")
+        self.assertEqual(self._loaded(), [])
 
     def test_a_golden_is_refused_for_what_its_strategy_does_at_import_time(self):
         for n, code in enumerate(("import os\nos.environ['LCB_GOLDEN_RAN'] = '1'\n", "import kite_client\n",

@@ -409,11 +409,19 @@ def _run_single(g: dict, impl: str) -> list[str]:
         from stockify.engine import run_bundle  # the C++ engine, same inputs and artifacts (M3.12)
     else:
         raise GoldenError(f"unknown implementation {impl!r}")
+    from stockify.strategy import StrategyCodeError
     with tempfile.TemporaryDirectory(prefix=f"golden-{g['id']}-") as tmp:
         folder = Path(tmp)
         pack = build_pack(g, folder)
-        bundle = build_bundle(g)
         expect_error = g.get("expect", {}).get("error")
+        try:
+            bundle = build_bundle(g)
+        except StrategyCodeError as e:
+            # The strategy's source failed the check (LCB 5.13): this golden fails, the later goldens and
+            # variants still run, and a golden written to document the refusal may expect it (LCB 5.17).
+            if expect_error and expect_error in str(e):
+                return []
+            return [f"strategy refused: {e}"]
         try:
             run_bundle(bundle, [pack], folder / "run", report=False)
         except Exception as e:                       # noqa: BLE001 — goldens may expect a failure
