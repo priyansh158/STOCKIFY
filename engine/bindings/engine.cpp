@@ -58,10 +58,10 @@ T whole(const char* name, const py::object& v) {
     return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
 }
 
-// B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 1000 basis points; anything else is
+// B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 10000 basis points; anything else is
 // refused, never taken as AUTO. The rule and the words are the oracle's (`_protection`).
 std::optional<stocksim::Bp> protection_arg(const py::object& v) {
-    const std::string what = "ctx.place: protection must be \"AUTO\" or an int from 1 to 1000 (basis points)";
+    const std::string what = "ctx.place: protection must be \"AUTO\" or an int from 1 to 10000 (basis points)";
     const auto tail = [&] {
         return what + ", not " + std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
                std::string(py::repr(v)) + ")";
@@ -78,7 +78,7 @@ std::optional<stocksim::Bp> protection_arg(const py::object& v) {
     } catch (const py::cast_error&) {  // beyond int64: out of range all the same
         throw py::value_error(tail());
     }
-    if (bp < 1 || bp > 1000) {
+    if (bp < 1 || bp > 10000) {
         throw py::value_error(tail());
     }
     return static_cast<stocksim::Bp>(bp);

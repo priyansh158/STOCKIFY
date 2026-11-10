@@ -29,14 +29,14 @@ def _whole(name: str, v) -> int:  # noqa: ANN001
 
 
 def _protection(v):  # noqa: ANN001, ANN202
-    """B2B 5.2 (audit M-2): `protection` is "AUTO" or an int from 1 to 1000 basis points. Anything else is refused,
+    """B2B 5.2 (audit M-2): `protection` is "AUTO" or an int from 1 to 10000 basis points. Anything else is refused,
     never taken as AUTO. The engine's binding (engine/bindings/engine.cpp, `protection_arg`) has the same rule."""
-    what = 'ctx.place: protection must be "AUTO" or an int from 1 to 1000 (basis points)'
+    what = 'ctx.place: protection must be "AUTO" or an int from 1 to 10000 (basis points)'
     if isinstance(v, str) and v == "AUTO":
         return v
     if not isinstance(v, int) or isinstance(v, bool):
         raise TypeError(f"{what}, not {type(v).__name__} ({v!r})")
-    if not 1 <= v <= 1000:
+    if not 1 <= v <= 10000:
         raise ValueError(f"{what}, not {type(v).__name__} ({v!r})")
     return v
 

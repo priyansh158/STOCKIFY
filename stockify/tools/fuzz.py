@@ -417,7 +417,7 @@ class RandomTrader(Strategy):
             price += 1
         trigger = max(0, ref + tick * (r.below(21) - 10)) // tick * tick
         validity = self._pick(r, ["DAY", "DAY", "IOC"] + (["GTC"] if r.below(50) == 0 else []))
-        protection = "AUTO" if r.below(3) else r.below(600)
+        protection = "AUTO" if r.below(3) else 1 + r.below(600)
         tag = self._pick(r, self.TAGS)
         oid = ctx.place(iid, side, qty, product, typ, price=price, trigger=trigger, validity=validity,
                         protection=protection, tag=tag)
