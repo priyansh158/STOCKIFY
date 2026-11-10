@@ -33,6 +33,7 @@ Tables: `sessions`, `session_days`, `session_timeline` (A1 §4).
 
 Files: `stockify/daemon/sessions.py`, `stockify/daemon/journal.py`.
 
+- [x] The engine side of the day-to-day state (Task 6, VOL 5.3, ST 5.1): `Engine.eod_state()` / `load_sod_state()` write and apply A1 §6.4 byte for byte as the oracle does; the saved state is untrusted input, so `load` checks all of it first and applies it whole or not at all, on both runners, with the same refusals (one table of hostile states, `tests/stockify/sod_state_hostile.py`). The daemon work below uses them.
 - [ ] Per session per IST trading day: resolve a **day bundle** (M2.1) for the session's instruments with `seed` derived as in A4 §4.5 and `sod_state` = the previous day's end-of-day state; save it as `journals/<session_id>/<YYYYMMDD>.bundle.json`; create a fresh `Engine` from it.
 - [ ] The dispatcher turns each incoming frame into `.evt` records for the session's instruments (the same encoder as packs, M1.8; `seq` = the dispatcher's per-day counter), adds `CLOCK` records every second and `GAP`/`REFDATA` records as they happen, **appends them to the journal first**, then calls `engine.push(batch)`. Flush per batch; fsync every 5 s and at phase changes.
 - [ ] Engine outputs from each batch (orders, order events, fills, charges) go to `lab.sqlite` in one transaction, upserted by `(session_id, trade_date, id)` so re-applying them is harmless (`session_orders`, `session_order_events`, `session_fills`, `session_charges`).
