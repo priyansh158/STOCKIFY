@@ -581,6 +581,22 @@ class GeminiKeySecrecyTests(unittest.TestCase):
                 for n in range(8, len(SECRET) + 1):
                     self.assertNotIn(SECRET[:n], str(err))
 
+    def test_a_redirect_is_not_followed_so_the_key_stays_with_the_host_it_was_meant_for(self):
+        # `requests` drops only `Authorization` on a cross-host redirect; a custom header would be
+        # re-sent to wherever a 30x points (review m-1).
+        def elsewhere(request):
+            resp = _answer(302, "")(request)
+            resp.url = request.url
+            resp.headers["Location"] = "https://elsewhere.example/collect"
+            return resp
+        _, err, wire, logs = self.call(elsewhere)
+        self.assertEqual(len(wire.requests), 1, "the redirect was followed")
+        self.assertEqual(wire.requests[0].url.split("/")[2], "generativelanguage.googleapis.com")
+        self.assertIsInstance(err, RuntimeError)
+        self.assertIn("302", str(err))
+        self.assertNotIn("elsewhere.example", str(err))
+        self.assert_clean(err, logs)
+
     def test_a_key_that_cannot_be_a_header_is_refused_without_being_shown(self):
         for bad in ("line\nbreak-fake-key", "has space fake key", "tab\tfake-key", "clé-fake-key", "nul\x00fake-key"):
             with self.subTest(bad=bad):

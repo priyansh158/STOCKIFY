@@ -180,15 +180,17 @@ ARTICLES:
     }
     failure = ""
     try:
-        resp = requests.post(url, headers={"x-goog-api-key": key}, json=body, timeout=60)
+        # No redirect is followed: `requests` would re-send a custom header to wherever a 30x
+        # points (it strips only Authorization), so the key stays with the host it was meant for.
+        resp = requests.post(url, headers={"x-goog-api-key": key}, json=body, timeout=60, allow_redirects=False)
     except Exception as e:
         failure = f"Gemini request failed: {type(e).__name__}: {scrub(str(e), key)}"
     if failure:
         # Raised outside the handler on purpose: the original error holds the prepared request,
         # headers and all, and must not ride along as this error's context.
         raise RuntimeError(failure)
-    if resp.status_code >= 400:
-        # Scrubbed before the cut, so the cut cannot leave half a key behind.
+    if resp.status_code >= 300:
+        # A redirect is an error like any other. Scrubbed before the cut, so the cut cannot leave half a key.
         raise RuntimeError(f"Gemini HTTP {resp.status_code}: {scrub(str(resp.text), key)[:300]}")
     data = resp.json()
     try:
