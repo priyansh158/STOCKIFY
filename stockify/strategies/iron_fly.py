@@ -24,7 +24,7 @@ class IronFly(OptionLegs):
         {'name': 'wing_strikes', 'label': 'Wings out (strikes)', 'type': 'int', 'default': 2, 'required': False, 'help': 'how many strikes above and below the at-the-money strike the bought wings are'},
         {'name': 'lots', 'label': 'Lots per option', 'type': 'int', 'default': 1, 'required': False, 'help': 'lots of each option traded'},
         {'name': 'min_days', 'label': 'Skip expiries closer than (days)', 'type': 'int', 'default': 0, 'required': False, 'help': 'skip expiries fewer than this many days away (0 trades the nearest, even on expiry day)'},
-        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market and stop orders, in basis points (5000 = 50 %)'},
+        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market and stop orders, in basis points (5000 = 50 %)', 'min': '1', 'max': '10000', 'unit': 'basis points (5000 = 50 %)'},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001

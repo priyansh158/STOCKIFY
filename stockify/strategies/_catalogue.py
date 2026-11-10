@@ -7,8 +7,8 @@ registers (STOCKSIM_STRATEGY); their params mirror the Python originals they por
 A params schema is a list of `{"name", "label", "type", "default", "required", "help"}` (`label` is the
 form's plain name for it), with `type` one of
 PARAM_TYPES. Values are checked the way the strategies read them (`int(...)`, `bool(...)`, `Decimal(str(...))`).
-An `int` or `decimal` entry may also carry `"max"` (a decimal string: the largest value accepted) together with
-`"unit"` (what the number is, with an example); a value above the bound is refused and the error states the unit.
+An `int` or `decimal` entry may also carry `"min"` and/or `"max"` (decimal strings: the smallest and largest value accepted) together with
+`"unit"` (what the number is, with an example); a value outside the bounds is refused and the error states the unit.
 
 `schema_of` is the lookup every run config passes through (stockify.runconfig, REG 5.3): one strategy by its
 ref, without listing the catalogue or loading the engine.
@@ -113,13 +113,17 @@ def schema_of(kind: str, ref: str) -> list[dict] | None:
 
 
 def _bound_problem(p: dict, v) -> str | None:  # noqa: ANN001
-    """A value above the entry's `max`, said with the entry's `unit` (the value already passed `_type_problem`)."""
-    if "max" not in p or p["type"] not in ("int", "decimal"):
+    """A value outside the entry's `min`/`max`, said with the entry's `unit` (the value already passed
+    `_type_problem`)."""
+    if ("max" not in p and "min" not in p) or p["type"] not in ("int", "decimal"):
         return None
     number = Decimal(int(v)) if p["type"] == "int" else Decimal(str(v))
-    if number <= Decimal(p["max"]):
-        return None
-    return f"{v!r} is above {p['max']}" + (f": it is {p['unit']}" if p.get("unit") else "")
+    unit = f": it is {p['unit']}" if p.get("unit") else ""
+    if "min" in p and number < Decimal(p["min"]):
+        return f"{v!r} is below {p['min']}{unit}"
+    if "max" in p and number > Decimal(p["max"]):
+        return f"{v!r} is above {p['max']}{unit}"
+    return None
 
 
 def _type_problem(t: str, v) -> str | None:  # noqa: ANN001

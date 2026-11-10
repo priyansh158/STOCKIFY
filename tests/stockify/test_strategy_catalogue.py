@@ -28,12 +28,14 @@ class CatalogueTests(unittest.TestCase):
             names = [p["name"] for p in s["params"]]
             self.assertEqual(len(names), len(set(names)), s["ref"])
             for p in s["params"]:
-                self.assertEqual(set(p) - {"max", "unit"}, {"name", "label", "type", "default", "required", "help"},
+                self.assertEqual(set(p) - {"min", "max", "unit"}, {"name", "label", "type", "default", "required", "help"},
                                  (s["ref"], p))
                 self.assertIn(p["type"], C.PARAM_TYPES)
-                if "max" in p:                      # REG 5.3: a bound is a decimal string and says its unit
+                for bound in ("min", "max"):           # REG 5.3: a bound is a decimal string and says its unit
+                    if bound not in p:
+                        continue
                     self.assertIn(p["type"], ("int", "decimal"), (s["ref"], p))
-                    self.assertIsInstance(p["max"], str)
+                    self.assertIsInstance(p[bound], str)
                     self.assertTrue(p.get("unit"), (s["ref"], p))
                 if p["required"]:
                     self.assertIsNone(p["default"])
@@ -97,6 +99,20 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(v(EodShortStraddle.PARAMS, {"stop_multiple": "abc"}), ["stop_multiple: is not a decimal number"])
         self.assertEqual(v(EodShortStraddle.PARAMS, {"stop_multiple": 2}), [])
         self.assertEqual(v(SmaCross.PARAMS, []), ["params must be an object"])
+
+    def test_protection_bp_is_refused_outside_1_to_10000_when_the_config_is_checked(self):
+        """C review I1: protection_bp is the same 1..10000 bp ctx.place takes, refused at config time, not mid-run."""
+        from stockify.strategies.eod_short_straddle import EodShortStraddle
+        from stockify.strategies.iron_fly import IronFly
+        from stockify.strategies.short_straddle_stop import ShortStraddleStop
+        unit = "basis points (5000 = 50 %)"
+        for params in (IronFly.PARAMS, ShortStraddleStop.PARAMS, EodShortStraddle.PARAMS):
+            for ok in (1, 5000, 10000):
+                self.assertEqual(C.validate_params(params, {"protection_bp": ok}), [], ok)
+            self.assertEqual(C.validate_params(params, {"protection_bp": 0}),
+                             [f"protection_bp: 0 is below 1: it is {unit}"])
+            self.assertEqual(C.validate_params(params, {"protection_bp": 20000}),
+                             [f"protection_bp: 20000 is above 10000: it is {unit}"])
 
     def test_a_bound_is_checked_and_its_error_states_the_unit(self):
         """REG 5.3 (dimensional F3): stop_pct is a fraction; "30" (meant as 30 %) is refused."""

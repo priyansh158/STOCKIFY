@@ -35,7 +35,7 @@ class EodShortStraddle(Strategy):
         {'name': 'lots', 'label': 'Lots per option', 'type': 'int', 'default': 1, 'required': False, 'help': 'lots of each option sold'},
         {'name': 'stop_multiple', 'label': 'Stop at × premium', 'type': 'decimal', 'default': '1.5', 'required': False, 'help': 'buy back when the options cost this many times the premium'},
         {'name': 'min_days', 'label': 'Skip expiries closer than (days)', 'type': 'int', 'default': 1, 'required': False, 'help': 'skip expiries fewer than this many days away'},
-        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market orders, in basis points (5000 = 50 %)'},
+        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market orders, in basis points (5000 = 50 %)', 'min': '1', 'max': '10000', 'unit': 'basis points (5000 = 50 %)'},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001
