@@ -660,27 +660,32 @@ def _find_spec(name: str):  # noqa: ANN202
         return None
 
 
-def check_module(module_name: str) -> None:
-    """Check a strategy module's source, and the modules it imports from its own package, before any import."""
-    pending, seen = [module_name], set()
+def check_module(module_name: str) -> str:
+    """Check a strategy module's source, and the modules it imports from its own package, before any import.
+
+    Returns the module's own source text: the very text that was checked (read once)."""
+    pending, seen, own = [module_name], set(), ""
     while pending:
         name = pending.pop()
         if name in seen:
             continue
         seen.add(name)
         source, package = _module_source(name)
+        if name == module_name:
+            own = source
         for m in check_source(source, name, package):
             if m not in seen and _find_spec(m) is not None:
                 pending.append(m)
+    return own
 
 
 def checked_source(module_name: str) -> str:
     """A strategy module's source text after the source check, read without importing the module.
 
-    For callers that hash the source (goldens). The text is what `inspect.getsource` gives for the module:
-    newlines as "\n", and a final one added if the file has none."""
-    check_module(module_name)
-    source, _ = _module_source(module_name)
+    For callers that hash the source (goldens): the hash describes the checked text, not a second read
+    of the file. The text is what `inspect.getsource` gives for the module: newlines as "\n", and a
+    final one added if the file has none."""
+    source = check_module(module_name)
     return source if source.endswith("\n") or not source else source + "\n"
 
 

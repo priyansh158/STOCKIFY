@@ -493,6 +493,22 @@ class StrategyGuardTest(unittest.TestCase):
         self.assertEqual(golden.run_one(g, "oracle"), [])
         self.assertEqual(self._loaded(), [f"{self.pkg}.fine"])  # the run loaded it, through strategy.load
 
+    def test_checked_source_returns_the_very_text_it_checked(self):
+        # One read: a file that changes between a check and a second read would get a hash of text that
+        # was never checked (review m-2).
+        name = self._module("once", GOOD)
+        real, calls = S._module_source, []
+
+        def counting(module_name):
+            calls.append(module_name)
+            source, package = real(module_name)
+            return ("import socket\n" + source if len(calls) > 1 else source), package
+
+        with mock.patch.object(S, "_module_source", counting):
+            text = S.checked_source(name)
+        self.assertEqual(calls, [name], "the source was read more than once")
+        self.assertEqual(text, textwrap.dedent(GOOD))
+
     def test_the_source_hash_of_a_golden_strategy_has_not_changed(self):
         from stockify.tools import fuzz, replay
         b = golden.build_bundle(self._golden(fuzz.REPLAY_REF))
