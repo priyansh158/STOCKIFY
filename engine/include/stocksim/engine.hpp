@@ -259,7 +259,8 @@ class Engine {
     explicit Engine(Bundle bundle);
 
     // Hands a resumed strategy its saved state (A4 §1.10); RunError when its load_state fails.
-    void set_strategy(std::shared_ptr<Strategy> strategy);
+    // `name` is what a C++ strategy's failures are called (a Python strategy's trampoline names itself).
+    void set_strategy(std::shared_ptr<Strategy> strategy, std::string_view name = {});
     const Strategy* strategy() const { return strategy_.get(); }
     void add_pack(std::shared_ptr<const PackReader> pack);  // packs in bundle order: the pack's src is its index
 
@@ -267,6 +268,11 @@ class Engine {
     void run(EventSource& source);                 // backtest over any source, then finish()
     void push(std::span<const std::byte> batch);   // live: encoded records, processed up to the batch end (A4 §1.4)
     void finish();                                 // the internal events left after the last input
+
+    // A paper session's day-to-day state (sod_state.hpp). Both hold the engine's busy guard, so a strategy callback
+    // that calls back into them is refused, and a refused load leaves the engine as it was.
+    void load_state_text(std::string_view text);   // before the first event, at most once
+    std::string eod_state() const;                 // after a day has ended and nothing has been processed since
 
     // One call at a time, and nothing after a failure (M3 review): run / push / finish refuse while another is in
     // progress (another thread, the GIL released for a C++ strategy, or a strategy calling back in), and once an
@@ -418,16 +424,17 @@ class Engine {
     std::priority_queue<InternalEvent, std::vector<InternalEvent>, LaterKey> internal_;
     std::uint64_t internal_seq_ = 0;
     bool started_ = false;
-    std::atomic<bool> busy_{false};
+    mutable std::atomic<bool> busy_{false};
     bool failed_ = false;
     class Running;  // the guard around run / push / finish
+    class Scope;    // the busy guard around the state calls (it does not poison the engine when one refuses)
     bool closed_out_ = false;
     TimeNs now_ = 0;
     EventKey key_{0, 0, 0, 0};
     TimeNs last_day_end_ = 0;
 
     OrderId next_order_ = 1;
-    OrderId min_live_ = 1;  // orders below this id are all final
+    std::vector<OrderId> live_ids_;  // ids of the orders that are not final, ascending (never a walk over an id range)
     std::map<InstrumentId, MarketState> market_;
     std::set<InstrumentId> sub_ticks_;
     std::map<InstrumentId, std::set<std::int32_t>> sub_bars_;
@@ -441,12 +448,14 @@ class Engine {
 
     // Day to day (VOL 5.3, A4 §1.10): see sod_state.hpp.
     bool resumed_ = false;                                  // a sod_state was applied: no on_start
+    bool settled_ = false;                                  // a day has ended and nothing was processed since
     std::vector<InternalEvent> carried_;                    // internal events passed over after the last DAY_END
     std::set<OrderId> prior_final_;                         // final orders loaded from the state
     std::int64_t charge_row_base_ = 0;                      // charges.csv rows written on earlier days
     std::optional<Date> state_date_;                        // the last bundle trading day whose DAY_END ran
     std::optional<std::string> day_end_strategy_state_;     // save_state() at DAY_END, checked (day bundles only)
     std::optional<std::string> pending_strategy_state_;     // loaded before set_strategy: handed over then
+    std::string strategy_name_;                             // a C++ strategy's registered name, for its refusals
     bool strategy_enabled_ = true;                          // D-70 (Task 7) fills these three
     std::set<std::string> pause_reasons_;
     Json queued_notifications_ = Json::array();

@@ -209,6 +209,7 @@ OrderId Engine::place(const PlaceRequest& r, OrderId parent, bool system) {  // 
     o.t_submit = now_;
     const OrderId id = o.order_id;
     Order& ord = book_.orders.emplace(id, std::move(o)).first->second;
+    live_ids_.push_back(id);
     event(book_, ord, "SUBMIT", r.side + " " + std::to_string(r.qty) + " " + r.product + " " + r.type);
     if (const auto code = validate(ord, system, Reason::Instrument, Reason::Freeze)) {
         return reject(ord, *code).order_id;
@@ -404,18 +405,16 @@ void Engine::accept(Order& o) {  // runner._accept
 }
 
 std::vector<OrderId> Engine::live_orders() {  // runner.live_orders
-    const auto final_or_absent = [this](OrderId id) {
-        const auto it = book_.orders.find(id);
-        return it == book_.orders.end() || it->second.final();  // ids absent after a sod_state load were final
-    };
-    while (min_live_ < next_order_ && final_or_absent(min_live_)) {
-        ++min_live_;
-    }
     std::vector<OrderId> out;
-    for (OrderId i = min_live_; i < next_order_; ++i) {
-        if (!final_or_absent(i)) {
-            out.push_back(i);
+    out.reserve(live_ids_.size());
+    for (const OrderId id : live_ids_) {
+        const auto it = book_.orders.find(id);
+        if (it != book_.orders.end() && !it->second.final()) {
+            out.push_back(id);
         }
+    }
+    if (out.size() != live_ids_.size()) {  // some finished since the last call: drop them (once)
+        live_ids_ = out;
     }
     return out;
 }

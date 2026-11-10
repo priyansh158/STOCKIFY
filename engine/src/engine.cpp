@@ -137,19 +137,58 @@ Engine::Engine(Bundle bundle)
     }
 }
 
-void Engine::set_strategy(std::shared_ptr<Strategy> strategy) {
+// The busy guard of the state calls: refuses while another call is in progress (a strategy calling back in from
+// load_state, save_state or a callback) and after a failed run. Unlike Running it leaves the engine usable when the
+// call itself is refused: a refused load changes nothing.
+class Engine::Scope {
+ public:
+    Scope(const Engine& e, const char* what) : e_(e) {
+        e.ensure_idle(what);
+        if (e.busy_.exchange(true)) {
+            throw RunError(std::string(what) + ": the engine is busy (a run, push or finish is in progress)");
+        }
+    }
+    ~Scope() { e_.busy_ = false; }
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+ private:
+    const Engine& e_;
+};
+
+void Engine::set_strategy(std::shared_ptr<Strategy> strategy, std::string_view name) {
+    Scope guard(*this, "set_strategy");
     strategy_ = std::move(strategy);
+    strategy_name_ = std::string(name);
     if (pending_strategy_state_ && strategy_) {  // a resumed day: load_state instead of on_start (A4 §1.10)
         const std::string text = std::move(*pending_strategy_state_);
         pending_strategy_state_.reset();
         try {
             strategy_->load_state(text);
-        } catch (const RunError&) {
-            throw;  // already names the strategy (the Python trampoline)
-        } catch (const std::exception& e) {
-            throw RunError(std::string("strategy load_state() raised: ") + e.what());
+        } catch (...) {
+            // The state was loaded before the strategy was set, so the engine already holds it: it cannot be put
+            // back. The failure is final for this engine object (every later call says so); start a new engine.
+            failed_ = true;
+            try {
+                throw;
+            } catch (const RunError&) {
+                throw;  // already names the strategy (the Python trampoline)
+            } catch (const std::exception& e) {
+                throw RunError("strategy " + (strategy_name_.empty() ? std::string() : strategy_name_ + ".") +
+                               "load_state() raised: " + e.what());
+            }
         }
     }
+}
+
+void Engine::load_state_text(std::string_view text) {
+    Scope guard(*this, "load_sod_state");
+    stocksim::load_sod_state(*this, text);
+}
+
+std::string Engine::eod_state() const {
+    Scope guard(*this, "eod_state");
+    return eod_state_json(*this);
 }
 
 void Engine::add_pack(std::shared_ptr<const PackReader> pack) {
@@ -242,6 +281,8 @@ void Engine::start(std::optional<EventKey> first_input) {
         throw RunError("no strategy set");
     }
     started_ = true;
+    settled_ = false;
+    day_end_strategy_state_.reset();  // a loaded state's strategy part stood in only until the run started
     schedule_days();
     // on_start sees the earliest time of the run.
     std::optional<TimeNs> first;
@@ -269,6 +310,7 @@ void Engine::process_internal_before(const std::optional<EventKey>& next_input) 
         }
         now_ = ev.key.t;
         key_ = ev.key;
+        settled_ = false;
         reseed_for(now_);
         activate_due(now_);
         dispatch_internal(ev);
@@ -339,6 +381,7 @@ void Engine::run(EventSource& source) {
         const Event* e = source.next();
         now_ = e->t;
         key_ = e->key();
+        settled_ = false;
         reseed_for(now_);
         activate_due(now_);
         process_input(*e);
@@ -356,6 +399,7 @@ void Engine::push(std::span<const std::byte> batch) {
         const Event* e = live_.next();
         now_ = e->t;
         key_ = e->key();
+        settled_ = false;
         reseed_for(now_);
         activate_due(now_);
         process_input(*e);
@@ -383,6 +427,7 @@ void Engine::close_out() {
     ev.kind = InternalKind::DayEnd;
     ev.date = date_of(now_);
     key_ = ev.key;
+    settled_ = false;
     activate_due(now_);
     dispatch_internal(ev);
 }
@@ -831,6 +876,7 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
     if (day_bundle_) {  // paper sessions: save_state() at DAY_END, checked (A4 §1.10)
         day_end_strategy_state_ = checked_strategy_state();
     }
+    settled_ = true;  // until the next event: eod_state() is the end of this day
 }
 
 void Engine::on_timer(const InternalEvent& ev) {  // runner._on_timer

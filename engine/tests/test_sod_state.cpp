@@ -96,13 +96,44 @@ TEST_CASE("sod_state round trip keeps every counter") {
                              RunError);
     }
 
-    SUBCASE("the strategy's part waits for set_strategy") {
+    SUBCASE("the strategy's part waits for set_strategy, and the loaded state is what a not-yet-run engine writes") {
         Engine e(load_bundle(kFixtures + "day1_bundle.json"));
         load_sod_state(e, text);
-        CHECK_THROWS_WITH_AS(eod_state_json(e), doctest::Contains("no strategy set"), RunError);
+        CHECK(eod_state_json(e) == text);
         e.set_strategy(make_strategy("noop_cpp"));
         CHECK(eod_state_json(e) == text);
     }
+}
+
+TEST_CASE("a state that is wrong is refused whole: the engine is left as it was") {
+    const std::string text = read_text(kFixtures + "day0_state.json");
+    const auto fresh = [] { return std::make_unique<Engine>(load_bundle(kFixtures + "day1_bundle.json")); };
+    const auto refused = [&](const std::string& bad, const char* words) {
+        const auto e = fresh();
+        CHECK_THROWS_WITH_AS(load_sod_state(*e, bad), doctest::Contains(words), RunError);
+        load_sod_state(*e, text);  // the same engine then takes the good state, once
+        CHECK(eod_state_json(*e) == text);
+    };
+    const auto changed = [&](const std::string& from, const std::string& to) {
+        std::string bad = text;
+        const std::size_t at = bad.find(from);
+        REQUIRE(at != std::string::npos);
+        bad.replace(at, from.size(), to);
+        return bad;
+    };
+    refused(changed("\"strategy\":{}", "\"strategy\":{\"k\":" + std::string(64, '[') + "1" + std::string(64, ']') + "}"),
+            "nested more than");
+    refused(std::string(100000, '['), "nested more than");
+    refused(changed("\"cash_paise\":4974100", "\"cash_paise\":1,\"cash_paise\":4974100"), "duplicate key 'cash_paise'");
+    refused(changed("\"strategy\":{}", "\"strategy\":{\"n\":18446744073709551616}"), "an integer outside 64 bits");
+    refused(changed("\"strategy\":{}", "\"strategy\":{\"x\":1e999}"), "a number is out of range");
+    refused(text + std::string(1, static_cast<char>(0)), "the text has a NUL character");
+    refused(changed("[1,1768244760000000000,2220000000000]", "[1,1768244760000000000,-1]"),
+            "timer period_ns must not be negative");
+    refused(changed("[1,1768244760000000000,2220000000000]", "[1,1768244760000000000,9223372036854775800]"),
+            "does not fit in int64");
+    refused(changed("\"next_order\":41", "\"next_order\":40"), "is not below counters.next_order (40)");
+    refused(changed("\"trade_date\":\"2026-01-12\"}", "\"trade_date\":\"2026-01-13\"}"), "must be before the bundle's first day");
 }
 
 TEST_CASE("prev_days and next_days are validated as the oracle validates them") {

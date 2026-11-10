@@ -9,6 +9,9 @@ TYPES = ("MARKET", "LIMIT", "SL", "SL-M")
 VALIDITIES = ("DAY", "IOC")
 ACTIVE = ("OPEN", "TRIGGER_PENDING")
 FINAL = ("COMPLETE", "CANCELLED", "REJECTED", "SLICED")
+LIVE = ("PENDING",) + ACTIVE                    # every status an order has before it is final
+REASONS = ("", "R_INSTRUMENT", "R_PRODUCT", "R_SESSION", "R_CAS", "R_QTY_LOT", "R_TICK", "R_BAND", "R_FREEZE",
+           "R_HOLDINGS", "R_NO_REFERENCE", "R_MARGIN", "EOD", "IOC", "USER", "RMS")
 SYSTEM_TAGS = ("AUTO_SQOFF", "RMS_SQOFF")
 
 

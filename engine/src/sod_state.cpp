@@ -4,11 +4,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <map>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
+#include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,24 +28,36 @@ namespace {
 constexpr std::string_view kSchema = "stockify.sod_state/1";
 
 // The top-level keys, as sod_state.KEYS (the A1 §6.4 table; the oracle's blockwatch block guards that list).
+// <block name="sod-state-keys-cpp" same-as="stockify/oracle/sod_state.py:sod-state-keys" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kKeys[] = {"schema", "trade_date", "cash_paise", "ledger", "pending_orders",
                                       "final_orders", "dp_done", "timers", "built_bars", "counters", "rng",
                                       "subscriptions", "strategy_enabled", "pause_reasons", "queued_notifications",
                                       "fsp_seen", "market", "bar_history", "strategy"};
+// </block>
 constexpr std::string_view kLedgerFields[] = {"capital_paise", "charges_total_paise", "reserved_paise", "positions"};
+// <block name="sod-state-position-fields-cpp" same-as="stockify/oracle/sod_state.py:sod-state-position-fields" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kPositionFields[] = {"instrument_id", "product", "style", "q", "d", "c", "realised", "vm",
                                                 "last_mark", "mark_source"};
+// </block>
+// <block name="sod-state-order-fields-cpp" same-as="stockify/oracle/sod_state.py:sod-state-order-fields" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kOrderFields[] = {
     "order_id", "parent_id", "instrument_id", "side", "qty", "product", "type", "price", "trigger", "validity",
     "protection", "tag", "t_submit", "t_activate", "status", "filled_qty", "fill_value", "reason", "limit",
     "from_market", "triggered", "protection_bp", "reserved", "first_eligible_done", "trade_date", "charged",
     "eod_after"};
+// </block>
+// <block name="sod-state-counters-cpp" same-as="stockify/oracle/sod_state.py:sod-state-counters" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kCounters[] = {"next_order", "next_fill", "next_timer", "charge_row"};
+// </block>
 constexpr std::string_view kRngFields[] = {"slippage", "strategy"};
 constexpr std::string_view kSubscriptionFields[] = {"ticks", "bars"};
+// <block name="sod-state-market-fields-cpp" same-as="stockify/oracle/sod_state.py:sod-state-market-fields" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kMarketFields[] = {"ltp", "t", "s0", "s1", "bid", "ask", "book", "band", "oi",
                                               "min_interval", "day"};
+// </block>
+// <block name="sod-state-snapshot-fields-cpp" same-as="stockify/oracle/sod_state.py:sod-state-snapshot-fields" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kSnapshotFields[] = {"t", "ltp", "volume", "atp", "high", "low"};
+// </block>
 
 std::string py_repr(std::string_view s) { return "'" + std::string(s) + "'"; }  // repr() of a plain string
 
@@ -55,10 +70,33 @@ std::string py_list(const std::vector<std::string>& items) {
     return out + "]";
 }
 
-// ── Typed reads (the oracle's KeyError / TypeError, here with the field named) ────────────────────────────────
+// ── Typed reads (sod_state._int and friends: the same words) ────────────────────────────────────────────────
 
 [[nodiscard]] RunError bad(std::string_view where, std::string_view what) {
     return RunError("sod_state: " + std::string(where) + " " + std::string(what));
+}
+
+// A piece of the file's text as it goes into an error message (sod_state.esc): quoted, one printable ASCII byte at a
+// time (' and \ escaped, everything else as \xHH), cut at 100 bytes.
+std::string esc(std::string_view s) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out = "'";
+    const std::size_t n = std::min<std::size_t>(s.size(), 100);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto b = static_cast<unsigned char>(s[i]);
+        if (b == 0x27) {
+            out += "\\'";
+        } else if (b == 0x5C) {
+            out += "\\\\";
+        } else if (b >= 0x20 && b <= 0x7E) {
+            out += static_cast<char>(b);
+        } else {
+            out += "\\x";
+            out += kHex[b >> 4];
+            out += kHex[b & 15];
+        }
+    }
+    return out + (s.size() > 100 ? "..." : "") + "'";
 }
 
 std::int64_t as_int(const Json& v, std::string_view where) {
@@ -71,15 +109,36 @@ std::int64_t as_int(const Json& v, std::string_view where) {
     return v.get<std::int64_t>();
 }
 
-std::uint64_t as_u64(const Json& v, std::string_view where) {
-    if (!v.is_number_integer() || (!v.is_number_unsigned() && v.get<std::int64_t>() < 0)) {
-        throw bad(where, "must be a non-negative 64-bit integer");
+std::int64_t as_nonneg(const Json& v, std::string_view where) {
+    const std::int64_t x = as_int(v, where);
+    if (x < 0) {
+        throw bad(where, "must not be negative");
     }
-    return v.get<std::uint64_t>();
+    return x;
+}
+
+std::int64_t as_pos(const Json& v, std::string_view where) {
+    const std::int64_t x = as_int(v, where);
+    if (x <= 0) {
+        throw bad(where, "must be positive");
+    }
+    return x;
+}
+
+std::int64_t as_atleast1(const Json& v, std::string_view where) {
+    const std::int64_t x = as_int(v, where);
+    if (x < 1) {
+        throw bad(where, "must be at least 1");
+    }
+    return x;
 }
 
 std::optional<std::int64_t> as_opt_int(const Json& v, std::string_view where) {
     return v.is_null() ? std::nullopt : std::optional<std::int64_t>(as_int(v, where));
+}
+
+std::optional<std::int64_t> as_opt_nonneg(const Json& v, std::string_view where) {
+    return v.is_null() ? std::nullopt : std::optional<std::int64_t>(as_nonneg(v, where));
 }
 
 std::int32_t as_i32(const Json& v, std::string_view where) {
@@ -112,11 +171,19 @@ bool as_bool(const Json& v, std::string_view where) {
     return v.get<bool>();
 }
 
+// A real YYYY-MM-DD date, year 1 to 9999 (the oracle's datetime.date).
 Date as_date(const Json& v, std::string_view where) {
+    if (!v.is_string()) {
+        throw bad(where, "must be a YYYY-MM-DD date");
+    }
     try {
-        return parse_iso_date(as_str(v, where));
-    } catch (const FormatError& e) {
-        throw bad(where, e.what());
+        const Date d = parse_iso_date(v.get_ref<const std::string&>());
+        if (d < 10000) {
+            throw FormatError("year 0");
+        }
+        return d;
+    } catch (const FormatError&) {
+        throw bad(where, "must be a YYYY-MM-DD date");
     }
 }
 
@@ -149,7 +216,11 @@ void need(const Json& d, std::span<const std::string_view> keys, std::string_vie
     }
     if (!extra.empty()) {
         std::sort(extra.begin(), extra.end());
-        throw RunError("sod_state: " + std::string(where) + " has unknown keys " + py_list(extra));
+        std::string list = "[";
+        for (std::size_t i = 0; i < extra.size(); ++i) {
+            list += (i != 0 ? ", " : "") + esc(extra[i]);
+        }
+        throw RunError("sod_state: " + std::string(where) + " has unknown keys " + list + "]");
     }
 }
 
@@ -262,11 +333,16 @@ JValue market_record(const MarketState& m) {  // sod_state._market
 
 }  // namespace
 
+namespace {
+struct Staged;  // what a valid state holds (defined with the restore code below)
+}
+
 // The helpers that read or write the engine's internals (a friend of Engine).
 struct SodState {
     static std::vector<InternalEvent> pending_internal(const Engine& e, InternalKind kind);
     static JValue timers_of(const Engine& e);
     static JValue built_of(const Engine& e);
+    static Staged parse(const Engine& e, const Json& state);
     static void restore(Engine& e, const Json& state);
 };
 
@@ -344,9 +420,9 @@ std::string Engine::checked_strategy_state() const {
     const std::string raw = strategy_->save_state();  // the Python trampoline hands back checked canonical JSON
     Json parsed;
     try {
-        parsed = Json::parse(raw);
-    } catch (const Json::parse_error& e) {
-        throw RunError(std::string("strategy save_state() returned invalid JSON: ") + e.what());
+        parsed = parse_strategy_state(raw);
+    } catch (const RunError& e) {
+        throw RunError("strategy save_state() returned an unusable state: " + std::string(e.what()));
     }
     if (!parsed.is_object()) {
         throw RunError("strategy save_state() must return a JSON object");
@@ -355,6 +431,12 @@ std::string Engine::checked_strategy_state() const {
 }
 
 std::string eod_state_json(const Engine& e) {  // sod_state.capture
+    if (!e.state_date_) {
+        throw RunError("sod_state: no trading day has ended yet");
+    }
+    if (!e.settled_) {
+        throw RunError("sod_state: events were processed after the last day ended");
+    }
     const Ledger& led = e.book_.ledger;
     // Invariants for what the state leaves out (A1 §6.4): DAY_END releases every CNC credit, and an instrument's
     // last price is its market LTP, so both are rebuilt on load rather than carried.
@@ -421,7 +503,7 @@ std::string eod_state_json(const Engine& e) {  // sod_state.capture
     counters["next_order"] = JValue(e.next_order_);
     counters["next_fill"] = JValue(e.book_.next_fill);
     counters["next_timer"] = JValue(e.next_timer_);
-    counters["charge_row"] = e.charge_row_base_ + static_cast<std::int64_t>(e.book_.charges.size());
+    counters["charge_row"] = checked_add(e.charge_row_base_, static_cast<std::int64_t>(e.book_.charges.size()));
     st["counters"] = std::move(counters);
 
     JValue rng = JValue::object();
@@ -481,64 +563,169 @@ std::string eod_state_json(const Engine& e) {  // sod_state.capture
     return dumps_canonical(st);
 }
 
-// ── Restore (sod_state.restore) ──────────────────────────────────────────────
+// ── Reading the text (sod_state.loads) ───────────────────────────────────────
 
 namespace {
 
-Order order_from(const Json& o, std::string_view group) {
-    need(o, kOrderFields, group);
-    const std::string where(group);
-    Order out;
-    out.order_id = as_u64(o.at("order_id"), where + ".order_id");
-    out.parent_id = as_u64(o.at("parent_id"), where + ".parent_id");
-    out.instrument = as_iid(o.at("instrument_id"), where + ".instrument_id");
-    out.side_text = as_str(o.at("side"), where + ".side");
-    out.product_text = as_str(o.at("product"), where + ".product");
-    out.type_text = as_str(o.at("type"), where + ".type");
-    out.validity_text = as_str(o.at("validity"), where + ".validity");
-    // The enums are meaningful only once validation passed (orders.hpp), so an unknown spelling keeps its default.
-    out.side = parse_side(out.side_text).value_or(Side::Buy);
-    out.product = parse_product(out.product_text).value_or(Product::CNC);
-    out.type = parse_order_type(out.type_text).value_or(OrderType::Market);
-    out.validity = parse_validity(out.validity_text).value_or(Validity::Day);
-    out.qty = as_int(o.at("qty"), where + ".qty");
-    out.price = as_int(o.at("price"), where + ".price");
-    out.trigger = as_int(o.at("trigger"), where + ".trigger");
-    const Json& prot = o.at("protection");
-    if (prot.is_string() && prot.get_ref<const std::string&>() == "AUTO") {
-        out.protection.reset();
-    } else {
-        out.protection = as_i32(prot, where + ".protection");
+constexpr std::size_t kMaxDepth = 64;             // levels in a free-form part (sod_state.MAX_DEPTH)
+constexpr std::size_t kTextDepth = kMaxDepth + 1;  // …and in the whole text (the state object is one more)
+
+// Builds the document as the parser reports it, and refuses what the oracle's reader refuses: a key twice in one
+// object, nesting past `max_depth`, an integer outside 64 bits, a number that is out of range. Iterative: nothing
+// here recurses on the file's depth.
+class Builder final : public Json::json_sax_t {
+ public:
+    explicit Builder(std::size_t max_depth) : max_depth_(max_depth) {}
+    Json root;
+    std::string error;  // set when a rule above (not the grammar) stopped the parse
+
+    bool null() override { return place(Json(nullptr)); }
+    bool boolean(bool v) override { return place(Json(v)); }
+    bool number_integer(number_integer_t v) override { return place(Json(v)); }
+    bool number_unsigned(number_unsigned_t v) override { return place(Json(v)); }
+    bool number_float(number_float_t v, const string_t& text) override {
+        if (!std::isfinite(v)) {
+            return fail("a number is out of range");
+        }
+        if (text.find_first_of(".eE") == std::string::npos) {  // an integer the parser could not keep as one
+            return fail("an integer outside 64 bits");
+        }
+        return place(Json(v));
     }
-    out.tag = as_str(o.at("tag"), where + ".tag");
-    out.t_submit = as_int(o.at("t_submit"), where + ".t_submit");
-    out.t_activate = as_int(o.at("t_activate"), where + ".t_activate");
-    const std::string& status = as_str(o.at("status"), where + ".status");
-    const std::optional<OrderStatus> st = parse_order_status(status);
-    if (!st) {
-        throw RunError("sod_state: " + where + ": unknown status " + py_repr(status));
+    bool string(string_t& v) override { return place(Json(v)); }
+    bool binary(binary_t&) override { return fail("a value is not JSON-typed"); }
+    bool start_object(std::size_t) override {
+        if (!open(Json::object())) {
+            return false;
+        }
+        keys_.emplace_back();
+        return true;
     }
-    out.status = *st;
-    out.filled_qty = as_int(o.at("filled_qty"), where + ".filled_qty");
-    out.fill_value = as_int(o.at("fill_value"), where + ".fill_value");
-    const std::string& reason = as_str(o.at("reason"), where + ".reason");
-    const std::optional<Reason> rs = parse_reason(reason);
-    if (!rs) {
-        throw RunError("sod_state: " + where + ": unknown reason " + py_repr(reason));
+    bool key(string_t& k) override {
+        if (!keys_.back().insert(k).second) {
+            return fail("duplicate key " + esc(k));
+        }
+        slot_ = &(*stack_.back())[k];
+        return true;
     }
-    out.reason = *rs;
-    out.limit = as_opt_int(o.at("limit"), where + ".limit");
-    out.from_market = as_bool(o.at("from_market"), where + ".from_market");
-    out.triggered = as_bool(o.at("triggered"), where + ".triggered");
-    if (!o.at("protection_bp").is_null()) {
-        out.protection_bp = as_i32(o.at("protection_bp"), where + ".protection_bp");
+    bool end_object() override {
+        stack_.pop_back();
+        keys_.pop_back();
+        return true;
     }
-    out.reserved = as_int(o.at("reserved"), where + ".reserved");
-    out.first_eligible_done = as_bool(o.at("first_eligible_done"), where + ".first_eligible_done");
-    out.trade_date = as_opt_date(o.at("trade_date"), where + ".trade_date");
-    out.charged = as_bool(o.at("charged"), where + ".charged");
-    out.eod_after = as_opt_date(o.at("eod_after"), where + ".eod_after");
-    return out;
+    bool start_array(std::size_t) override { return open(Json::array()); }
+    bool end_array() override {
+        stack_.pop_back();
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string& token, const Json::exception& ex) override {
+        if (error.empty()) {
+            if (ex.id == 406) {  // the parser's own overflow check, before it calls number_float
+                const bool integer = !token.empty() && token.find_first_not_of("-0123456789") == std::string::npos;
+                error = integer ? "an integer outside 64 bits" : "a number is out of range";
+            } else {
+                error = "invalid JSON: " + std::string(ex.what());
+            }
+        }
+        return false;
+    }
+
+ private:
+    bool fail(std::string what) {
+        error = std::move(what);
+        return false;
+    }
+    Json* put(Json&& v) {
+        if (stack_.empty()) {
+            root = std::move(v);
+            return &root;
+        }
+        Json* parent = stack_.back();
+        if (parent->is_array()) {
+            parent->push_back(std::move(v));
+            return &parent->back();
+        }
+        *slot_ = std::move(v);
+        return slot_;
+    }
+    bool place(Json&& v) {
+        put(std::move(v));
+        return true;
+    }
+    bool open(Json&& container) {
+        if (stack_.size() + 1 > max_depth_) {
+            return fail("the text is nested more than " + std::to_string(max_depth_) + " levels deep");
+        }
+        stack_.push_back(put(std::move(container)));
+        return true;
+    }
+
+    std::size_t max_depth_;
+    std::vector<Json*> stack_;
+    std::vector<std::unordered_set<std::string>> keys_;
+    Json* slot_ = nullptr;
+};
+
+// The same refusals for a state text and for the state a C++ strategy hands back.
+Json parse_text(std::string_view text, std::size_t max_depth) {
+    if (text.size() > kSodStateMaxBytes) {
+        throw RunError("sod_state: the text is larger than " + std::to_string(kSodStateMaxBytes) + " bytes");
+    }
+    if (text.find('\0') != std::string_view::npos) {
+        throw RunError("sod_state: the text has a NUL character");
+    }
+    if (text.starts_with("\xEF\xBB\xBF")) {
+        throw RunError("sod_state: invalid JSON: a byte order mark comes first");
+    }
+    Builder builder(max_depth);
+    const bool ok = Json::sax_parse(text.begin(), text.end(), &builder, Json::input_format_t::json, true, false);
+    if (!ok || !builder.error.empty()) {
+        throw RunError("sod_state: " + (builder.error.empty() ? std::string("invalid JSON") : builder.error));
+    }
+    return std::move(builder.root);
+}
+
+// A free-form part (the strategy's state, the queued notifications): bounded depth, checked without recursion
+// (sod_state._free_form; integers and floats were bounded when the text was read).
+void check_free_form(const Json& root, std::string_view owner) {
+    std::vector<std::pair<const Json*, std::size_t>> stack{{&root, 1}};
+    while (!stack.empty()) {
+        const auto [v, level] = stack.back();
+        stack.pop_back();
+        if (!v->is_array() && !v->is_object()) {
+            continue;
+        }
+        if (level > kMaxDepth) {
+            throw RunError("sod_state: " + std::string(owner) + " is nested more than " + std::to_string(kMaxDepth) +
+                           " levels deep");
+        }
+        for (const Json& child : *v) {
+            stack.emplace_back(&child, level + 1);
+        }
+    }
+}
+
+// ── Restore (sod_state.parse / restore) ──────────────────────────────────────
+
+constexpr std::int64_t kDayNs = 86'400LL * 1'000'000'000LL;
+
+// A decimal that is the one spelling of its number: ASCII digits, no leading zero, at most 10 of them.
+bool is_decimal(std::string_view s) {
+    return !s.empty() && s.size() <= 10 && (s[0] != '0' || s == "0") &&
+           std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
+// int(key) for an object keyed by an instrument id in decimal.
+InstrumentId iid_key(const std::string& key, std::string_view where) {
+    if (!is_decimal(key) || std::stoll(key) > 4294967295LL) {
+        throw bad(where, "key " + esc(key) + " is not an instrument id");
+    }
+    return static_cast<InstrumentId>(std::stoll(key));
+}
+
+// The first instant after an IST calendar day: its end, as UTC ns.
+TimeNs day_after(Date d) {
+    return (days_from_civil(d / 10000, d / 100 % 100, d % 100) + 1) * kDayNs - kIstOffsetNs;
 }
 
 std::optional<Snapshot> snapshot_from(const Json& v) {  // sod_state._snapshot
@@ -548,247 +735,519 @@ std::optional<Snapshot> snapshot_from(const Json& v) {  // sod_state._snapshot
     need(v, kSnapshotFields, "market snapshot");
     Snapshot s;
     s.t = as_int(v.at("t"), "market snapshot.t");
-    s.ltp = as_int(v.at("ltp"), "market snapshot.ltp");
-    s.volume = as_int(v.at("volume"), "market snapshot.volume");
-    s.atp = as_int(v.at("atp"), "market snapshot.atp");
-    s.high = as_int(v.at("high"), "market snapshot.high");
-    s.low = as_int(v.at("low"), "market snapshot.low");
+    s.ltp = as_nonneg(v.at("ltp"), "market snapshot.ltp");
+    s.volume = as_nonneg(v.at("volume"), "market snapshot.volume");
+    s.atp = as_nonneg(v.at("atp"), "market snapshot.atp");
+    s.high = as_nonneg(v.at("high"), "market snapshot.high");
+    s.low = as_nonneg(v.at("low"), "market snapshot.low");
     return s;
+}
+
+// sod_state._read_order: the same checks in the same order.
+Order order_from(const Json& o, std::string_view group, const InstrumentTable& ids, std::int64_t next_order,
+                 std::set<OrderId>& seen) {
+    need(o, kOrderFields, group);
+    const std::string where = std::string(group) + ".";
+    Order out;
+    const std::int64_t id = as_atleast1(o.at("order_id"), where + "order_id");
+    out.order_id = static_cast<OrderId>(id);
+    if (!seen.insert(out.order_id).second) {
+        throw RunError("sod_state: " + std::string(group) + ": order " + std::to_string(id) + " is listed twice");
+    }
+    if (id >= next_order) {
+        throw RunError("sod_state: " + std::string(group) + ": order " + std::to_string(id) +
+                       " is not below counters.next_order (" + std::to_string(next_order) + ")");
+    }
+    const std::string& status = as_str(o.at("status"), where + "status");
+    const std::optional<OrderStatus> st = parse_order_status(status);
+    if (!st) {
+        throw RunError("sod_state: " + std::string(group) + ": unknown status " + esc(status));
+    }
+    const std::string& reason = as_str(o.at("reason"), where + "reason");
+    const std::optional<Reason> rs = parse_reason(reason);
+    if (!rs) {
+        throw RunError("sod_state: " + std::string(group) + ": unknown reason " + esc(reason));
+    }
+    out.status = *st;
+    out.reason = *rs;
+    if (group == "pending_orders" && out.final()) {
+        throw RunError("sod_state: " + std::string(group) + ": order " + std::to_string(id) + " has the final status " +
+                       esc(status));
+    }
+    if (group == "final_orders" && !out.final()) {
+        throw RunError("sod_state: " + std::string(group) + ": order " + std::to_string(id) + " has the live status " +
+                       esc(status));
+    }
+    // A rejected order keeps what the strategy placed it with, valid or not (orders.csv writes it as given); every
+    // other order was accepted, so its words and numbers are the engine's own.
+    const bool placed = out.status != OrderStatus::Rejected;
+    out.parent_id = static_cast<OrderId>(as_nonneg(o.at("parent_id"), where + "parent_id"));
+    out.instrument = as_iid(o.at("instrument_id"), where + "instrument_id");
+    if (group == "pending_orders" && !ids.contains(out.instrument)) {
+        throw bad(where + "instrument_id", std::to_string(out.instrument) + " is not in the bundle");
+    }
+    const auto known = [&](const std::string& text, bool ok, std::string_view what) {
+        if (placed && !ok) {
+            throw RunError("sod_state: " + std::string(group) + ": unknown " + std::string(what) + " " + esc(text));
+        }
+    };
+    out.side_text = as_str(o.at("side"), where + "side");
+    known(out.side_text, parse_side(out.side_text).has_value(), "side");
+    out.qty = placed ? as_pos(o.at("qty"), where + "qty") : as_int(o.at("qty"), where + "qty");
+    out.product_text = as_str(o.at("product"), where + "product");
+    out.type_text = as_str(o.at("type"), where + "type");
+    out.validity_text = as_str(o.at("validity"), where + "validity");
+    known(out.product_text, parse_product(out.product_text).has_value(), "product");
+    known(out.type_text, parse_order_type(out.type_text).has_value(), "type");
+    known(out.validity_text, parse_validity(out.validity_text).has_value(), "validity");
+    // The enums are meaningful only for an order that passed the checks above (orders.hpp).
+    out.side = parse_side(out.side_text).value_or(Side::Buy);
+    out.product = parse_product(out.product_text).value_or(Product::CNC);
+    out.type = parse_order_type(out.type_text).value_or(OrderType::Market);
+    out.validity = parse_validity(out.validity_text).value_or(Validity::Day);
+    out.price = as_int(o.at("price"), where + "price");
+    out.trigger = as_int(o.at("trigger"), where + "trigger");
+    const Json& prot = o.at("protection");
+    if (prot.is_string() && prot.get_ref<const std::string&>() == "AUTO") {
+        out.protection.reset();
+    } else {
+        out.protection = as_i32(prot, where + "protection");
+    }
+    out.tag = as_str(o.at("tag"), where + "tag");
+    out.t_submit = as_int(o.at("t_submit"), where + "t_submit");
+    out.t_activate = as_int(o.at("t_activate"), where + "t_activate");
+    out.filled_qty = as_nonneg(o.at("filled_qty"), where + "filled_qty");
+    if (placed && out.filled_qty > out.qty) {
+        throw bad(where + "filled_qty", "must not be more than qty");
+    }
+    out.fill_value = as_int(o.at("fill_value"), where + "fill_value");
+    out.limit = as_opt_int(o.at("limit"), where + "limit");
+    out.from_market = as_bool(o.at("from_market"), where + "from_market");
+    out.triggered = as_bool(o.at("triggered"), where + "triggered");
+    if (!o.at("protection_bp").is_null()) {
+        out.protection_bp = as_i32(o.at("protection_bp"), where + "protection_bp");
+    }
+    out.reserved = as_nonneg(o.at("reserved"), where + "reserved");
+    out.first_eligible_done = as_bool(o.at("first_eligible_done"), where + "first_eligible_done");
+    out.trade_date = as_opt_date(o.at("trade_date"), where + "trade_date");
+    out.charged = as_bool(o.at("charged"), where + "charged");
+    out.eod_after = as_opt_date(o.at("eod_after"), where + "eod_after");
+    return out;
+}
+
+Pcg32 stream_from(const Json& v, const std::string& name) {  // sod_state._stream
+    const std::string where = "rng." + name;
+    const Json& pair = as_list(v, where, 2);
+    std::uint64_t parts[2]{};
+    const char* what[] = {"state", "inc"};
+    for (std::size_t i = 0; i < 2; ++i) {
+        const Json& x = pair[i];
+        if (!x.is_number_integer() || (!x.is_number_unsigned() && x.get<std::int64_t>() < 0)) {
+            throw bad(where, std::string(what[i]) + " must be a non-negative 64-bit integer");
+        }
+        parts[i] = x.get<std::uint64_t>();
+    }
+    if (parts[1] % 2 == 0) {
+        throw bad(where, "inc must be odd");
+    }
+    return Pcg32::at(parts[0], parts[1]);
 }
 
 MarketState market_from(const Json& m) {
     need(m, kMarketFields, "market");
     MarketState out;
-    out.ltp = as_opt_int(m.at("ltp"), "market.ltp");
+    out.ltp = as_opt_nonneg(m.at("ltp"), "market.ltp");
     out.t = as_opt_int(m.at("t"), "market.t");
     out.s0 = snapshot_from(m.at("s0"));
     out.s1 = snapshot_from(m.at("s1"));
-    out.bid = as_opt_int(m.at("bid"), "market.bid");
-    out.ask = as_opt_int(m.at("ask"), "market.ask");
+    out.bid = as_opt_nonneg(m.at("bid"), "market.bid");
+    out.ask = as_opt_nonneg(m.at("ask"), "market.ask");
     if (const Json& book = m.at("book"); !book.is_null()) {
         std::array<DepthLevel, 10> levels{};
         const Json& rows = as_list(book, "market.book", 10);
         for (std::size_t i = 0; i < 10; ++i) {
             const Json& lv = as_list(rows[i], "market.book level", 3);
-            levels[i] = DepthLevel{as_int(lv[0], "market.book price"), as_int(lv[1], "market.book qty"),
+            levels[i] = DepthLevel{as_nonneg(lv[0], "market.book price"), as_nonneg(lv[1], "market.book qty"),
                                    as_i32(lv[2], "market.book orders")};
         }
         out.book = levels;
     }
     if (const Json& band = m.at("band"); !band.is_null()) {
         const Json& pair = as_list(band, "market.band", 2);
-        out.band = std::make_pair(as_int(pair[0], "market.band lower"), as_int(pair[1], "market.band upper"));
+        out.band = std::make_pair(as_nonneg(pair[0], "market.band lower"), as_nonneg(pair[1], "market.band upper"));
     }
-    out.oi = as_opt_int(m.at("oi"), "market.oi");
+    out.oi = as_opt_nonneg(m.at("oi"), "market.oi");
     if (!m.at("min_interval").is_null()) {
-        out.min_interval = as_i32(m.at("min_interval"), "market.min_interval");
+        const std::int32_t v = as_i32(m.at("min_interval"), "market.min_interval");
+        if (v <= 0) {
+            throw bad("market.min_interval", "must be positive");
+        }
+        out.min_interval = v;
     }
     out.day = m.at("day").is_null() ? 0 : as_date(m.at("day"), "market.day");
     return out;
 }
 
-// int(key) for an object keyed by an instrument id in decimal.
-InstrumentId iid_key(const std::string& key, std::string_view where) {
-    if (key.empty() || key.size() > 10 || !std::all_of(key.begin(), key.end(), [](char c) { return c >= '0' && c <= '9'; })) {
-        throw bad(where, "key " + py_repr(key) + " is not an instrument id");
-    }
-    const std::int64_t v = std::stoll(key);
-    if (v > 4294967295LL) {
-        throw bad(where, "key " + py_repr(key) + " is not an instrument id");
-    }
-    return static_cast<InstrumentId>(v);
-}
+// Everything a valid state holds, built without touching the engine; the commit below cannot fail.
+struct Staged {
+    Date day = 0;
+    std::optional<Ledger> ledger;
+    std::map<OrderId, Order> orders;
+    std::vector<OrderId> live_ids;
+    std::set<OrderId> prior_final;
+    std::set<std::pair<InstrumentId, Date>> dp_done;
+    std::uint64_t next_order = 1, next_fill = 1, next_timer = 1;
+    std::int64_t charge_row = 0;
+    std::optional<Pcg32> slippage, strategy_rng;
+    std::vector<std::tuple<std::uint64_t, TimeNs, TimeNs>> timers;
+    struct Built {
+        InstrumentId iid;
+        std::int32_t isec;
+        TimeNs start;
+        std::array<std::int64_t, 6> bar;
+    };
+    std::vector<Built> built;
+    std::set<InstrumentId> sub_ticks;
+    std::map<InstrumentId, std::set<std::int32_t>> sub_bars;
+    bool strategy_enabled = true;
+    std::set<std::string> pause_reasons;
+    Json queued = Json::array();
+    std::map<std::pair<InstrumentId, Date>, Paise> fsp_seen;
+    std::map<InstrumentId, MarketState> market;
+    std::string strategy_text;   // as handed to load_state
+    std::string strategy_canon;  // canonical, for eod_state before a run
+};
 
 }  // namespace
 
-void SodState::restore(Engine& e, const Json& state) {  // sod_state.restore
+Staged SodState::parse(const Engine& e, const Json& state) {  // sod_state.parse
     if (!state.is_object() || !state.contains("schema")) {
         throw RunError("sod_state: state must be an object with a 'schema'");
     }
     const Json& schema = state.at("schema");
     if (!schema.is_string() || schema.get_ref<const std::string&>() != kSchema) {
         throw RunError("sod_state: schema must be " + py_repr(kSchema) + ", got " +
-                       (schema.is_string() ? py_repr(schema.get_ref<const std::string&>()) : schema.dump()));
+                       (schema.is_string() ? esc(schema.get_ref<const std::string&>()) : std::string("a non-string")));
     }
     need(state, kKeys, "state");
+    const InstrumentTable& ids = e.instruments_;
+    Staged s;
+    const Date first_day = e.calendar_.days().front().date;
+    s.day = as_date(state.at("trade_date"), "trade_date");
+    if (s.day >= first_day) {
+        throw RunError("sod_state: trade_date " + iso_date(s.day) + " must be before the bundle's first day " +
+                       iso_date(first_day));
+    }
+    const TimeNs after = day_after(s.day);
+    const std::string day_text = iso_date(s.day);
+
+    const Json& c = state.at("counters");
+    need(c, kCounters, "counters");
+    s.next_order = static_cast<std::uint64_t>(as_atleast1(c.at("next_order"), "counters.next_order"));
+    s.next_fill = static_cast<std::uint64_t>(as_atleast1(c.at("next_fill"), "counters.next_fill"));
+    s.next_timer = static_cast<std::uint64_t>(as_atleast1(c.at("next_timer"), "counters.next_timer"));
+    s.charge_row = as_nonneg(c.at("charge_row"), "counters.charge_row");
+
+    const std::int64_t cash = as_int(state.at("cash_paise"), "cash_paise");
     const Json& led_doc = state.at("ledger");
     need(led_doc, kLedgerFields, "ledger");
-    Ledger led(as_int(state.at("cash_paise"), "cash_paise"), as_int(led_doc.at("capital_paise"), "ledger.capital_paise"));
+    const std::int64_t capital = as_int(led_doc.at("capital_paise"), "ledger.capital_paise");
+    s.ledger.emplace(cash, capital);
+    Ledger& led = *s.ledger;
     led.charges_total = as_int(led_doc.at("charges_total_paise"), "ledger.charges_total_paise");
     led.reserved = as_int(led_doc.at("reserved_paise"), "ledger.reserved_paise");
+    std::set<std::pair<InstrumentId, Product>> opened;
     for (const Json& p : as_list(led_doc.at("positions"), "ledger.positions")) {
         need(p, kPositionFields, "ledger position");
+        const InstrumentId iid = as_iid(p.at("instrument_id"), "ledger position.instrument_id");
+        if (!ids.contains(iid)) {
+            throw bad("ledger position.instrument_id", std::to_string(iid) + " is not in the bundle");
+        }
         const std::string& product = as_str(p.at("product"), "ledger position.product");
         const std::optional<Product> prod = parse_product(product);
         if (!prod) {
-            throw RunError("sod_state: ledger position: unknown product " + py_repr(product));
+            throw RunError("sod_state: ledger position: unknown product " + esc(product));
         }
         const std::string& style = as_str(p.at("style"), "ledger position.style");
         if (style != "premium" && style != "variation") {
-            throw RunError("sod_state: ledger position: unknown style " + py_repr(style));
+            throw RunError("sod_state: ledger position: unknown style " + esc(style));
         }
-        Position& pos = led.get_or_open(as_iid(p.at("instrument_id"), "ledger position.instrument_id"), *prod,
-                                        style == "premium" ? CashStyle::Premium : CashStyle::Variation);
-        pos.q = as_int(p.at("q"), "ledger position.q");
-        pos.d = as_i32(p.at("d"), "ledger position.d");
-        pos.c = as_int(p.at("c"), "ledger position.c");
-        pos.realised = as_int(p.at("realised"), "ledger position.realised");
-        pos.vm = as_int(p.at("vm"), "ledger position.vm");
-        pos.last_mark = as_opt_int(p.at("last_mark"), "ledger position.last_mark");
-        pos.mark_source = as_str(p.at("mark_source"), "ledger position.mark_source");
+        const std::int64_t q = as_nonneg(p.at("q"), "ledger position.q");
+        const std::int64_t d = as_int(p.at("d"), "ledger position.d");
+        if (d != 1 && d != -1) {
+            throw bad("ledger position.d", "must be 1 or -1");
+        }
+        const std::int64_t cost = as_nonneg(p.at("c"), "ledger position.c");
+        if (q == 0 && cost != 0) {
+            throw bad("ledger position.c", "must be 0 when q is 0");
+        }
+        const std::int64_t realised = as_int(p.at("realised"), "ledger position.realised");
+        const std::int64_t vm = as_int(p.at("vm"), "ledger position.vm");
+        const std::optional<std::int64_t> last_mark = as_opt_int(p.at("last_mark"), "ledger position.last_mark");
+        const std::string& mark_source = as_str(p.at("mark_source"), "ledger position.mark_source");
+        if (!opened.insert({iid, *prod}).second) {
+            throw RunError("sod_state: ledger position " + std::to_string(iid) + " " + product + " is listed twice");
+        }
+        Position& pos = led.get_or_open(iid, *prod, style == "premium" ? CashStyle::Premium : CashStyle::Variation);
+        pos.q = q;
+        pos.d = static_cast<std::int32_t>(d);
+        pos.c = cost;
+        pos.realised = realised;
+        pos.vm = vm;
+        pos.last_mark = last_mark;
+        pos.mark_source = mark_source;
     }
-    Book& book = e.book_;
-    book.ledger = std::move(led);
-    book.orders.clear();
-    e.prior_final_.clear();
+
+    std::set<OrderId> seen;
     for (const char* group : {"pending_orders", "final_orders"}) {
         for (const Json& o : as_list(state.at(group), group)) {
-            Order ord = order_from(o, group);
-            const OrderId id = ord.order_id;
+            Order ord = order_from(o, group, ids, static_cast<std::int64_t>(s.next_order), seen);
             if (ord.final()) {
-                e.prior_final_.insert(id);
+                s.prior_final.insert(ord.order_id);
+            } else {
+                s.live_ids.push_back(ord.order_id);
             }
-            book.orders.insert_or_assign(id, std::move(ord));
+            s.orders.emplace(ord.order_id, std::move(ord));
         }
     }
-    book.dp_done.clear();
+    std::sort(s.live_ids.begin(), s.live_ids.end());
+
     for (const Json& row : as_list(state.at("dp_done"), "dp_done")) {
         const Json& pair = as_list(row, "dp_done row", 2);
-        book.dp_done.insert({as_iid(pair[0], "dp_done instrument_id"), as_date(pair[1], "dp_done trade_date")});
-    }
-    const Json& c = state.at("counters");
-    need(c, kCounters, "counters");
-    e.next_order_ = as_u64(c.at("next_order"), "counters.next_order");
-    book.next_fill = as_u64(c.at("next_fill"), "counters.next_fill");
-    e.next_timer_ = as_u64(c.at("next_timer"), "counters.next_timer");
-    e.charge_row_base_ = as_int(c.at("charge_row"), "counters.charge_row");
-    e.min_live_ = e.next_order_;
-    for (const auto& [id, o] : book.orders) {
-        if (!o.final()) {
-            e.min_live_ = std::min(e.min_live_, id);
+        const InstrumentId iid = as_iid(pair[0], "dp_done instrument_id");
+        if (!ids.contains(iid)) {
+            throw bad("dp_done instrument_id", std::to_string(iid) + " is not in the bundle");
         }
+        s.dp_done.insert({iid, as_date(pair[1], "dp_done trade_date")});
     }
-    const Json& rng = state.at("rng");
-    need(rng, kRngFields, "rng");
-    const auto stream = [](const Json& v, const char* name) {
-        const Json& pair = as_list(v, std::string("rng.") + name, 2);
-        return Pcg32::at(as_u64(pair[0], std::string("rng.") + name + " state"),
-                         as_u64(pair[1], std::string("rng.") + name + " inc"));
-    };
-    book.rng = stream(rng.at("slippage"), "slippage");
-    e.strategy_rng_ = stream(rng.at("strategy"), "strategy");
+
+    std::set<std::uint64_t> timer_ids;
     for (const Json& row : as_list(state.at("timers"), "timers")) {
         const Json& t = as_list(row, "timer", 3);
-        const std::uint64_t tid = as_u64(t[0], "timer id");
+        const auto tid = static_cast<std::uint64_t>(as_atleast1(t[0], "timer id"));
         const TimeNs at = as_int(t[1], "timer t_ns");
-        e.timers_[tid] = {at, as_int(t[2], "timer period_ns")};
-        InternalEvent ev{EventKey{at, kRankTimer, 0, 0}, InternalKind::Timer};
-        ev.timer = tid;
-        e.push_internal(std::move(ev));
+        const TimeNs period = as_nonneg(t[2], "timer period_ns");
+        if (at > 0 && period > INT64_MAX - at) {
+            throw RunError("sod_state: timer " + std::to_string(tid) + ": t_ns + period_ns does not fit in int64");
+        }
+        if (at < after) {
+            throw RunError("sod_state: timer " + std::to_string(tid) + " is not after the saved day " + day_text);
+        }
+        if (!timer_ids.insert(tid).second) {
+            throw RunError("sod_state: timer " + std::to_string(tid) + " is listed twice");
+        }
+        if (tid >= s.next_timer) {
+            throw RunError("sod_state: timer " + std::to_string(tid) + " is not below counters.next_timer (" +
+                           std::to_string(s.next_timer) + ")");
+        }
+        s.timers.emplace_back(tid, at, period);
     }
+
+    std::set<std::tuple<InstrumentId, std::int32_t, TimeNs>> built_keys;
     for (const Json& row : as_list(state.at("built_bars"), "built_bars")) {
         const Json& b = as_list(row, "built bar", 9);
         const InstrumentId iid = as_iid(b[0], "built bar instrument_id");
-        const std::int32_t isec = as_i32(b[1], "built bar interval_s");
-        const TimeNs start = as_int(b[2], "built bar start_ns");
-        std::array<std::int64_t, 6> bar{};
-        for (std::size_t i = 0; i < 6; ++i) {
-            bar[i] = as_int(b[3 + i], "built bar value");
+        if (!ids.contains(iid)) {
+            throw bad("built bar instrument_id", std::to_string(iid) + " is not in the bundle");
         }
-        e.built_[{iid, isec}][start] = bar;
-        InternalEvent ev{EventKey{checked_add(start, checked_mul(isec, kNsPerSecond)), kRankBarBuilt, 0, 0},
-                         InternalKind::BarBuilt};
-        ev.instrument = iid;
-        ev.interval_s = isec;
-        ev.start = start;
-        e.push_internal(std::move(ev));
+        const std::int32_t isec = as_i32(b[1], "built bar interval_s");
+        if (isec <= 0) {
+            throw bad("built bar interval_s", "must be positive");
+        }
+        const TimeNs start = as_int(b[2], "built bar start_ns");
+        const TimeNs span = static_cast<TimeNs>(isec) * kNsPerSecond;
+        if (start > 0 && span > INT64_MAX - start) {
+            throw RunError("sod_state: built bar: start_ns + interval_s does not fit in int64");
+        }
+        if (start + span < after) {
+            throw RunError("sod_state: built bar " + std::to_string(iid) + " " + std::to_string(isec) +
+                           " is not after the saved day " + day_text);
+        }
+        Staged::Built built{iid, isec, start, {}};
+        for (std::size_t i = 0; i < 6; ++i) {
+            built.bar[i] = as_nonneg(b[3 + i], "built bar value");
+        }
+        if (!built_keys.insert({iid, isec, start}).second) {
+            throw RunError("sod_state: built bar " + std::to_string(iid) + " " + std::to_string(isec) + " " +
+                           std::to_string(start) + " is listed twice");
+        }
+        s.built.push_back(built);
     }
+
+    const Json& rng = state.at("rng");
+    need(rng, kRngFields, "rng");
+    s.slippage = stream_from(rng.at("slippage"), "slippage");
+    s.strategy_rng = stream_from(rng.at("strategy"), "strategy");
+
     const Json& subs = state.at("subscriptions");
     need(subs, kSubscriptionFields, "subscriptions");
-    e.sub_ticks_.clear();
-    for (const Json& iid : as_list(subs.at("ticks"), "subscriptions.ticks")) {
-        e.sub_ticks_.insert(as_iid(iid, "subscriptions.ticks"));
+    for (const Json& v : as_list(subs.at("ticks"), "subscriptions.ticks")) {
+        const InstrumentId iid = as_iid(v, "subscriptions.ticks");
+        if (!ids.contains(iid)) {
+            throw bad("subscriptions.ticks", std::to_string(iid) + " is not in the bundle");
+        }
+        s.sub_ticks.insert(iid);
     }
     if (!subs.at("bars").is_object()) {
         throw RunError("sod_state: subscriptions.bars must be an object");
     }
-    e.sub_bars_.clear();
     for (const auto& [key, intervals] : subs.at("bars").items()) {
-        std::set<std::int32_t>& set = e.sub_bars_[iid_key(key, "subscriptions.bars")];
-        for (const Json& isec : as_list(intervals, "subscriptions.bars")) {
-            set.insert(as_i32(isec, "subscriptions.bars interval_s"));
+        const InstrumentId iid = iid_key(key, "subscriptions.bars");
+        if (!ids.contains(iid)) {
+            throw bad("subscriptions.bars", "key " + esc(key) + " is not in the bundle");
+        }
+        std::set<std::int32_t>& mine = s.sub_bars[iid];
+        for (const Json& v : as_list(intervals, "subscriptions.bars")) {
+            const std::int32_t isec = as_i32(v, "subscriptions.bars interval_s");
+            if (isec <= 0) {
+                throw bad("subscriptions.bars interval_s", "must be positive");
+            }
+            mine.insert(isec);
         }
     }
-    e.strategy_enabled_ = as_bool(state.at("strategy_enabled"), "strategy_enabled");
-    e.pause_reasons_.clear();
+
+    s.strategy_enabled = as_bool(state.at("strategy_enabled"), "strategy_enabled");
     for (const Json& r : as_list(state.at("pause_reasons"), "pause_reasons")) {
-        e.pause_reasons_.insert(as_str(r, "pause_reasons"));
+        s.pause_reasons.insert(as_str(r, "pause_reasons"));
     }
-    e.queued_notifications_ = as_list(state.at("queued_notifications"), "queued_notifications");
-    e.fsp_seen_.clear();
+    s.queued = as_list(state.at("queued_notifications"), "queued_notifications");
+    check_free_form(s.queued, "queued_notifications");
+
     for (const Json& row : as_list(state.at("fsp_seen"), "fsp_seen")) {
         const Json& f = as_list(row, "fsp_seen row", 3);
-        e.fsp_seen_[{as_iid(f[0], "fsp_seen underlying_id"), as_date(f[1], "fsp_seen date")}] =
-            as_int(f[2], "fsp_seen paise");
+        const InstrumentId uid = as_iid(f[0], "fsp_seen underlying_id");
+        if (!ids.contains(uid)) {
+            throw bad("fsp_seen underlying_id", std::to_string(uid) + " is not in the bundle");
+        }
+        const Date d = as_date(f[1], "fsp_seen date");
+        const Paise px = as_int(f[2], "fsp_seen paise");
+        if (!s.fsp_seen.emplace(std::make_pair(uid, d), px).second) {
+            throw RunError("sod_state: fsp_seen " + std::to_string(uid) + " " + iso_date(d) + " is listed twice");
+        }
     }
+
     if (!state.at("market").is_object()) {
         throw RunError("sod_state: market must be an object");
     }
-    e.market_.clear();
     for (const auto& [key, m] : state.at("market").items()) {
-        e.market_[iid_key(key, "market")] = market_from(m);
+        const InstrumentId iid = iid_key(key, "market");
+        if (!ids.contains(iid)) {
+            throw bad("market", "key " + esc(key) + " is not in the bundle");
+        }
+        s.market[iid] = market_from(m);
     }
+
+    if (!state.at("bar_history").is_object()) {
+        throw RunError("sod_state: bar_history must be an object");
+    }
+    for (const auto& [key, rows] : state.at("bar_history").items()) {
+        const std::size_t colon = key.find(':');
+        const std::string iid_text = key.substr(0, colon);
+        const std::string isec_text = colon == std::string::npos ? "" : key.substr(colon + 1);
+        if (colon == std::string::npos || !is_decimal(iid_text) || !is_decimal(isec_text) ||
+            std::stoll(iid_text) > 4294967295LL || std::stoll(isec_text) <= 0 || std::stoll(isec_text) > INT32_MAX) {
+            throw bad("bar_history", "key " + esc(key) + " is not <instrument_id>:<interval_s>");
+        }
+        const auto iid = static_cast<InstrumentId>(std::stoll(iid_text));
+        const auto isec = static_cast<std::int32_t>(std::stoll(isec_text));
+        if (!ids.contains(iid)) {
+            throw bad("bar_history", "key " + esc(key) + " is not in the bundle");
+        }
+        const auto market = s.market.find(iid);
+        if (market == s.market.end()) {
+            throw bad("bar_history", "key " + esc(key) + " has no market entry");
+        }
+        std::vector<BarRow> bars;
+        for (const Json& row : as_list(rows, "bar_history")) {
+            const Json& r = as_list(row, "bar_history row", 7);
+            BarRow b{};
+            b.start = as_int(r[0], "bar start_ns");
+            b.open = as_nonneg(r[1], "bar open");
+            b.high = as_nonneg(r[2], "bar high");
+            b.low = as_nonneg(r[3], "bar low");
+            b.close = as_nonneg(r[4], "bar close");
+            b.volume = as_nonneg(r[5], "bar volume");
+            b.oi = as_nonneg(r[6], "bar oi");
+            if (!bars.empty() && b.start <= bars.back().start) {
+                throw RunError("sod_state: bar_history " + key + ": start_ns must rise from row to row");
+            }
+            bars.push_back(b);
+        }
+        market->second.bars[isec] = std::move(bars);
+    }
+
+    if (!state.at("strategy").is_object()) {
+        throw RunError("sod_state: strategy must be an object");
+    }
+    check_free_form(state.at("strategy"), "strategy");
+    s.strategy_text = state.at("strategy").dump();
+    s.strategy_canon = dumps_canonical(to_jvalue(state.at("strategy")));
+    return s;
+}
+
+void SodState::restore(Engine& e, const Json& state) {  // sod_state.restore
+    Staged s = parse(e, state);
+    // The strategy's part comes first among the changes: it is the one step that runs code we did not write, so
+    // its failure must leave the engine untouched. Without a strategy yet, set_strategy hands it over (and a
+    // failure there is final for that engine). Everything below cannot fail.
+    if (e.strategy_) {
+        try {
+            e.strategy_->load_state(s.strategy_text);
+        } catch (const RunError&) {
+            throw;
+        } catch (const std::exception& ex) {
+            throw RunError("strategy " + (e.strategy_name_.empty() ? std::string() : e.strategy_name_ + ".") +
+                           "load_state() raised: " + ex.what());
+        }
+    } else {
+        e.pending_strategy_state_ = s.strategy_text;
+    }
+    Book& book = e.book_;
+    book.ledger = std::move(*s.ledger);
+    book.orders = std::move(s.orders);
+    e.prior_final_ = std::move(s.prior_final);
+    e.live_ids_ = std::move(s.live_ids);
+    book.dp_done = std::move(s.dp_done);
+    e.next_order_ = s.next_order;
+    book.next_fill = s.next_fill;
+    e.next_timer_ = s.next_timer;
+    e.charge_row_base_ = s.charge_row;
+    book.rng = *s.slippage;
+    e.strategy_rng_ = *s.strategy_rng;
+    e.timers_.clear();
+    for (const auto& [tid, at, period] : s.timers) {
+        e.timers_[tid] = {at, period};
+        InternalEvent ev{EventKey{at, kRankTimer, 0, 0}, InternalKind::Timer};
+        ev.timer = tid;
+        e.push_internal(std::move(ev));
+    }
+    for (const Staged::Built& b : s.built) {
+        e.built_[{b.iid, b.isec}][b.start] = b.bar;
+        InternalEvent ev{EventKey{b.start + static_cast<TimeNs>(b.isec) * kNsPerSecond, kRankBarBuilt, 0, 0},
+                         InternalKind::BarBuilt};
+        ev.instrument = b.iid;
+        ev.interval_s = b.isec;
+        ev.start = b.start;
+        e.push_internal(std::move(ev));
+    }
+    e.sub_ticks_ = std::move(s.sub_ticks);
+    e.sub_bars_ = std::move(s.sub_bars);
+    e.strategy_enabled_ = s.strategy_enabled;
+    e.pause_reasons_ = std::move(s.pause_reasons);
+    e.queued_notifications_ = std::move(s.queued);
+    e.fsp_seen_ = std::move(s.fsp_seen);
+    e.market_ = std::move(s.market);
     e.underlying_last_.clear();
     for (const auto& [iid, m] : e.market_) {
         if (m.ltp) {
             e.underlying_last_[iid] = *m.ltp;
         }
     }
-    if (!state.at("bar_history").is_object()) {
-        throw RunError("sod_state: bar_history must be an object");
-    }
-    for (const auto& [key, rows] : state.at("bar_history").items()) {
-        const std::size_t colon = key.find(':');
-        if (colon == std::string::npos) {
-            throw bad("bar_history", "key " + py_repr(key) + " is not <instrument_id>:<interval_s>");
-        }
-        const InstrumentId iid = iid_key(key.substr(0, colon), "bar_history");
-        const std::string isec_text = key.substr(colon + 1);
-        if (isec_text.empty() || isec_text.size() > 10 ||
-            !std::all_of(isec_text.begin(), isec_text.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
-            throw bad("bar_history", "key " + py_repr(key) + " is not <instrument_id>:<interval_s>");
-        }
-        const std::int64_t isec = std::stoll(isec_text);
-        if (isec > INT32_MAX) {
-            throw bad("bar_history", "key " + py_repr(key) + " is not <instrument_id>:<interval_s>");
-        }
-        std::vector<BarRow> bars;
-        for (const Json& row : as_list(rows, "bar_history")) {
-            const Json& r = as_list(row, "bar_history row", 7);
-            bars.push_back(BarRow{as_int(r[0], "bar start_ns"), as_int(r[1], "bar open"), as_int(r[2], "bar high"),
-                                  as_int(r[3], "bar low"), as_int(r[4], "bar close"), as_int(r[5], "bar volume"),
-                                  as_int(r[6], "bar oi")});
-        }
-        e.market_[iid].bars[static_cast<std::int32_t>(isec)] = std::move(bars);
-    }
-    e.state_date_ = as_opt_date(state.at("trade_date"), "trade_date");
-    if (!state.at("strategy").is_object()) {
-        throw RunError("sod_state: strategy must be an object");
-    }
+    e.state_date_ = s.day;
     e.orders_drained_ = e.next_order_;  // loaded orders were journaled on their own day (drain_outputs)
-    // The strategy's part goes last, as in the oracle; without a strategy yet, set_strategy hands it over.
-    const std::string text = state.at("strategy").dump();
-    if (e.strategy_) {
-        try {
-            e.strategy_->load_state(text);
-        } catch (const RunError&) {
-            throw;
-        } catch (const std::exception& ex) {
-            throw RunError(std::string("strategy load_state() raised: ") + ex.what());
-        }
-    } else {
-        e.pending_strategy_state_ = text;
-    }
+    // Until the engine runs, the state it would write for the strategy is the one it was handed (start() clears it).
+    e.day_end_strategy_state_ = std::move(s.strategy_canon);
+    e.settled_ = true;
 }
 
 void load_sod_state_json(Engine& e, const Json& state) {  // runner.Engine._load_state
@@ -806,13 +1265,12 @@ void load_sod_state(Engine& e, std::string_view text) {  // runner.Engine.load_s
     if (e.started_) {
         throw RunError("sod_state must be loaded before the first event");
     }
-    Json state;
-    try {
-        state = Json::parse(text.begin(), text.end());
-    } catch (const Json::parse_error& ex) {
-        throw RunError(std::string("sod_state: invalid JSON: ") + ex.what());
+    if (e.resumed_) {
+        throw RunError("sod_state is already loaded");
     }
-    load_sod_state_json(e, state);
+    load_sod_state_json(e, parse_text(text, kTextDepth));
 }
+
+Json parse_strategy_state(std::string_view text) { return parse_text(text, kMaxDepth); }
 
 }  // namespace stocksim

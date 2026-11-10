@@ -421,7 +421,7 @@ void bind_engine(py::module_& m) {
             ctx->params = to_python(e->bundle().strategy.params, ctx->types);
             e->set_strategy(std::make_shared<StrategyTrampoline>(std::move(strategy), ctx));
         })
-        .def("set_strategy_cpp", [](Engine& e, const std::string& name) { e.set_strategy(stocksim::make_strategy(name)); },
+        .def("set_strategy_cpp", [](Engine& e, const std::string& name) { e.set_strategy(stocksim::make_strategy(name), name); },
              "A registered C++ strategy (STOCKSIM_STRATEGY); its params come from the bundle.")
         .def("run", [](Engine& e) { guarded(e, [&] { e.run(); }); })
         .def("push", [](Engine& e, const py::bytes& batch) {
@@ -465,14 +465,22 @@ void bind_engine(py::module_& m) {
         })
         .def("labels", &Engine::labels)
         // A paper session's day-to-day state (A1 §6.4, VOL 5.3): the same bytes as the oracle's eod_state().
-        .def("load_sod_state", [](Engine& e, const std::string& text) {
-            e.ensure_idle("load_sod_state");
-            stocksim::load_sod_state(e, text);
-        }, "A start-of-day state (eod_state() of the previous day); before the first event only, at most once.")
-        .def("eod_state", [](const Engine& e) {
-            e.ensure_idle("eod_state");
-            return stocksim::eod_state_json(e);
-        }, "The state for the next day's sod_state, as canonical JSON.")
+        .def("load_sod_state", [](Engine& e, const py::object& text) {
+            // A str whose characters cannot be UTF-8 (a lone surrogate) is a refusal, not a Python error.
+            if (!PyUnicode_Check(text.ptr())) {
+                throw py::type_error("load_sod_state: the text must be a str");
+            }
+            Py_ssize_t size = 0;
+            const char* data = PyUnicode_AsUTF8AndSize(text.ptr(), &size);
+            if (data == nullptr) {
+                PyErr_Clear();
+                throw stocksim::RunError("sod_state: the text is not valid Unicode");
+            }
+            e.load_state_text(std::string_view(data, static_cast<std::size_t>(size)));
+        }, "A start-of-day state (eod_state() of the previous day); before the first event only, at most once. "
+           "All of it is checked first: a refused load leaves the engine as it was.")
+        .def("eod_state", [](const Engine& e) { return e.eod_state(); },
+             "The state for the next day's sod_state, as canonical JSON.")
         .def("book", [](const Engine& e) {
             // Open positions as (instrument_id, product, signed units), in the order they were first opened; between
             // pushes only (the M5 daemon keeps them pinned, Task 15).
@@ -487,6 +495,8 @@ void bind_engine(py::module_& m) {
         });
 
     m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");
+
+    m.attr("SOD_STATE_MAX_BYTES") = py::int_(stocksim::kSodStateMaxBytes);
 
     py::register_exception<stocksim::RunError>(m, "RunError", PyExc_RuntimeError);
 }

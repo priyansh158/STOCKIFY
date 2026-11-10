@@ -152,7 +152,7 @@ class Engine:
         self.now = 0
         self.key = (0, -1, 0, 0)
         self.next_order = 1
-        self.min_live = 1                               # orders below this id are all final
+        self.live_ids: list[int] = []                   # ids of the orders that are not final, ascending
         self.day_ends = [d["day_end_ns"] for d in self.days]
         self.sub_ticks: set[int] = set()
         self.sub_bars: dict[int, set[int]] = {}
@@ -182,6 +182,8 @@ class Engine:
         self.queued_notifications: list = []
         self.started = False
         self.resumed = False
+        self.busy: str | None = None                   # the call in progress (run / load_sod_state / eod_state)
+        self.settled = False                           # a day has ended and nothing has been processed since
         from stockify.oracle.context import Context
         self.ctx = Context(self)
         if bundle.get("sod_state") is not None:        # applied here, so no caller can forget it
@@ -191,36 +193,48 @@ class Engine:
 
     # ── Day-to-day state (A1 §6.4) ────────────────────────────────────────────
 
-    def _load_state(self, state: dict) -> None:
+    def _enter(self, what: str) -> None:
+        """One call at a time: the engine refuses a call made from inside another one (a strategy callback)."""
+        if self.busy is not None:
+            raise RunError(f"{what}: the engine is busy ({self.busy} is in progress)")
+        self.busy = what
+
+    def _load_state(self, state, text: str | None = None) -> None:  # noqa: ANN001
+        """Apply a state (a parsed object, or the text of one), all or nothing."""
         from stockify.oracle import sod_state
-        if self.started:
-            raise RunError("sod_state must be loaded before the first event")
-        if self.resumed:
-            raise RunError("sod_state is already loaded")
+        self._enter("load_sod_state")
         try:
-            sod_state.restore(self, state)
-        except (sod_state.StateError, KeyError, TypeError, ValueError) as e:
-            raise RunError(str(e)) from e
-        self.resumed = True
+            if self.started:
+                raise RunError("sod_state must be loaded before the first event")
+            if self.resumed:
+                raise RunError("sod_state is already loaded")
+            try:
+                sod_state.restore(self, sod_state.loads(text) if text is not None else state)
+            except (sod_state.StateError, KeyError, TypeError, ValueError, ArithmeticError, RecursionError) as e:
+                raise RunError(str(e)) from e
+            self.resumed = True
+            self.settled = True
+        finally:
+            self.busy = None
 
     def load_sod_state(self, text: str) -> None:
         """A start-of-day state (eod_state() of the previous day); before the first event only."""
-        from stockify.oracle import sod_state
-        if self.started:
-            raise RunError("sod_state must be loaded before the first event")
-        try:
-            state = sod_state.loads(text)
-        except sod_state.StateError as e:
-            raise RunError(str(e)) from e
-        self._load_state(state)
+        self._load_state(None, text)
 
     def eod_state(self) -> str:
         """The state for the next day's sod_state, as canonical JSON (A1 §6.4)."""
         from stockify.oracle import sod_state
+        self._enter("eod_state")
         try:
-            return sod_state.dumps(sod_state.capture(self))
-        except sod_state.StateError as e:
-            raise RunError(str(e)) from e
+            if self.state_date is None or not self.settled:
+                raise RunError("sod_state: no trading day has ended yet" if self.state_date is None else
+                               "sod_state: events were processed after the last day ended")
+            try:
+                return sod_state.dumps(sod_state.capture(self))
+            except sod_state.StateError as e:
+                raise RunError(str(e)) from e
+        finally:
+            self.busy = None
 
     @staticmethod
     def _check_cal_days(key: str, rows, after: str | None, before: str | None) -> None:  # noqa: ANN001
@@ -482,6 +496,7 @@ class Engine:
                   self.now, 0)
         self.next_order += 1
         self.book.orders[o.order_id] = o
+        self.live_ids.append(o.order_id)
         self._event(self.book, o, "SUBMIT", f"{side} {qty} {product} {type_}")
         code = self._validate(o, system, upto="R_FREEZE")
         if code:
@@ -612,13 +627,9 @@ class Engine:
     def live_orders(self) -> list[Order]:
         """Orders that are not final, in id order (finished ones are skipped once)."""
         orders = self.book.orders
-        while self.min_live < self.next_order and (self.min_live not in orders or orders[self.min_live].status in FINAL):
-            self.min_live += 1                          # ids absent after a sod_state load were final
-        out = []
-        for i in range(self.min_live, self.next_order):
-            o = orders.get(i)
-            if o is not None and o.status not in FINAL:
-                out.append(o)
+        out = [o for o in map(orders.get, self.live_ids) if o is not None and o.status not in FINAL]
+        if len(out) != len(self.live_ids):              # some finished since the last call: drop them (once)
+            self.live_ids = [o.order_id for o in out]
         return out
 
     def _activate_due(self, t: int) -> None:
@@ -1298,6 +1309,7 @@ class Engine:
                 self.day_end_strategy_state = sod_state.strategy_state(self.strategy)
             except sod_state.StateError as e:
                 raise RunError(str(e)) from e
+        self.settled = True                           # until the next event: eod_state() is the end of this day
 
     def _next_date(self, d: str) -> str:
         return _date.fromordinal(_date.fromisoformat(d).toordinal() + 1).isoformat()
@@ -1327,7 +1339,16 @@ class Engine:
     # ── Main loop ────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        self._enter("run")
+        try:
+            self._run()
+        finally:
+            self.busy = None
+
+    def _run(self) -> None:
         self.started = True
+        self.settled = False
+        self.day_end_strategy_state = None            # a loaded state's strategy part stands in only until the run starts
         self._schedule_days()
         first = [self.internal[0][0][0]] + ([self.records[0][0][0]] if self.records else [])
         self.now = min(first)                     # on_start sees the earliest time of the run
@@ -1346,6 +1367,7 @@ class Engine:
                     self.carried.append((key, kind, payload))   # a paper session's next day gets them (sod_state)
                     continue
                 self.now, self.key = key[0], key
+                self.settled = False
                 self._reseed_for(self.now)
                 self._activate_due(self.now)
                 self._dispatch_internal(kind, payload)
@@ -1353,12 +1375,14 @@ class Engine:
                 key, rec = nxt_in
                 i += 1
                 self.now, self.key = key[0], key
+                self.settled = False
                 self._reseed_for(self.now)
                 self._activate_due(self.now)
                 self._dispatch_input(rec)
         if self.now > last_day_end:                     # D-52: the final close-out (A4 §1.10)
             self.internal_seq += 1
             self.key = (self.now, DAY_END, 0, self.internal_seq)
+            self.settled = False
             self._activate_due(self.now)
             self._dispatch_internal("DAY_END", self._date(self.now))
         self.labels |= self.margin.labels                # e.g. delivery_margin_approx (D-60)
