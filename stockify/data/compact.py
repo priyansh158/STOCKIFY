@@ -372,6 +372,36 @@ def _landing_packets(landing: Path) -> int:
         conn.close()
 
 
+LANDING_PARTS = ("", "-wal", "-shm")            # a landing file and SQLite's companions to it
+
+
+def _retiring(landing: Path) -> Path:
+    """The name a landing file carries while retention counts it and deletes it.
+
+    Renaming fails while any process has the file open, and nothing opens the new name, so the file that is
+    counted is the file that is deleted. The name does not match `ticks_*.sqlite`.
+    """
+    return landing.with_name(f"{landing.name}.retiring")
+
+
+def _move_landing(src: Path, dst: Path) -> None:
+    """Rename a landing file and its -wal/-shm companions, all of them or none. OSError when one is in use."""
+    moved = []
+    try:
+        for part in LANDING_PARTS:
+            a, b = Path(str(src) + part), Path(str(dst) + part)
+            if a.exists():
+                a.rename(b)
+                moved.append((a, b))
+    except OSError:
+        for a, b in reversed(moved):
+            try:
+                b.rename(a)
+            except OSError:
+                log.error("could not rename %s back to %s", b, a)
+        raise
+
+
 def _archived_packets(target: Path, row: sqlite3.Row | None) -> int | None:
     """The most packets any record says the day's archive holds (I-13: the floor for a replacement).
 
@@ -640,9 +670,11 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
     `retention_days` old (0 = right after verification, once the session is
     over). The archive is re-verified against the digest in tick_days just
     before deleting; if that fails the day drops back to status 'landing' and
-    the file is kept. The landing file's packets are then counted: unless the
-    count equals the archived count, the file is kept, a warning is logged and
-    the day is not in the returned list. `retention_days: null` deletes nothing.
+    the file is kept. The landing file is then renamed aside (which fails while
+    any process has it open), the renamed file's packets are counted, and only
+    a file whose count equals the archived count is deleted. Otherwise it is
+    renamed back and kept, a warning is logged and the day is not in the
+    returned list. `retention_days: null` deletes nothing.
 
     A replacement of the day's archive that was interrupted is undone first
     (`_recover`), with a warning; if that cannot be done the day is skipped.
@@ -675,17 +707,55 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
             with refdata.transaction() as conn:
                 conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (row["trade_date"],))
             continue
-        if landing.exists():
-            try:
-                found = f"{_landing_packets(landing)} packets"
-            except sqlite3.Error as e:
-                found = f"cannot be counted ({e})"
-            if found != f"{row['packets']} packets":
-                log.warning("%s: landing file %s: %s, but the verified archive holds %d packets; landing kept",
-                            row["trade_date"], landing, found, row["packets"])
+        archived, retiring = int(row["packets"]), _retiring(landing)
+        if retiring.exists():                          # an earlier run stopped between its rename and its delete
+            if landing.exists():
+                log.warning("%s: %s was left renamed by an interrupted run and a landing file %s is there as well; "
+                            "both kept (the verified archive holds %d packets)",
+                            row["trade_date"], retiring, landing, archived)
                 continue
-        for p in (landing, Path(str(landing) + "-wal"), Path(str(landing) + "-shm")):
-            p.unlink(missing_ok=True)
+            try:
+                _move_landing(retiring, landing)
+            except OSError as e:
+                log.warning("%s: %s was left renamed by an interrupted run and could not be renamed back to %s "
+                            "(%s); kept", row["trade_date"], retiring, landing, e)
+                continue
+            log.warning("%s: a landing file left renamed by an interrupted run was put back: %s",
+                        row["trade_date"], landing)
+        if landing.exists():
+            # Aside first: the rename fails while any process has the file open, and nothing opens the new
+            # name, so the file that is counted is the file that is deleted.
+            try:
+                _move_landing(landing, retiring)
+            except OSError as e:
+                log.warning("%s: landing file %s is in use (%s); landing kept (the verified archive holds %d "
+                            "packets)", row["trade_date"], landing, e, archived)
+                continue
+            try:
+                found = _landing_packets(retiring)
+                differs = "" if found == archived else f"{found} packets"
+            except sqlite3.Error as e:
+                differs = f"cannot be counted ({e})"
+            if not differs:
+                try:
+                    retiring.unlink()
+                except OSError as e:
+                    differs = f"could not be deleted ({e})"
+            if differs:
+                try:
+                    _move_landing(retiring, landing)
+                    kept = "landing kept"
+                except OSError as e:
+                    kept = f"kept as {retiring}, which could not be renamed back ({e})"
+                log.warning("%s: landing file %s: %s, but the verified archive holds %d packets; %s",
+                            row["trade_date"], landing, differs, archived, kept)
+                continue
+        for p in (retiring, landing):                  # what SQLite left beside a file that is gone
+            for part in LANDING_PARTS[1:]:
+                try:
+                    Path(str(p) + part).unlink(missing_ok=True)
+                except OSError as e:
+                    log.warning("%s: %s%s could not be removed (%s)", row["trade_date"], p, part, e)
         with refdata.transaction() as conn:
             conn.execute("UPDATE tick_days SET status='landing_deleted' WHERE trade_date=?", (row["trade_date"],))
         log.info("%s: landing file deleted; the verified archive is the record", row["trade_date"])

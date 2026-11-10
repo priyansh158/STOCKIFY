@@ -865,6 +865,13 @@ class RetentionTests(CompactTest):
         row = refdata._connect().execute("SELECT status, packets FROM tick_days").fetchone()
         self.assertEqual((row["status"], row["packets"]), ("verified", 701))
         self.assertTrue((self.folder() / "meta.json").exists())
+        self.assert_only_the_landing_file_is_left()
+
+    def assert_only_the_landing_file_is_left(self):
+        """Nothing renamed aside stays behind: the landing folder holds the landing file (and its WAL parts)."""
+        name = paths.ticks_landing_file(DAY).name
+        left = {p.name for p in paths.ticks_landing_dir().iterdir()}
+        self.assertLessEqual(left, {name, name + "-wal", name + "-shm"})
 
     def test_a_landing_file_with_more_packets_than_the_archive_is_kept(self):
         compact.compact(DAY)
@@ -886,6 +893,73 @@ class RetentionTests(CompactTest):
         paths.ticks_landing_file(DAY).write_bytes(junk)
         self.assert_kept()
         self.assertEqual(paths.ticks_landing_file(DAY).read_bytes(), junk)
+
+    def test_the_packets_are_counted_in_the_file_that_is_then_deleted(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        real, counted = compact._landing_packets, []
+
+        def count(path):
+            counted.append((path, landing.exists()))
+            return real(path)
+
+        with patch.object(compact, "_landing_packets", count):
+            self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertEqual(len(counted), 1)
+        path, landing_was_there = counted[0]
+        self.assertNotEqual(path, landing)                     # renamed aside first: nothing can write to it
+        self.assertEqual(path.parent, landing.parent)
+        self.assertFalse(landing_was_there)
+        self.assertEqual(list(paths.ticks_landing_dir().iterdir()), [])
+
+    def test_a_landing_file_that_another_process_has_open_is_kept(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        other = sqlite3.connect(str(landing))                  # the recorder, still flushing
+        try:
+            self.assertEqual(other.execute("SELECT COUNT(*) FROM packets").fetchone()[0], 701)
+            self.assert_kept()
+            self.assertEqual(other.execute("SELECT COUNT(*) FROM packets").fetchone()[0], 701)
+        finally:
+            other.close()
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])              # it has let go
+        self.assertEqual(list(paths.ticks_landing_dir().iterdir()), [])
+
+    def test_a_landing_file_left_renamed_by_an_interrupted_run_is_put_back_and_judged_again(self):
+        compact.compact(DAY)
+        record_packets(3)
+        landing = paths.ticks_landing_file(DAY)
+        landing.rename(compact._retiring(landing))             # stopped between the rename and the count
+        self.assert_kept()
+        self.assertEqual(landing_packets(), 704)
+
+    def test_a_matching_file_left_renamed_by_an_interrupted_run_is_deleted(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        landing.rename(compact._retiring(landing))
+        with self.logs("WARNING"):
+            self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertEqual(list(paths.ticks_landing_dir().iterdir()), [])
+        self.assertEqual(tick_days_row()["status"], "landing_deleted")
+
+    def test_a_renamed_file_and_a_new_landing_file_are_both_kept(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        aside = compact._retiring(landing)
+        landing.rename(aside)
+        LandingDB(DAY).close()                                 # a restart made a new, empty landing file
+        with self.logs("WARNING") as logs:
+            self.assertEqual(compact.apply_retention(DAY), [])
+        self.assertTrue(any(str(aside) in line and str(landing) in line for line in logs.output), logs.output)
+        self.assertTrue(aside.exists())
+        self.assertEqual(landing_packets(), 0)
+        self.assertEqual(tick_days_row()["status"], "verified")
+
+    def test_the_renamed_name_is_not_read_as_a_landing_file(self):
+        landing = paths.ticks_landing_file(DAY)
+        aside = compact._retiring(landing)
+        self.assertEqual(aside.parent, landing.parent)
+        self.assertFalse(aside.match("ticks_*.sqlite"))                                # ticks.available_days
 
     def test_a_day_still_being_recorded_is_never_touched(self):
         with patch.object(compact, "session_over", return_value=False):
