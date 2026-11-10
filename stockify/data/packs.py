@@ -590,12 +590,26 @@ def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
     return sorted(all_events + _clock_events(b, t_lo, t_hi)), t_lo, t_hi
 
 
+_PACK_SHA = re.compile(r"[0-9a-f]{64}")
+
+
+def _checked_sha(sha: str) -> str:
+    """`sha` if it is a pack hash, else PackError. The hash becomes a file name, so anything but 64
+    lower-case hex digits (a separator, dots, a drive letter) is refused here, whoever the caller is."""
+    if not (isinstance(sha, str) and _PACK_SHA.fullmatch(sha)):
+        shown = repr(sha) if len(repr(sha)) <= 80 else repr(sha)[:77] + "..."
+        raise PackError(f"pack hash must be exactly 64 lower-case hex digits, got {shown}")
+    return sha
+
+
 def pack_path(sha: str) -> Path:
-    return paths.packs_dir() / f"{sha}.evt"
+    name = f"{_checked_sha(sha)}.evt"          # checked before the packs folder is looked at
+    return paths.packs_dir() / name
 
 
 def manifest_path(sha: str) -> Path:
-    return paths.packs_dir() / f"{sha}.json"
+    name = f"{_checked_sha(sha)}.json"
+    return paths.packs_dir() / name
 
 
 def _normalise(spec: dict) -> dict:

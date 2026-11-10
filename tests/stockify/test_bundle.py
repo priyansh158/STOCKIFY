@@ -47,6 +47,24 @@ class RunConfigTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(runconfig.RunConfigError, f"^{field.replace('[', '.').replace(']', '.')}"):
                 runconfig.load(run(**change))
 
+    # Anything but 64 lower-case hex digits could become a path outside the packs folder (LCB 5.10).
+    BAD_PACK_HASHES = (
+        "../x" + "0" * 61, "../" + "0" * 61, "..\\" + "0" * 61, "/" + "0" * 63, "\\" + "0" * 63,
+        "0" * 31 + "/" + "0" * 32, "0" * 31 + "\\" + "0" * 32, "0" * 31 + ".." + "0" * 31, "C:" + "0" * 62,
+        "A" * 64, "0" * 63 + "F", "0" * 63, "0" * 65, "", "0" * 63 + "g", "0" * 63 + " ", "0" * 64 + "\n",
+        "0" * 63 + "\n", "\uff10" * 64, "0" * 63 + "\u0660", "0" * 63 + "\x00", 0, None, ["0" * 64], b"0" * 64,
+    )
+
+    def test_a_pack_hash_is_64_lower_case_hex_digits_and_nothing_else(self):
+        for bad in self.BAD_PACK_HASHES:
+            with self.subTest(bad=bad), self.assertRaisesRegex(
+                    runconfig.RunConfigError, r"^data\.packs\[0\]\.sha256: must be exactly 64 lower-case hex digits"):
+                runconfig.load(run(data={"packs": [{"sha256": bad}]}))
+        with self.assertRaisesRegex(runconfig.RunConfigError, r"^data\.packs\[1\]\.sha256"):
+            runconfig.load(run(data={"packs": [{"sha256": "0" * 64}, {"sha256": "../" + "0" * 61}]}))
+        for good in ("0" * 64, "0123456789abcdef" * 4):
+            self.assertEqual(runconfig.load(run(data={"packs": [{"sha256": good}]}))["data"]["packs"], [{"sha256": good}])
+
 
 class BundleTest(unittest.TestCase):
     def setUp(self):
@@ -135,6 +153,14 @@ class BundleTests(BundleTest):
         path.write_bytes(path.read_bytes() + b"\0")
         with self.assertRaisesRegex(bundle.BundleError, "hash mismatch"):
             self.resolve(data={"packs": [{"sha256": sha}]})
+
+    def test_a_config_that_skipped_validation_still_cannot_name_a_path(self):
+        outside = paths.packs_dir().parent / ("0" * 61 + ".evt")
+        outside.write_bytes(b"not a pack")
+        self.addCleanup(outside.unlink)
+        for bad in ("../" + "0" * 61, "..\\" + "0" * 61):
+            with self.subTest(bad=bad), self.assertRaisesRegex(packs.PackError, "64 lower-case hex digits"):
+                bundle.resolve_packs({"data": {"packs": [{"sha256": bad}]}})
 
     def test_strategy_source_hash(self):
         b = self.resolve()

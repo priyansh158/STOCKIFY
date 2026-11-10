@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 from stockify import numerics, paths
@@ -39,6 +40,11 @@ DEFAULTS = {
 }
 FILL_DEFAULTS = {"limit_touch_policy": "through", "participation": "0.10", "depth_take": "0.50",
                  "slippage": {"kind": "none"}, "half_spread_ticks": 1}
+
+
+# A pack's hash names its file (packs/<sha>.evt). Exactly this and nothing else, so a config can never
+# turn it into a path with separators or dots; stockify.data.packs checks again where the path is built.
+_PACK_SHA = re.compile(r"[0-9a-f]{64}")
 
 
 class RunConfigError(ValueError):
@@ -99,7 +105,8 @@ def _packs(data: dict) -> list[dict]:
         where = f"data.packs[{i}]"
         _need(isinstance(p, dict) and (("spec" in p) != ("sha256" in p)), where, "needs exactly one of spec or sha256")
         if "sha256" in p:
-            _need(isinstance(p["sha256"], str) and len(p["sha256"]) == 64, where + ".sha256", "must be 64 hex digits")
+            _need(isinstance(p["sha256"], str) and _PACK_SHA.fullmatch(p["sha256"]) is not None, where + ".sha256",
+                  "must be exactly 64 lower-case hex digits")
         out.append(p)
     return out
 

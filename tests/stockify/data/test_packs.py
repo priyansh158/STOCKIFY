@@ -28,6 +28,34 @@ def t(hhmmss: str) -> int:
     return timeutil.ist_ns(DAY, hhmmss)
 
 
+class PackPathTests(unittest.TestCase):
+    """A pack's file name is its hash and nothing else (LCB 5.10)."""
+
+    BAD = ("../x" + "0" * 61, "../" + "0" * 61, "..\\" + "0" * 61, "/" + "0" * 63, "\\" + "0" * 63,
+           "0" * 31 + "/" + "0" * 32, "0" * 31 + "\\" + "0" * 32, "0" * 31 + ".." + "0" * 31, "C:" + "0" * 62,
+           "A" * 64, "0" * 63 + "F", "0" * 63, "0" * 65, "", "ab", "0" * 63 + "g", "0" * 64 + "\n", "0" * 63 + "\n",
+           "\uff10" * 64, "0" * 63 + "\x00", "*" * 64, 0, None, b"0" * 64)
+
+    def test_only_a_full_lower_case_hash_becomes_a_path(self):
+        for fn in (packs.pack_path, packs.manifest_path, packs.manifest):
+            for bad in self.BAD:
+                with self.subTest(fn=fn.__name__, bad=bad), \
+                        self.assertRaisesRegex(packs.PackError, "exactly 64 lower-case hex digits"):
+                    fn(bad)
+
+    def test_the_refusal_does_not_touch_the_disk(self):
+        with patch.object(paths, "packs_dir", side_effect=AssertionError("looked at the packs folder")):
+            for fn in (packs.pack_path, packs.manifest_path):
+                with self.assertRaises(packs.PackError):
+                    fn("../" + "0" * 61)
+
+    def test_a_real_hash_stays_inside_the_packs_folder(self):
+        for sha in ("0" * 64, "0123456789abcdef" * 4):
+            self.assertEqual(packs.pack_path(sha), paths.packs_dir() / f"{sha}.evt")
+            self.assertEqual(packs.manifest_path(sha), paths.packs_dir() / f"{sha}.json")
+            self.assertEqual(packs.pack_path(sha).parent, paths.packs_dir())
+
+
 class PackTest(unittest.TestCase):
     def setUp(self):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
