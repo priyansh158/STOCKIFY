@@ -356,6 +356,22 @@ class TicksSocketTests(LocalOnlyBase):
         self.unsubscribe.assert_called_once_with({1000, 1001})
         self.assertEqual(self._subscribed(), self._tokens(cap) + [5, 6])
 
+    def test_unsubscribing_tokens_this_client_never_held_frees_nothing_and_touches_nothing(self):
+        # Another socket's holdings are not this client's to drop, and give it no room (review m-4).
+        self._logged_in(True)
+        cap = self.ticks.MAX_TOKENS_PER_CLIENT
+        query = "?tokens=" + ",".join(map(str, self._tokens(cap)))
+        with self._connect(query) as ws:
+            ws.send_json({"unsubscribe": [738561, 408065]})                                # never held here
+            ws.send_json({"subscribe": [5]})                                               # still full
+            self.assertEqual(ws.receive_json()["type"], "error")
+            ws.send_json({"unsubscribe": [1000, 738561, "738561", -1]})                    # one of them held
+            ws.send_json({"subscribe": [5]})                                               # one place freed
+            ws.send_json({"subscribe": [6]})                                               # full again
+            self.assertEqual(ws.receive_json()["type"], "error")
+        self.unsubscribe.assert_called_once_with({1000})
+        self.assertEqual(self._subscribed(), self._tokens(cap) + [5])
+
 
 if __name__ == "__main__":
     unittest.main()

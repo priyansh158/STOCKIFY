@@ -114,10 +114,12 @@ async def ticks_ws(websocket: WebSocket) -> None:
                         ticker_bridge.ensure_subscribed(toks, mode="ltp")
                 if "unsubscribe" in msg and isinstance(msg["unsubscribe"], list):
                     import kite_ticker_worker
-                    toks = _tokens_in(msg["unsubscribe"])
-                    if toks:
-                        held.difference_update(toks)
-                        kite_ticker_worker.unsubscribe(set(toks))
+                    # Only what this client holds: another socket's tokens are not its to drop,
+                    # and give it no room under the cap.
+                    gone = set(_tokens_in(msg["unsubscribe"])) & held
+                    if gone:
+                        held.difference_update(gone)
+                        kite_ticker_worker.unsubscribe(gone)
         except WebSocketDisconnect:
             pass
 
