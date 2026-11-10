@@ -288,6 +288,9 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
         ticker, clock = open_replay(ticker_spec, faults=faults)
         landing = LandingDB(day, paths.ticks_replay_file(day))
         call = direct_call
+        tokens = _token_map(day)
+        universe = loader.load_json("universe.json")
+        manager = SubscriptionManager(day, universe, clock, log_rows=landing.log_subscriptions)
     else:
         import kite_client
         clock = WallClock()
@@ -306,6 +309,15 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
         except conn_budget.BudgetExceeded as e:
             log.error("no live ticker: %s", e)
             return exitcodes.RECONNECT_EXHAUSTED
+        # Start-up checks stay fail-fast: the token map and the universe are loaded, and the subscription
+        # plan built, before the wait for the subscribe time, so a bad one stops the run now (M3).
+        try:
+            tokens = _token_map(day)
+            universe = loader.load_json("universe.json")
+            manager = SubscriptionManager(day, universe, clock)
+        except BaseException:
+            _release_ticket(ticker)
+            raise
         # The day's landing file is created only once this run is going to record (I-13): a run that
         # ends here, stopped while waiting or started after the unsubscribe time, leaves nothing on disk.
         start_ns = timeutil.ist_ns(day, schedule["jobs"]["subscribe"])
@@ -319,11 +331,9 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
             _release_ticket(ticker)
             return exitcodes.OK
         landing = LandingDB(day)
+        manager.log_rows = landing.log_subscriptions
         call = live_call_in_ticker
 
-    tokens = _token_map(day)
-    universe = loader.load_json("universe.json")
-    manager = SubscriptionManager(day, universe, clock, log_rows=landing.log_subscriptions)
     for warning in manager.warnings:
         log.warning("subscriptions: %s", warning)
     recorder = Recorder(landing, tokens.get, clock)

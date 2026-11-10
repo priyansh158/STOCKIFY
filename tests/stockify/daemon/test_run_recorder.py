@@ -134,5 +134,35 @@ class LiveRecorderTests(unittest.TestCase):
         self.assertEqual(self.landing_files(), [paths.ticks_landing_file(DAY).name])
 
 
+    def test_a_bad_token_map_fails_before_the_wait_and_creates_no_landing_file(self):
+        waited = []
+        self.clock.sleep_until = lambda t_ns, stop_event=None: waited.append(t_ns) or True
+        with patch.object(daemon, "_token_map", side_effect=RuntimeError("token map is broken")):
+            with self.assertRaisesRegex(RuntimeError, "token map is broken"):
+                self.run_at("08:50")
+        self.assertEqual(waited, [])                                 # it did not wait for 08:58 first
+        self.assertEqual(self.landing_files(), [])
+        self.assertFalse(self.ticker.connected)
+        self.assertEqual(self.ticker.budget_ticket.released, 1)
+
+    def test_a_bad_universe_fails_before_the_wait_and_creates_no_landing_file(self):
+        from stockify.config import loader
+        waited = []
+        self.clock.sleep_until = lambda t_ns, stop_event=None: waited.append(t_ns) or True
+        real = loader.load_json
+
+        def load_json(name, *args, **kw):
+            if name == "universe.json":
+                raise ValueError("universe is broken")
+            return real(name, *args, **kw)
+
+        with patch.object(loader, "load_json", load_json):
+            with self.assertRaisesRegex(ValueError, "universe is broken"):
+                self.run_at("08:50")
+        self.assertEqual(waited, [])
+        self.assertEqual(self.landing_files(), [])
+        self.assertEqual(self.ticker.budget_ticket.released, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
