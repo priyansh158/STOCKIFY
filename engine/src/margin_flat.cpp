@@ -55,8 +55,16 @@ FlatMargin::FlatMargin(const Json& root)
       mis_rows_(list_or_empty(require(root, "broker_policy", "bundle"), "mis_margin_pct")),
       addon_(list_or_empty(require(root, "margin_params", "bundle"), "expiry_day_short_index_option_addon")),
       schedule_(list_or_empty(require(root, "broker_policy", "bundle"), "delivery_margin_schedule")) {
-    for (const Json& d : require(root, "days", "bundle")) {
-        days_.push_back(d.at("date").get<std::string>());
+    // the bundle's days with its prev_days and next_days (VOL 5.2, A1 §6.2): a one-day paper bundle counts trading
+    // days (D-60) as the whole run does
+    for (const char* key : {"prev_days", "days", "next_days"}) {
+        const auto rows = root.find(key);
+        if (rows == root.end() || !rows->is_array()) {
+            continue;
+        }
+        for (const Json& d : *rows) {
+            days_.push_back(d.at("date").get<std::string>());
+        }
     }
 }
 

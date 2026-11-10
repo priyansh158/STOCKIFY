@@ -390,8 +390,8 @@ Paise Engine::order_px(const Order& o) const {  // runner._order_px
 void Engine::accept(Order& o) {  // runner._accept
     const std::string g(group_of(o.instrument));
     o.t_activate = o.t_submit + latency_ns_;
-    if (phase_at(g, o.t_activate) != "CONTINUOUS") {
-        const std::optional<TimeNs> nxt = calendar_.next_continuous_start(
+    if (phase_at(g, o.t_activate) != "CONTINUOUS") {  // queued for the next session, next_days included (A4 §3.10)
+        const std::optional<TimeNs> nxt = cal_all_.next_continuous_start(
             [&](Date d) { return instruments_.group_of(o.instrument, d); }, o.t_submit);
         if (!nxt) {
             reject(o, Reason::Session);
@@ -404,12 +404,16 @@ void Engine::accept(Order& o) {  // runner._accept
 }
 
 std::vector<OrderId> Engine::live_orders() {  // runner.live_orders
-    while (min_live_ < next_order_ && book_.orders.at(min_live_).final()) {
+    const auto final_or_absent = [this](OrderId id) {
+        const auto it = book_.orders.find(id);
+        return it == book_.orders.end() || it->second.final();  // ids absent after a sod_state load were final
+    };
+    while (min_live_ < next_order_ && final_or_absent(min_live_)) {
         ++min_live_;
     }
     std::vector<OrderId> out;
     for (OrderId i = min_live_; i < next_order_; ++i) {
-        if (!book_.orders.at(i).final()) {
+        if (!final_or_absent(i)) {
             out.push_back(i);
         }
     }
@@ -698,7 +702,7 @@ void Engine::simulate_bar(Book& book, InstrumentId iid, const BarFields& bar, Ti
 
 void Engine::match_bar(InstrumentId iid, const BarFields& bar, TimeNs t) {  // runner._match_bar
     const Date d = date_of(bar.start_ns);
-    const std::optional<TimeNs> cs = calendar_.continuous_start(group_of(iid, d), d);
+    const std::optional<TimeNs> cs = continuous_start(group_of(iid, d), d);  // the bar's own session (prev_days too)
     const TimeNs eff_start = cs ? std::max(bar.start_ns, *cs) : bar.start_ns;
     const std::vector<OrderId> ids = eligible(iid, eff_start);
     if (ids.empty()) {
@@ -739,7 +743,7 @@ void Engine::adopt(Book& sim) {  // runner._adopt
 
 void Engine::match_eod(InstrumentId iid, const BarFields& bar, TimeNs t) {  // runner._match_eod
     const Date d = date_of(bar.start_ns);
-    const std::optional<TimeNs> cs = calendar_.continuous_start(group_of(iid, d), d);
+    const std::optional<TimeNs> cs = continuous_start(group_of(iid, d), d);  // the bar's own session (prev_days too)
     const TimeNs eff_start = cs ? std::max(bar.start_ns, *cs) : bar.start_ns;
     const std::vector<OrderId> ids = eligible(iid, eff_start);
     if (ids.empty()) {

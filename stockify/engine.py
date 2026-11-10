@@ -83,11 +83,6 @@ def run_bundle(bundle: dict, pack_paths: list, folder, strategy=None, manifest: 
     from stockify import bundle as bundle_mod, timeutil
     from stockify.oracle import RunResult
 
-    if bundle.get("sod_state") is not None or "next_days" in bundle or "prev_days" in bundle:
-        # VOL 5.3 (Task 6) teaches the C++ engine both; until then it must not run a day bundle as a fresh run.
-        # Refused before anything is written, so no partial run folder is left behind.
-        raise NotImplementedError("the C++ engine does not yet apply sod_state, prev_days or next_days "
-                                  "(A1 §6.4, VOL 5.3)")
     mod = load()
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)

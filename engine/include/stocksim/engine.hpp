@@ -38,6 +38,12 @@
 namespace stocksim {
 
 class Engine;
+struct SodState;  // sod_state.cpp: the capture / restore helpers, which see the engine's internals
+
+// The day-to-day state (sod_state.hpp, VOL 5.3): written and applied by these, which see the engine's internals.
+std::string eod_state_json(const Engine& engine);
+void load_sod_state(Engine& engine, std::string_view text);
+void load_sod_state_json(Engine& engine, const Json& state);
 
 // ── Market state (A4 §2) ─────────────────────────────────────────────────────
 
@@ -249,8 +255,10 @@ struct Outputs {
 
 class Engine {
  public:
+    // Applies the bundle's `sod_state` (A1 §6.4) when it has one; the strategy's part waits for set_strategy.
     explicit Engine(Bundle bundle);
 
+    // Hands a resumed strategy its saved state (A4 §1.10); RunError when its load_state fails.
     void set_strategy(std::shared_ptr<Strategy> strategy);
     const Strategy* strategy() const { return strategy_.get(); }
     void add_pack(std::shared_ptr<const PackReader> pack);  // packs in bundle order: the pack's src is its index
@@ -277,6 +285,9 @@ class Engine {
 
     // Results, for the artifacts (M3.9).
     const Book& book() const { return book_; }
+    // Final orders loaded from a sod_state: this day's orders.csv leaves them out (A1 §6.4 `final_orders`).
+    const std::set<OrderId>& prior_final() const { return prior_final_; }
+    std::int64_t charge_row_base() const { return charge_row_base_; }  // charges.csv rows written on earlier days
     const InstrumentTable& instruments() const { return instruments_; }
     const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
     const std::vector<EquityRow>& equity() const { return equity_; }
@@ -288,11 +299,23 @@ class Engine {
 
  private:
     friend class Context;
+    friend struct SodState;
+    friend std::string eod_state_json(const Engine& engine);
+    friend void load_sod_state(Engine& engine, std::string_view text);
+    friend void load_sod_state_json(Engine& engine, const Json& state);
 
     // time and phases
     Date date_of(TimeNs t) const { return ist_date(t); }
     std::string_view group_of(InstrumentId iid, std::optional<Date> d = std::nullopt) const;
     std::string_view phase_at(std::string_view group, TimeNs t) const { return calendar_.phase_at(group, t); }
+    // A day's CONTINUOUS start, over the bundle's days and its prev_days / next_days (runner.continuous_start): a
+    // bar dated an earlier day (a daily bar at the next midnight) is matched against its own session (A1 §6.2).
+    std::optional<TimeNs> continuous_start(std::string_view group, Date d) const {
+        return cal_all_.continuous_start(group, d);
+    }
+    static SessionCalendar all_days(const Json& root, const SessionCalendar& days);  // prev_days + days + next_days
+    // save_state() as A1 §6.4 embeds it: parsed, a JSON object; RunError (naming the strategy when it can) otherwise.
+    std::string checked_strategy_state() const;
     const Spec* spec(InstrumentId iid, Date d) const { return instruments_.spec_on(iid, d); }
     const Spec& spec_or_throw(InstrumentId iid, Date d) const;
 
@@ -371,7 +394,9 @@ class Engine {
     void on_built(const InternalEvent& ev);
 
     Bundle bundle_;
-    SessionCalendar calendar_;
+    SessionCalendar calendar_;  // the bundle's days: processed (phases, DAY_END), seeded
+    SessionCalendar cal_all_;   // with prev_days and next_days (A1 §6.2): calendar only, never processed
+    bool day_bundle_ = false;   // a paper session's day bundle (prev_days or next_days present)
     InstrumentTable instruments_;
     TimeNs stale_after_ns_ = 0;
     std::string fill_kind_;  // bar | snapshot_ltp | snapshot_quote | eod_close
@@ -413,6 +438,18 @@ class Engine {
     std::map<InstrumentId, Paise> underlying_last_;
     std::uint64_t event_no_ = 0;
     bool delivering_ = false;
+
+    // Day to day (VOL 5.3, A4 §1.10): see sod_state.hpp.
+    bool resumed_ = false;                                  // a sod_state was applied: no on_start
+    std::vector<InternalEvent> carried_;                    // internal events passed over after the last DAY_END
+    std::set<OrderId> prior_final_;                         // final orders loaded from the state
+    std::int64_t charge_row_base_ = 0;                      // charges.csv rows written on earlier days
+    std::optional<Date> state_date_;                        // the last bundle trading day whose DAY_END ran
+    std::optional<std::string> day_end_strategy_state_;     // save_state() at DAY_END, checked (day bundles only)
+    std::optional<std::string> pending_strategy_state_;     // loaded before set_strategy: handed over then
+    bool strategy_enabled_ = true;                          // D-70 (Task 7) fills these three
+    std::set<std::string> pause_reasons_;
+    Json queued_notifications_ = Json::array();
 
     std::vector<PositionEodRow> positions_eod_;
     std::vector<EquityRow> equity_;

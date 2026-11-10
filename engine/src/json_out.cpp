@@ -70,6 +70,8 @@ void write(const JValue& value, std::string& out) {
         out += *b ? "true" : "false";
     } else if (const std::int64_t* i = std::get_if<std::int64_t>(&v)) {
         out += std::to_string(*i);
+    } else if (const std::uint64_t* u = std::get_if<std::uint64_t>(&v)) {
+        out += std::to_string(*u);
     } else if (const double* d = std::get_if<double>(&v)) {
         out += format_float(*d);
     } else if (const std::string* s = std::get_if<std::string>(&v)) {

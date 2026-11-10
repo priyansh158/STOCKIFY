@@ -307,18 +307,7 @@ class FailureTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "strategy param 'fast' is not an integer"):
             go()
 
-    def test_day_state_waits_for_m5(self):
-        g, p = daily_world(5502)
-        with tempfile.TemporaryDirectory(prefix="strategies-fail-") as tmp:
-            pack, b = _materialise(g, p, Path(tmp))
-            from stockify import bundle as bundle_mod
-            bundle_mod.write(b, Path(tmp))
-            e = engine.load().Engine(str(Path(tmp) / "bundle.json"))
-            with self.assertRaisesRegex(NotImplementedError, r"eod_state: .*\(M5\.3, D-47\)"):
-                e.eod_state()
-            with self.assertRaisesRegex(NotImplementedError, r"load_sod_state: "):
-                e.load_sod_state("{}")
-            del e
+    # The day-to-day state (eod_state / load_sod_state, VOL 5.3, D-47 closed) is covered by test_engine_sod_state.
 
     def test_an_unknown_cpp_strategy(self):
         g, p = daily_world(5501)

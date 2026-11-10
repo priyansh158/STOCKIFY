@@ -640,17 +640,18 @@ class StrategyStateTests(SplitCase):
             with self.assertRaisesRegex(RunError, words):
                 Engine(json.loads(bundle_mod.dumps({**b0, "next_days": bad})), [], Strategy())
 
-    def test_cpp_engine_refuses_day_bundles_before_writing_anything(self):
+    def test_cpp_engine_refuses_a_bad_sod_state_before_running(self):
+        # VOL 5.3: the C++ engine runs day bundles (tests.stockify.test_engine_sod_state); a bundle whose sod_state is
+        # not a complete state is refused by its constructor, as the oracle's is
         from stockify import engine as cpp
         world = fuzz.fuzz_world(4003)
         whole = golden.build_bundle(world)
-        b0 = day_bundles(whole)[0]
-        for b in (b0, {**whole, "sod_state": {"schema": sod_state.SCHEMA}}):
+        for b in ({**whole, "sod_state": {"schema": sod_state.SCHEMA}}, {**whole, "sod_state": 3}):
             with tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp) / "run"
-                with self.assertRaisesRegex(NotImplementedError, "VOL 5.3"):
+                with self.assertRaisesRegex(RuntimeError, "sod_state"):
                     cpp.run_bundle(b, [], out, strategy=Strategy(), report=False)
-                self.assertFalse(out.exists())
+                self.assertFalse((out / "orders.csv").exists())
 
 
 class CarriedPartsTests(SplitCase):

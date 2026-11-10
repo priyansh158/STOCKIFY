@@ -19,6 +19,7 @@
 #include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/pack_reader.hpp"
+#include "stocksim/sod_state.hpp"
 
 namespace py = pybind11;
 
@@ -105,6 +106,33 @@ class StrategyTrampoline : public stocksim::Strategy {
         obj_.attr("on_fill")(ctx_obj_, ctx_->fill(f));
     }
 
+    // The day-to-day state (A1 §6.4, A2 §4.1): save_state() checked by the oracle's own sod_state.strategy_state
+    // (a JSON object of JSON-typed values that canonical JSON gives back exactly) and handed over as canonical
+    // JSON; load_state() gets the saved object back. Both fail as the oracle fails: a RunError naming the strategy.
+    std::string save_state() const override {
+        try {
+            const py::module_ sod = py::module_::import("stockify.oracle.sod_state");
+            const py::object state = sod.attr("strategy_state")(obj_);
+            return py::str(py::module_::import("stockify.numerics").attr("dumps_canonical")(state));
+        } catch (py::error_already_set& err) {
+            if (err.matches(py::module_::import("stockify.oracle.sod_state").attr("StateError"))) {
+                throw stocksim::RunError(std::string(py::str(err.value())));
+            }
+            throw;
+        }
+    }
+    void load_state(std::string_view text) override {
+        const py::object state = py::module_::import("json").attr("loads")(py::str(text.data(), text.size()));
+        try {
+            obj_.attr("load_state")(state);
+        } catch (py::error_already_set& err) {
+            const std::string owner = py::str(py::type::handle_of(obj_).attr("__name__"));
+            const std::string kind = py::str(err.type().attr("__name__"));
+            throw stocksim::RunError("strategy " + owner + ".load_state() raised " + kind + ": " +
+                                     std::string(py::str(err.value())));
+        }
+    }
+
  private:
     py::object obj_;
     std::shared_ptr<CtxProxy> ctx_;
@@ -182,12 +210,6 @@ void guarded(Engine& e, F&& step) {
         e.context().log("ERROR", std::string("the run stops: ") + ex.what());
         throw;
     }
-}
-
-[[noreturn]] void not_until_m5(const char* what) {
-    PyErr_SetString(PyExc_NotImplementedError,
-                    (std::string(what) + ": the start/end-of-day state arrives with the paper daemon (M5.3, D-47)").c_str());
-    throw py::error_already_set();
 }
 
 }  // namespace
@@ -423,8 +445,8 @@ void bind_engine(py::module_& m) {
             for (std::size_t i = o.fills_from; i < o.fills_to; ++i) {
                 stocksim::fill_row(b.fills[i], fills);
             }
-            for (std::size_t i = o.charges_from; i < o.charges_to; ++i) {
-                stocksim::charge_row(static_cast<std::int64_t>(i) + 1, b.charges[i], charges);
+            for (std::size_t i = o.charges_from; i < o.charges_to; ++i) {  // row_no continues across days (VOL 5.2)
+                stocksim::charge_row(e.charge_row_base() + static_cast<std::int64_t>(i) + 1, b.charges[i], charges);
             }
             py::dict out;
             out["orders"] = orders.rows;
@@ -442,10 +464,27 @@ void bind_engine(py::module_& m) {
             return stocksim::write_artifacts(e, std::filesystem::path(folder));
         })
         .def("labels", &Engine::labels)
-        // A paper session's day-to-day state (A1 `sod_state`, M5.3) is defined with the daemon that carries it,
-        // against an oracle twin; until then both refuse loudly rather than hand back a partial state (D-47).
-        .def("load_sod_state", [](Engine&, const std::string&) { not_until_m5("load_sod_state"); })
-        .def("eod_state", [](const Engine&) -> std::string { not_until_m5("eod_state"); });
+        // A paper session's day-to-day state (A1 §6.4, VOL 5.3): the same bytes as the oracle's eod_state().
+        .def("load_sod_state", [](Engine& e, const std::string& text) {
+            e.ensure_idle("load_sod_state");
+            stocksim::load_sod_state(e, text);
+        }, "A start-of-day state (eod_state() of the previous day); before the first event only, at most once.")
+        .def("eod_state", [](const Engine& e) {
+            e.ensure_idle("eod_state");
+            return stocksim::eod_state_json(e);
+        }, "The state for the next day's sod_state, as canonical JSON.")
+        .def("book", [](const Engine& e) {
+            // Open positions as (instrument_id, product, signed units), in the order they were first opened; between
+            // pushes only (the M5 daemon keeps them pinned, Task 15).
+            e.ensure_idle("book");
+            py::list out;
+            for (const stocksim::Position& p : e.book().ledger.positions()) {
+                if (p.q != 0) {
+                    out.append(py::make_tuple(p.instrument, std::string(stocksim::to_string(p.product)), p.qty()));
+                }
+            }
+            return out;
+        });
 
     m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");
 

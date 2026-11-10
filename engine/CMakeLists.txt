@@ -85,6 +85,7 @@ add_library(stocksim_core STATIC
   src/strategy.cpp
   src/engine.cpp
   src/engine_trading.cpp
+  src/sod_state.cpp
   src/ledger.cpp
   src/margin_flat.cpp
   src/costs.cpp
@@ -130,6 +131,7 @@ add_executable(stocksim_tests
   tests/test_bundle.cpp
   tests/test_packs.cpp
   tests/test_session.cpp
+  tests/test_sod_state.cpp
   tests/test_black76.cpp
   tests/test_span_exact.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_strategies stocksim_core)

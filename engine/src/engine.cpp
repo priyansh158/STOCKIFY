@@ -12,6 +12,7 @@
 #include "stocksim/margin/spanlite.hpp"
 #include "stocksim/margin/staircase.hpp"
 #include "stocksim/pricing/black76.hpp"
+#include "stocksim/sod_state.hpp"
 
 namespace stocksim {
 
@@ -19,7 +20,62 @@ namespace {
 
 const Json& run_of(const Bundle& b) { return require(b.root, "run", "bundle"); }
 
+// prev_days / next_days (A1 §6.2, runner._check_cal_days): day objects in the days[] shape without seed, dates
+// rising, all after `after` (the bundle's last day) or all before `before` (its first). The messages are the oracle's.
+void check_cal_days(const char* key, const Json* rows, const std::optional<std::string>& after,
+                    const std::optional<std::string>& before) {
+    if (rows == nullptr || rows->is_null()) {
+        return;
+    }
+    if (!rows->is_array()) {
+        throw RunError(std::string("bundle: ") + key + " must be a list");
+    }
+    std::optional<std::string> last = after;
+    for (std::size_t n = 0; n < rows->size(); ++n) {
+        const Json& d = (*rows)[n];
+        const std::string where = std::string("bundle: ") + key + "[" + std::to_string(n) + "]";
+        if (!d.is_object() || !d.contains("date") || !d.contains("groups") || !d.contains("mis_cutoff_ns") ||
+            !d.contains("day_end_ns") || !d.at("date").is_string()) {
+            throw RunError(where + " must be a day object (date, groups, mis_cutoff_ns, day_end_ns)");
+        }
+        if (d.contains("seed")) {
+            throw RunError(where + " has a seed: these days are never processed");
+        }
+        const std::string date = d.at("date").get<std::string>();
+        if (last && date <= *last) {
+            throw RunError(where + ": " + date + " is not after " + *last);
+        }
+        last = date;
+    }
+    if (before && !rows->empty() && last && *last >= *before) {
+        throw RunError(std::string("bundle: ") + key + ": " + *last + " is not before " + *before);
+    }
+}
+
 }  // namespace
+
+SessionCalendar Engine::all_days(const Json& root, const SessionCalendar& days) {
+    const Json& own = require(root, "days", "bundle");
+    const auto prev = root.find("prev_days");
+    const auto next = root.find("next_days");
+    const Json* prev_rows = prev == root.end() ? nullptr : &*prev;
+    const Json* next_rows = next == root.end() ? nullptr : &*next;
+    const std::optional<std::string> first =
+        days.days().empty() ? std::nullopt : std::optional<std::string>(iso_date(days.days().front().date));
+    const std::optional<std::string> last =
+        days.days().empty() ? std::nullopt : std::optional<std::string>(iso_date(days.days().back().date));
+    check_cal_days("prev_days", prev_rows, std::nullopt, first);
+    check_cal_days("next_days", next_rows, last, std::nullopt);
+    Json all = Json::array();
+    for (const Json* rows : {prev_rows, &own, next_rows}) {
+        if (rows != nullptr && rows->is_array()) {
+            for (const Json& d : *rows) {
+                all.push_back(d);
+            }
+        }
+    }
+    return SessionCalendar(all);
+}
 
 namespace {
 double rate_on(const Json& bundle_root, const std::string& iso_day);  // defined with the chain view below
@@ -30,6 +86,8 @@ double rate_on(const Json& bundle_root, const std::string& iso_day);  // defined
 Engine::Engine(Bundle bundle)
     : bundle_(std::move(bundle)),
       calendar_(require(bundle_.root, "days", "bundle")),
+      cal_all_(all_days(bundle_.root, calendar_)),
+      day_bundle_(bundle_.root.contains("prev_days") || bundle_.root.contains("next_days")),
       instruments_(require(bundle_.root, "instruments", "bundle"), calendar_),
       costs_(require(bundle_.root, "charges", "bundle"), require(run_of(bundle_), "costs", "run")),
       ctx_(*this),
@@ -69,9 +127,30 @@ Engine::Engine(Bundle bundle)
     } else {  // never a silent fallback to flat (CAM 4.3)
         throw RunError("run.margin: margin model '" + margin_model + "' is not supported yet");
     }
+    // A paper session's day bundle carries the previous day's state (A1 §6.4): applied here, so no caller can
+    // forget it (runner.Engine.__init__).
+    if (const auto st = bundle_.root.find("sod_state"); st != bundle_.root.end() && !st->is_null()) {
+        if (!st->is_object()) {
+            throw RunError("bundle: sod_state must be an object or null");
+        }
+        stocksim::load_sod_state_json(*this, *st);
+    }
 }
 
-void Engine::set_strategy(std::shared_ptr<Strategy> strategy) { strategy_ = std::move(strategy); }
+void Engine::set_strategy(std::shared_ptr<Strategy> strategy) {
+    strategy_ = std::move(strategy);
+    if (pending_strategy_state_ && strategy_) {  // a resumed day: load_state instead of on_start (A4 §1.10)
+        const std::string text = std::move(*pending_strategy_state_);
+        pending_strategy_state_.reset();
+        try {
+            strategy_->load_state(text);
+        } catch (const RunError&) {
+            throw;  // already names the strategy (the Python trampoline)
+        } catch (const std::exception& e) {
+            throw RunError(std::string("strategy load_state() raised: ") + e.what());
+        }
+    }
+}
 
 void Engine::add_pack(std::shared_ptr<const PackReader> pack) {
     if (started_) {
@@ -174,8 +253,10 @@ void Engine::start(std::optional<EventKey> first_input) {
     }
     now_ = first.value_or(0);
     reseed_for(now_);
-    strategy_->on_start(ctx_);
-    deliver();
+    if (!resumed_) {  // a resumed day ran strategy.load_state instead (A4 §1.10)
+        strategy_->on_start(ctx_);
+        deliver();
+    }
 }
 
 void Engine::process_internal_before(const std::optional<EventKey>& next_input) {
@@ -183,7 +264,8 @@ void Engine::process_internal_before(const std::optional<EventKey>& next_input) 
         const InternalEvent ev = internal_.top();
         internal_.pop();
         if (ev.key.t > last_day_end_) {
-            continue;  // timers after the last day never fire
+            carried_.push_back(ev);  // timers after the last day never fire here; the next day's run gets them
+            continue;
         }
         now_ = ev.key.t;
         key_ = ev.key;
@@ -518,7 +600,7 @@ void Engine::build_bars(InstrumentId iid, TimeNs t, Paise price, std::optional<Q
             continue;  // the pack has real bars for it
         }
         const Date d = date_of(t);
-        const std::optional<TimeNs> cs = calendar_.continuous_start(group_of(iid, d), d);
+        const std::optional<TimeNs> cs = continuous_start(group_of(iid, d), d);
         if (!cs || t < *cs) {
             continue;
         }
@@ -743,6 +825,12 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
     strategy_->on_session_end(ctx_);
     deliver();
     book_.ledger.release_day(next_date(d));
+    if (calendar_.day(d) != nullptr) {  // not the D-52 close-out's own (maybe non-trading) date
+        state_date_ = d;
+    }
+    if (day_bundle_) {  // paper sessions: save_state() at DAY_END, checked (A4 §1.10)
+        day_end_strategy_state_ = checked_strategy_state();
+    }
 }
 
 void Engine::on_timer(const InternalEvent& ev) {  // runner._on_timer
@@ -935,7 +1023,7 @@ double Context::session_vwap(InstrumentId iid) const {  // context.session_vwap:
         return std::numeric_limits<double>::quiet_NaN();
     }
     const Date d = e_.date_of(e_.now_);
-    const std::optional<TimeNs> cs = e_.calendar_.continuous_start(e_.group_of(iid, d), d);
+    const std::optional<TimeNs> cs = e_.continuous_start(e_.group_of(iid, d), d);
     const auto& rows = it->second.bars.begin()->second;  // the smallest interval (min(m.bars))
     Int128 pv = 0, v = 0;
     for (const BarRow& r : rows) {
