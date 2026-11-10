@@ -23,6 +23,7 @@ _WEB_ORIGIN = stockify_paths.loopback_origin(
 import kite_client  # noqa: E402, F401  — patches the Kite SDK's client class to paper only (LCB 5.7)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from server.routers import (
     alerts,
@@ -33,7 +34,7 @@ from server.routers import (
     tests as tests_router,
     ticks,
 )
-from server import log_redaction
+from server import local_only, log_redaction
 
 log_redaction.install()
 
@@ -98,6 +99,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# The API serves this machine's own UI only (server/local_only.py). The middleware added last
+# runs first: the Host is checked, then the Origin, and only then CORS and the routes.
+app.add_middleware(local_only.WebOriginOnly, web_origin=_WEB_ORIGIN)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(local_only.LOOPBACK_HOSTS), www_redirect=False)
 
 
 @app.get("/api/health")

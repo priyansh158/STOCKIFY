@@ -131,7 +131,7 @@ class ApiTests(QualityTest):
         from fastapi.testclient import TestClient
         from server.main import app
         quality.report(DAY)
-        client = TestClient(app)
+        client = TestClient(app, base_url=support.API_BASE_URL)
         ok = client.get("/api/data/quality", params={"date": "2026-11-09"})
         self.assertEqual(ok.status_code, 200)
         body = ok.json()

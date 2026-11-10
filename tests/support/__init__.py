@@ -158,6 +158,10 @@ HAVE_KITECONNECT = _have("kiteconnect")
 requires_pydantic = unittest.skipUnless(HAVE_PYDANTIC, "pydantic not installed")
 requires_fastapi = unittest.skipUnless(HAVE_FASTAPI, "fastapi not installed")
 
+# The API answers loopback hosts only, so a TestClient must say it is one:
+# `TestClient(app, base_url=API_BASE_URL)` (the default host, "testserver", is refused).
+API_BASE_URL = "http://127.0.0.1:8001"
+
 
 # ── 3. SQLite singleton helpers ──────────────────────────────────────────────
 
@@ -219,6 +223,7 @@ def cleanup_sandbox() -> None:
 
 
 __all__ = [
+    "API_BASE_URL",
     "SANDBOX_ROOT",
     "SandboxedDBTest",
     "STUBBED",

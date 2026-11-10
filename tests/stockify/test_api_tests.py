@@ -81,7 +81,7 @@ class ApiTestBase(SandboxedDBTest):
         test_queue.set_queue(self.queue)
         self.addCleanup(test_queue.set_queue, None)
         self.addCleanup(self._release)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
 
     def _release(self):
         for p in self.launcher.procs.values():
@@ -370,7 +370,7 @@ class CppFromTheFormTests(SandboxedDBTest):
         self.queue = test_queue.TestQueue(launcher=test_queue.subprocess_launcher, cap=2)
         test_queue.set_queue(self.queue)
         self.addCleanup(test_queue.set_queue, None)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
 
     def test_sma_cross_cpp_and_orb_cpp_launch_from_the_form(self):
         from tests.stockify.test_bundle import run

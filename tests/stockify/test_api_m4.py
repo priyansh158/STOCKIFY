@@ -34,7 +34,7 @@ class FnoApiTests(SandboxedDBTest):
         super().setUp()
         from fastapi.testclient import TestClient
         from server.main import app
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=tests.support.API_BASE_URL)
 
     def _run(self, run_id: str, gid: str, variant: str):  # noqa: ANN202
         h = _variant(gid, variant)
