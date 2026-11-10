@@ -489,6 +489,61 @@ class ArchiveKeptTests(CompactTest):
         self.assertEqual(tick_days_row(), row)
         self.assertEqual(list(paths.ticks_archive_dir().iterdir()), [])
 
+    def assert_another_recording_is_refused(self, res, before, packets):
+        landing = paths.ticks_landing_file(DAY)
+        self.assertEqual(res.status, "failed", res)
+        self.assertIn(str(archive_folder()), res.error)                                # it names both
+        self.assertIn(str(landing), res.error)
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), packets)                                   # and keeps both
+
+    def test_force_refuses_a_landing_file_that_does_not_start_with_the_archived_packets(self):
+        self.retain()
+        before = self.state()
+        record_packets(720)                                    # another recording: more packets, none the day's
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_another_recording_is_refused(res, before, 720)
+        self.assertIn(self.first.digest, res.error)
+
+    def test_force_refuses_another_recording_of_the_same_size(self):
+        before = self.state()
+        drop_landing()
+        record_packets(701)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_another_recording_is_refused(res, before, 701)
+
+    def test_a_day_back_at_status_landing_is_not_rebuilt_from_another_recording(self):
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        before = self.state()
+        drop_landing()
+        record_packets(720)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY)                                                 # no force is needed here
+        self.assert_another_recording_is_refused(res, before, 720)
+
+    def test_the_row_identifies_the_archive_when_its_meta_json_cannot_be_read(self):
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        before = self.state()
+        drop_landing()
+        record_packets(720)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_another_recording_is_refused(res, before, 720)
+
+    def test_an_archive_that_nothing_identifies_is_not_replaced(self):
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        with refdata.transaction() as conn:
+            conn.execute("DELETE FROM tick_days")
+        before = self.state()
+        for force in (False, True):
+            with self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assert_another_recording_is_refused(res, before, 701)
+
     def test_a_lost_archive_is_not_papered_over_by_a_smaller_landing_file(self):
         self.retain()
         row = tick_days_row()

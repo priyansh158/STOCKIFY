@@ -27,8 +27,9 @@ After that the archive is the day's only record and every reader uses it
 
 An archive is never made smaller (I-13). A day that is `verified` or
 `landing_deleted` is not compacted again unless `force=True`, and no run, forced
-or not, replaces an archive with one that holds fewer packets. A landing file
-that turns up for a `landing_deleted` day is left where it is and reported.
+or not, replaces an archive with one that holds fewer packets, or with one
+whose landing file does not start with the packets the archive holds. A landing
+file that turns up for a `landing_deleted` day is left where it is and reported.
 
 Replacing an archive never deletes it first. The old folder is renamed aside
 (`old.date=YYYY-MM-DD`, next to it), the new one is renamed into place, checked
@@ -399,6 +400,22 @@ def _archived_packets(target: Path, row: sqlite3.Row | None) -> int | None:
     return max(known, default=0)
 
 
+def _archive_identity(target: Path, row: sqlite3.Row | None) -> tuple[int, str] | None:
+    """(packets, landing digest) of the archive in `target`: what a landing file must start with to replace it.
+
+    From the archive's meta.json; when that cannot be read, from the tick_days row of a day whose row says an
+    archive was made. None when neither says.
+    """
+    try:
+        meta = json.loads((target / "meta.json").read_text(encoding="utf-8"))
+        return int(meta["packets"]), str(meta["landing_digest"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    if _has_archive(row) and row["packets"] is not None and row["digest"]:
+        return int(row["packets"]), str(row["digest"])
+    return None
+
+
 def compact(day: date, *, landing: Path | None = None, archive_root: Path | None = None,
             force: bool = False) -> Result:
     """Build and verify the day's archive from its landing file.
@@ -407,7 +424,9 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     given. With or without `force`, an archive is never replaced by one holding fewer packets: the result is
     `failed`, its error names both counts, and only this run's temporary folder is removed (I-13). The count
     to beat is the one of the archive on disk, whatever the row's status; an archive folder whose count cannot
-    be read is not replaced at all, forced or not.
+    be read is not replaced at all, forced or not. Nor is an archive replaced by another recording: the
+    packets it holds must be the first packets of the landing file (same digest), so only late frames added to
+    the day's own landing file can extend it; otherwise `failed`, naming the landing file and the archive.
 
     A run that fails on a day that has, or had, an archive leaves its tick_days row exactly as it was; the
     failure is in the result only.
@@ -469,6 +488,15 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
                    "were")
         log.error("compaction of %s %s", day, refusal)
         return done("failed", refusal)
+    held = None                                 # (packets, digest) of the archive this run would replace
+    if target.exists():
+        held = _archive_identity(target, existing)
+        if held is None:
+            refusal = (f"refused: nothing says which packets the archive in {target} holds (its meta.json cannot "
+                       f"be read and tick_days has no digest for it), so the landing file {landing} cannot be "
+                       "shown to start with them; the archive is not replaced and both are left as they were")
+            log.error("compaction of %s %s", day, refusal)
+            return done("failed", refusal)
     tmp = _tmp(target)
     if not target.exists() and _has_archive(existing) and _archive_state(tmp) is not None:
         # Versions before the rename-aside replacement removed the old archive first; one stopped right there
@@ -488,6 +516,8 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
             raise CompactionError(f"landing quick_check failed: {check}")
         sinks = {name: _Sink(tmp / f"{name}.parquet", schema, level) for name, schema in SCHEMAS.items()}
         h = hashlib.sha256()
+        seen = 0
+        start = h.hexdigest() if held and held[0] == 0 else None    # digest of the first held[0] landing packets
         cur = conn.execute(f"SELECT {', '.join(PACKET_COLS)} FROM packets ORDER BY seq")
         while True:
             rows = cur.fetchmany(FETCH)
@@ -497,6 +527,9 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
                 kind, values = _route(row)
                 sinks[kind].add(values)
                 _digest_update(h, row["seq"], row["frame_no"], row["instrument_id"], bytes(row["raw"]))
+                seen += 1
+                if held and seen == held[0]:
+                    start = h.copy().hexdigest()
         for s in sinks.values():
             s.close()
         res.counts = {name: s.rows for name, s in sinks.items()}
@@ -513,6 +546,14 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
         refusal = (f"refused: the landing file holds {res.packets} packets and the day's archive holds {archived}; "
                    "an archive is never replaced by a smaller one, so the archive and the landing file are "
                    "left as they were")
+        log.error("compaction of %s %s", day, refusal)
+        return done("failed", refusal)
+    if held and start != held[1]:
+        # More packets, but not the same recording: late frames extend an archive, they never rewrite it.
+        shutil.rmtree(tmp, ignore_errors=True)
+        refusal = (f"refused: the first {held[0]} packets of the landing file {landing} (digest {start}) are not "
+                   f"the {held[0]} packets of the archive in {target} (digest {held[1]}); an archive is replaced "
+                   "only by a landing file that starts with the packets it holds, so both are left as they were")
         log.error("compaction of %s %s", day, refusal)
         return done("failed", refusal)
 
