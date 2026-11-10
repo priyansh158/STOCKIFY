@@ -7,12 +7,14 @@ import io
 import json
 import unittest
 import zipfile
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import unquote
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
 from stockify import paths, timeutil
+from stockify.config import loader
+from stockify.data import calendar as cal
 from stockify.data import nse_margin_files as M
 
 DAY = date(2026, 11, 9)          # a Monday
@@ -452,29 +454,134 @@ class CreatedPlausibilityTests(MarginFilesTest):
 
 class OpeningFileTests(MarginFilesTest):
     """I-2: the bundle's opening `.s` steps back over days with no archived file at all (NSE published nothing:
-    a holiday the calendar does not know before 2024), at most 5 of them; a day with any file stops the walk."""
+    a holiday the calendar does not hold, or a gap in the archive), at most 5 of them; a day with any file stops
+    the walk. The calendar holds the holidays from 2009 on (D-75): 26 Jan and 7 Mar 2023 are in it. So in the
+    first test the walk passes a holiday of the calendar, which uses up none of the 5; in the tests after it the
+    empty days that count are trading days of the calendar."""
 
-    def test_a_holiday_gap_uses_the_end_of_day_file_before_it(self):
-        self.archived(date(2023, 1, 25), "s", "202301251700")              # 26 Jan 2023: Republic Day, no files
+    def test_a_calendar_holiday_with_no_file_is_passed_to_the_session_before_it(self):
+        """26 Jan 2023 (Republic Day) is a holiday of the calendar and has no file, as NSE published none: 27 Jan
+        opens with the end-of-day file of 25 Jan, the last session before the holiday."""
+        self.assertFalse(cal.is_trading_day("FO", date(2023, 1, 26)))
+        self.archived(date(2023, 1, 25), "s", "202301251700")
         files = M.usable_files(date(2023, 1, 27))
         self.assertEqual([Path_name(p) for p, _ in files], ["nsccl.20230125.s.zip"])
 
+    def test_a_trading_day_missing_from_the_archive_is_stepped_over(self):
+        self.archived(date(2021, 10, 8), "s", "202110081700")              # Mon 11 Oct 2021: the archive's one gap
+        files = M.usable_files(date(2021, 10, 12))
+        self.assertEqual([Path_name(p) for p, _ in files], ["nsccl.20211008.s.zip"])
+
     def test_a_previous_day_with_only_intraday_files_gives_nothing(self):
-        self.archived(date(2023, 1, 25), "s", "202301251700")
-        self.archived(date(2023, 1, 26), "i1", "202301252000")              # a file, but no .s: never older ones
-        self.assertEqual(M.usable_files(date(2023, 1, 27)), [])
+        self.archived(date(2023, 1, 24), "s", "202301241700")
+        self.archived(date(2023, 1, 25), "i1", "202301242000")              # a file, but no .s: never older ones
+        self.assertEqual(M.usable_files(date(2023, 1, 27)), [])            # 26 Jan is a holiday of the calendar
 
     def test_more_than_five_empty_days_give_nothing(self):
-        # 2023-03-01 (Wed) .s; 2..9 Mar has 6 weekdays; the run day is 10 Mar.
+        # 2023-03-01 (Wed) .s; 2..10 Mar has 6 trading days (7 Mar is Holi); the run day is Mon 13 Mar.
         self.archived(date(2023, 3, 1), "s", "202303011700")
-        self.assertEqual(M.usable_files(date(2023, 3, 10)), [])
-        self.assertEqual(M.opening_eod(date(2023, 3, 10)), None)
-        self.archived(date(2023, 3, 2), "s", "202303021700")                # now 5 empty weekdays: 3, 6, 7, 8, 9
-        self.assertEqual(Path_name(M.opening_eod(date(2023, 3, 10))[0]), "nsccl.20230302.s.zip")
+        self.assertEqual(M.usable_files(date(2023, 3, 13)), [])
+        self.assertEqual(M.opening_eod(date(2023, 3, 13)), None)
+        self.archived(date(2023, 3, 2), "s", "202303021700")                # now 5 empty trading days: 3, 6, 8, 9, 10
+        self.assertEqual(Path_name(M.opening_eod(date(2023, 3, 13))[0]), "nsccl.20230302.s.zip")
 
     def test_reading_the_archive_creates_no_year_folders(self):
         M.usable_files(date(2015, 6, 10))
         self.assertFalse((paths.nse_margin_dir("span") / "2015").exists())
+
+
+# A Muhurat-only day (a holiday of the calendar that has an end-of-day file) and the first session after it.
+MUHURAT_THEN_SESSION = [(date(2010, 11, 5), date(2010, 11, 8)), (date(2011, 10, 26), date(2011, 10, 28)),
+                        (date(2012, 11, 13), date(2012, 11, 15)), (date(2014, 10, 23), date(2014, 10, 27)),
+                        (date(2015, 11, 11), date(2015, 11, 13)), (date(2017, 10, 19), date(2017, 10, 23)),
+                        (date(2018, 11, 7), date(2018, 11, 9)), (date(2021, 11, 4), date(2021, 11, 8)),
+                        (date(2022, 10, 24), date(2022, 10, 25)), (date(2024, 11, 1), date(2024, 11, 4))]
+MUHURAT_MARK = "Muhurat session only"
+ARCHIVE_GAP = date(2021, 10, 11)
+
+
+class OpeningAfterAHolidayWithAFileTests(MarginFilesTest):
+    """D-75 fix: the opening file is the end-of-day file NSE had in force, also when the calendar calls its day a
+    holiday (the regular session was closed and only the Muhurat hour traded)."""
+
+    def setUp(self):
+        super().setUp()
+        cal.reload()
+
+    def test_the_session_after_a_muhurat_only_day_opens_with_that_days_file(self):
+        for muhurat, session in MUHURAT_THEN_SESSION:
+            with self.subTest(session=session):
+                full = cal.previous_trading_day("FO", muhurat)          # the last full session before it
+                self.assertLess(full, muhurat)
+                self.assertTrue(cal.is_trading_day("FO", session))
+                self.assertEqual(cal.next_trading_day("FO", muhurat), session)
+                self.archived(full, "s", f"{full:%Y%m%d}1700")
+                self.archived(muhurat, "s", f"{muhurat:%Y%m%d}1930")
+                self.assertEqual([Path_name(p) for p, _ in M.usable_files(session)], [M.span_name(muhurat, "s")])
+                self.assertEqual(Path_name(M.opening_eod(session)[0]), M.span_name(muhurat, "s"))
+
+    def test_a_file_is_never_used_for_its_own_day_or_an_earlier_one(self):
+        muhurat, session = MUHURAT_THEN_SESSION[8]                      # Mon 24 Oct 2022, Tue 25 Oct 2022
+        friday = cal.previous_trading_day("FO", muhurat)
+        self.archived(friday, "s", f"{friday:%Y%m%d}1700")
+        self.archived(muhurat, "s", f"{muhurat:%Y%m%d}1930")
+        self.archived(session, "s", f"{session:%Y%m%d}1700")
+        self.assertEqual(Path_name(M.opening_eod(muhurat)[0]), M.span_name(friday, "s"))
+        self.assertEqual(Path_name(M.opening_eod(session)[0]), M.span_name(muhurat, "s"))
+
+    def test_a_holiday_with_only_intraday_files_gives_nothing(self):
+        muhurat, session = MUHURAT_THEN_SESSION[8]
+        friday = cal.previous_trading_day("FO", muhurat)
+        self.archived(friday, "s", f"{friday:%Y%m%d}1700")
+        self.archived(muhurat, "i1", f"{friday:%Y%m%d}2000")            # a file, but no .s: never older ones
+        self.assertEqual(M.usable_files(session), [])
+
+    def test_holidays_without_a_file_do_not_use_up_the_empty_days(self):
+        # Thu 24 Oct 2019 .s; then five empty trading days (25, 29, 30, 31 Oct and 1 Nov) and one holiday of the
+        # calendar with no file (Mon 28 Oct); the run day is Mon 4 Nov 2019.
+        self.assertFalse(cal.is_trading_day("FO", date(2019, 10, 28)))
+        self.archived(date(2019, 10, 24), "s", "201910241700")
+        self.assertEqual(Path_name(M.opening_eod(date(2019, 11, 4))[0]), "nsccl.20191024.s.zip")
+        self.assertEqual(M.opening_eod(date(2019, 11, 5)), None)        # six empty trading days
+
+    def test_no_day_opens_with_an_older_file_than_before_the_holidays_were_added(self):
+        """Over file names, every trading day from 2009 on: the opening file is the one the walk gave when the
+        calendar held no holiday before 2024 and no Muhurat-only day (each weekday was then a trading day, and the
+        Muhurat days' files were found as any other day's). The archive here is a set of file names that mirrors
+        the real one: an end-of-day file for every trading day of the calendar but 2021-10-11, and for each
+        Muhurat-only day. (The other tests of this class read real files; 4,400 of them would take half a minute.)"""
+        from unittest.mock import patch
+        rows = loader.load_csv("calendar/nse_holidays.csv")
+        muhurat = {date.fromisoformat(r["date"]) for r in rows if MUHURAT_MARK in r["description"]}
+        self.assertEqual({m for m, _ in MUHURAT_THEN_SESSION}, muhurat)
+        held_before = {date.fromisoformat(r["date"]) for r in rows if r["date"] >= "2024-01-01"} - muhurat
+        first, last = date(2009, 1, 1), date(2026, 11, 6)
+        weekdays = [d for d in (first + timedelta(days=i) for i in range((last - first).days + 1))
+                    if d.weekday() < 5]
+        have = {d for d in weekdays if (cal.is_trading_day("FO", d) and d != ARCHIVE_GAP) or d in muhurat}
+        names = {M.span_name(d, "s") for d in have}
+
+        def any_archived(day: date) -> bool:
+            return any(M.span_name(day, suffix) in names for suffix in M.SPAN_SUFFIXES)
+
+        def before(day: date) -> date | None:
+            """The walk as it was: back over the trading days of the old calendar, at most 5 without a file."""
+            d = day
+            for _ in range(M.OPENING_MAX_EMPTY_DAYS + 1):
+                d -= timedelta(days=1)
+                while d.weekday() >= 5 or d in held_before:
+                    d -= timedelta(days=1)
+                if d in have:
+                    return d
+            return None
+
+        sessions = [d for d in weekdays if cal.is_trading_day("FO", d)]
+        self.assertGreater(len(sessions), 4000)
+        with patch.object(M, "_any_archived", any_archived):
+            differ = [(d, before(d), M.opening_day(d)) for d in sessions if M.opening_day(d) != before(d)]
+            self.assertEqual(differ, [])
+            self.assertEqual(M.opening_day(first), None)                # nothing is archived before the first day
+            self.assertEqual(M.opening_day(date(2021, 10, 12)), date(2021, 10, 8))
 
 
 def Path_name(p) -> str:  # noqa: N802
