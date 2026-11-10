@@ -854,10 +854,11 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   "Muhurat Trading" that evening (2010: normal market 18:15-19:00), so the regular session was closed. No other
   weekday holiday of 2009-2023 has a `.s` file. In CDM 4.1 the day after such a day opened with the `.s` of the last
   full session (the calendar's previous trading day); fix round 1 below changed that.
-- **Left as they are (outside this change):** 2024-11-01 (Diwali Laxmi Pujan 2024, a Friday with a `.s` file) is not
-  in the 2024 rows, so the calendar calls it a trading day; 2025-10-21 (Diwali Laxmi Pujan) is a holiday that has day bars. NSE's
-  lists also carry weekend entries (2012-04-28 and 2012-09-08 "Special Live Trading", 2012-11-11 "Dhanteras Trading"
-  for CM, holidays that fell on a weekend): no rows, weekends are never trading days here.
+- **Left as they are (outside this change):** 2024-11-01 (Diwali Laxmi Pujan 2024, a Friday with a `.s` file) was
+  not in the 2024 rows, so the calendar called it a trading day (added in fix round 1 below); 2025-10-21 (Diwali
+  Laxmi Pujan) is a holiday that has day bars. NSE's lists also carry weekend entries (2012-04-28 and 2012-09-08
+  "Special Live Trading", 2012-11-11 "Dhanteras Trading" for CM, holidays that fell on a weekend): no rows, weekends
+  are never trading days here.
 - **The audit command** (`python -m stockify calendar audit --from 2009-01-01 --to 2023-12-31`, about 1 s, writes
   nothing; an idle WAL database is opened as immutable so not even its `-shm` is touched) on 2026-11-09: 3,912
   weekdays, 3,699 with data, 221 holidays; trading days with no data: 2021-10-11; holidays with data: the nine
@@ -884,3 +885,19 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
     still go by calendar trading days, so they never ask for a Muhurat-only day's `.s`. The archive already holds
     the ten files of 2010 to 2024. 2025-10-21's is not there, so 2025-10-23 opens with 2025-10-20's `.s` (labelled
     exact) until that file is fetched: an open point for the owner.
+- **2024-11-01 is a Muhurat-only day and is now a holiday (controller finding; CDM 4.3).** Row added:
+  `2024-11-01,CM;FO,Diwali Laxmi Pujan (Muhurat session only)`. The calendar now has ten Muhurat-only days.
+  - Evidence in the lab (read-only, 2026-11-09): `cm_eod` turnover ₹17,744 crore on 2024-11-01 against ₹99,475 crore
+    on 2024-10-31 and ₹96,202 crore on 2024-11-04; 0.18 of the median of the ten sessions around it. The `.s` file
+    of the day was created at 20:33 IST.
+  - Name: NSE's holiday-master API for 2024 (`$LAB/nse/raw/nse_holidays/2024.json`) names the day "Diwali Laxmi
+    Pujan" in its COM, MF, NDM and NTRP lists and leaves it out of CM and FO, which is why the 2024 rows missed it.
+    The NSE circular for the day was not fetched (this round used no network), so the row cites the API and the lab.
+  - Effects: 2024-11-01 is no session for CM and FO; the previous trading day of 2024-11-04 is 2024-10-31 (previous
+    close, bars); 2024-11-04 opens with `nsccl.20241101.s.zip` as before (CDM 4.2). The audit for
+    2024-01-01..2026-11-06 now shows 44 holidays, no trading day without data, and two holidays with data:
+    2024-11-01 (`span`, `bars`, the three EOD tables, raw files) and 2025-10-21 (`bars`).
+  - Every other 2024 to 2026 row is byte-identical. No golden, pack hash or example run moved.
+  - **Seen, not touched:** `2024-11-02,CM;FO,Balipratipada` is a Saturday row (the API lists it; a weekend is never
+    a trading day here, so the row changes nothing). The other weekend rows of 2024 to 2026 are the same kind, for
+    example `2024-10-12` Dussehra and `2026-11-08` Diwali Laxmi Pujan*.

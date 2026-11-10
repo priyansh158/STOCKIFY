@@ -82,6 +82,29 @@ class ShippedHolidayListTests(unittest.TestCase):
         row = next(r for r in self.old if r["date"] == "2022-10-24")
         self.assertIn("Muhurat session only", row["description"])
 
+    def test_the_2024_muhurat_only_day_is_a_holiday(self):
+        # Fri 1 Nov 2024, Diwali Laxmi Pujan: the lab's cm_eod turnover is 0.18 of the sessions around it (one
+        # Muhurat hour), and NSE's API leaves the day out of its CM and FO lists as it does for 2012-2022.
+        for segment in ("CM", "FO"):
+            with self.subTest(segment=segment):
+                self.assertFalse(cal.is_trading_day(segment, date(2024, 11, 1)))
+                self.assertEqual(cal.previous_trading_day(segment, date(2024, 11, 4)), date(2024, 10, 31))
+        row = next(r for r in self.rows if r["date"] == "2024-11-01")
+        self.assertEqual(row["segments"], "CM;FO")
+        self.assertEqual(row["description"], "Diwali Laxmi Pujan (Muhurat session only)")
+        self.assertIn("regular session closed, Muhurat trading only", row["source"])
+
+    def test_ten_days_are_muhurat_only(self):
+        days = [r["date"] for r in self.rows if "Muhurat session only" in r["description"]]
+        self.assertEqual(days, ["2010-11-05", "2011-10-26", "2012-11-13", "2014-10-23", "2015-11-11", "2017-10-19",
+                                "2018-11-07", "2021-11-04", "2022-10-24", "2024-11-01"])
+        for r in self.rows:
+            if r["date"] in days:
+                with self.subTest(row=r["date"]):
+                    self.assertTrue(r["description"].endswith(" (Muhurat session only)"))
+                    self.assertTrue(r["source"].startswith("regular session closed, Muhurat trading only: "))
+                    self.assertTrue(r["source"].endswith("the lab has a .s SPAN file for the day"))
+
     def test_an_archive_gap_is_not_a_holiday(self):
         # 2021-10-11 has no .s file because NSE served a non-zip body, and no NSE list calls it a holiday.
         self.assertTrue(cal.is_trading_day("FO", date(2021, 10, 11)))

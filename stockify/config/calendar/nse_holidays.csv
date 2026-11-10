@@ -237,6 +237,7 @@ date,segments,description,source
 2024-09-07,CM;FO,Ganesh Chaturthi,"NSE holiday-master API type=trading year=2024, fetched 2026-11-05"
 2024-10-02,CM;FO,Mahatma Gandhi Jayanti,"NSE holiday-master API type=trading year=2024, fetched 2026-11-05"
 2024-10-12,CM;FO,Dussehra,"NSE holiday-master API type=trading year=2024, fetched 2026-11-05"
+2024-11-01,CM;FO,Diwali Laxmi Pujan (Muhurat session only),"regular session closed, Muhurat trading only: NSE holiday-master API type=trading year=2024 names the day in its COM, MF, NDM and NTRP lists and leaves it out of CM and FO, fetched 2026-11-05; the lab's cm_eod turnover that day is 0.18 of the sessions around it; the lab has a .s SPAN file for the day"
 2024-11-02,CM;FO,Balipratipada,"NSE holiday-master API type=trading year=2024, fetched 2026-11-05"
 2024-11-15,CM;FO,Prakash Gurpurb Sri Guru Nanak Dev,"NSE holiday-master API type=trading year=2024, fetched 2026-11-05"
 2024-11-20,CM;FO,Assembly Elections in Maharashtra,"NSE holiday-master API type=trading year=2024, fetched 2026-11-05"

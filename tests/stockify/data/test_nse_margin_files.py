@@ -549,7 +549,7 @@ class OpeningAfterAHolidayWithAFileTests(MarginFilesTest):
         from unittest.mock import patch
         rows = loader.load_csv("calendar/nse_holidays.csv")
         muhurat = {date.fromisoformat(r["date"]) for r in rows if MUHURAT_MARK in r["description"]}
-        self.assertTrue({m for m, _ in MUHURAT_THEN_SESSION[:9]} <= muhurat)
+        self.assertEqual({m for m, _ in MUHURAT_THEN_SESSION}, muhurat)
         held_before = {date.fromisoformat(r["date"]) for r in rows if r["date"] >= "2024-01-01"} - muhurat
         first, last = date(2009, 1, 1), date(2026, 11, 6)
         weekdays = [d for d in (first + timedelta(days=i) for i in range((last - first).days + 1))
