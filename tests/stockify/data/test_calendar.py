@@ -37,15 +37,118 @@ class TradingDayTests(unittest.TestCase):
         rows = [r for r in cal.loader.load_csv("calendar/nse_holidays.csv") if r["date"] == "2024-03-02"]
         self.assertEqual(rows, [])
 
-    def test_holiday_list_covers_2024_to_2026(self):
+    def test_holiday_list_covers_2009_to_2026(self):
         years = {r["date"][:4] for r in cal.loader.load_csv("calendar/nse_holidays.csv")}
-        self.assertEqual(years, {"2024", "2025", "2026"})
+        self.assertEqual(years, {str(y) for y in range(2009, 2027)})
 
     def test_trading_days_and_neighbours(self):
         days = cal.trading_days("FO", date(2026, 11, 6), date(2026, 11, 12))
         self.assertEqual(days, [date(2026, 11, 6), date(2026, 11, 9), date(2026, 11, 11), date(2026, 11, 12)])
         self.assertEqual(cal.previous_trading_day("FO", date(2026, 11, 11)), date(2026, 11, 9))
         self.assertEqual(cal.next_trading_day("FO", date(2026, 11, 6)), date(2026, 11, 9))
+
+
+class ShippedHolidayListTests(unittest.TestCase):
+    """The 2009-2023 rows (D-75): a weekday with no NSE data in the lab is a holiday; NSE's own lists only name it."""
+
+    def setUp(self):
+        cal.reload()
+        self.rows = cal.loader.load_csv("calendar/nse_holidays.csv")
+        self.old = [r for r in self.rows if r["date"] < "2024-01-01"]
+
+    def test_every_year_2009_to_2023_has_at_least_8_weekday_holidays(self):
+        for year in range(2009, 2024):
+            with self.subTest(year=year):
+                days = [r for r in self.old
+                        if r["date"].startswith(str(year)) and date.fromisoformat(r["date"]).weekday() < 5]
+                self.assertGreaterEqual(len(days), 8)
+
+    def test_weekdays_without_a_span_file_are_not_trading_days(self):
+        # Each of these weekdays has no nsccl.<date>.s.zip in the lab's complete SPAN archive (checked 2026-11-09).
+        for day in (date(2009, 4, 30),      # Parliamentary elections in Mumbai
+                    date(2012, 8, 15),      # Independence Day
+                    date(2014, 4, 24),      # General elections
+                    date(2017, 8, 25),      # Ganesh Chaturthi
+                    date(2020, 5, 25),      # Id-Ul-Fitr
+                    date(2023, 12, 25)):    # Christmas
+            for segment in ("CM", "FO"):
+                with self.subTest(day=day, segment=segment):
+                    self.assertFalse(cal.is_trading_day(segment, day))
+
+    def test_a_muhurat_only_day_is_a_holiday(self):
+        # NSE/CMTR/50560 lists 2022-10-24 as a trading holiday with Muhurat trading only; the owner's standing
+        # decision is no special sessions, so the day is closed although a .s file exists for it.
+        self.assertFalse(cal.is_trading_day("FO", date(2022, 10, 24)))
+        row = next(r for r in self.old if r["date"] == "2022-10-24")
+        self.assertIn("Muhurat session only", row["description"])
+
+    def test_the_2024_muhurat_only_day_is_a_holiday(self):
+        # Fri 1 Nov 2024, Diwali Laxmi Pujan: the lab's cm_eod turnover is 0.18 of the sessions around it (one
+        # Muhurat hour), and NSE's API leaves the day out of its CM and FO lists as it does for 2012-2022.
+        for segment in ("CM", "FO"):
+            with self.subTest(segment=segment):
+                self.assertFalse(cal.is_trading_day(segment, date(2024, 11, 1)))
+                self.assertEqual(cal.previous_trading_day(segment, date(2024, 11, 4)), date(2024, 10, 31))
+        row = next(r for r in self.rows if r["date"] == "2024-11-01")
+        self.assertEqual(row["segments"], "CM;FO")
+        self.assertEqual(row["description"], "Diwali Laxmi Pujan (Muhurat session only)")
+        self.assertIn("regular session closed, Muhurat trading only", row["source"])
+
+    def test_ten_days_are_muhurat_only(self):
+        days = [r["date"] for r in self.rows if "Muhurat session only" in r["description"]]
+        self.assertEqual(days, ["2010-11-05", "2011-10-26", "2012-11-13", "2014-10-23", "2015-11-11", "2017-10-19",
+                                "2018-11-07", "2021-11-04", "2022-10-24", "2024-11-01"])
+        for r in self.rows:
+            if r["date"] in days:
+                with self.subTest(row=r["date"]):
+                    self.assertTrue(r["description"].endswith(" (Muhurat session only)"))
+                    self.assertTrue(r["source"].startswith("regular session closed, Muhurat trading only: "))
+                    self.assertTrue(r["source"].endswith("the lab has a .s SPAN file for the day"))
+
+    def test_three_labels_are_the_ones_their_one_source_prints(self):
+        # Review F5. NSE/CMTR/13713 prints "Moharum" (NSE/FAOP/13715 has "Moharram"); NSE/CMTR/19539 and
+        # NSE/FAOP/19544 print "Diwali", a dash (U+2013, written here as " - " so that the file stays ASCII) and
+        # "Laxmi Puja*"; NSE/CMTR/16348 prints "Laxmi Puja*" where the API has "Diwali (Laxmi Pujan)*".
+        row = {r["date"]: r for r in self.rows}
+        self.assertEqual(row["2010-12-17"]["description"], "Moharum")
+        self.assertIn("NSE/CMTR/13713 of ", row["2010-12-17"]["source"])
+        self.assertNotIn("FAOP", row["2010-12-17"]["source"])
+        self.assertEqual(row["2012-11-13"]["description"], "Diwali - Laxmi Puja* (Muhurat session only)")
+        self.assertIn("NSE/CMTR/19539 and NSE/FAOP/19544 of ", row["2012-11-13"]["source"])
+        self.assertEqual(row["2011-10-26"]["description"], "Laxmi Puja* (Muhurat session only)")
+        self.assertIn("NSE/CMTR/16348 of ", row["2011-10-26"]["source"])
+        self.assertNotIn("API", row["2011-10-26"]["source"])
+        for r in self.rows:
+            self.assertTrue((r["description"] + r["source"]).isascii(), r["date"])
+
+    def test_an_archive_gap_is_not_a_holiday(self):
+        # 2021-10-11 has no .s file because NSE served a non-zip body, and no NSE list calls it a holiday.
+        self.assertTrue(cal.is_trading_day("FO", date(2021, 10, 11)))
+
+    def test_the_neighbours_of_a_holiday_stay_trading_days(self):
+        self.assertEqual(cal.trading_days("FO", date(2009, 4, 29), date(2009, 5, 4)),
+                         [date(2009, 4, 29), date(2009, 5, 4)])      # 30 Apr election, 1 May, a weekend
+
+    def test_pre_2024_rows_are_weekdays_for_both_segments(self):
+        self.assertTrue(self.old)
+        for r in self.old:
+            with self.subTest(row=r["date"]):
+                self.assertLess(date.fromisoformat(r["date"]).weekday(), 5)
+                self.assertEqual(r["segments"], "CM;FO")
+
+    def test_dates_are_unique(self):
+        dates = [r["date"] for r in self.rows]
+        self.assertEqual(len(dates), len(set(dates)))
+
+    def test_every_row_has_a_description_and_a_source(self):
+        for r in self.rows:
+            with self.subTest(row=r["date"]):
+                self.assertTrue(r["description"].strip())
+                self.assertTrue(r["source"].strip())
+
+    def test_rows_are_sorted_by_date(self):
+        dates = [r["date"] for r in self.rows]
+        self.assertEqual(dates, sorted(dates))
 
 
 class PhaseBoundaryTests(unittest.TestCase):

@@ -60,7 +60,8 @@ ELM_MIN_COLUMNS = 7                      # instrument, symbol, expiry, strike, C
 ELM_PCT = re.compile(r"[0-9]{1,3}(\.[0-9]{1,8})?")        # ASCII digits only: \d takes any Unicode digit
 # The plausible created time of a SPAN file of business day D (L-4 ruling, CAM 4.5): from 12:00 IST on the calendar
 # day before D's previous trading day to D+1 06:00 IST. NSE makes a Monday's i1 on the Friday night or early Saturday
-# (22:47 Fri .. 01:59 Sat seen); the extra day covers a weekday holiday the calendar does not know (pre-2024).
+# (22:47 Fri .. 01:59 Sat seen); the extra day covers a weekday holiday missing from the calendar (it holds the
+# holidays from 2009 on, D-75).
 CREATED_FROM = (-1, "12:00")           # days relative to the previous trading day of D
 CREATED_UNTIL = (1, "06:00")
 
@@ -353,6 +354,12 @@ def _any_archived(day: date) -> bool:
     return any(_span_path(day, s).exists() for s in SPAN_SUFFIXES)
 
 
+def eod_archived(day: date) -> bool:
+    """Whether the end-of-day (`.s`) file of `day` is in the archive: NSE makes one for every day it trades, so
+    the calendar audit reads its absence on a weekday as a closed exchange (D-75)."""
+    return _archived(day, ("s",))
+
+
 def in_force_files(day: date, skipped: list | None = None) -> list[tuple[str, int]]:
     """Archived SPAN files of trade date `day` as (path, created_ns), oldest first. A file without a readable
     created time, or whose created time is not plausible for `day` (L-4), is not used; with `skipped`, it is
@@ -404,25 +411,38 @@ def previous_eod(day: date, *, max_days: int = 30) -> tuple[str, int] | None:
 OPENING_MAX_EMPTY_DAYS = 5
 
 
+def opening_day(day: date, *, max_empty: int = OPENING_MAX_EMPTY_DAYS) -> date | None:
+    """The day whose end-of-day file trade date `day` opens with (CAM 4.4, I-2 ruling; D-75): the latest weekday
+    before `day` that has an archived SPAN file of any suffix, whether or not the F&O calendar calls that weekday a
+    trading day. NSE keeps its latest end-of-day file in force, and a Muhurat-only day is a holiday of the calendar
+    that has one. A weekday with no file is stepped over: a trading day of the calendar with none (a holiday the
+    calendar lacks, or the archive's one gap, 2021-10-11) uses up one of `max_empty`, a holiday of the calendar
+    uses up none. None when more than `max_empty` trading days in a row have no file."""
+    d, empty = day, 0
+    while empty <= max_empty:
+        d -= timedelta(days=1)
+        if d.weekday() >= 5:
+            continue
+        if _any_archived(d):
+            return d
+        empty += calendar.is_trading_day(SEGMENT, d)
+    return None
+
+
 def opening_eod(day: date, *, max_empty: int = OPENING_MAX_EMPTY_DAYS,
                 skipped: list | None = None) -> tuple[str, int] | None:
-    """The end-of-day file a backtest opens trade date `day` with (CAM 4.4, I-2 ruling): walk back over F&O
-    calendar trading days that have NO archived SPAN file of any suffix, at most `max_empty` of them, and stop at the
-    first day that has any file: its `.s` if archived (and usable), else nothing. The 2009-2026 backfill finished
-    with no errors, so a day without any file is one NSE never published: a holiday the calendar does not hold
-    (before 2024 it holds none). A day with intraday files but no `.s` gives nothing (never an older file)."""
-    d = day
-    for _ in range(max_empty + 1):
-        d = calendar.previous_trading_day(SEGMENT, d)
-        if not _any_archived(d):
-            continue
-        found: list = []
-        for path, created_ns in in_force_files(d, found):
-            if path.endswith(".s.zip"):
-                return path, created_ns
-        if skipped is not None:
-            skipped.extend(x for x in found if x[0].endswith(".s.zip"))
+    """The end-of-day file a backtest opens trade date `day` with: the `.s` of `opening_day(day)` if it is archived
+    (and usable), else nothing. A day with intraday files but no `.s` gives nothing (never an older file), and so
+    does a walk that finds no file: a stale file is never used (D-64). The file is always of a day before `day`."""
+    d = opening_day(day, max_empty=max_empty)
+    if d is None:
         return None
+    found: list = []
+    for path, created_ns in in_force_files(d, found):
+        if path.endswith(".s.zip"):
+            return path, created_ns
+    if skipped is not None:
+        skipped.extend(x for x in found if x[0].endswith(".s.zip"))
     return None
 
 
@@ -431,9 +451,10 @@ def usable_files(day: date, skipped: list | None = None) -> list[tuple[str, int]
     lookahead (spec §5.1, CAM 4.3): the previous NSE session's `.s` when archived (`opening_eod`; never an older one),
     then D's `i1`..`i4`. D's own `.s` never: it is published after the close. Each file applies from
     its own `created_ns`; the file in force at t is the last one created at or before t, and before the first one
-    nothing is (a late `i1` does not move earlier). The previous trading day is found by `opening_eod`: days with no
-    archived file at all (holidays the calendar lacks) are stepped over. With `skipped`, archived files left out for
-    a bad created time are recorded there as (path, reason)."""
+    nothing is (a late `i1` does not move earlier). The previous session is found by `opening_day`: weekdays with no
+    archived file at all are stepped over, and a Muhurat-only day's file is used although the calendar calls the
+    day a holiday. With `skipped`, archived files left out for a bad created time are recorded there as
+    (path, reason)."""
     found: list = []
     own = [(p, c) for p, c in in_force_files(day, found) if not p.endswith(".s.zip")]
     if skipped is not None:

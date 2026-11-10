@@ -708,7 +708,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 ## 2026-11-09 — the margin staircase: real numbers (ENG 4.3, D-64)
 
 **NSE SPAN archive** (`$LAB/nse/margin/span`, end-of-day `.s` files, fetched with `stockify nse margin-files --backfill`):
-- Range 2009-01-02..2026-11-06: 4,399 files stored, 212 days missing (holidays, 10–19 a year), 1 rejected, 22 GB.
+- Range 2009-01-01..2026-11-06: 4,399 files stored, 212 days missing (holidays, 10–19 a year), 1 rejected, 22 GB. (Corrected in CDM 4.5: this line said 2009-01-02; the first file is `nsccl.20090101.s.zip`, stored in the same backfill.)
 - The rejected file is 2021-10-11 `.s`: NSE served a 7.7 MB body that is not a zip (HTTP 200). The fetcher refused it and archived nothing. That one file is why the backfill command exits 1.
 - Intraday files (i1–i4) and the ELM file are kept for recent days only (S-7). The first contract-wise ELM file is available about 1 Sep 2026.
 
@@ -760,19 +760,25 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   before the previous trading day of B (a Monday: Thursday 12:00) and B+1 06:00 IST. The first ruling, B−2 12:00, was
   wrong (CAM 4.5): NSE makes a Monday's i1 on Friday night or early Saturday. Real stamps (IST): 2026-06-01 i1
   202605292247 (Fri 22:47); 2025-01-06 i1 202501040159 (Sat 01:59); 2026-10-26 i1 202610240125 (Sat 01:25);
-  2026-11-02 i1 202610310013 (Sat 00:13). The extra day covers a weekday holiday the calendar lacks (pre-2024). Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
+  2026-11-02 i1 202610310013 (Sat 00:13). The extra day covers a weekday holiday the calendar lacks (it holds the holidays from 2009 on since D-75). Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
   `span_skipped`. Not yet checked against the real 2009–2026 archive (this round did not open the lab). **Controller /
   owner check (read-only):**
   `.\.venv\Scripts\python.exe -c "from datetime import date; from stockify.data import calendar as c, nse_margin_files as m; bad=[]; [m.in_force_files(d, bad) for d in c.trading_days('FO', date(2009,1,1), date(2026,11,6))]; print(len(bad)); print(bad[:20])"`
   If NSE re-stamped old `.s` files later than B+1 06:00, they show up here and the window needs a dated exception.
 - **The opening `.s` (I-2 ruling):** a bundle day D opens with the `.s` of the previous NSE session: walk back over
   calendar trading days with no archived file of any suffix (at most 5) and stop at the first day with any file
-  (its `.s`, else nothing). Before 2024 the calendar has no holidays, so the day after each holiday (10–19 a year)
-  used to get no SPAN at all; it now gets the `.s` before the holiday.
+  (its `.s`, else nothing). When this was written the calendar had no holidays before 2024, so the day after each
+  holiday (10–19 a year) used to get no SPAN at all; the walk-back gave it the `.s` before the holiday. The calendar
+  now holds the 2009–2023 holidays (D-75, entry below), so the walk-back is a safety net.
+  - **Changed (CDM 4.2, D-75 fix round 1):** the walk goes back over weekdays, not over calendar trading days, and
+    stops at the first weekday with any archived file (`nse_margin_files.opening_day`). A calendar trading day with
+    no file uses up one of the 5 empty days; a calendar holiday with no file uses up none. So a Muhurat-only day's
+    `.s` (a holiday that has a file) opens the next session.
   - Known exception: 2021-10-11 has no file because NSE served a non-zip body (the one rejected backfill file), so
     2021-10-12 opens with 2021-10-08's `.s` (one session stale) until that day's `.s` is fetched again.
-  - **Owner item:** add the 2009–2023 NSE holidays to `stockify/config/calendar/nse_holidays.csv` with cited
-    sources (the backfill's 212 missing weekdays are the candidate list). Then the walk-back is only a safety net.
+  - **Owner item, done (CDM 4.1, D-75):** the 2009–2023 NSE holidays are in
+    `stockify/config/calendar/nse_holidays.csv` with cited sources (the backfill's 212 missing weekdays, and nine
+    Muhurat-only days). The walk-back is now only a safety net.
 - **ELM % form (M-3):** both models use an ELM % only as 1–3 integer digits with at most 8 fraction digits (no sign,
   space or exponent); `read_elm` keeps only such values. Strikes must be whole paise (L-6).
 - **An unreadable archived ELM file** is skipped and recorded in `elm_skipped` (label `margin_elm:skipped_files`);
@@ -808,3 +814,129 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   `stocksim_tests.exe` and `stockify/_engine.cp312-win_amd64.pyd`.
 - Speed, synthetic 600,000-event tick pack, median of 9: `noop_cpp` 488.6 -> 483.6 / 488.8 ms (two runs, within
   noise); Python no-op 1812.6 -> 1827.7 / 1791.2 ms; Python SMA 673.9 -> 672.7 / 674.4 ms. No measurable change.
+
+## 2026-11-09 - the 2009-2023 holidays, from the lab's data (CDM 4.1, D-75)
+
+- **Method.** A weekday with no end-of-day SPAN file (`.s`) and no data in any other store is a holiday. Checked
+  2026-11-09 against `$LAB` (read-only): `.s` files under `nse/margin/span`, `bars.sqlite`, the three EOD tables of
+  `refdata.sqlite` and the raw NSE files (the bars hold three instruments' day bars from 2022-01-03; the EOD tables
+  and raw files begin 2023-12-28). The archive now has 4,401 `.s` files for 2009-01-01..2026-11-06, none on a
+  Saturday or Sunday (the backfill asks for calendar trading days, so no weekend was ever asked for).
+- **The method holds where the calendar was already sourced.** For 2024-01-01..2026-11-06 the weekdays without a `.s`
+  file are exactly the calendar's weekday holidays.
+- **Result: 221 rows added** to `stockify/config/calendar/nse_holidays.csv`, for CM and FO: 212 weekdays without data
+  and 9 Muhurat-only days. Every row is named from an NSE list (X-14); none needed the "name not sourced" label.
+
+| Year | Weekdays | With a `.s` file | Without | Rows added | Of them Muhurat only |
+|---|---|---|---|---|---|
+| 2009 | 261 | 242 | 19 | 19 | 0 |
+| 2010 | 261 | 251 | 10 | 11 | 1 |
+| 2011 | 260 | 247 | 13 | 14 | 1 |
+| 2012 | 261 | 247 | 14 | 15 | 1 |
+| 2013 | 261 | 248 | 13 | 13 | 0 |
+| 2014 | 261 | 243 | 18 | 19 | 1 |
+| 2015 | 261 | 247 | 14 | 15 | 1 |
+| 2016 | 261 | 246 | 15 | 15 | 0 |
+| 2017 | 260 | 248 | 12 | 13 | 1 |
+| 2018 | 261 | 246 | 15 | 16 | 1 |
+| 2019 | 261 | 244 | 17 | 17 | 0 |
+| 2020 | 262 | 250 | 12 | 12 | 0 |
+| 2021 | 261 | 247 | 14 | 14 | 1 |
+| 2022 | 260 | 248 | 12 | 13 | 1 |
+| 2023 | 260 | 245 | 15 | 15 | 0 |
+| Total | 3,912 | 3,699 | 213 | 221 | 9 |
+
+- **2021: 14 weekdays without a file, 13 of them holidays.** The other is 2021-10-11, the one file the backfill
+  rejected (above). It is in no NSE holiday list, so it stays a trading day and the walk-back still steps over it.
+  The 14 rows of 2021 are those 13 and the Muhurat day.
+- **Muhurat-only days (holidays that have a `.s` file):** 2010-11-05, 2011-10-26, 2012-11-13, 2014-10-23, 2015-11-11,
+  2017-10-19, 2018-11-07, 2021-11-04, 2022-10-24. NSE's yearly holiday circular lists each as a trading holiday with
+  "Muhurat Trading" that evening (2010: normal market 18:15-19:00), so the regular session was closed. No other
+  weekday holiday of 2009-2023 has a `.s` file. In CDM 4.1 the day after such a day opened with the `.s` of the last
+  full session (the calendar's previous trading day); fix round 1 below changed that.
+- **Left as they are (outside this change):** 2024-11-01 (Diwali Laxmi Pujan 2024, a Friday with a `.s` file) was
+  not in the 2024 rows, so the calendar called it a trading day (added in fix round 1 below); 2025-10-21 (Diwali
+  Laxmi Pujan) is a holiday that has day bars. NSE's lists also carry weekend entries (2012-04-28 and 2012-09-08
+  "Special Live Trading", 2012-11-11 "Dhanteras Trading" for CM, holidays that fell on a weekend): no rows, weekends
+  are never trading days here.
+- **The audit command** (`python -m stockify calendar audit --from 2009-01-01 --to 2023-12-31`, about 1 s, writes
+  nothing; a database is opened as immutable so not even its `-shm` is touched, and a busy one is not opened at
+  all: fix round 1 below; run it only while no recorder or daemon is writing) on 2026-11-09: 3,912
+  weekdays, 3,699 with data, 221 holidays; trading days with no data: 2021-10-11; holidays with data: the nine
+  Muhurat days (`span`; 2022-10-24 also `bars`). For 2024-01-01..2026-11-06: none without data; 2025-10-21 with `bars`.
+
+### Fix round 1 (CDM 4.2 onwards, after the task review)
+
+- **The morning after a Muhurat-only day (review F1, ruling: option b; CDM 4.2).** The opening file of trading day D
+  is the `.s` of the latest earlier weekday that has a file in the archive, whether or not the calendar calls that
+  weekday a trading day. `nse_margin_files.opening_day(D)` gives that weekday and `opening_eod(D)` its `.s`.
+  - The sessions it changes back: 2010-11-08, 2011-10-28, 2012-11-15, 2014-10-27, 2015-11-13, 2017-10-23,
+    2018-11-09, 2021-11-08 and 2022-10-25 open with the Muhurat day's `.s` again (CDM 4.1 gave them the file of the
+    last full session, one session stale and labelled exact). 2024-11-04 opens with `nsccl.20241101.s.zip`.
+  - Checked over file names for every trading day 2009-01-01..2026-11-06
+    (`test_no_day_opens_with_an_older_file_than_before_the_holidays_were_added`): the opening day is the one the old
+    walk gave over the old calendar (no holiday before 2024, no Muhurat-only holiday). No day differs.
+  - Unchanged: at most 5 empty trading days; a weekday with intraday files but no `.s` gives nothing; a file is
+    never used for its own day or an earlier one; 2021-10-12 still opens with 2021-10-08's `.s`. Weekends are
+    never looked at (the archive has no weekend file).
+  - Not touched: previous close and bars come from the last full session (owner: no Muhurat session is simulated).
+    Cost if the ruling is wrong: on those mornings the margin reflects the Muhurat hour's prices while the previous
+    close does not.
+  - Left as it is: `previous_eod` (the validator's lookup of the file Kite had) and the fetch and backfill loops
+    still go by calendar trading days, so they never ask for a Muhurat-only day's `.s`. The archive already holds
+    the ten files of 2010 to 2024. 2025-10-21's is not there, so 2025-10-23 opens with 2025-10-20's `.s` (labelled
+    exact) until that file is fetched: an open point for the owner.
+- **2024-11-01 is a Muhurat-only day and is now a holiday (controller finding; CDM 4.3).** Row added:
+  `2024-11-01,CM;FO,Diwali Laxmi Pujan (Muhurat session only)`. The calendar now has ten Muhurat-only days.
+  - Evidence in the lab (read-only, 2026-11-09): `cm_eod` turnover ₹17,744 crore on 2024-11-01 against ₹99,475 crore
+    on 2024-10-31 and ₹96,202 crore on 2024-11-04; 0.18 of the median of the ten sessions around it. The `.s` file
+    of the day was created at 20:33 IST.
+  - Name: NSE's holiday-master API for 2024 (`$LAB/nse/raw/nse_holidays/2024.json`) names the day "Diwali Laxmi
+    Pujan" in its COM, MF, NDM and NTRP lists and leaves it out of CM and FO, which is why the 2024 rows missed it.
+    The NSE circular for the day was not fetched (this round used no network), so the row cites the API and the lab.
+  - Effects: 2024-11-01 is no session for CM and FO; the previous trading day of 2024-11-04 is 2024-10-31 (previous
+    close, bars); 2024-11-04 opens with `nsccl.20241101.s.zip` as before (CDM 4.2). The audit for
+    2024-01-01..2026-11-06 now shows 44 holidays, no trading day without data, and two holidays with data:
+    2024-11-01 (`span`, `bars`, the three EOD tables, raw files) and 2025-10-21 (`bars`).
+  - Every other 2024 to 2026 row is byte-identical. No golden, pack hash or example run moved.
+  - **Seen, not touched:** `2024-11-02,CM;FO,Balipratipada` is a Saturday row (the API lists it; a weekend is never
+    a trading day here, so the row changes nothing). The other weekend rows of 2024 to 2026 are the same kind, for
+    example `2024-10-12` Dussehra and `2026-11-08` Diwali Laxmi Pujan*.
+- **The audit opens no busy store, and no store without `immutable=1` (review F2 and F3; CDM 4.4).**
+  - Before: a store with rows in its `-wal` was opened `mode=ro`, and SQLite then made or wrote the `-shm` beside
+    it: a write in the lab, against "writes nothing".
+  - Now (`holiday_audit._read`): a database is opened only as `mode=ro&immutable=1`. A store whose `-wal` file (or
+    rollback `-journal`) is not empty is not opened: the report lists it under "Not checked" as "busy, not
+    checked", it counts as holding nothing, and the command exits 1 with a line on stderr. The `-wal` is looked at
+    again after the read, since an immutable read takes no lock and a writer can start under it. A store that
+    cannot be read (a page torn by a checkpoint, or not a database) is listed as "not readable, not checked"
+    instead of ending in a traceback.
+  - **Run the audit only while no recorder or daemon is writing. A read during a write can make the report wrong,
+    never the stores.** The CLI help says the same. A writer that opens, writes and closes inside the read leaves
+    no `-wal` behind and is not seen.
+  - Tests: on the busy path the lab folder's file list, sizes and modified times are the same before and after
+    (a writer still connected; a killed writer's `-wal` with no `-shm`; a hot journal), and every connection string
+    ends in `?mode=ro&immutable=1`. `test_rows_still_in_the_wal_are_read` is gone: by this ruling such rows are no
+    longer read.
+  - On the real lab (2026-11-09, the three `-wal` files are 0 bytes): `calendar audit --from 2009-01-01 --to
+    2026-11-06` exits 0, and the name, size and modified time of every file in `$LAB` are the same before and
+    after. 4,657 weekdays, 4,402 with data, 265 holidays; one trading day without data (2021-10-11); eleven
+    holidays with data (the ten Muhurat-only days and 2025-10-21).
+  - F4, no change: `stockify.paths` makes a lab folder that is missing, as for every reader (documented).
+- **Small ones from the review (CDM 4.5).**
+  - F5, three labels now match the one source their row cites, as printed there (read again from the saved PDFs):
+    - `2010-12-17`: "Moharum" (was "Moharram"), citing NSE/CMTR/13713 alone. The two circulars of that year differ:
+      NSE/FAOP/13715 prints "Moharram".
+    - `2012-11-13`: "Diwali - Laxmi Puja* (Muhurat session only)" (was "Diwali-Laxmi Puja*"). NSE/CMTR/19539 and
+      NSE/FAOP/19544 both print "Diwali", a dash with a space on each side (U+2013 by the PDF's own character map)
+      and "Laxmi Puja*"; a text dump that drops the dash reads "Diwali Laxmi Puja*". The dash is written as a
+      hyphen so that the file stays ASCII (a test holds it to that): the audit prints the label, and a piped
+      Windows console turns U+2013 into a wrong character. The same circular prints the next day as "Diwali -
+      Balipratipada", with a hyphen.
+    - `2011-10-26`: the label "Laxmi Puja*" stays; the row now cites NSE/CMTR/16348 alone (it also named the API,
+      which has "Diwali (Laxmi Pujan)*").
+    - Open or closed is not touched by any of the three; X-14 says the same.
+  - F6: `test_a_holiday_gap_uses_the_end_of_day_file_before_it` is now
+    `test_a_calendar_holiday_with_no_file_is_passed_to_the_session_before_it`, with a docstring, and the class
+    docstring says which test passes a holiday and which step over empty trading days.
+  - F7: the archive starts 2009-01-01 (`nsccl.20090101.s.zip`); the ENG 4.3 entry above said 2009-01-02.
