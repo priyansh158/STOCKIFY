@@ -362,6 +362,7 @@ def strip_order_routes(kc):  # noqa: ANN001, ANN201
     """Make one KiteConnect instance paper-only, in place, and return it (idempotent)."""
     if getattr(kc, "_stockify_paper_only", False):
         return kc
+    session = _guardable_session(kc)          # raises before anything is changed
     class_routes = dict(type(kc)._routes)
     deny = ORDER_ROUTE_KEYS | order_route_keys(class_routes)
     routes = {k: v for k, v in class_routes.items() if k not in deny}
@@ -383,17 +384,15 @@ def strip_order_routes(kc):  # noqa: ANN001, ANN201
     for verb in ("GET", "POST", "PUT", "DELETE"):
         setattr(kc, "_" + verb.lower(), _verb(verb))
 
-    session = getattr(kc, "reqsession", None)
-    if session is not None and callable(getattr(session, "request", None)):
-        inner_send = session.request
+    inner_send = session.request
 
-        def guarded_send(method, url, *args, **kwargs):  # noqa: ANN001, ANN202
-            if _url_forbidden(url, method):
-                raise OrderRouteForbidden(f"Kite URL {_url_path(url)} ({str(method).upper()}) is not available: "
-                                          "STOCKIFY is paper only")
-            return inner_send(method, url, *args, **kwargs)
-        session.request = guarded_send
-        _mount_guard(session)
+    def guarded_send(method, url, *args, **kwargs):  # noqa: ANN001, ANN202
+        if _url_forbidden(url, method):
+            raise OrderRouteForbidden(f"Kite URL {_url_path(url)} ({str(method).upper()}) is not available: "
+                                      "STOCKIFY is paper only")
+        return inner_send(method, url, *args, **kwargs)
+    session.request = guarded_send
+    _mount_guard(session)
 
     names = set(ORDER_METHODS)
     names.update(n for n in dir(type(kc)) if n.startswith(_ORDER_METHOD_PREFIXES))
@@ -458,10 +457,41 @@ def margin_query(consider_positions: object = False, mode: object = None) -> dic
     return query
 
 
+_UNGUARDED = ("refusing to build a Kite client without the paper-only transport guard "
+              "(has kiteconnect changed? STOCKIFY is tested against 5.2.2)")
+
+
+def _guardable_session(kc):  # noqa: ANN001, ANN202
+    """The client's HTTP session, if the transport guard can be mounted on it; RuntimeError otherwise.
+
+    The guard is the deepest paper-only layer. If a later SDK renames `reqsession` or changes its shape, the
+    client is not built at all, rather than built with that layer quietly missing (LCB 5.12).
+    """
+    session = getattr(kc, "reqsession", None)
+    if session is None:
+        raise RuntimeError(f"the Kite SDK object has no `reqsession` to mount on: {_UNGUARDED}")
+    missing = [name for name in ("request", "send", "mount", "get_adapter")
+               if not callable(getattr(session, name, None))]
+    if not isinstance(getattr(session, "adapters", None), dict):
+        missing.append("adapters")
+    if missing:
+        raise RuntimeError("the Kite SDK session lacks " + ", ".join(f"reqsession.{name}" for name in missing)
+                           + f": {_UNGUARDED}")
+    return session
+
+
 def _mount_guard(session) -> None:  # noqa: ANN001
-    """Mount the checking transport on a requests.Session, wrapping whatever adapter it had."""
-    if not (callable(getattr(session, "mount", None)) and callable(getattr(session, "get_adapter", None))):
-        return
+    """Mount the checking transport on a requests.Session, wrapping whatever adapter it had.
+    Raises RuntimeError if the session does not end up with the guard on every route out."""
+    _mount_guard_on(session)
+    mounts = dict(session.adapters)
+    if (set(mounts) != {"https://", "http://"} or not all(getattr(a, "paper_only", False) for a in mounts.values())
+            or not getattr(session.send, "paper_only", False)):
+        raise RuntimeError("the Kite SDK session has transports the guard does not cover "
+                           f"({', '.join(sorted(map(str, mounts)))}): {_UNGUARDED}")
+
+
+def _mount_guard_on(session) -> None:  # noqa: ANN001
     for prefix in ("https://", "http://"):
         inner = session.get_adapter(prefix + "api.kite.trade/")
         if not getattr(inner, "paper_only", False):

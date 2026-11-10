@@ -75,11 +75,38 @@ ORDER_METHODS_5_2_2 = (
 )
 
 
+class FakeAdapter:
+    """Stands in for requests' HTTPAdapter: the fake session never gets as far as a transport."""
+
+    def send(self, request, **kwargs):  # noqa: ANN001, ANN201
+        raise AssertionError("the fake session never sends")
+
+    def close(self) -> None:
+        pass
+
+
 class FakeSession:
-    """Stands in for requests.Session: records instead of sending."""
+    """Stands in for requests.Session: records instead of sending.
+
+    It has what the transport guard is mounted on (`adapters`, `mount`, `get_adapter`, `send`), as the real
+    session does; `kite_client` refuses to build a client on a session without them (LCB 5.12).
+    """
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.adapters: dict = {"https://": FakeAdapter(), "http://": FakeAdapter()}
+
+    def mount(self, prefix, adapter) -> None:  # noqa: ANN001
+        self.adapters[prefix] = adapter
+
+    def get_adapter(self, url):  # noqa: ANN001, ANN201
+        for prefix in sorted(self.adapters, key=len, reverse=True):       # longest match first, as requests does
+            if url.lower().startswith(prefix.lower()):
+                return self.adapters[prefix]
+        raise ValueError(f"no adapter for {url!r}")
+
+    def send(self, request, **kwargs):  # noqa: ANN001, ANN201
+        raise AssertionError("the fake session never sends")
 
     def request(self, method, url, *args, **kwargs):  # noqa: ANN001, ANN201
         self.sent.append((method, url))

@@ -18,7 +18,7 @@ import tests.support as support  # noqa: F401  — must precede project imports
 import kite_client
 from stockify import kite_readonly
 from tests.stockify.kite_fakes import (EXPECTED_DENY_5_2_2, ORDER_METHODS_5_2_2, ROUTES_5_2_2, SDK_VERSION,
-                                       FakeKite, FakeKiteConnect)
+                                       FakeKite, FakeKiteConnect, FakeSession)
 
 REPO = Path(kite_client.__file__).resolve().parent
 
@@ -191,6 +191,125 @@ class StrippedClientTest(unittest.TestCase):
 
 
 @unittest.skipUnless(support.HAVE_KITECONNECT, "kiteconnect not installed")
+def _sdk_without(what: str) -> type:
+    """A stub SDK class whose session lacks `what` (as a later kiteconnect might): the guard has nothing to hold."""
+
+    class Session(FakeSession):
+        def __getattribute__(self, name):  # noqa: ANN001, ANN204
+            if name == what:
+                raise AttributeError(name)
+            return super().__getattribute__(name)
+
+    class Sdk(FakeKiteConnect):
+        built: list = []
+
+        def __init__(self, api_key, access_token=None, **kwargs):  # noqa: ANN001
+            super().__init__(api_key, access_token, **kwargs)
+            if what == "reqsession":
+                self.session = self.reqsession          # the attribute renamed
+                del self.reqsession
+            elif what == "None":
+                self.reqsession = None
+            else:
+                self.reqsession = Session()
+            type(self).built.append(self)
+
+    Sdk.__name__ = f"SdkWithout_{what}"
+    return Sdk
+
+
+UNGUARDABLE = ("reqsession", "None", "request", "send", "mount", "get_adapter", "adapters")
+
+
+class UnguardableSdkTest(unittest.TestCase):
+    """LCB 5.12: an SDK object the transport guard cannot be mounted on is never handed out."""
+
+    def setUp(self):
+        support.fresh_cache_dir(type(self).__name__)
+        env = support.isolated_env({"KITE_API_KEY": "test-key", "KITE_API_SECRET": "test-secret"}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for target, value in (("KITECONNECT_AVAILABLE", True), ("_client", None), ("_client_token_fp", "")):
+            p = mock.patch.object(kite_client, target, value)
+            p.start()
+            self.addCleanup(p.stop)
+        kite_client.save_token({"access_token": "test-access", "obtained_at": int(time.time())})
+
+    def sdk(self, cls):  # noqa: ANN001, ANN202
+        return mock.patch.object(kite_client, "KiteConnect", cls)
+
+    def test_get_client_raises_instead_of_returning_an_unguarded_client(self):
+        for what in UNGUARDABLE:
+            cls = _sdk_without(what)
+            with self.subTest(missing=what), self.sdk(cls):
+                with self.assertRaisesRegex(RuntimeError, "transport guard") as ctx:
+                    kite_client.get_client()
+                self.assertNotIsInstance(ctx.exception, kite_client.KiteAuthError)
+                self.assertIsNone(kite_client._client, "an unguarded client was kept for the next caller")
+                with self.assertRaisesRegex(RuntimeError, "transport guard"):
+                    kite_client.get_client()                                  # and again: nothing was cached
+                for kc in cls.built:
+                    self.assertFalse(getattr(kc, "_stockify_paper_only", False), "marked as guarded")
+                    self.assertEqual(kc.sent, [])
+
+    def test_the_login_exchange_raises_too_and_saves_nothing(self):
+        before = kite_client._token_file().read_bytes()
+        for what in UNGUARDABLE:
+            cls = _sdk_without(what)
+            with self.subTest(missing=what), self.sdk(cls):
+                with self.assertRaisesRegex(RuntimeError, "transport guard"):
+                    kite_client.exchange_request_token("req-123")
+                self.assertEqual([kc.sent for kc in cls.built], [[]], "the token exchange was sent unguarded")
+                self.assertEqual(kite_client._token_file().read_bytes(), before)
+
+    def test_strip_order_routes_raises_before_it_changes_anything(self):
+        for what in UNGUARDABLE:
+            kc = _sdk_without(what)(api_key="k")
+            before = dict(vars(kc))
+            with self.subTest(missing=what):
+                with self.assertRaisesRegex(RuntimeError, "transport guard"):
+                    kite_client.strip_order_routes(kc)
+                self.assertEqual(dict(vars(kc)), before)
+
+    def test_a_guarded_class_cannot_even_be_constructed(self):
+        for what in UNGUARDABLE:
+            cls = _sdk_without(what)
+            kite_client._guard_the_class(cls)
+            with self.subTest(missing=what), self.assertRaisesRegex(RuntimeError, "transport guard"):
+                cls(api_key="k")
+
+    def test_a_session_whose_mounts_cannot_be_made_guarded_is_refused(self):
+        import requests
+        import requests.adapters
+
+        class Sdk(FakeKiteConnect):
+            def __init__(self, api_key, access_token=None, **kwargs):  # noqa: ANN001
+                super().__init__(api_key, access_token, **kwargs)
+                self.reqsession = requests.Session()
+                # A host-specific mount: requests would pick it over the guarded "https://" one.
+                self.reqsession.mount("https://api.kite.trade/v2/", requests.adapters.HTTPAdapter())
+
+        with self.sdk(Sdk), self.assertRaisesRegex(RuntimeError, "transport guard"):
+            kite_client.get_client()
+        self.assertIsNone(kite_client._client)
+
+    def test_the_message_says_what_is_missing(self):
+        with self.sdk(_sdk_without("mount")), self.assertRaisesRegex(RuntimeError, r"reqsession\.mount"):
+            kite_client.get_client()
+        with self.sdk(_sdk_without("reqsession")), self.assertRaisesRegex(RuntimeError, r"no `reqsession`"):
+            kite_client.get_client()
+
+    def test_a_complete_session_is_still_served_and_guarded(self):
+        with self.sdk(FakeKiteConnect):
+            k = kite_client.get_client()
+        self.assertTrue(k._stockify_paper_only)
+        self.assertEqual(set(k.reqsession.adapters), {"https://", "http://"})
+        self.assertTrue(all(getattr(a, "paper_only", False) for a in k.reqsession.adapters.values()))
+        self.assertTrue(getattr(k.reqsession.send, "paper_only", False))
+        k.quote("NSE:X")
+        self.assertEqual([s[0] for s in k.sent], ["market.quote"])
+
+
 class RealSdkTest(unittest.TestCase):
     """The installed SDK itself: route table, method names, and a stripped instance (no request is sent)."""
 
