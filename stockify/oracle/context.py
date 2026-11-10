@@ -28,6 +28,19 @@ def _whole(name: str, v) -> int:  # noqa: ANN001
     return v
 
 
+def _protection(v):  # noqa: ANN001, ANN202
+    """B2B 5.2 (audit M-2): `protection` is "AUTO" or an int from 1 to 1000 basis points. Anything else is refused,
+    never taken as AUTO. The engine's binding (engine/bindings/engine.cpp, `protection_arg`) has the same rule."""
+    what = 'ctx.place: protection must be "AUTO" or an int from 1 to 1000 (basis points)'
+    if isinstance(v, str) and v == "AUTO":
+        return v
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise TypeError(f"{what}, not {type(v).__name__} ({v!r})")
+    if not 1 <= v <= 1000:
+        raise ValueError(f"{what}, not {type(v).__name__} ({v!r})")
+    return v
+
+
 class Context:
     def __init__(self, engine):  # noqa: ANN001
         self._e = engine
@@ -115,7 +128,7 @@ class Context:
     def place(self, instrument: int, side: str, qty: int, product: str, type: str, price: int = 0, trigger: int = 0,  # noqa: A002
               validity: str = "DAY", protection="AUTO", tag: str = "") -> int:  # noqa: ANN001
         o = self._e.place(int(instrument), side, _whole("qty", qty), product, type, _whole("price", price),
-                          _whole("trigger", trigger), validity, protection, tag)
+                          _whole("trigger", trigger), validity, _protection(protection), tag)
         return o.order_id
 
     def modify(self, order_id: int, **changes) -> bool:  # noqa: ANN003

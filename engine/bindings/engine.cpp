@@ -58,6 +58,32 @@ T whole(const char* name, const py::object& v) {
     return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
 }
 
+// B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 1000 basis points; anything else is
+// refused, never taken as AUTO. The rule and the words are the oracle's (`_protection`).
+std::optional<stocksim::Bp> protection_arg(const py::object& v) {
+    const std::string what = "ctx.place: protection must be \"AUTO\" or an int from 1 to 1000 (basis points)";
+    const auto tail = [&] {
+        return what + ", not " + std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
+               std::string(py::repr(v)) + ")";
+    };
+    if (py::isinstance<py::str>(v) && v.cast<std::string>() == "AUTO") {
+        return std::nullopt;
+    }
+    if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
+        throw py::type_error(tail());
+    }
+    long long bp = 0;
+    try {
+        bp = v.cast<long long>();
+    } catch (const py::cast_error&) {  // beyond int64: out of range all the same
+        throw py::value_error(tail());
+    }
+    if (bp < 1 || bp > 1000) {
+        throw py::value_error(tail());
+    }
+    return static_cast<stocksim::Bp>(bp);
+}
+
 // The Python-visible ctx. It refers to the engine weakly: the engine owns the strategy, and a strong reference
 // back would be a cycle through C++ that Python's collector cannot break (the engine, and its mapped packs,
 // would never be freed).
@@ -316,9 +342,7 @@ void bind_engine(py::module_& m) {
                  r.price = whole<stocksim::Paise>("price", price);
                  r.trigger = whole<stocksim::Paise>("trigger", trigger);
                  r.validity = py::str(validity);
-                 if (py::isinstance<py::int_>(protection)) {  // an int (bool included, as isinstance(…, int))
-                     r.protection = protection.cast<stocksim::Bp>();
-                 }
+                 r.protection = protection_arg(protection);
                  r.tag = py::str(tag);
                  return x.c().place(r);
              },

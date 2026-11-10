@@ -118,5 +118,38 @@ class WholeNumberTests(unittest.TestCase):
                 self.assertIn(" INFO order 1: ", (o / "events_log.txt").read_text(encoding="utf-8"))
 
 
+_PROT = 'ctx.place: protection must be "AUTO" or an int from 1 to 1000 (basis points)'
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class ProtectionTests(unittest.TestCase):
+    """B2B 5.2 (audit M-2): `protection` is "AUTO" or an int from 1 to 1000 bp. Before, anything else (a float,
+    "auto", "10", None, 0, -5, 10**6) was quietly taken as AUTO on the engine and used raw on the oracle."""
+
+    BAD_TYPE = (1.0, 5.5, True, False, "auto", "10", "", None, Decimal("5"), [5])
+    BAD_RANGE = (0, -1, 1001, 10**6, 2**40)
+
+    def test_a_bad_protection_stops_both_runs_with_the_same_error(self):
+        once = _Once(self)
+        for bad in self.BAD_TYPE + self.BAD_RANGE:
+            kind = ValueError if isinstance(bad, int) and not isinstance(bad, bool) else TypeError
+            why = f"{_PROT}, not {type(bad).__name__} ({bad!r})"
+            with self.subTest(value=repr(bad)):
+                for impl in ("oracle", "engine"):
+                    run, e = once.run(impl, protection=bad)
+                    self.assertIs(type(e), kind, (impl, e))
+                    self.assertEqual(str(e), why, impl)
+                    self.assertFalse((run / "orders.csv").exists(), impl)
+
+    def test_auto_and_one_to_a_thousand_run_the_same_on_both(self):
+        once = _Once(self)
+        for prot in ("AUTO", 1, 5, 100, 1000):
+            with self.subTest(protection=prot):
+                o, oe = once.run("oracle", protection=prot)
+                e, ee = once.run("engine", protection=prot)
+                self.assertEqual((oe, ee), (None, None))
+                assert_same_artifacts(self, o, e)
+
+
 if __name__ == "__main__":
     unittest.main()
