@@ -373,6 +373,55 @@ class ArchiveKeptTests(CompactTest):
         self.assertEqual(self.state(), before)
         self.assert_no_leftovers()
 
+    def test_a_forced_run_that_fails_verification_leaves_the_row_and_the_archive(self):
+        record_packets(5)                                                              # late frames
+        before = self.state()
+        with patch.object(compact, "verify", side_effect=compact.CompactionError("boom")), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("boom", res.error)                                               # reported in the result only
+        self.assertEqual(self.state(), before)                                         # status, packets, digest: all
+        self.assert_no_leftovers()
+        again = compact.compact(DAY)                                                   # the routine run after it
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", self.first.digest, 701))
+        self.assertEqual(self.state(), before)
+        self.assertEqual(landing_packets(), 706)
+
+    def test_a_failed_forced_run_does_not_open_a_retained_day_to_the_routine_run(self):
+        self.retain()
+        before = self.state()
+        record_packets(701)                                    # a stray file: as many packets, none of them the day's
+        with patch.object(compact, "verify", side_effect=compact.CompactionError("boom")), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual(res.status, "failed")
+        self.assertEqual(self.state(), before)
+        with self.logs("WARNING"):
+            again = compact.compact(DAY)
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", self.first.digest, 701))
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), 701)
+
+    def test_a_failed_run_on_a_day_back_at_status_landing_leaves_the_row_too(self):
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        before = self.state()
+        with patch.object(compact, "verify", side_effect=compact.CompactionError("boom")), self.logs("ERROR"):
+            res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertEqual(self.state(), before)                                         # archive_path is still there
+        self.assert_no_leftovers()
+
+    def test_a_forced_run_on_a_landing_file_that_cannot_be_read_leaves_the_row_and_the_archive(self):
+        before = self.state()
+        drop_landing()
+        paths.ticks_landing_file(DAY).write_bytes(b"not a database, " * 300)
+        with self.assertRaises(sqlite3.DatabaseError):
+            compact.compact(DAY, force=True)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(compact.compact(DAY).status, "verified")
+        self.assertEqual(self.state(), before)
+
     def test_a_lost_archive_is_not_papered_over_by_a_smaller_landing_file(self):
         self.retain()
         row = tick_days_row()

@@ -403,6 +403,9 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     given. With or without `force`, an archive is never replaced by one holding fewer packets: the result is
     `failed`, its error names both counts, and only this run's temporary folder is removed (I-13).
 
+    A run that fails on a day that has, or had, an archive leaves its tick_days row exactly as it was; the
+    failure is in the result only.
+
     An archive is replaced by renames, never by deleting it first (module docstring). A replacement that
     an earlier run left half done is undone before anything else; `error` then says so, whatever the status.
     """
@@ -510,9 +513,13 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     try:
         verify(tmp, res.digest, res.packets)
     except CompactionError as e:
-        res.status = "failed"
-        res.landing_bytes = _landing_size(landing)
-        _record(res, day, landing)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not target.exists() and not _has_archive(existing):
+            # A first compaction: note the day as still in its landing file. A day that has, or had, an
+            # archive keeps its row exactly as it was (I-13): the failure is reported in the result only.
+            res.status = "failed"
+            res.landing_bytes = _landing_size(landing)
+            _record(res, day, landing)
         log.error("compaction of %s failed verification: %s (landing kept)", day, e)
         return done("failed", str(e))
 
