@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import urllib.parse
 from typing import Any, Optional
 
 import requests
@@ -27,12 +28,36 @@ _DISRUPT_RE = re.compile("|".join(_DISRUPT_PATTERNS), re.IGNORECASE)
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
 
+_KEY_ENV = ("GOOGLE_AI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+_REDACTED = "[redacted]"
+# What a key may be made of: visible ASCII. Anything else cannot be sent as a header value, and
+# `requests` would quote the whole value back in its error.
+_SENDABLE_KEY = re.compile(r"[\x21-\x7e]+")
+
+
 def resolve_gemini_api_key() -> str:
     return (
         os.environ.get("GOOGLE_AI_API_KEY", "")
         or os.environ.get("GEMINI_API_KEY", "")
         or os.environ.get("GOOGLE_API_KEY", "")
     ).strip()
+
+
+def scrub(text: str, *keys: Optional[str]) -> str:
+    """`text` with every Gemini key replaced by "[redacted]".
+
+    Covers the keys passed in and every key the environment holds, each as written, URL-quoted and
+    as `repr` would escape it. The key travels in a header and should never be in an error or log
+    text to begin with; everything this package logs or reports goes through here regardless.
+    """
+    secrets = {(k or "").strip() for k in keys} | {os.environ.get(name, "").strip() for name in _KEY_ENV}
+    spellings: set[str] = set()
+    for secret in secrets - {""}:
+        spellings |= {secret, repr(secret)[1:-1], urllib.parse.quote(secret, safe=""),
+                      urllib.parse.quote_plus(secret)}
+    for spelling in sorted(spellings, key=len, reverse=True):
+        text = text.replace(spelling, _REDACTED)
+    return text
 
 
 def heuristic_suspect(
@@ -85,6 +110,11 @@ def classify_batch(
         raise RuntimeError(
             "Missing GOOGLE_AI_API_KEY / GEMINI_API_KEY — cannot classify"
         )
+    if not _SENDABLE_KEY.fullmatch(key):
+        raise RuntimeError(
+            "The Gemini API key holds a space, a control character or a non-ASCII character, "
+            "so it cannot be sent — check GOOGLE_AI_API_KEY / GEMINI_API_KEY"
+        )
     if not articles:
         return []
 
@@ -135,9 +165,11 @@ ARTICLES:
 {json.dumps(payload_articles, ensure_ascii=False)}
 """
 
+    # The key goes in a header, never in the URL: URLs end up in error texts, proxy logs and
+    # urllib3's debug log.
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_id}:generateContent?key={key}"
+        f"{model_id}:generateContent"
     )
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -146,9 +178,18 @@ ARTICLES:
             "responseMimeType": "application/json",
         },
     }
-    resp = requests.post(url, json=body, timeout=60)
+    failure = ""
+    try:
+        resp = requests.post(url, headers={"x-goog-api-key": key}, json=body, timeout=60)
+    except Exception as e:
+        failure = f"Gemini request failed: {type(e).__name__}: {scrub(str(e), key)}"
+    if failure:
+        # Raised outside the handler on purpose: the original error holds the prepared request,
+        # headers and all, and must not ride along as this error's context.
+        raise RuntimeError(failure)
     if resp.status_code >= 400:
-        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
+        # Scrubbed before the cut, so the cut cannot leave half a key behind.
+        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {scrub(str(resp.text), key)[:300]}")
     data = resp.json()
     try:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
