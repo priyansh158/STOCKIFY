@@ -341,6 +341,8 @@ class Engine {
     // funds (A4 §6.5)
     std::optional<Paise> mark_price(InstrumentId iid) const;
     std::optional<Paise> ref_price(InstrumentId iid) const;
+    // The margin model's portfolio (D-80): NRML positions and MIS futures and options, one net NRML leg each.
+    std::vector<MarginLeg> fo_book(const Ledger& ledger) const;
     Paise blocked(const Ledger& ledger, Date d) const;
     Funds funds(const Ledger& ledger) const;
     bool reduces(InstrumentId iid, Product product, Side side, Qty qty) const;

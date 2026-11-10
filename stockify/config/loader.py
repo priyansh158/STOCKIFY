@@ -12,7 +12,9 @@ Rules enforced for every file:
 * within one dated list, rows are sorted by `effective_from` per `applies`
   key, and two rows for the same key may not share a date;
 * charge rates are decimal strings converted exactly to ppb through
-  `stockify.numerics` (a `<field>_ppb` key is added next to each one).
+  `stockify.numerics` (a `<field>_ppb` key is added next to each one);
+* in `broker_policy.json`, an `FO` row of `mis_margin_pct` is exactly 1: it is a share of the NRML
+  margin, and intraday F&O leverage is not modelled (A4 §6.5, D-80).
 
 `jsonschema` is not a dependency, so the checks are written by hand.
 """
@@ -149,6 +151,23 @@ def _convert_charge_rates(doc: dict) -> None:
                         raise ConfigError(f"charges.components.{comp}[{i}].{field}: {e}") from e
 
 
+def _check_mis_margin(doc: dict) -> None:
+    """broker_policy.mis_margin_pct: a CM row is a share of the traded value; an FO row is a share of the NRML
+    margin, and only the whole of it is modelled (A4 §6.5, D-80). Any other FO value is refused here, so that it is
+    never applied as a silent scale."""
+    for i, row in enumerate(doc.get("mis_margin_pct", [])):
+        if not isinstance(row, dict) or (row.get("applies") or {}).get("segment") != "FO":
+            continue
+        where = f"broker_policy.mis_margin_pct[{i}]"
+        try:
+            whole = numerics.to_ppb(row.get("pct")) == numerics.to_ppb("1")
+        except (ArithmeticError, TypeError, ValueError) as e:      # not a decimal string
+            raise ConfigError(f"{where}.pct: {e}") from e
+        if not whole:
+            raise ConfigError(f"{where}: the FO row from {row.get('effective_from')} has pct {row.get('pct')!r}; only "
+                              '"1" (the full NRML margin) is accepted: intraday F&O leverage is not modelled (D-80)')
+
+
 def load_json(name: str, config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
@@ -162,6 +181,8 @@ def load_json(name: str, config_dir: Path | None = None) -> dict:
     doc = _walk_dated(doc, name.removesuffix(".json"), allow_verify=(name == "charges.json"))
     if name == "charges.json":
         _convert_charge_rates(doc)
+    if name == "broker_policy.json":
+        _check_mis_margin(doc)
     return doc
 
 

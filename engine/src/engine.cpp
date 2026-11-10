@@ -52,6 +52,36 @@ void check_cal_days(const char* key, const Json* rows, const std::optional<std::
     }
 }
 
+// broker_policy.mis_margin_pct (runner._check_mis_rows): an FO row is a share of the NRML margin, and only the whole
+// of it is modelled (A4 §6.5, D-80). Any other value is refused, never scaled silently. The message is the oracle's.
+void check_mis_rows(const Json& policy) {
+    const auto rows = policy.find("mis_margin_pct");
+    if (rows == policy.end() || !rows->is_array()) {
+        return;
+    }
+    for (const Json& r : *rows) {
+        if (!r.is_object()) {
+            continue;
+        }
+        const auto applies = r.find("applies");
+        if (applies == r.end() || !applies->is_object()) {
+            continue;
+        }
+        const auto segment = applies->find("segment");
+        if (segment == applies->end() || !segment->is_string() || segment->get<std::string>() != "FO") {
+            continue;
+        }
+        const auto v = r.find("pct_ppb");
+        const bool whole = v != r.end() && v->is_number_integer();
+        if (!whole || *v != Json(kPpb)) {
+            throw RunError("bundle: broker_policy.mis_margin_pct: the FO row from " +
+                           r.at("effective_from").get<std::string>() + " has pct_ppb " +
+                           (whole ? v->dump() : std::string("missing")) + "; only " + std::to_string(kPpb) +
+                           " (the full NRML margin) is accepted: intraday F&O leverage is not modelled (D-80)");
+        }
+    }
+}
+
 }  // namespace
 
 SessionCalendar Engine::all_days(const Json& root, const SessionCalendar& days) {
@@ -109,6 +139,7 @@ Engine::Engine(Bundle bundle)
             day_seeds_.emplace_back(calendar_.days()[i].date, *bundle_.day_seeds[i]);
         }
     }
+    check_mis_rows(require(bundle_.root, "broker_policy", "bundle"));
     const Json& margin_cfg = require(run, "margin", "run");
     const std::string margin_model = require_string(margin_cfg, "model", "run.margin");
     auto host = [this] {
@@ -855,14 +886,8 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
     const Paise blk = blocked(led, d);
     equity_.push_back(EquityRow{d, nav, led.cash, blk, nav - led.capital + led.charges_total, led.charges_total});
     if (!margin_->daily_model().empty()) {  // SPAN-lite's per-underlying day rows (M4.8)
-        std::vector<MarginLeg> legs;
-        for (const Position& p : led.positions()) {
-            if (p.q != 0 && p.product == Product::NRML) {
-                legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
-            }
-        }
-        for (const UnderlyingMargin& b :
-             margin_->breakdown(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, iso_date(d))) {
+        for (const UnderlyingMargin& b : margin_->breakdown(
+                 fo_book(led), instruments_, [this](InstrumentId i) { return ref_price(i); }, iso_date(d))) {
             margin_daily_.push_back(MarginDailyRow{d, b.underlying, std::string(margin_->daily_model()), b.step,
                                                    b.scan, b.somc, b.elm, b.addons, b.total()});
         }

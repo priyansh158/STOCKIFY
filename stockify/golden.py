@@ -18,7 +18,8 @@ Defaults (all overridable in the YAML under `bundle:`):
 * `mis_cutoff`: none (no square-off) unless given, e.g. `{CM: "15:20", FO: "15:25"}`; `CM_CAS`
   (CAS stocks on their CAS days, Z-5) defaults to the CM time.
 * charges `zero`: every component zero; or explicit rows in the A1 §7.2 format.
-* policy: protection 200 bp, MIS margin CM 20 % / FO 100 %, no CNC sale hold-back.
+* policy: protection 200 bp, MIS margin CM 20 % of the value / FO 100 % of the NRML margin (the only
+  FO value the runners accept, D-80), no CNC sale hold-back.
 * margin: flat index 12 %, stock 20 %. Pricing: stale 5000 ms, risk-free 0.
 """
 from __future__ import annotations

@@ -35,7 +35,7 @@ class SpanLiteMargin final : public MarginModel {
                       const std::function<std::optional<Paise>(InstrumentId)>& price,
                       const std::string& date) const override;
     Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const override {
-        return flat_.mis(kind, units, price, date);  // MIS is the same rule under every model (A4 §6.5)
+        return flat_.mis(kind, units, price, date);  // MIS shares: the same rule under every model (A4 §6.5)
     }
     std::string label() const override { return "margin:spanlite(approx)"; }
     std::vector<UnderlyingMargin> breakdown(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,

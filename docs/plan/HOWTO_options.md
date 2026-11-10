@@ -118,6 +118,25 @@ Margin is the money the broker blocks while a position is open. A run picks its 
   with an error instead of guessing.
 - **spanlite** and **flat** are estimates, not NSE's own calculation, and are labelled as such.
 
+**Intraday (MIS) futures and options need the same margin as carry-forward (NRML) ones.** Zerodha gives no
+intraday leverage on F&O (Z-5), so the model you picked prices an MIS future or option exactly as it prices an NRML
+one:
+
+- buying an option costs its premium; selling an option, or buying or selling a future, blocks the model's margin
+  for it; an order that only closes part of a position blocks nothing;
+- MIS and NRML positions sit in one book per underlying, so an MIS leg and an NRML leg hedge each other: a long
+  wing bought NRML cuts the margin of a call sold MIS;
+- what makes an order MIS is unchanged: the broker squares it off at the cut-off (15:26 for F&O), with a fee.
+
+Two examples with NIFTY at 25,000, a lot of 65 and the flat model (12 % of the index price × quantity):
+
+- buying one future MIS blocks ₹1,95,000, the same as NRML (not the whole ₹16,25,000 contract value);
+- selling one call MIS at ₹100 blocks ₹1,95,000, the same as NRML (not the ₹6,500 the call is sold for).
+
+Only shares get an intraday rate (20 % of the value traded: `broker_policy.json` → `mis_margin_pct`, the `CM`
+row). The `FO` row there must stay `"1"`: the config loader and the runners refuse any other value with "intraday
+F&O leverage is not modelled".
+
 ### The staircase
 
 SPAN is the exchange's margin method, and NSE publishes its risk file every day. The staircase tries the steps from

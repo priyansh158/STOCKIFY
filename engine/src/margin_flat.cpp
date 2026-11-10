@@ -205,8 +205,10 @@ Int128 FlatMargin::long_option_delivery(const Instrument& row, Qty units, const 
 }
 
 Paise FlatMargin::mis(std::string_view kind, Qty units, Paise price, const std::string& date) const {
-    const bool deriv = kind == "FUT" || kind == "CE" || kind == "PE";
-    const Ppb r = mis_rate(deriv ? "FO" : "CM", date);
+    if (kind == "FUT" || kind == "CE" || kind == "PE") {  // margin.FlatMargin.mis: the same refusal
+        throw RunError("mis: a " + std::string(kind) + " is margined as NRML, not as a share of its value (D-80)");
+    }
+    const Ppb r = mis_rate("CM", date);
     const Qty u = units < 0 ? -units : units;
     const Int128 x = Int128::mul(checked_mul(u, price), r);
     if (x.negative()) {

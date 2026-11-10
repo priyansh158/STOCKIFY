@@ -76,24 +76,57 @@ std::optional<Paise> Engine::ref_price(InstrumentId iid) const {  // runner._ref
     return it == underlying_last_.end() ? std::nullopt : std::optional<Paise>(it->second);
 }
 
-Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked
-    std::vector<MarginLeg> legs;
-    Paise mis = 0;
-    const std::string date = iso(d);
+namespace {
+
+// Adds `units` to the leg of `iid`, or appends an NRML leg for it: one leg per instrument, in first-seen order
+// (the oracle's dict).
+void add_units(std::vector<MarginLeg>& legs, InstrumentId iid, Qty units) {
+    const auto it = std::ranges::find(legs, iid, &MarginLeg::instrument);
+    if (it != legs.end()) {
+        it->units = checked_add(it->units, units);
+    } else {
+        legs.push_back(MarginLeg{iid, Product::NRML, units});
+    }
+}
+
+void drop_flat_legs(std::vector<MarginLeg>& legs) {
+    std::erase_if(legs, [](const MarginLeg& leg) { return leg.units == 0; });
+}
+
+}  // namespace
+
+// runner._fo_book: the margin model's portfolio (A4 §6.5, D-80). Every NRML position and every MIS future or option,
+// one net leg per instrument in the ledger's order, each handed over as NRML: an MIS future or option is margined
+// exactly as the same NRML position, in one book with the NRML ones, so a hedge across the two products counts.
+// Legs that net to nothing are left out.
+std::vector<MarginLeg> Engine::fo_book(const Ledger& ledger) const {
+    std::vector<MarginLeg> net;
     for (const Position& p : ledger.positions()) {
-        if (p.q == 0) {
-            continue;
-        }
-        if (p.product == Product::MIS) {
-            const std::optional<Paise> m = mark_price(p.instrument);
-            mis = checked_add(mis, margin_->mis(instruments_.at(p.instrument).kind, p.q,
-                                               m && *m != 0 ? *m : p.avg_price(), date));
-        } else {
-            legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
+        if (p.q != 0 && (p.product == Product::NRML ||
+                         (p.product == Product::MIS && instruments_.at(p.instrument).is_derivative()))) {
+            add_units(net, p.instrument, p.qty());
         }
     }
-    return checked_add(margin_->requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
-                       mis);
+    drop_flat_legs(net);
+    return net;
+}
+
+Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked
+    Paise mis = 0;  // MIS shares: a share of their value (A4 §6.5)
+    const std::string date = iso(d);
+    for (const Position& p : ledger.positions()) {
+        if (p.q == 0 || p.product != Product::MIS) {
+            continue;
+        }
+        const Instrument& row = instruments_.at(p.instrument);
+        if (!row.is_derivative()) {
+            const std::optional<Paise> m = mark_price(p.instrument);
+            mis = checked_add(mis, margin_->mis(row.kind, p.q, m && *m != 0 ? *m : p.avg_price(), date));
+        }
+    }
+    return checked_add(
+        margin_->requirement(fo_book(ledger), instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
+        mis);
 }
 
 Funds Engine::funds(const Ledger& ledger) const {  // runner.funds
@@ -119,33 +152,18 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
     if (o.product == Product::CNC) {
         return o.side == Side::Buy ? checked_mul(o.qty, px) : 0;
     }
-    if (o.product == Product::MIS) {
+    if (o.product == Product::MIS && !row.is_derivative()) {
         return margin_->mis(row.kind, o.qty, px, date);
     }
+    // NRML, and MIS futures and options, which need what the same NRML order needs (D-80)
     if (row.is_option() && o.side == Side::Buy) {
         return checked_mul(o.qty, px);
     }
-    std::vector<MarginLeg> legs;
-    for (const Position& p : book_.ledger.positions()) {
-        if (p.q != 0 && p.product == Product::NRML) {
-            legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
-        }
-    }
-    // after_legs = legs + [(o, NRML, signed qty)], combined per (instrument, product) in first-seen order
-    std::vector<MarginLeg> combined;
-    auto add = [&](const MarginLeg& leg) {
-        for (MarginLeg& c : combined) {
-            if (c.instrument == leg.instrument && c.product == leg.product) {
-                c.units += leg.units;
-                return;
-            }
-        }
-        combined.push_back(leg);
-    };
-    for (const MarginLeg& leg : legs) {
-        add(leg);
-    }
-    add(MarginLeg{o.instrument, Product::NRML, o.qty * o.sign()});
+    const std::vector<MarginLeg> legs = fo_book(book_.ledger);
+    // the book with the order in it: its instrument's leg changed, or a new last leg
+    std::vector<MarginLeg> combined = legs;
+    add_units(combined, o.instrument, o.qty * o.sign());
+    drop_flat_legs(combined);
     // before and after (the staircase prices each underlying at one step for both, MEZ 4.9)
     const auto [before, after] = margin_->pair(
         legs, combined, instruments_, [this](InstrumentId i) { return ref_price(i); },

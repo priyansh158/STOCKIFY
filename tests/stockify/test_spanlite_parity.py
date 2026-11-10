@@ -49,6 +49,10 @@ def spanlite_bundle(g: dict, **over) -> dict:
 class OptionTrader(Strategy):
     """Sells straddles, buys wings, trades the future, closes legs; logs funds after every order."""
 
+    def product(self, iid: int) -> str:
+        """The product every order on `iid` is placed in (test_fo_mis_margin trades some contracts as MIS, D-80)."""
+        return "NRML"
+
     def on_start(self, ctx):  # noqa: ANN001
         ctx.subscribe_ticks(1)
         self.n = 0
@@ -84,7 +88,7 @@ class OptionTrader(Strategy):
         for o in orders:
             iid, side = o[0], o[1]
             qty = o[2] if len(o) > 2 else 75 * (1 + rng.below(2))
-            oid = ctx.place(iid, side, qty, "NRML", "MARKET", protection=5000)
+            oid = ctx.place(iid, side, qty, self.product(iid), "MARKET", protection=5000)
             ctx.log("info", f"order {oid} {iid} {side} {qty} {ctx.order(oid).status} funds {ctx.funds()!r}")
 
 
@@ -219,7 +223,7 @@ class SpanLiteOracleRunTests(unittest.TestCase):
             for r in rows:
                 per_day[r["trade_date"]] = per_day.get(r["trade_date"], 0) + int(r["total"])
             for d, total in per_day.items():
-                self.assertLessEqual(total, equity[d])            # blocked = SPAN-lite NRML + any MIS
+                self.assertLessEqual(total, equity[d])            # blocked = the SPAN-lite book + any MIS shares
             self.assertTrue(all(int(r[k]) % 100 == 0 for r in rows for k in ("scan", "somc", "elm", "addons")))
 
 

@@ -440,7 +440,7 @@ yet"), never a fallback to flat.
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
 | `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,underlying_mark_paise` (the last: a derivative's underlying mark at DAY_END, empty otherwise; D-55) |
 | `equity.csv` | ✔ | `trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise` |
-| `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with NRML F&O legs at DAY_END, none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons) |
+| `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with F&O legs at DAY_END (NRML ones, and any MIS future or option still open then: one book, A4 §6.5, D-80), none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons) |
 | `metrics.json` | ✔ (floats; A4 §9.3) | A4 §8 |
 | `events_log.txt` | ✔ | strategy and engine log lines stamped with engine time |
 | `determinism.json` | — | SHA-256 of each deterministic file |
@@ -672,7 +672,7 @@ Times are IST; the resolver converts them to UTC ns per trading day and applies 
 
 ### 7.5 `broker_policy.json`
 
-Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era equity time), `mis_margin_pct` (decimal string, e.g. `"0.20"`), `market_protection_auto_bp` (integer bp, e.g. `200` = 2%; **an assumption**, labelled; D-34), `freeze_policy_default`, `max_slices` (10, R-1), `cnc_sell_credit_same_day` (fraction), `delivery_margin_schedule` (Z-4 rows: `day_offset`, `applies_to`, `basis`, `pct`), `block_new_long_otm_stock_options_expiry_week`, `rms_square_off_time`.
+Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era equity time), `mis_margin_pct` (decimal string per segment: the `CM` row is a share of the traded value, e.g. `"0.20"`; the `FO` row is a share of the NRML margin and must be `"1"`, since intraday F&O leverage is not modelled and any other value is refused; A4 §6.5, D-80), `market_protection_auto_bp` (integer bp, e.g. `200` = 2%; **an assumption**, labelled; D-34), `freeze_policy_default`, `max_slices` (10, R-1), `cnc_sell_credit_same_day` (fraction), `delivery_margin_schedule` (Z-4 rows: `day_offset`, `applies_to`, `basis`, `pct`), `block_new_long_otm_stock_options_expiry_week`, `rms_square_off_time`.
 
 ### 7.6 `margin_params.json`
 

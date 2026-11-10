@@ -27,7 +27,7 @@ from datetime import date as _date
 from stockify import numerics, timeutil
 from stockify.oracle import costs as costs_mod
 from stockify.oracle.ledger import Ledger
-from stockify.oracle.margin import FlatMargin
+from stockify.oracle.margin import DERIVATIVES, FlatMargin
 from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, participation_cap, path_points, protection_limit,
                                      slipped)
 from stockify.oracle.orders import ACTIVE, FINAL, SYSTEM_TAGS, Fill, FillView, Order, OrderView
@@ -124,6 +124,7 @@ class Engine:
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
+        self._check_mis_rows(bundle["broker_policy"].get("mis_margin_pct"))
         model = self.run_cfg["margin"]["model"]
         if model == "spanlite":
             from stockify.fno.spanlite import SpanLiteMargin
@@ -299,6 +300,19 @@ class Engine:
         return None
 
     @staticmethod
+    def _check_mis_rows(rows) -> None:  # noqa: ANN001
+        """broker_policy.mis_margin_pct: an FO row is a share of the NRML margin, and only the whole of it is modelled
+        (A4 §6.5, D-80): any other value is refused, never scaled silently."""
+        for r in rows or []:
+            if (r.get("applies") or {}).get("segment") != "FO":
+                continue
+            v = r.get("pct_ppb")
+            if type(v) is not int or v != PPB:
+                raise RunError(f"bundle: broker_policy.mis_margin_pct: the FO row from {r['effective_from']} has pct_ppb "
+                               f"{v if type(v) is int else 'missing'}; only {PPB} (the full NRML margin) is "
+                               "accepted: intraday F&O leverage is not modelled (D-80)")
+
+    @staticmethod
     def _check_instruments(rows: list[dict]) -> None:
         """Ids within uint32 and positive lots and ticks, checked once (as the engine's InstrumentTable does), so
         no later division meets a zero."""
@@ -410,17 +424,25 @@ class Engine:
             return (m.bid + m.ask) // 2
         return m.ltp
 
-    def blocked(self, ledger: Ledger, d: str) -> int:
-        legs, mis = [], 0
+    def _fo_book(self, ledger: Ledger) -> list[tuple[int, str, int]]:
+        """The margin model's portfolio (A4 §6.5, D-80): every NRML position and every MIS future or option, one net
+        leg per instrument in the ledger's order, each handed over as NRML. An MIS future or option is margined
+        exactly as the same NRML position, in one book with the NRML ones, so a hedge across the two products
+        counts; legs that net to nothing are left out."""
+        net: dict[int, int] = {}
         for p in ledger.positions.values():
-            if not p.q:
-                continue
-            if p.product == "MIS":
-                mis += self.margin.mis(self.inst[p.instrument_id]["kind"], p.q,
-                                       self.mark_price(p.instrument_id) or p.avg_price, d)
-            else:
-                legs.append((p.instrument_id, p.product, p.qty))
-        return self.margin.requirement(legs, self.inst.__getitem__, self._ref_price, d) + mis
+            if p.q and (p.product == "NRML" or
+                        (p.product == "MIS" and self.inst[p.instrument_id]["kind"] in DERIVATIVES)):
+                net[p.instrument_id] = net.get(p.instrument_id, 0) + p.qty
+        return [(iid, "NRML", units) for iid, units in net.items() if units]
+
+    def blocked(self, ledger: Ledger, d: str) -> int:
+        mis = 0                                         # MIS shares: a share of their value (A4 §6.5)
+        for p in ledger.positions.values():
+            kind = self.inst[p.instrument_id]["kind"]
+            if p.q and p.product == "MIS" and kind not in DERIVATIVES:
+                mis += self.margin.mis(kind, p.q, self.mark_price(p.instrument_id) or p.avg_price, d)
+        return self.margin.requirement(self._fo_book(ledger), self.inst.__getitem__, self._ref_price, d) + mis
 
     def _ref_price(self, iid: int) -> int | None:
         return self.mark_price(iid) or self.underlying_last.get(iid)
@@ -447,17 +469,15 @@ class Engine:
             return 0
         if o.product == "CNC":
             return o.qty * px if o.side == "BUY" else 0
-        if o.product == "MIS":
+        if o.product == "MIS" and kind not in DERIVATIVES:
             return self.margin.mis(kind, o.qty, px, d)
+        # NRML, and MIS futures and options, which need what the same NRML order needs (D-80)
         if kind in ("CE", "PE") and o.side == "BUY":
             return o.qty * px
-        legs = [(p.instrument_id, p.product, p.qty) for p in self.book.ledger.positions.values()
-                if p.q and p.product == "NRML"]
-        after_legs = legs + [(o.instrument_id, "NRML", o.qty * o.sign)]
-        combined: dict = {}
-        for iid, prod, units in after_legs:
-            combined[(iid, prod)] = combined.get((iid, prod), 0) + units
-        merged = [(i, p, u) for (i, p), u in combined.items()]
+        legs = self._fo_book(self.book.ledger)
+        combined = {iid: units for iid, _, units in legs}
+        combined[o.instrument_id] = combined.get(o.instrument_id, 0) + o.qty * o.sign
+        merged = [(iid, "NRML", units) for iid, units in combined.items() if units]
         price_after = lambda i: px if i == o.instrument_id else self._ref_price(i)  # noqa: E731
         if hasattr(self.margin, "pair"):            # the staircase: before and after at one step (MEZ 4.9)
             before, after = self.margin.pair(legs, merged, self.inst.__getitem__, self._ref_price, price_after, d)
@@ -1294,8 +1314,7 @@ class Engine:
         blocked = self.blocked(led, d)
         self.equity.append((d, nav, led.cash, blocked, nav - led.capital + led.charges_total, led.charges_total))
         if hasattr(self.margin, "breakdown"):       # per-underlying day rows (M4.8; flat writes none)
-            legs = [(p.instrument_id, p.product, p.qty) for p in led.positions.values() if p.q and p.product == "NRML"]
-            for b in self.margin.breakdown(legs, self.inst.__getitem__, self._ref_price, d):
+            for b in self.margin.breakdown(self._fo_book(led), self.inst.__getitem__, self._ref_price, d):
                 self.margin_daily.append((d, b.underlying_id, self.margin_model, b.step, b.scan, b.somc, b.elm,
                                           b.addons, b.total))
         self.strategy.on_session_end(self.ctx)

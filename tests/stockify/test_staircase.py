@@ -336,6 +336,7 @@ class StaircaseTests(unittest.TestCase):
         fake = SimpleNamespace(inst=ROWS, margin=StaircaseMargin(e.bundle, e), now=NOW,
                                book=SimpleNamespace(ledger=SimpleNamespace(positions={(10, "NRML"): pos})),
                                _date=lambda t: DAY, _reduces=lambda *a: False, _ref_price=price)
+        fake._fo_book = lambda ledger: runner.Engine._fo_book(fake, ledger)
         order = SimpleNamespace(instrument_id=12, product="NRML", side="SELL", qty=65, sign=-1)
         self.assertEqual(runner.Engine._required(fake, order, 5_000), a - b)
 

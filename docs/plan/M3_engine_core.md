@@ -83,7 +83,7 @@ Files: `costs.hpp/.cpp`.
 Files: `ledger.hpp/.cpp`, `margin_flat.cpp`.
 
 - [x] Positions, average price, realised P&L, cash, NAV (A4 §6); funds reservation at submit with the required-amount table of A4 §6.5. MIS square-off at the dated cut-off with `AUTO_SQOFF` orders that bypass the session/margin checks, plus the optional fee (G04). `SEG_CLOSE` (DAY-order expiry, provisional futures marks) and `DAY_END` (settlement fallback, `positions_eod`, the single daily NAV row, `on_session_end`) per A4 §1.10 and §6.7; re-marks when daily settlement prices arrive (A4 §6.4).
-- [x] `MarginModel` interface (A2 §2) with `FlatMargin` (T0, D-14): MIS `mis_margin_pct`; NRML futures and short options `pct × notional` by underlying class (index / stock) from `margin_params.json`; labelled approximate (I-14).
+- [x] `MarginModel` interface (A2 §2) with `FlatMargin` (T0, D-14): MIS shares `mis_margin_pct` (MIS futures and options are margined as NRML, D-80); NRML futures and short options `pct × notional` by underlying class (index / stock) from `margin_params.json`; labelled approximate (I-14).
 - [x] Index options/futures cash settlement per A4 §7.2 (needed for G10; physical settlement is M4.6).
 
 ## M3.9 Metrics and artifacts (S)

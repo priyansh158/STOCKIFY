@@ -234,10 +234,13 @@ Amended by D-46 (Kite's contract note, captured 2026-11-06): components are **ex
 | Any order that only reduces an existing position | 0 |
 | CNC buy | `qty·px` |
 | CNC sell | 0 (holdings check `R_HOLDINGS`) |
-| MIS (opening or increasing) | `round_half_up_div(qty·px·mis_margin_ppb, 10⁹)` |
+| MIS shares (opening or increasing) | `round_half_up_div(qty·px·mis_margin_ppb, 10⁹)`, with the `CM` row of `mis_margin_pct` |
+| MIS futures and options | as NRML: the three rows below (Z-5, D-80) |
 | NRML futures (opening or increasing) | incremental margin-model requirement: `M(portfolio + order) − M(portfolio)`, floored at 0 |
 | NRML option buy | `qty·px` (premium, X-10) |
 | NRML option sell (opening or increasing) | incremental margin-model requirement |
+
+**The margin portfolio (D-80).** `portfolio` is every NRML position plus every MIS position in a future or an option, netted per contract: one book per underlying, under whichever margin model the run uses. An MIS leg and an NRML leg therefore hedge each other, and a long and a short of one contract held under the two products need no margin. The blocked margin of positions is `M(portfolio)` plus, for each MIS share position, `round_half_up_div(|q|·mark·mis_margin_ppb, 10⁹)`. "Reduces an existing position" is still judged per `(instrument_id, product)` (§6.1). The `FO` row of `mis_margin_pct` is a share of the NRML margin, and only the whole of it (`1`) is modelled: the config loader and both runners refuse any other value, saying that intraday F&O leverage is not modelled, instead of scaling anything by it. Everything else about MIS (the cut-off and square-off of §6.3, charges, labels) is the same for shares, futures and options.
 
 Margin-model results are converted with `ceil_to(ceil(x), 100)` (§0.3). Charges are not reserved; if they push `available` below zero, risk-increasing orders are rejected `R_MARGIN` until it recovers. A margin model whose requirement grows over time (e.g. the expiry-week schedule, M4.7, D-60) can do the same. An order that only reduces an existing position is never rejected `R_MARGIN`, even in a shortfall, so a short account can always trade out of it. With `rms_square_off` enabled, positions are reduced at the policy time (`RMS_SQOFF`; not modelled while the shipped policy has no time).
 
