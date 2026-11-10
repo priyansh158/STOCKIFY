@@ -347,9 +347,16 @@ def _cmd_oracle_run(args) -> int:
         return 1
     m = res.metrics
     print(res.folder)
-    print(f"NAV {m['nav_start_paise'] / 100:,.2f} -> {m['nav_end_paise'] / 100:,.2f}; trades {m['trades']}; "
-          f"costs {m['costs_total_paise'] / 100:,.2f}; labels {', '.join(res.labels)}", file=sys.stderr)
+    print(_summary_line(m, res.labels), file=sys.stderr)
     return 0
+
+
+def _summary_line(m: dict, labels) -> str:  # noqa: ANN001
+    """The one-line result both `oracle run` and `run` print: NAV, trades, rejected orders, costs, labels."""
+    rejects = sum((m.get("rejects") or {}).values())
+    return (f"NAV {m.get('nav_start_paise', 0) / 100:,.2f} -> {m.get('nav_end_paise', 0) / 100:,.2f}; "
+            f"trades {m.get('trades')}; rejects {rejects}; costs {m.get('costs_total_paise', 0) / 100:,.2f}; "
+            f"labels {', '.join(labels)}")
 
 
 def _cmd_run(args) -> int:
@@ -399,9 +406,7 @@ def _cmd_run(args) -> int:
     print(row["folder"])
     m = json.loads(row["metrics_json"]) if row.get("metrics_json") else {}
     labels = json.loads(row["labels_json"]) if row.get("labels_json") else []
-    print(f"NAV {m.get('nav_start_paise', 0) / 100:,.2f} -> {m.get('nav_end_paise', 0) / 100:,.2f}; "
-          f"trades {m.get('trades')}; costs {m.get('costs_total_paise', 0) / 100:,.2f}; "
-          f"labels {', '.join(labels)}", file=sys.stderr)
+    print(_summary_line(m, labels), file=sys.stderr)
     return 0
 
 
