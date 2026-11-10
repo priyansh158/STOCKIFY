@@ -50,9 +50,15 @@ def loopback_origin(env_name: str, default: str) -> str:
     """Return a normalized HTTP origin restricted to local loopback."""
     value = (os.environ.get(env_name) or default).strip().rstrip("/")
     parsed = urlparse(value)
+    try:
+        port = parsed.port                      # None without one; ValueError for a non-number or out of range
+    except ValueError:
+        port = -1
     if (
         parsed.scheme != "http"
         or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or port == -1
+        or parsed.netloc.endswith(":")
         or parsed.username
         or parsed.password
         or parsed.path not in {"", "/"}
@@ -64,4 +70,5 @@ def loopback_origin(env_name: str, default: str) -> str:
             f"{env_name} must be an HTTP loopback origin, for example "
             f"http://127.0.0.1:3000 (received {value!r})."
         )
-    return value
+    # The origin as a browser sends it: lower-case host, and no port when it is http's default.
+    return f"http://{parsed.hostname}" + (f":{port}" if port not in (None, 80) else "")

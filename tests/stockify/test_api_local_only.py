@@ -125,6 +125,30 @@ class OriginTests(LocalOnlyBase):
         with self.assertRaises(ValueError):
             local_only.WebOriginOnly(None, "")
 
+    def test_a_configured_origin_with_the_default_port_matches_what_a_browser_sends(self):
+        # A browser never puts the scheme's default port in Origin (review m-5).
+        import stockify_paths
+        from server import local_only
+        with support.isolated_env({"STOCKIFY_WEB_ORIGIN": "http://127.0.0.1:80"}, clear=False):
+            origin = stockify_paths.loopback_origin("STOCKIFY_WEB_ORIGIN", "http://127.0.0.1:3000")
+        self.assertEqual(origin, "http://127.0.0.1")
+        guard = local_only.WebOriginOnly(None, origin)
+        self.assertFalse(guard.refuses({"type": "http", "method": "POST", "headers": [(b"origin", b"http://127.0.0.1")]}))
+        self.assertTrue(guard.refuses({"type": "http", "method": "POST", "headers": [(b"origin", b"http://127.0.0.1:3000")]}))
+        # The class on its own normalises both sides, and only the scheme's own default port.
+        for configured, sent, refused in (("http://localhost:80", b"http://localhost", False),
+                                          ("http://localhost", b"http://localhost:80", False),
+                                          ("HTTP://LocalHost:80", b"http://localhost", False),
+                                          ("https://localhost:443", b"https://localhost", False),
+                                          ("http://localhost:443", b"http://localhost", True),
+                                          ("https://localhost:80", b"https://localhost", True),
+                                          ("http://localhost:8080", b"http://localhost", True),
+                                          ("http://localhost:80", b"http://localhost:8080", True),
+                                          ("http://localhost:3000", b"http://localhost:30000", True)):
+            with self.subTest(configured=configured, sent=sent):
+                scope = {"type": "websocket", "headers": [(b"origin", sent)]}
+                self.assertEqual(local_only.WebOriginOnly(None, configured).refuses(scope), refused)
+
     def test_the_guards_wrap_the_whole_app_in_the_right_order(self):
         from fastapi.middleware.cors import CORSMiddleware
         from starlette.middleware.trustedhost import TrustedHostMiddleware

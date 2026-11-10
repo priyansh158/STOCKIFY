@@ -36,6 +36,18 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+_DEFAULT_PORTS = {"http": ":80", "https": ":443"}
+
+
+def _as_a_browser_sends_it(origin: str) -> str:
+    """Trimmed, lower-cased, and without the scheme's own default port, which a browser never puts in Origin."""
+    origin = origin.strip().lower()
+    scheme, sep, rest = origin.partition("://")
+    default = _DEFAULT_PORTS.get(scheme)
+    if sep and default and rest.endswith(default):
+        origin = origin[: -len(default)]
+    return origin
+
 
 def _is_loopback(host: str) -> bool:
     """Starlette's rule for `Host`: the name before the first colon, compared exactly."""
@@ -68,7 +80,7 @@ class WebOriginOnly:
 
     def __init__(self, app: ASGIApp, web_origin: str) -> None:
         self.app = app
-        self.web_origin = web_origin.strip().lower()
+        self.web_origin = _as_a_browser_sends_it(web_origin)
         if not self.web_origin:
             raise ValueError("WebOriginOnly needs the web origin to compare with")
 
@@ -80,7 +92,7 @@ class WebOriginOnly:
             return False
         # Every Origin header counts: two of them, or one holding a list, is not the web origin.
         origins = [value for name, value in scope["headers"] if name.lower() == b"origin"]
-        return any(value.decode("latin-1").strip().lower() != self.web_origin for value in origins)
+        return any(_as_a_browser_sends_it(value.decode("latin-1")) != self.web_origin for value in origins)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if not self.refuses(scope):
