@@ -10,6 +10,7 @@
 // Integers only outside `strategy`. Unknown keys are refused at every level; so is a missing one.
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -26,6 +27,11 @@ inline constexpr std::size_t kSodStateMaxBytes = 256U * 1024U * 1024U;
 // A state a C++ strategy hands back, read by the same rules as a state text (at most 64 levels deep, integers
 // inside 64 bits, no key twice, no NUL); RunError otherwise.
 Json parse_strategy_state(std::string_view text);
+
+// The `sod_state` member of a bundle file's text, read by the same reader as a state text (a bundle's own DOM parse
+// would turn an integer past 64 bits into a float, take the last of a repeated key and keep any depth). nullopt when
+// the file has none, or on a grammar error outside it. RunError for what a state text is refused for.
+std::optional<Json> bundle_sod_state(std::string_view bundle_text);
 
 // The state at the end of the engine's last processed day (or, before a run, the one it was loaded with).
 // RunError when the state cannot be written (a CNC release left after DAY_END, a timer with no queued event, a

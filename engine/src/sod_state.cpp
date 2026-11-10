@@ -133,6 +133,20 @@ std::int64_t as_atleast1(const Json& v, std::string_view where) {
     return x;
 }
 
+// An id counter or the charge-row count: at least `lo`, at most kCounterMax (sod_state.COUNTER_MAX).
+constexpr std::int64_t kCounterMax = std::int64_t{1} << 62;
+
+std::int64_t as_counter(const Json& v, std::string_view where, std::int64_t lo) {
+    const std::int64_t x = as_int(v, where);
+    if (x < lo) {
+        throw bad(where, lo == 1 ? "must be at least 1" : "must not be negative");
+    }
+    if (x > kCounterMax) {
+        throw bad(where, "must be at most " + std::to_string(kCounterMax));
+    }
+    return x;
+}
+
 std::optional<std::int64_t> as_opt_int(const Json& v, std::string_view where) {
     return v.is_null() ? std::nullopt : std::optional<std::int64_t>(as_int(v, where));
 }
@@ -666,6 +680,87 @@ class Builder final : public Json::json_sax_t {
     Json* slot_ = nullptr;
 };
 
+// A bundle file's `sod_state` member, read by the same reader as a state text and nothing else of the file: the
+// document is parsed again as events, the member is built by a Builder (so its depth, big integers, repeated keys and
+// numbers out of range are refused as in a text), and everything outside it is only counted past. A grammar error
+// outside the member is left to the bundle's own parse.
+class Extract final : public Json::json_sax_t {
+ public:
+    Extract() : inner_(kTextDepth) {}
+    Builder inner_;
+    bool found = false;
+
+    bool null() override { return leaf([&] { return inner_.null(); }); }
+    bool boolean(bool v) override { return leaf([&] { return inner_.boolean(v); }); }
+    bool number_integer(number_integer_t v) override { return leaf([&] { return inner_.number_integer(v); }); }
+    bool number_unsigned(number_unsigned_t v) override { return leaf([&] { return inner_.number_unsigned(v); }); }
+    bool number_float(number_float_t v, const string_t& t) override {
+        return leaf([&] { return inner_.number_float(v, t); });
+    }
+    bool string(string_t& v) override { return leaf([&] { return inner_.string(v); }); }
+    bool binary(binary_t& v) override { return leaf([&] { return inner_.binary(v); }); }
+    bool start_object(std::size_t n) override { return open([&] { return inner_.start_object(n); }); }
+    bool start_array(std::size_t n) override { return open([&] { return inner_.start_array(n); }); }
+    bool key(string_t& k) override {
+        if (in_) {
+            return inner_.key(k);
+        }
+        if (level_ == 1) {
+            pending_ = k == "sod_state";
+        }
+        return true;
+    }
+    bool end_object() override { return close([&] { return inner_.end_object(); }); }
+    bool end_array() override { return close([&] { return inner_.end_array(); }); }
+    bool parse_error(std::size_t position, const std::string& token, const Json::exception& ex) override {
+        return in_ ? inner_.parse_error(position, token, ex) : false;
+    }
+
+ private:
+    // Is this value the member's (or inside it)? Called once per value.
+    bool takes() {
+        if (in_) {
+            return true;
+        }
+        if (level_ == 1 && pending_) {
+            pending_ = false;
+            found = true;
+            return true;
+        }
+        return false;
+    }
+    template <typename F>
+    bool leaf(F f) {
+        return takes() ? f() : true;
+    }
+    template <typename F>
+    bool open(F f) {
+        const bool feed = takes();
+        ++level_;
+        if (!feed) {
+            return true;
+        }
+        in_ = true;
+        return f();
+    }
+    template <typename F>
+    bool close(F f) {
+        --level_;
+        if (!in_) {
+            return true;
+        }
+        const bool ok = f();
+        if (level_ == 1) {
+            in_ = false;  // the member's own container is closed
+        }
+        return ok;
+    }
+
+    std::size_t level_ = 0;
+    bool in_ = false;
+    bool pending_ = false;
+};
+
 // The same refusals for a state text and for the state a C++ strategy hands back.
 Json parse_text(std::string_view text, std::size_t max_depth) {
     if (text.size() > kSodStateMaxBytes) {
@@ -943,10 +1038,10 @@ Staged SodState::parse(const Engine& e, const Json& state) {  // sod_state.parse
 
     const Json& c = state.at("counters");
     need(c, kCounters, "counters");
-    s.next_order = static_cast<std::uint64_t>(as_atleast1(c.at("next_order"), "counters.next_order"));
-    s.next_fill = static_cast<std::uint64_t>(as_atleast1(c.at("next_fill"), "counters.next_fill"));
-    s.next_timer = static_cast<std::uint64_t>(as_atleast1(c.at("next_timer"), "counters.next_timer"));
-    s.charge_row = as_nonneg(c.at("charge_row"), "counters.charge_row");
+    s.next_order = static_cast<std::uint64_t>(as_counter(c.at("next_order"), "counters.next_order", 1));
+    s.next_fill = static_cast<std::uint64_t>(as_counter(c.at("next_fill"), "counters.next_fill", 1));
+    s.next_timer = static_cast<std::uint64_t>(as_counter(c.at("next_timer"), "counters.next_timer", 1));
+    s.charge_row = as_counter(c.at("charge_row"), "counters.charge_row", 0);
 
     const std::int64_t cash = as_int(state.at("cash_paise"), "cash_paise");
     const Json& led_doc = state.at("ledger");
@@ -1110,8 +1205,9 @@ Staged SodState::parse(const Engine& e, const Json& state) {  // sod_state.parse
     for (const Json& r : as_list(state.at("pause_reasons"), "pause_reasons")) {
         s.pause_reasons.insert(as_str(r, "pause_reasons"));
     }
-    s.queued = as_list(state.at("queued_notifications"), "queued_notifications");
-    check_free_form(s.queued, "queued_notifications");
+    // Checked in place, before the copy: a copy of a deeply nested value recurses (a bundle file's DOM keeps any depth).
+    check_free_form(as_list(state.at("queued_notifications"), "queued_notifications"), "queued_notifications");
+    s.queued = state.at("queued_notifications");
 
     for (const Json& row : as_list(state.at("fsp_seen"), "fsp_seen")) {
         const Json& f = as_list(row, "fsp_seen row", 3);
@@ -1272,5 +1368,24 @@ void load_sod_state(Engine& e, std::string_view text) {  // runner.Engine.load_s
 }
 
 Json parse_strategy_state(std::string_view text) { return parse_text(text, kMaxDepth); }
+
+std::optional<Json> bundle_sod_state(std::string_view bundle_text) {
+    if (bundle_text.find("\"sod_state\"") == std::string_view::npos) {
+        return std::nullopt;
+    }
+    Extract extract;
+    const bool ok = Json::sax_parse(bundle_text.begin(), bundle_text.end(), &extract, Json::input_format_t::json, true,
+                                    false);
+    if (!ok) {
+        if (!extract.inner_.error.empty()) {
+            throw RunError("sod_state: " + extract.inner_.error);
+        }
+        return std::nullopt;  // a grammar error elsewhere: the bundle's own parse reports it
+    }
+    if (!extract.found) {
+        return std::nullopt;
+    }
+    return std::move(extract.inner_.root);
+}
 
 }  // namespace stocksim

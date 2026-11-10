@@ -120,6 +120,10 @@ INT_LO, INT_HI = -(2**63), 2**64 - 1   # the integers a free-form part may hold:
 I64_MAX = 2**63 - 1
 I32_MAX = 2**31 - 1
 U32_MAX = 2**32 - 1
+# An id counter or the charge-row count may not pass 2**62. A run adds at most one a nanosecond, so no run reaches it
+# (146 years), and a state the runner writes is therefore one its own reader accepts: the writer's next id or row
+# stays far inside int64 (the C++ engine adds them in int64 and the CSV writers count past them).
+COUNTER_MAX = 2**62
 
 
 def esc(s: str) -> str:
@@ -304,6 +308,15 @@ def _atleast1(v, where: str) -> int:  # noqa: ANN001
     return v
 
 
+def _counter(v, where: str, lo: int) -> int:  # noqa: ANN001
+    v = _int(v, where)
+    if v < lo:
+        raise _bad(where, "must be at least 1" if lo == 1 else "must not be negative")
+    if v > COUNTER_MAX:
+        raise _bad(where, f"must be at most {COUNTER_MAX}")
+    return v
+
+
 def _i32(v, where: str) -> int:  # noqa: ANN001
     v = _int(v, where)
     if not -(2**31) <= v <= I32_MAX:
@@ -483,10 +496,10 @@ def parse(engine, state) -> dict:  # noqa: ANN001
 
     c = state["counters"]
     _need(c, COUNTERS, "counters")
-    next_order = _atleast1(c["next_order"], "counters.next_order")
-    next_fill = _atleast1(c["next_fill"], "counters.next_fill")
-    next_timer = _atleast1(c["next_timer"], "counters.next_timer")
-    charge_row = _nonneg(c["charge_row"], "counters.charge_row")
+    next_order = _counter(c["next_order"], "counters.next_order", 1)
+    next_fill = _counter(c["next_fill"], "counters.next_fill", 1)
+    next_timer = _counter(c["next_timer"], "counters.next_timer", 1)
+    charge_row = _counter(c["charge_row"], "counters.charge_row", 0)
 
     cash = _int(state["cash_paise"], "cash_paise")
     led_doc = state["ledger"]
@@ -785,6 +798,55 @@ def _lone_surrogate(tok: str) -> bool:
         if 0xDC00 <= code < 0xE000:
             return True
         i += 6
+
+
+BUNDLE_DEPTH = 100                # levels anywhere in a bundle file outside its sod_state (a guard for json.loads)
+_COLON = re.compile(r"\s*:")
+
+
+def _scan_bundle(text: str) -> None:
+    """The bundle's depth guard: the `sod_state` member under the same limit as a state text (counted from the state
+    object itself), the rest of the file under BUNDLE_DEPTH; unpaired surrogates anywhere."""
+    depth = 0
+    state_depth = None                # the depth of the `sod_state` value's own container, while inside it
+    pending = False                   # the next token is the value of the top-level "sod_state" key
+    for m in _TOKEN.finditer(text):
+        tok = m.group()
+        if tok in "[{":
+            depth += 1
+            if pending:
+                state_depth = depth
+            pending = False
+            if state_depth is not None:
+                if depth - state_depth + 1 > TEXT_DEPTH:
+                    raise StateError(f"sod_state: the text is nested more than {TEXT_DEPTH} levels deep")
+            elif depth > BUNDLE_DEPTH:
+                raise StateError(f"sod_state: the bundle is nested more than {BUNDLE_DEPTH} levels deep")
+        elif tok in "]}":
+            depth -= 1
+            if state_depth is not None and depth < state_depth:
+                state_depth = None
+        else:
+            pending = False
+            if "\\u" in tok and _lone_surrogate(tok):
+                raise StateError("sod_state: invalid JSON: a string holds an unpaired surrogate")
+            if depth == 1 and state_depth is None and tok == '"sod_state"' and _COLON.match(text, m.end()):
+                pending = True
+
+
+def loads_bundle(text: str) -> dict:
+    """A bundle file's text, parsed as the oracle's file readers read it: its `sod_state` is held to the rules of a
+    state text (depth, integers inside 64 bits, no key twice); json.loads alone would let a deep one crash with
+    RecursionError and a repeated key win silently. Raises StateError. (The C++ reader checks the `sod_state` member
+    alone; a repeated key elsewhere in a bundle is refused here too, which no bundle the builder writes has.)"""
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8")
+    _scan_bundle(text)
+    try:
+        return json.loads(text, object_pairs_hook=_object, parse_int=_parse_int, parse_float=_parse_float,
+                          parse_constant=_parse_constant)
+    except json.JSONDecodeError as e:
+        raise StateError(f"sod_state: invalid JSON: {e}") from e
 
 
 def _object(pairs: list) -> dict:

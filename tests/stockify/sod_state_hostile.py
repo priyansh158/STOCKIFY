@@ -24,6 +24,7 @@ GOOD_TEXT = (FIXTURES / "day0_state.json").read_text(encoding="utf-8")
 BUNDLE_PATH = FIXTURES / "day1_bundle.json"
 MAX_BYTES = 256 * 1024 * 1024          # sod_state.MAX_BYTES and the engine's SOD_STATE_MAX_BYTES (a test ties the three)
 INT64_MAX = 2**63 - 1
+BOUND = 2**62                          # the largest id counter or charge row a state may carry (sod_state.COUNTER_MAX)
 MIDNIGHT = 1768242600000000000         # 2026-01-13 00:00 IST: the first instant after the saved day (2026-01-12)
 TIMER = [1, 1768244760000000000, 2220000000000]   # the good state's only timer: id, t_ns, period_ns
 
@@ -35,7 +36,9 @@ class Row:
     make: Callable[[dict, str], object]
     error: str | None                  # a piece of the refusal; None: accepted by both, same bytes written back
     run: bool = False                  # accepted rows: also run the day and compare the end-of-day states
-    text_only: bool = False            # cannot travel inside a bundle's sod_state (a text-level refusal)
+    text_only: bool = False            # cannot travel inside a bundle's sod_state as a dict (a text-level refusal)
+    bundle: bool = False               # a text_only row that is also spliced, as text, into a bundle file (the
+                                       # constructor path: no dict stands between the file and the reader)
 
 
 def good() -> dict:
@@ -168,6 +171,19 @@ def _keys_first(st: dict) -> dict:
     return st
 
 
+def snapshot(**kw) -> dict:  # noqa: ANN003
+    out = {"t": 1, "ltp": 1, "volume": 1, "atp": 1, "high": 1, "low": 1}
+    out.update(kw)
+    return out
+
+
+def book(slot: int, value: int) -> list:
+    """A ten-level book of (price, qty, orders) with one price (slot 0) or quantity (slot 1) changed."""
+    rows = [[1, 1, 1] for _ in range(10)]
+    rows[3][slot] = value
+    return rows
+
+
 STRATEGY_OK = {"a": -2**63, "b": 2**64 - 1, "s": "é   \" \\ \x7f", "f": 1.5e300, "n": None, "t": [True, {"k": []}]}
 
 ROWS: tuple[Row, ...] = (
@@ -181,7 +197,9 @@ ROWS: tuple[Row, ...] = (
     Row("a rejected order keeps the text it was placed with", 6,
         final(1, side="HOLD", product="XYZ", type="ICEBERG", validity="GTC", qty=-5, instrument_id=999), None),
     Row("a built bar, a one-shot timer and a live order are carried", 3, edit(_carried_work), None, run=True),
-    Row("charge_row at INT64_MAX loads", 13, put("counters.charge_row", INT64_MAX), None),
+    Row("charge_row at the bound loads", 4, put("counters.charge_row", BOUND), None),
+    Row("next_fill at the bound loads", 4, put("counters.next_fill", BOUND), None),
+    Row("next_timer at the bound loads", 4, put("counters.next_timer", BOUND), None),
     Row("rng state at 2**64-1", 13, put("rng.slippage", [2**64 - 1, 3]), None),
 
     # ── 1: all-or-nothing (the last checks of the old loader) ────────────────
@@ -202,16 +220,19 @@ ROWS: tuple[Row, ...] = (
     # ── 2: nesting depth (the two crash cases, and the limit) ────────────────
     Row("queued_notifications nested 5,000 deep (crash)", 2,
         replace('"queued_notifications":[]', '"queued_notifications":' + nested(5000)), "nested more than",
-        text_only=True),
+        text_only=True, bundle=True),
+    Row("queued_notifications nested 100,000 deep, as a bundle's state would hold it (crash)", 2,
+        replace('"queued_notifications":[]', '"queued_notifications":' + nested(100000)), "nested more than",
+        text_only=True, bundle=True),
     Row("strategy nested 20,000 deep (crash)", 2,
-        replace('"strategy":{}', '"strategy":{"k":' + nested(20000) + "}"), "nested more than", text_only=True),
+        replace('"strategy":{}', '"strategy":{"k":' + nested(20000) + "}"), "nested more than", text_only=True, bundle=True),
     Row("strategy nested 65 levels", 2, replace('"strategy":{}', '"strategy":{"k":' + nested(64) + "}"),
         "nested more than"),
     Row("queued_notifications nested 65 levels", 2,
         replace('"queued_notifications":[]', '"queued_notifications":' + nested(65)), "nested more than"),
     Row("a market entry nested 100,000 deep", 2,
         replace('"strategy_enabled":true', '"strategy_enabled":' + nested(100000)), "nested more than",
-        text_only=True),
+        text_only=True, bundle=True),
 
     # ── 3: timers (the two hang cases first) ─────────────────────────────────
     Row("a timer with a negative period (hang)", 3, put("timers.0.2", -1),
@@ -237,17 +258,29 @@ ROWS: tuple[Row, ...] = (
         "final_orders: order 1 is not below counters.next_order (1)"),
     Row("next_order 0", 4, put("counters.next_order", 0), "counters.next_order must be at least 1"),
     Row("next_order 2**63", 4, put("counters.next_order", 2**63), "counters.next_order does not fit in int64"),
+    Row("next_order one past the bound", 4, put("counters.next_order", BOUND + 1),
+        "counters.next_order must be at most 4611686018427387904"),
+    Row("next_order at INT64_MAX", 4, put("counters.next_order", INT64_MAX),
+        "counters.next_order must be at most 4611686018427387904"),
+    Row("next_fill one past the bound", 4, put("counters.next_fill", BOUND + 1),
+        "counters.next_fill must be at most 4611686018427387904"),
+    Row("next_timer one past the bound", 4, put("counters.next_timer", BOUND + 1),
+        "counters.next_timer must be at most 4611686018427387904"),
+    Row("charge_row one past the bound", 4, put("counters.charge_row", BOUND + 1),
+        "counters.charge_row must be at most 4611686018427387904"),
+    Row("charge_row at INT64_MAX", 4, put("counters.charge_row", INT64_MAX),
+        "counters.charge_row must be at most 4611686018427387904"),
     Row("next_fill 0", 4, put("counters.next_fill", 0), "counters.next_fill must be at least 1"),
     Row("one order listed twice", 4, edit(_dup_order), "final_orders: order 1 is listed twice"),
     Row("one order in both groups", 4, edit(_order_in_both_groups), "final_orders: order 31 is listed twice"),
     Row("one position listed twice", 4, edit(_dup_position), "ledger position 2 MIS is listed twice"),
     Row("order id 0", 4, final(1, order_id=0), "final_orders.order_id must be at least 1"),
     Row("a key twice at the top", 4, replace('"cash_paise":4974100', '"cash_paise":1,"cash_paise":4974100'),
-        "duplicate key 'cash_paise'", text_only=True),
+        "duplicate key 'cash_paise'", text_only=True, bundle=True),
     Row("a key twice in the strategy's state", 4, replace('"strategy":{}', '"strategy":{"a":1,"b":2,"a":3}'),
-        "duplicate key 'a'", text_only=True),
+        "duplicate key 'a'", text_only=True, bundle=True),
     Row("a key twice in counters", 4, replace('"next_timer":2', '"next_timer":2,"next_timer":2'),
-        "duplicate key 'next_timer'", text_only=True),
+        "duplicate key 'next_timer'", text_only=True, bundle=True),
 
     # ── 5: positions ─────────────────────────────────────────────────────────
     Row("position direction 0", 5, put("ledger.positions.1.d", 0), "ledger position.d must be 1 or -1"),
@@ -295,9 +328,9 @@ ROWS: tuple[Row, ...] = (
 
     # ── 8: numbers the two JSON readers treat differently ────────────────────
     Row("1e999 in the strategy's state", 8, replace('"strategy":{}', '"strategy":{"x":1e999}'),
-        "a number is out of range", text_only=True),
+        "a number is out of range", text_only=True, bundle=True),
     Row("-1e999 as the cash", 8, replace('"cash_paise":4974100', '"cash_paise":-1e999'),
-        "a number is out of range", text_only=True),
+        "a number is out of range", text_only=True, bundle=True),
     Row("NaN in the strategy's state", 8, replace('"strategy":{}', '"strategy":{"x":NaN}'),
         "sod_state: invalid JSON", text_only=True),
     Row("Infinity in the strategy's state", 8, replace('"strategy":{}', '"strategy":{"x":Infinity}'),
@@ -314,15 +347,15 @@ ROWS: tuple[Row, ...] = (
 
     # ── 9: integers outside 64 bits ──────────────────────────────────────────
     Row("2**64 in the strategy's state", 9, replace('"strategy":{}', '"strategy":{"n":18446744073709551616}'),
-        "an integer outside 64 bits", text_only=True),
+        "an integer outside 64 bits", text_only=True, bundle=True),
     Row("-2**63-1 in the strategy's state", 9, replace('"strategy":{}', '"strategy":{"n":-9223372036854775809}'),
-        "an integer outside 64 bits", text_only=True),
+        "an integer outside 64 bits", text_only=True, bundle=True),
     Row("10**30 in the strategy's state", 9, replace('"strategy":{}', '"strategy":{"n":1' + "0" * 30 + "}"),
-        "an integer outside 64 bits", text_only=True),
+        "an integer outside 64 bits", text_only=True, bundle=True),
     Row("a 5,000-digit integer", 9, replace('"strategy":{}', '"strategy":{"n":' + "9" * 5000 + "}"),
-        "an integer outside 64 bits", text_only=True),
+        "an integer outside 64 bits", text_only=True, bundle=True),
     Row("2**64 as the cash", 9, replace('"cash_paise":4974100', '"cash_paise":18446744073709551616'),
-        "an integer outside 64 bits", text_only=True),
+        "an integer outside 64 bits", text_only=True, bundle=True),
 
     # ── 10: the state's date ─────────────────────────────────────────────────
     Row("no trade_date", 10, put("trade_date", None), "trade_date must be a YYYY-MM-DD date"),
@@ -410,6 +443,24 @@ ROWS: tuple[Row, ...] = (
     Row("a text past the size limit", 13, lambda st, text: text + " " * (MAX_BYTES + 1 - len(text)),
         "the text is larger than 268435456 bytes", text_only=True),
 
+    # ── negative market values (nothing the engine writes: a negative price crashes a run) ──────────────────
+    Row("a negative market ltp", 8, put("market.2.ltp", -1), "market.ltp must not be negative"),
+    Row("a negative market bid", 8, put("market.2.bid", -1), "market.bid must not be negative"),
+    Row("a negative market ask", 8, put("market.2.ask", -1), "market.ask must not be negative"),
+    Row("a negative market oi", 8, put("market.2.oi", -1), "market.oi must not be negative"),
+    Row("a negative snapshot ltp", 8, put("market.2.s0", snapshot(ltp=-1)), "market snapshot.ltp must not be negative"),
+    Row("a negative snapshot volume", 8, put("market.2.s0", snapshot(volume=-1)),
+        "market snapshot.volume must not be negative"),
+    Row("a negative snapshot atp", 8, put("market.2.s1", snapshot(atp=-1)), "market snapshot.atp must not be negative"),
+    Row("a negative snapshot high", 8, put("market.2.s1", snapshot(high=-1)),
+        "market snapshot.high must not be negative"),
+    Row("a negative snapshot low", 8, put("market.2.s1", snapshot(low=-1)), "market snapshot.low must not be negative"),
+    Row("a snapshot with a negative time is fine", 8, put("market.2.s0", snapshot(t=-1)), None),
+    Row("a negative band lower", 8, put("market.2.band", [-1, 5]), "market.band lower must not be negative"),
+    Row("a negative band upper", 8, put("market.2.band", [1, -5]), "market.band upper must not be negative"),
+    Row("a negative book price", 8, put("market.2.book", book(0, -1)), "market.book price must not be negative"),
+    Row("a negative book quantity", 8, put("market.2.book", book(1, -1)), "market.book qty must not be negative"),
+
     # ── shapes of the remaining parts ────────────────────────────────────────
     Row("strategy_enabled as a number", 6, put("strategy_enabled", 1), "strategy_enabled must be a boolean"),
     Row("a pause reason that is a number", 6, put("pause_reasons", [5]), "pause_reasons must be a string"),
@@ -429,4 +480,5 @@ ROWS: tuple[Row, ...] = (
 # them in the table by name.
 HANG_ROWS = ("a timer with a negative period (hang)", "a timer period near INT64_MAX (hang)",
              "a huge next_order with a live order runs")
-CRASH_ROWS = ("queued_notifications nested 5,000 deep (crash)", "strategy nested 20,000 deep (crash)")
+CRASH_ROWS = ("queued_notifications nested 5,000 deep (crash)", "strategy nested 20,000 deep (crash)",
+              "queued_notifications nested 100,000 deep, as a bundle's state would hold it (crash)")

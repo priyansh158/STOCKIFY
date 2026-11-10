@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include <ostream>  // doctest prints string_view through operator<<
@@ -134,6 +135,23 @@ TEST_CASE("a state that is wrong is refused whole: the engine is left as it was"
             "does not fit in int64");
     refused(changed("\"next_order\":41", "\"next_order\":40"), "is not below counters.next_order (40)");
     refused(changed("\"trade_date\":\"2026-01-12\"}", "\"trade_date\":\"2026-01-13\"}"), "must be before the bundle's first day");
+}
+
+namespace {
+class RefusesItsState final : public Strategy {
+ public:
+    void load_state(std::string_view) override { throw std::runtime_error("boom"); }
+};
+}  // namespace
+
+TEST_CASE("a C++ strategy that refuses its state is named, and the failure is final for that engine") {
+    const std::string text = read_text(kFixtures + "day0_state.json");
+    Engine e(load_bundle(kFixtures + "day1_bundle.json"));
+    load_sod_state(e, text);
+    CHECK_THROWS_WITH_AS(e.set_strategy(std::make_shared<RefusesItsState>(), "refusing_cpp"),
+                         doctest::Contains("strategy refusing_cpp.load_state() raised: boom"), RunError);
+    CHECK_THROWS_WITH_AS(e.eod_state(), doctest::Contains("failed earlier"), RunError);
+    CHECK_THROWS_WITH_AS(e.set_strategy(make_strategy("noop_cpp")), doctest::Contains("failed earlier"), RunError);
 }
 
 TEST_CASE("prev_days and next_days are validated as the oracle validates them") {

@@ -59,6 +59,15 @@ class OracleSide:
         b["sod_state"] = state
         return oracle_runner.Engine(b, [], Keeper())
 
+    @staticmethod
+    def from_bundle_text(text: str, folder: Path):  # noqa: ANN205, ARG004
+        """The bundle file's text, read as the oracle's file readers read it."""
+        try:
+            b = sod_state.loads_bundle(text)
+        except sod_state.StateError as e:
+            raise oracle_runner.RunError(str(e)) from e
+        return oracle_runner.Engine(b, [], Keeper())
+
 
 class EngineSide:
     name = "engine"
@@ -78,6 +87,13 @@ class EngineSide:
         b = json.loads(BUNDLE_TEXT)
         b["sod_state"] = state
         bundle_mod.write(b, folder)
+        e = engine.load().Engine(str(folder / "bundle.json"))
+        e.set_strategy_py(Keeper())
+        return e
+
+    @staticmethod
+    def from_bundle_text(text: str, folder: Path):  # noqa: ANN205
+        (folder / "bundle.json").write_bytes(text.encode("utf-8"))
         e = engine.load().Engine(str(folder / "bundle.json"))
         e.set_strategy_py(Keeper())
         return e
@@ -111,6 +127,21 @@ def load_bundle(side, state: dict) -> tuple[str, str]:  # noqa: ANN001
     """The same state through a bundle's `sod_state` (the constructor applies it)."""
     with tempfile.TemporaryDirectory(prefix="sod-hostile-", dir=str(tests.support.SANDBOX_ROOT)) as tmp:
         return attempt(side, lambda: side.from_bundle(state, Path(tmp)).eod_state())
+
+
+def bundle_text_with(state_text: str) -> str:
+    """The fixture bundle's file text with `state_text` as its sod_state: the text goes in as it is, so what only a
+    text can hold (a key twice, a huge integer, a very deep nesting) reaches the constructor's reader."""
+    b = json.loads(BUNDLE_TEXT)
+    b["sod_state"] = "@@STATE@@"
+    return numerics.dumps_canonical(b).replace('"@@STATE@@"', state_text)
+
+
+def load_bundle_text(side, state_text: str) -> tuple[str, str]:  # noqa: ANN001
+    """The same text through a bundle file's `sod_state`: ("ok", the state written back) or ("refused", …)."""
+    text = bundle_text_with(state_text)
+    with tempfile.TemporaryDirectory(prefix="sod-hostile-", dir=str(tests.support.SANDBOX_ROOT)) as tmp:
+        return attempt(side, lambda: side.from_bundle_text(text, Path(tmp)).eod_state())
 
 
 _reference: dict[str, str] = {}
@@ -155,6 +186,11 @@ class RowChecks:
             else:
                 self.assertEqual(via_bundle[0], "refused", f"{side.name} accepted it inside a bundle")
                 self.assertIn(row.error, via_bundle[1])
+        elif row.bundle:                      # a text-level refusal must hold on the constructor path too
+            via_bundle = load_bundle_text(side, text)
+            self.assertEqual(via_bundle[0], "refused", f"{side.name} accepted it inside a bundle file")
+            self.assertIn(row.error, via_bundle[1])
+            self.assertTrue(via_bundle[1].startswith("sod_state: "), via_bundle[1])
         return got
 
     def check_untouched(self, side, bad_text: str) -> None:  # noqa: ANN001
@@ -202,6 +238,9 @@ class EngineHostileStateTests(RowChecks, unittest.TestCase):
                 text = H.text_of(H.build(row))
                 want = load_text(OracleSide, text, run=row.run)
                 self.assertTrue(same(got, want), f"engine {got[1][:300]!r} vs oracle {want[1][:300]!r}")
+                if row.bundle:
+                    got_b, want_b = load_bundle_text(EngineSide, text), load_bundle_text(OracleSide, text)
+                    self.assertTrue(same(got_b, want_b), f"engine {got_b[1][:300]!r} vs oracle {want_b[1][:300]!r}")
 
     def test_the_size_limit_is_the_oracles(self):
         self.assertEqual(engine.load().SOD_STATE_MAX_BYTES, sod_state.MAX_BYTES)
@@ -384,6 +423,19 @@ class StrategyPartChecks:
                 e.run()                                         # DAY_END → save_state → the nested call
                 self.assertEqual(len(s.seen), 2, s.seen)
                 self.assertIn(f"{call}: the engine is busy", s.seen[1])
+
+    def test_eod_state_refuses_after_a_run_that_stopped_mid_day(self):
+        class Boom(Keeper):
+            def on_session_phase(self, ctx, change):  # noqa: ANN001
+                raise ValueError("boom")
+        e = self.side.new(Boom())
+        e.load_sod_state(H.GOOD_TEXT)
+        self.assertEqual(e.eod_state(), H.GOOD_TEXT)
+        with self.assertRaises(Exception):                      # noqa: B017 — each runner's own wrapper of it
+            e.run()
+        kind, out = attempt(self.side, e.eod_state)
+        self.assertEqual(kind, "refused")
+        self.assertRegex(out, "events were processed after the last day ended|failed earlier")
 
     def test_eod_state_needs_a_finished_day(self):
         e = self.side.new()

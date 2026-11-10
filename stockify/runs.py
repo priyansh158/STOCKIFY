@@ -258,7 +258,11 @@ def rerun(run_id: str) -> tuple[str, bool]:
         cfg = json.loads((src / "run.json").read_text(encoding="utf-8"))
     except FileNotFoundError as e:
         raise RunFailed(run_id, f"not a finished run folder: {e.filename} is missing") from e
-    bundle = json.loads(bundle_text)
+    from stockify.oracle import sod_state
+    try:
+        bundle = sod_state.loads_bundle(bundle_text)      # its sod_state is checked like a state text (depth, ints)
+    except sod_state.StateError as e:
+        raise RunFailed(run_id, str(e)) from e
     pack_paths = [paths.lab_dir() / p["path"] for p in bundle["packs"]]
     missing = [str(p) for p in pack_paths if not p.exists()]
     if missing:

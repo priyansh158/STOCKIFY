@@ -6,6 +6,7 @@
 
 #include "stocksim/errors.hpp"
 #include "stocksim/sha256.hpp"
+#include "stocksim/sod_state.hpp"
 
 namespace stocksim {
 
@@ -42,10 +43,16 @@ std::string require_string(const Json& obj, std::string_view key, std::string_vi
 Bundle parse_bundle(std::string_view text) {
     Bundle b;
     b.sha256 = sha256_hex(text);
+    // A paper session's day bundle carries the previous day's state: that member is read as a state text is read
+    // (sod_state.hpp), before the file's own parse, which would not refuse what that reader refuses.
+    std::optional<Json> state = bundle_sod_state(text);
     try {
         b.root = Json::parse(text.begin(), text.end());
     } catch (const Json::parse_error& e) {
         throw FormatError(std::string("bundle: invalid JSON: ") + e.what());
+    }
+    if (state && b.root.is_object() && b.root.contains("sod_state")) {
+        b.root["sod_state"] = std::move(*state);
     }
     const Json& r = b.root;
     if (require_string(r, "schema", "bundle") != kBundleSchema) {
