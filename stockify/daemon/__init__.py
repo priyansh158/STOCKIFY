@@ -306,6 +306,18 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
         except conn_budget.BudgetExceeded as e:
             log.error("no live ticker: %s", e)
             return exitcodes.RECONNECT_EXHAUSTED
+        # The day's landing file is created only once this run is going to record (I-13): a run that
+        # ends here, stopped while waiting or started after the unsubscribe time, leaves nothing on disk.
+        start_ns = timeutil.ist_ns(day, schedule["jobs"]["subscribe"])
+        if clock.now_ns() < start_ns:
+            log.info("waiting for the subscribe time %s IST", schedule["jobs"]["subscribe"])
+            if not clock.sleep_until(start_ns, stop):
+                _release_ticket(ticker)
+                return exitcodes.OK
+        if clock.now_ns() >= timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"]):
+            log.info("the session is over for %s", day)
+            _release_ticket(ticker)
+            return exitcodes.OK
         landing = LandingDB(day)
         call = live_call_in_ticker
 
@@ -317,18 +329,6 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
     recorder = Recorder(landing, tokens.get, clock)
     session = RecorderSession(ticker, recorder, manager, clock, call_in_ticker=call)
     end_ns = timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])
-
-    if not replay:
-        start_ns = timeutil.ist_ns(day, schedule["jobs"]["subscribe"])
-        if clock.now_ns() < start_ns:
-            log.info("waiting for the subscribe time %s IST", schedule["jobs"]["subscribe"])
-            if not clock.sleep_until(start_ns, stop):
-                _release_ticket(ticker)
-                return exitcodes.OK
-        if clock.now_ns() >= end_ns:
-            log.info("the session is over for %s", day)
-            _release_ticket(ticker)
-            return exitcodes.OK
 
     recorder.start()
     session.start()
