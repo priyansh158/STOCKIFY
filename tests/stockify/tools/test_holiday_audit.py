@@ -10,6 +10,7 @@ import sqlite3
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, timedelta
+from unittest.mock import patch
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
@@ -55,6 +56,42 @@ def put_eod(table: str, day: date) -> None:
 
 def put_raw(dataset: str, day: date) -> None:
     (paths.nse_raw_dir(dataset) / f"{day:%Y%m%d}.csv").write_bytes(b"x")
+
+
+def write_in_progress(day: date) -> sqlite3.Connection:
+    """bars.sqlite as it is while a recorder writes: a committed bar of `day` is in the `-wal`, not in the main
+    file, and the writer is still connected."""
+    writer = sqlite3.connect(str(paths.bars_db()))
+    writer.execute("INSERT INTO bars VALUES (1, 'day', ?, 100)", (timeutil.ist_ns(day, "00:00"),))
+    writer.commit()
+    return writer
+
+
+def killed_writer(day: date) -> None:
+    """bars.sqlite as a recorder that was killed leaves it: a committed bar of `day` is in the `-wal` and there is
+    no `-shm` (a plain read-only connection would make one)."""
+    db = paths.bars_db()
+    wal, shm = (db.with_name(db.name + suffix) for suffix in ("-wal", "-shm"))
+    writer = write_in_progress(day)
+    main, pending = db.read_bytes(), wal.read_bytes()
+    writer.close()                                         # checkpoints and removes the -wal
+    db.write_bytes(main)
+    wal.write_bytes(pending)
+    shm.unlink(missing_ok=True)
+
+
+def opened_by(fn) -> list[str]:  # noqa: ANN001
+    """The database names `fn` hands to sqlite3.connect inside the audit module."""
+    seen: list[str] = []
+    real = H.sqlite3.connect
+
+    def connect(name, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        seen.append(str(name))
+        return real(name, *args, **kwargs)
+
+    with patch.object(H.sqlite3, "connect", connect):
+        fn()
+    return seen
 
 
 def tree() -> list[tuple[str, int, int]]:
@@ -148,15 +185,105 @@ class HolidayAuditTest(unittest.TestCase):
         self.assertEqual(tree(), before)
         self.assertNotIn(date(2009, 1, 6), got.silent_trading_days)
 
-    def test_rows_still_in_the_wal_are_read(self):
+    def test_a_store_with_a_write_in_progress_is_not_opened(self):
+        """Rows in a `-wal` can only be read by a connection that writes the `-shm`: such a store is left alone."""
         put_bar(date(2009, 1, 6), wal=True)
-        writer = sqlite3.connect(str(paths.bars_db()))
+        put_eod("fo_eod", date(2009, 1, 9))
+        writer = write_in_progress(date(2009, 1, 7))
         self.addCleanup(writer.close)
-        writer.execute("INSERT INTO bars VALUES (1, 'day', ?, 100)", (timeutil.ist_ns(date(2009, 1, 7), "00:00"),))
-        writer.commit()                                    # in the -wal, not yet in the main file
-        silent = H.audit(START, END).silent_trading_days
-        self.assertNotIn(date(2009, 1, 6), silent)
-        self.assertNotIn(date(2009, 1, 7), silent)
+        paths.nse_margin_dir("span"), paths.nse_raw_dir()  # stockify.paths makes the folders it is asked for
+        before = tree()
+        self.assertGreater(dict((name, size) for name, size, _ in before)["bars.sqlite-wal"], 0)
+        got: list = []
+        opened = opened_by(lambda: got.append(H.audit(START, END)))
+        self.assertEqual(tree(), before)                   # the file list, the sizes and the modified times
+        self.assertEqual([name for name in opened if "bars.sqlite" in name], [])
+        self.assertEqual(len(opened), 1)                   # refdata.sqlite is idle and is read
+        self.assertEqual(got[0].not_checked, (("bars.sqlite", "busy, not checked (its -wal file is not empty)"),))
+        self.assertIn(date(2009, 1, 6), got[0].silent_trading_days)    # its bars were not read
+        self.assertNotIn(date(2009, 1, 9), got[0].silent_trading_days)
+        self.assertIn("bars.sqlite: busy, not checked", H.report(got[0]))
+
+    def test_rows_left_in_the_wal_by_a_killed_writer_are_not_read(self):
+        put_bar(date(2009, 1, 6), wal=True)
+        killed_writer(date(2009, 1, 7))
+        paths.nse_margin_dir("span"), paths.nse_raw_dir()
+        before = tree()
+        self.assertEqual([name for name, _, _ in before if name.startswith("bars")],
+                         ["bars.sqlite", "bars.sqlite-wal"])
+        got = H.audit(START, END)
+        self.assertEqual(tree(), before)                   # no -shm is made, the -wal is not replayed
+        self.assertEqual([name for name, _ in got.not_checked], ["bars.sqlite"])
+
+    def test_a_hot_rollback_journal_also_means_a_write_in_progress(self):
+        put_eod("cm_eod", date(2009, 1, 6))
+        paths.nse_margin_dir("span"), paths.nse_raw_dir()
+        journal = paths.refdata_db().with_name(paths.refdata_db().name + "-journal")
+        journal.write_bytes(b"x" * 512)
+        before = tree()
+        got = H.audit(START, END)
+        self.assertEqual(tree(), before)
+        self.assertEqual([name for name, _ in got.not_checked], ["refdata.sqlite"])
+        self.assertIn("-journal", got.not_checked[0][1])
+
+    def test_every_database_is_opened_immutable(self):
+        put_bar(date(2009, 1, 6), wal=True)
+        put_eod("fo_eod", date(2009, 1, 7))
+        opened = opened_by(lambda: H.audit(START, END))
+        self.assertEqual(len(opened), 2)
+        for name in opened:
+            with self.subTest(name=name):
+                self.assertTrue(name.endswith("?mode=ro&immutable=1"))
+
+    def test_a_write_that_starts_during_the_read_is_reported(self):
+        """The `-wal` is looked at before and after the read: an immutable read takes no lock, so a writer can
+        start under it, and what was read is then not used."""
+        put_bar(date(2009, 1, 6))
+        real = H.sqlite3.connect
+
+        def connect(name, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            conn = real(name, *args, **kwargs)
+            paths.bars_db().with_name("bars.sqlite-wal").write_bytes(b"x" * 4096)      # the writer arrives
+            return conn
+
+        with patch.object(H.sqlite3, "connect", connect):
+            got = H.audit(START, END)
+        self.assertEqual([name for name, _ in got.not_checked], ["bars.sqlite"])
+        self.assertIn(date(2009, 1, 6), got.silent_trading_days)
+
+    def test_a_store_that_cannot_be_read_is_reported_not_raised(self):
+        paths.refdata_db().write_bytes(b"not a database, or a page torn by a checkpoint" * 100)
+        got = H.audit(START, END)
+        self.assertEqual([name for name, _ in got.not_checked], ["refdata.sqlite"])
+        self.assertIn("not readable, not checked", got.not_checked[0][1])
+
+    def test_an_idle_lab_has_nothing_unchecked(self):
+        put_bar(date(2009, 1, 6), wal=True)
+        put_eod("fo_eod", date(2009, 1, 7))
+        got = H.audit(START, END)
+        self.assertEqual(got.not_checked, ())
+        self.assertNotIn("not checked", H.report(got))
+
+    def test_cli_exits_non_zero_when_a_store_is_busy(self):
+        put_bar(date(2009, 1, 6), wal=True)
+        killed_writer(date(2009, 1, 7))
+        paths.nse_margin_dir("span"), paths.nse_raw_dir()
+        before = tree()
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["calendar", "audit", "--from", START.isoformat(), "--to", END.isoformat()])
+        self.assertEqual(code, 1)
+        self.assertEqual(tree(), before)
+        self.assertIn("bars.sqlite: busy, not checked", out.getvalue())
+        self.assertIn("no recorder or daemon is writing", err.getvalue())
+
+    def test_cli_help_says_when_to_run_it(self):
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            cli.main(["calendar", "audit", "--help"])
+        text = " ".join(out.getvalue().split())
+        self.assertIn("only while no recorder or daemon is writing", text)
+        self.assertIn("can make the report wrong, never the stores", text)
 
     def test_an_empty_lab_gets_no_files(self):
         got = H.audit(START, END)

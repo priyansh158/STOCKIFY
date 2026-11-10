@@ -860,7 +860,8 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   "Special Live Trading", 2012-11-11 "Dhanteras Trading" for CM, holidays that fell on a weekend): no rows, weekends
   are never trading days here.
 - **The audit command** (`python -m stockify calendar audit --from 2009-01-01 --to 2023-12-31`, about 1 s, writes
-  nothing; an idle WAL database is opened as immutable so not even its `-shm` is touched) on 2026-11-09: 3,912
+  nothing; a database is opened as immutable so not even its `-shm` is touched, and a busy one is not opened at
+  all: fix round 1 below; run it only while no recorder or daemon is writing) on 2026-11-09: 3,912
   weekdays, 3,699 with data, 221 holidays; trading days with no data: 2021-10-11; holidays with data: the nine
   Muhurat days (`span`; 2022-10-24 also `bars`). For 2024-01-01..2026-11-06: none without data; 2025-10-21 with `bars`.
 
@@ -901,3 +902,24 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   - **Seen, not touched:** `2024-11-02,CM;FO,Balipratipada` is a Saturday row (the API lists it; a weekend is never
     a trading day here, so the row changes nothing). The other weekend rows of 2024 to 2026 are the same kind, for
     example `2024-10-12` Dussehra and `2026-11-08` Diwali Laxmi Pujan*.
+- **The audit opens no busy store, and no store without `immutable=1` (review F2 and F3; CDM 4.4).**
+  - Before: a store with rows in its `-wal` was opened `mode=ro`, and SQLite then made or wrote the `-shm` beside
+    it: a write in the lab, against "writes nothing".
+  - Now (`holiday_audit._read`): a database is opened only as `mode=ro&immutable=1`. A store whose `-wal` file (or
+    rollback `-journal`) is not empty is not opened: the report lists it under "Not checked" as "busy, not
+    checked", it counts as holding nothing, and the command exits 1 with a line on stderr. The `-wal` is looked at
+    again after the read, since an immutable read takes no lock and a writer can start under it. A store that
+    cannot be read (a page torn by a checkpoint, or not a database) is listed as "not readable, not checked"
+    instead of ending in a traceback.
+  - **Run the audit only while no recorder or daemon is writing. A read during a write can make the report wrong,
+    never the stores.** The CLI help says the same. A writer that opens, writes and closes inside the read leaves
+    no `-wal` behind and is not seen.
+  - Tests: on the busy path the lab folder's file list, sizes and modified times are the same before and after
+    (a writer still connected; a killed writer's `-wal` with no `-shm`; a hot journal), and every connection string
+    ends in `?mode=ro&immutable=1`. `test_rows_still_in_the_wal_are_read` is gone: by this ruling such rows are no
+    longer read.
+  - On the real lab (2026-11-09, the three `-wal` files are 0 bytes): `calendar audit --from 2009-01-01 --to
+    2026-11-06` exits 0, and the name, size and modified time of every file in `$LAB` are the same before and
+    after. 4,657 weekdays, 4,402 with data, 265 holidays; one trading day without data (2021-10-11); eleven
+    holidays with data (the ten Muhurat-only days and 2025-10-21).
+  - F4, no change: `stockify.paths` makes a lab folder that is missing, as for every reader (documented).

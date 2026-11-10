@@ -130,7 +130,12 @@ def _cmd_calendar_audit(args) -> int:
     if end < start:
         print(f"--to {end} is before --from {start}", file=sys.stderr)
         return 1
-    print(holiday_audit.report(holiday_audit.audit(start, end, args.segment)))
+    found = holiday_audit.audit(start, end, args.segment)
+    print(holiday_audit.report(found))
+    if found.not_checked:
+        print("calendar audit: " + ", ".join(name for name, _ in found.not_checked) + " not checked; run it again "
+              "while no recorder or daemon is writing", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -793,7 +798,13 @@ def main(argv: list[str] | None = None) -> int:
     c.set_defaults(func=_cmd_calendar)
     csub = c.add_subparsers(dest="calendar_command")
     au = csub.add_parser("audit", help="the holiday list against the lab's data: trading days with no data and "
-                                       "holidays with data (D-75); reads the lab, writes nothing")
+                                       "holidays with data (D-75); reads the lab, writes nothing",
+                         description="The holiday list against the lab's data: trading days with no data and "
+                                     "holidays with data (D-75). Reads the lab and writes nothing: a database is "
+                                     "opened immutable. Run it only while no recorder or daemon is writing: a "
+                                     "database with a write in progress is not opened (the report names it "
+                                     "\"busy, not checked\" and the exit code is 1), and a read during a write can "
+                                     "make the report wrong, never the stores.")
     au.add_argument("--from", dest="date_from", required=True, help="first date YYYY-MM-DD")
     au.add_argument("--to", dest="date_to", required=True, help="last date YYYY-MM-DD")
     au.add_argument("--segment", default="FO", choices=["CM", "FO"], help="calendar segment (default FO)")
