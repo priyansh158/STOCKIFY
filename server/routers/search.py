@@ -13,6 +13,7 @@ via `india_utils.to_yfinance_ticker` / `to_kite_symbol`.
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
 from typing import Iterable
 
@@ -22,10 +23,12 @@ import kite_client
 from india_utils import strip_exchange_suffix
 from server.schemas import SearchHit
 
+# yfinance is imported inside `_yfinance_hits`, the only place that uses it: it loads a large tree of
+# packages, and the API should not run that code at start-up for a fallback that Kite usually makes
+# unnecessary. The flag only says whether the package is installed; finding it does not import it.
 try:
-    import yfinance as yf
-    _YFINANCE_AVAILABLE = True
-except ImportError:  # pragma: no cover — yfinance is in requirements.txt
+    _YFINANCE_AVAILABLE = importlib.util.find_spec("yfinance") is not None
+except (ImportError, ValueError):  # pragma: no cover — yfinance is in requirements.txt
     _YFINANCE_AVAILABLE = False
 
 log = logging.getLogger("stockify.search")
@@ -68,6 +71,10 @@ def _kite_rows_to_hits(rows: Iterable[dict]) -> list[SearchHit]:
 def _yfinance_hits(query: str, limit: int) -> list[SearchHit]:
     """Fallback search via yfinance — only NSE/BSE equities surface."""
     if not _YFINANCE_AVAILABLE:
+        return []
+    try:
+        import yfinance as yf
+    except ImportError:
         return []
     try:
         quotes = yf.Search(query, max_results=limit).quotes  # type: ignore[attr-defined]
