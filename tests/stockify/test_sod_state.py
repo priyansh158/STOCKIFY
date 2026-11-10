@@ -19,7 +19,7 @@ from unittest import mock
 
 import tests.support  # noqa: F401  — must precede project imports
 
-from stockify import bundle as bundle_mod, golden, numerics, runconfig
+from stockify import bundle as bundle_mod, engine as engine_mod, golden, numerics, runconfig
 from stockify.oracle import artifacts, sod_state
 from stockify.oracle.runner import Engine, RunError, load_records
 from stockify.strategy import Strategy
@@ -640,6 +640,7 @@ class StrategyStateTests(SplitCase):
             with self.assertRaisesRegex(RunError, words):
                 Engine(json.loads(bundle_mod.dumps({**b0, "next_days": bad})), [], Strategy())
 
+    @unittest.skipUnless(engine_mod.available(), "stockify._engine is not built")
     def test_cpp_engine_refuses_a_bad_sod_state_before_running(self):
         # VOL 5.3: the C++ engine runs day bundles (tests.stockify.test_engine_sod_state); a bundle whose sod_state is
         # not a complete state is refused by its constructor, as the oracle's is

@@ -21,8 +21,9 @@ from stockify.oracle import sod_state
 from stockify.oracle.runner import load_records
 from stockify.strategy import Strategy
 from stockify.tools import fuzz
-from tests.stockify.test_sod_state import (IndicatorTrader, _join, day_bundles, first_difference, long_history_world,
-                                           run_day_by_day, run_whole, slice_records)
+from tests.stockify.test_sod_state import (IndicatorTrader, _join, _script, _shipped_worlds, day_bundles,
+                                           delivery_window_world, dp_world, first_difference, fsp_world,
+                                           long_history_world, run_day_by_day, run_whole, slice_records)
 
 SEEDS = range(4000, 4100)
 
@@ -187,6 +188,7 @@ class LongHistoryOutcome:
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class EngineStateParityTests(unittest.TestCase):
     def test_engine_state_equals_oracle_state_byte_for_byte(self):
         compared = 0
@@ -237,6 +239,60 @@ class Probe(Strategy):
         Probe.calls.append(f"load_state {state}")
 
 
+class WorldChecks(unittest.TestCase):
+    """The oracle's split-equals-whole worlds, on the engine as well (review I3): the oracle's day-by-day states, the
+    engine's, and every artifact of both must agree, and the engine split must equal the engine whole."""
+
+    def assert_engine_world(self, bundle: dict, pack: Path, make, label) -> Outcome:  # noqa: ANN001
+        folder = Path(tempfile.mkdtemp(prefix="sod-world-", dir=str(tests.support.SANDBOX_ROOT)))
+        o = Outcome(bundle, pack, make, folder, bundle["run"].get("margin", {}).get("model"))
+        if o.error is None:
+            self.assertEqual(o.oracle_states, o.engine_states, label)
+            self.assertIsNone(o.engine_parts_vs_whole(), label)
+            self.assertIsNone(o.oracle_vs_engine_whole(), label)
+            for i in range(o.days):
+                self.assertIsNone(o.engine_vs_oracle_day(i), (label, i))
+        return o
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class EngineCarriedPartsTests(WorldChecks):
+    """Task 5's CarriedPartsTests worlds (a margin window across the split, a DP charge, a settlement price)."""
+
+    def test_carried_parts_worlds_on_the_engine(self):
+        for name, world_of in (("delivery window", delivery_window_world), ("dp", dp_world), ("fsp", fsp_world)):
+            with self.subTest(world=name):
+                world = world_of()
+                folder = Path(tempfile.mkdtemp(prefix="sod-carried-", dir=str(tests.support.SANDBOX_ROOT)))
+                bundle, pack = _world_inputs(world, folder)
+                o = self.assert_engine_world(bundle, pack, lambda b=bundle: _script(b), world["id"])
+                self.assertIsNone(o.error, o.error)
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class EngineShippedStrategyTests(WorldChecks):
+    def test_every_shipped_strategy_split_equals_whole_on_the_engine(self):
+        from stockify import strategy as S
+        for ref, (world, params, build) in _shipped_worlds().items():
+            with self.subTest(strategy=ref):
+                folder = Path(tempfile.mkdtemp(prefix="sod-shipped-", dir=str(tests.support.SANDBOX_ROOT)))
+                bundle = build(world)
+                bundle["strategy"]["params"] = params
+                pack = golden.build_pack(world, folder)
+                o = self.assert_engine_world(bundle, pack, lambda r=ref: S.load(r), ref)
+                self.assertIsNone(o.error, o.error)
+
+    def test_script_goldens_split_equals_whole_on_the_engine(self):
+        multi = [(p, g) for p, g in golden.goldens() if len(g["bundle"]["dates"]) > 1 and not g["strategy"].get("ref")]
+        self.assertGreaterEqual(len(multi), 4)
+        for _, g in multi:
+            with self.subTest(golden=g["id"]):
+                folder = Path(tempfile.mkdtemp(prefix="sod-golden-", dir=str(tests.support.SANDBOX_ROOT)))
+                bundle, pack = _world_inputs(g, folder)
+                self.assert_engine_world(bundle, pack, lambda b=bundle: _script(b), g["id"])
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class EngineStateBindingTests(unittest.TestCase):
     def _first_day(self, folder: Path, seed: int = 4003) -> tuple[dict, dict, Path | None, Path, list[int]]:
         """A fuzz world's whole bundle, its first-day bundle, the first day's pack and the whole pack."""
@@ -380,6 +436,7 @@ class EngineStateBindingTests(unittest.TestCase):
             self.assertEqual(res.run_id, "run")
 
 
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class LivePushReseedTests(unittest.TestCase):
     def test_push_reseeds_per_day_like_run(self):
         """VOL 5.1 on the live path (the Task 4 review): with seed_mode per_day, pushing a world's records in batches
