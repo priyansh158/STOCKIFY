@@ -18,6 +18,16 @@ class _Rng:
         return self._g.below(n)
 
 
+def _whole(name: str, v) -> int:  # noqa: ANN001
+    """B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place are an int and nothing else. A float, a bool,
+    a str or a Decimal is refused, never rounded: `int(1.5)` used to place 1. The engine's binding
+    (engine/bindings/engine.cpp, `whole`) has the same rule and the same words."""
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise TypeError(f"ctx.place: {name} must be an int, not {type(v).__name__} ({v!r}): "
+                        "money is whole paise and quantity is whole units")
+    return v
+
+
 class Context:
     def __init__(self, engine):  # noqa: ANN001
         self._e = engine
@@ -104,8 +114,8 @@ class Context:
     # orders
     def place(self, instrument: int, side: str, qty: int, product: str, type: str, price: int = 0, trigger: int = 0,  # noqa: A002
               validity: str = "DAY", protection="AUTO", tag: str = "") -> int:  # noqa: ANN001
-        o = self._e.place(int(instrument), side, int(qty), product, type, int(price), int(trigger), validity,
-                          protection, tag)
+        o = self._e.place(int(instrument), side, _whole("qty", qty), product, type, _whole("price", price),
+                          _whole("trigger", trigger), validity, protection, tag)
         return o.order_id
 
     def modify(self, order_id: int, **changes) -> bool:  # noqa: ANN003

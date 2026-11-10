@@ -44,6 +44,20 @@ py::object opt(const std::optional<std::int64_t>& v) { return v ? py::object(py:
 
 py::object to_python(const stocksim::Json& j, const OracleTypes& t) { return t.json_loads(j.dump()); }
 
+// B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place are a Python int and nothing else. A float, a
+// bool, a str or a Decimal is refused, never rounded (py::int_(1.5) used to place 1). The rule and the words are
+// the oracle's (stockify/oracle/context.py, `_whole`).
+template <typename T>
+T whole(const char* name, const py::object& v) {
+    if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
+        throw py::type_error(std::string("ctx.place: ") + name + " must be an int, not " +
+                             std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
+                             std::string(py::repr(v)) +
+                             "): money is whole paise and quantity is whole units");
+    }
+    return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
+}
+
 // The Python-visible ctx. It refers to the engine weakly: the engine owns the strategy, and a strong reference
 // back would be a cycle through C++ that Python's collector cannot break (the engine, and its mapped packs,
 // would never be freed).
@@ -291,15 +305,16 @@ void bind_engine(py::module_& m) {
              [](CtxProxy& x, const py::object& instrument, const py::object& side, const py::object& qty,
                 const py::object& product, const py::object& type, const py::object& price, const py::object& trigger,
                 const py::object& validity, const py::object& protection, const py::object& tag) {
-                 // The oracle's Context.place: int() of instrument, qty, price and trigger; the rest as given.
+                 // The oracle's Context.place: int() of instrument; qty, price and trigger are whole numbers,
+                 // checked in that order; the rest as given.
                  stocksim::PlaceRequest r;
                  r.instrument = py::int_(instrument).cast<stocksim::InstrumentId>();
                  r.side = py::str(side);
-                 r.qty = py::int_(qty).cast<stocksim::Qty>();
+                 r.qty = whole<stocksim::Qty>("qty", qty);
                  r.product = py::str(product);
                  r.type = py::str(type);
-                 r.price = py::int_(price).cast<stocksim::Paise>();
-                 r.trigger = py::int_(trigger).cast<stocksim::Paise>();
+                 r.price = whole<stocksim::Paise>("price", price);
+                 r.trigger = whole<stocksim::Paise>("trigger", trigger);
                  r.validity = py::str(validity);
                  if (py::isinstance<py::int_>(protection)) {  // an int (bool included, as isinstance(…, int))
                      r.protection = protection.cast<stocksim::Bp>();
