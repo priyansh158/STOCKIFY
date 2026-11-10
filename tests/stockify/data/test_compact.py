@@ -437,6 +437,37 @@ class RetentionTests(CompactTest):
         row = refdata._connect().execute("SELECT status FROM tick_days").fetchone()
         self.assertEqual(row["status"], "landing")
 
+    def assert_kept(self):
+        landing = paths.ticks_landing_file(DAY)
+        with self.logs("WARNING") as logs:
+            self.assertEqual(compact.apply_retention(DAY), [])                         # reported as not deleted
+        self.assertTrue(landing.exists())
+        self.assertTrue(any("701" in line and str(landing) in line for line in logs.output), logs.output)
+        row = refdata._connect().execute("SELECT status, packets FROM tick_days").fetchone()
+        self.assertEqual((row["status"], row["packets"]), ("verified", 701))
+        self.assertTrue((self.folder() / "meta.json").exists())
+
+    def test_a_landing_file_with_more_packets_than_the_archive_is_kept(self):
+        compact.compact(DAY)
+        record_packets(3)                                                              # frames after compaction
+        self.assert_kept()
+        self.assertEqual(landing_packets(), 704)
+
+    def test_a_landing_file_with_fewer_packets_than_the_archive_is_kept(self):
+        compact.compact(DAY)
+        drop_landing()
+        LandingDB(DAY).close()
+        self.assert_kept()
+        self.assertEqual(landing_packets(), 0)
+
+    def test_a_landing_file_that_cannot_be_counted_is_kept(self):
+        compact.compact(DAY)
+        drop_landing()
+        junk = b"not a database, " * 300
+        paths.ticks_landing_file(DAY).write_bytes(junk)
+        self.assert_kept()
+        self.assertEqual(paths.ticks_landing_file(DAY).read_bytes(), junk)
+
     def test_a_day_still_being_recorded_is_never_touched(self):
         with patch.object(compact, "session_over", return_value=False):
             res = compact.compact(DAY)

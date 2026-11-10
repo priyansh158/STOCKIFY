@@ -19,7 +19,8 @@ For one trade date:
 
 The archive is written to a temporary folder and moved into place only after
 verification. Landing files are deleted only by `apply_retention`: once the day is verified
-(and re-verified just before deletion) and at least `storage.json` →
+(and re-verified just before deletion), the landing file still holds exactly the
+archived number of packets, and the day is at least `storage.json` →
 `retention_days` old; 0 means right after the close (D-38), null never.
 After that the archive is the day's only record and every reader uses it
 (`stockify.data.ticks`).
@@ -414,7 +415,9 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
     `retention_days` old (0 = right after verification, once the session is
     over). The archive is re-verified against the digest in tick_days just
     before deleting; if that fails the day drops back to status 'landing' and
-    the file is kept. `retention_days: null` deletes nothing.
+    the file is kept. The landing file's packets are then counted: unless the
+    count equals the archived count, the file is kept, a warning is logged and
+    the day is not in the returned list. `retention_days: null` deletes nothing.
     """
     days = loader.load_json("storage.json").get("retention_days")
     if days is None:
@@ -436,6 +439,15 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
             with refdata.transaction() as conn:
                 conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (row["trade_date"],))
             continue
+        if landing.exists():
+            try:
+                found = f"{_landing_packets(landing)} packets"
+            except sqlite3.Error as e:
+                found = f"cannot be counted ({e})"
+            if found != f"{row['packets']} packets":
+                log.warning("%s: landing file %s: %s, but the verified archive holds %d packets; landing kept",
+                            row["trade_date"], landing, found, row["packets"])
+                continue
         for p in (landing, Path(str(landing) + "-wal"), Path(str(landing) + "-shm")):
             p.unlink(missing_ok=True)
         with refdata.transaction() as conn:
