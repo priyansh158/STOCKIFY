@@ -5,9 +5,11 @@ import json
 import logging
 import random
 import shutil
+import sqlite3
 import unittest
 from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 import pyarrow.parquet as pq
@@ -104,6 +106,32 @@ def tick_days_row() -> dict | None:
     return None if row is None else dict(row)
 
 
+def archive_dir_names() -> list[str]:
+    """Everything in the archive folder: after a run, only the day's archive may be there."""
+    return sorted(p.name for p in paths.ticks_archive_dir().iterdir())
+
+
+def whole(folder) -> bool:
+    """A whole archive: a readable meta.json and every file it lists."""
+    try:
+        meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return all((folder / name).is_file() for name in meta["files"])
+
+
+def failing_rename(fails):
+    """Path.rename that raises, as Windows does for a folder with an open file, when fails(source, target)."""
+    real = Path.rename
+
+    def rename(path, new):
+        if fails(path, Path(new)):
+            raise PermissionError(13, "in use", str(path))
+        return real(path, new)
+
+    return patch.object(Path, "rename", rename)
+
+
 class CompactTest(unittest.TestCase):
     def setUp(self):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
@@ -183,6 +211,14 @@ class ArchiveTests(CompactTest):
         self.assertEqual(second.counts, {})                           # skipped, not rebuilt
         third = compact.compact(DAY, force=True)
         self.assertEqual((third.status, third.digest), ("verified", first.digest))
+
+    def test_a_temporary_folder_left_by_a_first_compaction_is_cleared(self):
+        tmp = compact._tmp(archive_folder())
+        tmp.mkdir(parents=True)
+        (tmp / "full.parquet").write_bytes(b"cut short")
+        res = compact.compact(DAY)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
 
     def test_no_landing_file(self):
         self.assertEqual(compact.compact(date(2026, 11, 11)).status, "no_landing")
@@ -347,6 +383,218 @@ class ArchiveKeptTests(CompactTest):
         self.assertIn("701", res.error)
         self.assertEqual(tick_days_row(), row)                 # the row still says what the day held
         self.assertEqual(list(paths.ticks_archive_dir().iterdir()), [])
+
+
+class ReplacementTests(CompactTest):
+    """I-13: an archive is replaced by setting the old one aside, moving the new one in, checking it and
+    recording it; only then is the old one removed. A step that fails puts the old archive back."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(compact.compact(DAY).status, "verified")
+        record_packets(19)                                   # late frames: the landing file now holds 720
+        self.before = (archive_bytes(), tick_days_row())
+
+    def assert_the_old_archive_is_still_the_record(self, res):
+        self.assertEqual(res.status, "failed", res)
+        self.assertEqual((archive_bytes(), tick_days_row()), self.before)
+        row = tick_days_row()
+        compact.verify(archive_folder(), row["digest"], row["packets"])            # whole, and it still verifies
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+        self.assertEqual(landing_packets(), 720)
+
+    def test_an_archive_with_a_file_open_in_it_is_neither_replaced_nor_damaged(self):
+        with open(archive_folder() / "quote.parquet", "rb"):                       # a reader: the API, a replay
+            with self.logs("ERROR"):
+                res = compact.compact(DAY, force=True)
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn(str(archive_folder()), res.error)
+        again = compact.compact(DAY, force=True)                                   # the reader is gone
+        self.assertEqual((again.status, again.packets, archived_packets()), ("verified", 720, 720))
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+    def test_a_new_archive_that_cannot_be_moved_into_place_leaves_the_old_one(self):
+        with failing_rename(lambda source, target: source.name.endswith(".tmp")), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn("in use", res.error)
+
+    def test_a_new_archive_that_fails_its_check_in_place_is_taken_out_again(self):
+        real, checked = compact.verify, []
+
+        def verify(folder, digest, rows):
+            checked.append(folder)
+            if len(checked) > 1:
+                raise compact.CompactionError("full.parquet changed after it was written")
+            return real(folder, digest, rows)
+
+        with patch.object(compact, "verify", verify), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual(checked[1:], [archive_folder()])                          # checked where it now lives
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn("full.parquet changed after it was written", res.error)
+
+    def test_a_new_archive_that_cannot_be_recorded_is_taken_out_again(self):
+        with patch.object(compact, "_record", side_effect=sqlite3.OperationalError("database is locked")), \
+                self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn("database is locked", res.error)
+
+    def test_at_every_step_of_a_replacement_a_whole_archive_is_in_place_or_set_aside(self):
+        gaps = []
+        real_rename, real_rmtree = Path.rename, shutil.rmtree
+
+        def check(step):
+            folders = [p for p in paths.ticks_archive_dir().iterdir() if not p.name.endswith(".tmp")]
+            if not any(whole(p) for p in folders):
+                gaps.append(step)
+
+        def rename(path, new):
+            out = real_rename(path, new)
+            check(f"after moving {path.name} to {Path(new).name}")
+            return out
+
+        def rmtree(path, *args, **kwargs):
+            out = real_rmtree(path, *args, **kwargs)
+            check(f"after removing {Path(path).name}")
+            return out
+
+        with patch.object(Path, "rename", rename), patch.object(shutil, "rmtree", rmtree):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 720, ""))
+        self.assertEqual(gaps, [])
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+    def test_an_old_archive_that_cannot_be_removed_stays_aside_and_goes_on_the_next_run(self):
+        real = shutil.rmtree
+
+        def rmtree(path, *args, **kwargs):
+            path = Path(path)
+            if not path.name.endswith(".tmp") and (path / "quote.parquet").exists():
+                for f in sorted(path.iterdir()):                                   # Windows: quote.parquet is open
+                    if f.name == "quote.parquet":
+                        raise PermissionError(32, "in use", str(f))
+                    f.unlink()
+            return real(path, *args, **kwargs)
+
+        with patch.object(shutil, "rmtree", rmtree), self.logs("WARNING"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets), ("verified", 720), res)
+        row = tick_days_row()
+        self.assertEqual((row["status"], row["packets"], row["digest"]), ("verified", 720, res.digest))
+        compact.verify(archive_folder(), row["digest"], row["packets"])            # the new archive is whole
+        left = [p for p in paths.ticks_archive_dir().iterdir() if p != archive_folder()]
+        self.assertEqual(len(left), 1)
+        self.assertIn(str(left[0]), res.error)                                     # it says where the old one is
+        after = (archive_bytes(), tick_days_row())
+        again = compact.compact(DAY)
+        self.assertEqual((again.status, again.packets), ("verified", 720))
+        self.assertEqual((archive_bytes(), tick_days_row()), after)
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+
+class RecoveryTests(CompactTest):
+    """I-13: a replacement that was interrupted is undone by the next run, before anything else."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(compact.compact(DAY).status, "verified")
+        self.before = (archive_bytes(), tick_days_row())
+        self.aside = compact._aside(archive_folder())
+
+    def assert_restored(self, res):
+        self.assertEqual((res.status, res.packets, res.digest),
+                         ("verified", 701, self.before[1]["digest"]), res)
+        self.assertIn(str(self.aside), res.error)                                  # the result says what it did
+        self.assertIn("put back", res.error)
+        self.assertEqual(archive_bytes(), self.before[0])
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+    def test_the_set_aside_name_is_not_read_as_a_day(self):
+        self.assertEqual(self.aside.parent, archive_folder().parent)
+        self.assertFalse(self.aside.name.startswith("date="))                      # ticks.available_days globs date=*
+
+    def test_an_archive_left_set_aside_is_put_back_first(self):
+        archive_folder().rename(self.aside)                                        # stopped before the move in
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+
+    def test_it_is_put_back_for_a_day_whose_landing_file_is_gone_too(self):
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        row = tick_days_row()
+        archive_folder().rename(self.aside)
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), row)
+
+    def test_an_incomplete_archive_folder_gives_way_to_the_set_aside_copy(self):
+        shutil.copytree(archive_folder(), self.aside)
+        for name in ("full.parquet", "meta.json"):                                 # what a part-way removal left
+            (archive_folder() / name).unlink()
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+
+    def test_a_replacement_stopped_before_it_was_recorded_is_undone(self):
+        record_packets(19)
+        with patch.object(compact, "_record", side_effect=KeyboardInterrupt):      # the process died right here
+            with self.assertRaises(KeyboardInterrupt):
+                compact.compact(DAY, force=True)
+        self.assertEqual(archived_packets(), 720)                                  # the new one is in place,
+        self.assertTrue(whole(self.aside))                                         # the old one set aside,
+        self.assertEqual(tick_days_row(), self.before[1])                          # and the row describes the old one
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+        self.assertEqual(landing_packets(), 720)
+
+    def test_retention_puts_a_set_aside_archive_back_before_it_deletes_the_landing_file(self):
+        archive_folder().rename(self.aside)
+        with self.logs("WARNING") as logs:
+            self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertTrue(any(str(self.aside) in line and "put back" in line for line in logs.output), logs.output)
+        self.assertEqual(archive_bytes(), self.before[0])
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+        self.assertEqual(tick_days_row(), dict(self.before[1], status="landing_deleted"))
+        self.assertFalse(paths.ticks_landing_file(DAY).exists())
+
+    def test_a_whole_archive_in_the_temporary_folder_is_not_deleted_while_the_day_has_none(self):
+        tmp = compact._tmp(archive_folder())
+        archive_folder().rename(tmp)               # an older version stopped between removing the old and moving in
+        left = {p.name: p.read_bytes() for p in tmp.iterdir()}
+        for force in (False, True):
+            with self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assertEqual(res.status, "failed", res)
+            self.assertIn(str(tmp), res.error)
+            self.assertEqual({p.name: p.read_bytes() for p in tmp.iterdir()}, left)
+            self.assertEqual(tick_days_row(), self.before[1])
+        self.assertEqual(landing_packets(), 701)
+        tmp.rename(archive_folder())                                               # what the message asks for
+        res = compact.compact(DAY)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        self.assertEqual(archive_bytes(), self.before[0])
+
+    def test_an_incomplete_set_aside_copy_with_no_archive_is_reported_and_nothing_is_touched(self):
+        archive_folder().rename(self.aside)
+        for name in ("full.parquet", "meta.json"):
+            (self.aside / name).unlink()
+        left = {p.name: p.read_bytes() for p in self.aside.iterdir()}
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+            self.assertEqual(compact.apply_retention(DAY), [])
+        self.assertEqual(res.status, "failed")
+        self.assertIn(str(self.aside), res.error)
+        self.assertEqual({p.name: p.read_bytes() for p in self.aside.iterdir()}, left)
+        self.assertEqual(archive_dir_names(), [self.aside.name])
+        self.assertEqual(tick_days_row(), self.before[1])
+        self.assertEqual(landing_packets(), 701)
 
 
 class NeverShrinksPropertyTests(unittest.TestCase):
