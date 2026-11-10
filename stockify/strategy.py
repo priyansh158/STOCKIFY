@@ -121,8 +121,8 @@ class Bar:
     high: int
     low: int
     close: int
-    volume: int
-    oi: int
+    volume: int                 # units for every source, never contracts (A1 §5, D-79)
+    oi: int                     # units
     built: bool = False
 
 
@@ -131,7 +131,7 @@ class Tick:
     instrument: int
     t_ns: int
     ltp: int
-    volume: int
+    volume: int                 # units traded so far that day (Kite's day volume), never contracts
     atp: int
     bid: int | None
     ask: int | None

@@ -89,6 +89,13 @@ class ConversionTests(FoVolumeTest):
         self.fo_row(DAY1, self.ce, 1_000, 50)                            # the spec in force says 75
         self.assertEqual(self.bars(packs.build(self.spec([self.ce])))[("2026-11-16", self.ce)]["volume"], 50_000)
 
+    def test_the_rows_own_lot_can_change_between_days_within_one_pack(self):
+        self.fo_row(DAY1, self.ce, 1_000, 75)                            # the spec in force says 75 on both days
+        self.fo_row(DAY2, self.ce, 1_000, 65)
+        bars = self.bars(packs.build(self.spec([self.ce], DAY1, DAY2)))
+        self.assertEqual(bars[("2026-11-16", self.ce)]["volume"], 75_000)
+        self.assertEqual(bars[("2026-11-17", self.ce)]["volume"], 65_000)
+
     def test_a_null_lot_row_takes_the_spec_in_force_on_its_trade_date(self):
         self.second_day()
         specs = [tuple(r) for r in refdata._connect().execute(
@@ -112,9 +119,31 @@ class ConversionTests(FoVolumeTest):
                 before = sorted(p.name for p in paths.packs_dir().iterdir())
                 with self.assertRaisesRegex(
                         packs.PackError, rf"fo_eod 2026-11-16 instrument {self.late} \(NFO:NIFTY26N2424200CE\): "
-                                         r"no lot size in the row and no contract spec in force"):
+                                         r"no sourced lot size exists for that day"):
                     packs.build(self.spec([self.late]))
                 self.assertEqual(sorted(p.name for p in paths.packs_dir().iterdir()), before)   # nothing published
+
+    def test_a_bhavcopy_only_instrument_is_named_by_its_contract_terms(self):
+        """Old-format rows belong to instruments the bhavcopy registered without a tradingsymbol (A1 §1): the
+        error names them by underlying, kind, expiry and strike, never as `NFO:None`."""
+        with refdata.transaction() as conn:
+            ids = [conn.execute(
+                "INSERT INTO instruments (exchange, kind, tradingsymbol, underlying, expiry, strike_paise, "
+                "first_seen, last_seen, source) VALUES ('NFO', ?, NULL, 'NIFTY', '2026-12-31', ?, "
+                "'2026-11-16', '2026-11-16', 'bhavcopy')", (kind, strike)).lastrowid
+                for kind, strike in (("PE", 2_605_050), ("FUT", None))]
+        for iid, name in zip(ids, ("NFO:NIFTY PE 2026-12-31 26050.50", "NFO:NIFTY FUT 2026-12-31")):
+            with self.subTest(name=name):
+                self.assertIsNone(instruments.spec_at(iid, DAY1))
+                with refdata.transaction() as conn:
+                    conn.execute("DELETE FROM fo_eod")
+                self.fo_row(DAY1, iid, 1_000, None)
+                with self.assertRaises(packs.PackError) as cm:
+                    packs.build(self.spec([iid]))
+                msg = str(cm.exception)
+                self.assertTrue(msg.startswith(f"fo_eod 2026-11-16 instrument {iid} ({name}): "), msg)
+                self.assertIn("no sourced lot size exists for that day", msg)
+                self.assertNotIn("None", msg)
 
     def test_a_lot_that_is_not_positive_fails_the_build(self):
         for lot in (0, -75):

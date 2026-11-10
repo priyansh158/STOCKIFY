@@ -173,6 +173,8 @@ bars in the lab so far):
 - `fill_model` `bar` fills an order on the next bar (A4 §4.1), taking at most 10 % of that bar's volume, with
   0.05 % slippage against you. `bar.volume` is in units (shares; for F&O, contracts × lot size) whatever the
   data source: NSE's daily F&O file counts contracts and is converted when the pack is built (A1 §5, D-79).
+  Known data hole: 2023-12-28 and 2023-12-29 carry no sourced lot size, so an F&O `bhav_eod` pack over those two
+  days fails to build; start such a pack on 2024-01-01 or later.
 
 ## 3. Run it from the command line
 

@@ -282,6 +282,8 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
   the dated `contract_specs` row in force on the trade date. A row with no lot from either fails the pack
   build with an error naming the instrument and the day: a lot is never guessed. `fo_eod.oi` is units already
   and is copied as it is.
+  Known data hole: 2023-12-28 and 2023-12-29 (old-format files, NULL `lot_size`; `contract_specs` starts
+  2024-01-01) have no sourced lot, so an F&O daily pack over them fails; the lot is never derived from turnover.
 
 ## §6 Runs
 

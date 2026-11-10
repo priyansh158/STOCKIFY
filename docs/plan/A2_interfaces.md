@@ -181,7 +181,7 @@ The same API is implemented by the oracle (M2) and the engine (M3). A strategy w
 ```python
 class Strategy:
     def on_start(self, ctx): ...
-    def on_bar(self, ctx, bar): ...                 # bar.instrument, .interval_s, .start_ns, .t_ns, .open/.high/.low/.close (paise), .volume, .oi
+    def on_bar(self, ctx, bar): ...                 # bar.instrument, .interval_s, .start_ns, .t_ns, .open/.high/.low/.close (paise), .volume (units, never contracts: D-79), .oi (units)
     def on_tick(self, ctx, tick): ...               # tick.instrument, .t_ns, .ltp, .volume, .atp, .bid/.ask (FULL only), .stale
     def on_timer(self, ctx, timer_id): ...
     def on_fill(self, ctx, fill): ...               # fill.order_id, .instrument, .side, .qty, .price, .t_ns, .evidence

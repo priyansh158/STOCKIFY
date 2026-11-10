@@ -56,6 +56,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from stockify import numerics, paths, timeutil
+from stockify.data import instruments
 
 MAGIC = b"STKEVT01"
 VERSION = 1
@@ -490,6 +491,22 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
     return heapq.merge(ticks_sorted, side), t_lo, t_hi
 
 
+def _instrument_label(iid: int) -> str:
+    """`NFO:NIFTY26NOVFUT`, or for a contract the bhavcopy registered without a tradingsymbol (A1 §1)
+    `NFO:NIFTY FUT 2024-01-25` / `NFO:NIFTY CE 2024-01-25 21500.00`: never `NFO:None`."""
+    info = instruments.get(iid)
+    if info is None:
+        return "unknown instrument"
+    if info.get("tradingsymbol"):
+        return f"{info['exchange']}:{info['tradingsymbol']}"
+    parts = [info.get("underlying") or "?", info.get("kind") or "?"]
+    if info.get("expiry"):
+        parts.append(info["expiry"])
+    if info.get("strike_paise") is not None:
+        parts.append(f"{info['strike_paise'] // 100}.{info['strike_paise'] % 100:02d}")
+    return f"{info['exchange']}:{' '.join(parts)}"
+
+
 def _fo_units(day: date, iid: int, contracts, row_lot):  # noqa: ANN001, ANN202
     """An `fo_eod` row's traded volume in units (D-79).
 
@@ -498,19 +515,16 @@ def _fo_units(day: date, iid: int, contracts, row_lot):  # noqa: ANN001, ANN202
     or, where that is NULL (old-format files), the dated contract spec in force on the trade date. No lot from
     either fails the build: never a guessed lot, never contracts passed off as units. The product is taken in
     Python (SQLite would turn an overflowing one into a float) and must fit an int64."""
-    from stockify.data import instruments
-
     def fail(why: str) -> PackError:
-        info = instruments.get(iid) or {}
-        return PackError(f"fo_eod {day.isoformat()} instrument {iid} "
-                         f"({info.get('exchange')}:{info.get('tradingsymbol')}): {why}")
+        return PackError(f"fo_eod {day.isoformat()} instrument {iid} ({_instrument_label(iid)}): {why}")
 
     lot, source = row_lot, "fo_eod.lot_size"
     if lot is None:
         lot, source = (instruments.spec_at(iid, day) or {}).get("lot_size"), "contract_specs"
         if lot is None:
-            raise fail("no lot size in the row and no contract spec in force on that date, so its volume in "
-                       "contracts cannot be turned into units (D-79)")
+            raise fail("no sourced lot size exists for that day (none in the row, no contract spec in force), so "
+                       "its volume in contracts cannot be turned into units; a lot is never derived from turnover "
+                       "(D-79)")
     if type(lot) is not int or lot < 1:
         raise fail(f"lot size {lot!r} ({source}) is not a positive whole number")
     if contracts is None:
