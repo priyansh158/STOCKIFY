@@ -653,6 +653,16 @@ def check_module(module_name: str) -> None:
                 pending.append(m)
 
 
+def checked_source(module_name: str) -> str:
+    """A strategy module's source text after the source check, read without importing the module.
+
+    For callers that hash the source (goldens). The text is what `inspect.getsource` gives for the module:
+    newlines as "\n", and a final one added if the file has none."""
+    check_module(module_name)
+    source, _ = _module_source(module_name)
+    return source if source.endswith("\n") or not source else source + "\n"
+
+
 def load(ref: str, params: dict | None = None) -> Strategy:
     """'package.module:ClassName' → an instance, after the source check (which runs before the import)."""
     module_name, cls_name = ref.split(":")

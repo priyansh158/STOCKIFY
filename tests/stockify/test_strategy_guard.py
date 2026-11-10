@@ -1,6 +1,9 @@
 """Strategies may not import network or Kite modules, and their source is checked before it runs (LCB 5.3)."""
 from __future__ import annotations
 
+import copy
+import hashlib
+import inspect
 import shutil
 import sys
 import tempfile
@@ -10,6 +13,7 @@ from pathlib import Path
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
+from stockify import golden
 from stockify import strategy as S
 
 GOOD = """
@@ -287,6 +291,72 @@ class StrategyGuardTest(unittest.TestCase):
     def test_a_missing_module_is_a_strategy_error(self):
         with self.assertRaises(S.StrategyCodeError):
             S.load(f"{self.pkg}.nope:X")
+
+    # ── Goldens name strategies too (LCB 5.13) ───────────────────────────────
+
+    def _golden(self, ref: str) -> dict:
+        g = copy.deepcopy(next(g for _, g in golden.goldens(["G01"])))
+        g["strategy"] = {"ref": ref, "params": {}}
+        return g
+
+    def _loaded(self) -> list[str]:
+        return sorted(n for n in sys.modules if n.startswith(self.pkg + "."))
+
+    def test_a_golden_naming_a_strategy_that_imports_socket_is_refused(self):
+        ref = self._module("net", "import socket\n" + GOOD) + ":Fine"
+        with self.assertRaisesRegex(S.StrategyCodeError, "socket"):
+            golden.build_bundle(self._golden(ref))
+        self.assertEqual(self._loaded(), [], "the strategy file ran before it was checked")
+        with self.assertRaisesRegex(S.StrategyCodeError, "socket"):
+            golden.run_one(self._golden(ref), "oracle")
+        self.assertEqual(self._loaded(), [], "the strategy file ran before it was checked")
+
+    def test_a_golden_is_refused_for_what_its_strategy_does_at_import_time(self):
+        for n, code in enumerate(("import os\nos.environ['LCB_GOLDEN_RAN'] = '1'\n", "import kite_client\n",
+                                  "import subprocess\n", "open('x', 'w')\n", "from stockify import kite_readonly\n",
+                                  "import datetime\nT = datetime.datetime.now()\n")):
+            ref = self._module(f"bad{n}", code + GOOD) + ":Fine"
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                golden.build_bundle(self._golden(ref))
+            self.assertEqual(self._loaded(), [])
+        import os
+        self.assertNotIn("LCB_GOLDEN_RAN", os.environ)
+
+    def test_a_golden_strategy_s_own_helpers_are_checked_as_well(self):
+        self._module("wire", "import socket\nx = 1\n")
+        ref = self._module("uses_wire", f"from {self.pkg}.wire import x\n" + GOOD) + ":Fine"
+        with self.assertRaisesRegex(S.StrategyCodeError, "socket"):
+            golden.build_bundle(self._golden(ref))
+        self.assertEqual(self._loaded(), [])
+
+    def test_a_golden_naming_a_missing_strategy_file_is_refused(self):
+        with self.assertRaises(S.StrategyCodeError):
+            golden.build_bundle(self._golden(f"{self.pkg}.nope:X"))
+
+    def test_a_golden_with_a_clean_strategy_is_built_and_run_as_before(self):
+        ref = self._module("fine", GOOD) + ":Fine"
+        b = golden.build_bundle(self._golden(ref))
+        self.assertEqual(self._loaded(), [], "building the bundle needs the source, not the module")
+        # The source hash is what it was when the module was imported to be read: the text, newlines as "\n".
+        self.assertEqual(b["strategy"], {"kind": "python", "ref": ref, "params": {},
+                                         "source_sha256": hashlib.sha256(textwrap.dedent(GOOD).encode()).hexdigest()})
+        g = self._golden(ref)
+        g["expect"] = {"orders": [], "fills": []}               # Fine never trades
+        self.assertEqual(golden.run_one(g, "oracle"), [])
+        self.assertEqual(self._loaded(), [f"{self.pkg}.fine"])  # the run loaded it, through strategy.load
+
+    def test_the_source_hash_of_a_golden_strategy_has_not_changed(self):
+        from stockify.tools import fuzz, replay
+        b = golden.build_bundle(self._golden(fuzz.REPLAY_REF))
+        self.assertEqual(b["strategy"]["source_sha256"],
+                         hashlib.sha256(inspect.getsource(replay).encode("utf-8")).hexdigest())
+        # A file without a final newline hashed as if it had one (inspect.getsource did that); it still does.
+        ref = self._module("no_newline", GOOD)
+        path = self.root / self.pkg / "no_newline.py"
+        path.write_bytes(path.read_bytes().rstrip())
+        b = golden.build_bundle(self._golden(ref + ":Fine"))
+        self.assertEqual(b["strategy"]["source_sha256"],
+                         hashlib.sha256(textwrap.dedent(GOOD).encode()).hexdigest())
 
 
 if __name__ == "__main__":

@@ -137,9 +137,10 @@ def _instruments(g: dict, days: list[dict]) -> list[dict]:
 
 def _bundle_strategy(s: dict) -> dict:
     if s["kind"] == "python":
-        import importlib
-        import inspect
-        source = inspect.getsource(importlib.import_module(s["ref"].split(":")[0]))
+        # A golden file can name any strategy. Its source goes through the same check as every other way in
+        # (A2 §4.4), and is read without importing the module: none of its code runs here (LCB 5.13).
+        from stockify import strategy as strategy_mod
+        source = strategy_mod.checked_source(s["ref"].split(":")[0])
         return {"kind": "python", "ref": s["ref"], "params": s["params"],
                 "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest()}
     return {"kind": "script", "actions": s["actions"], "params": {},
