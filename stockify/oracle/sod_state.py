@@ -804,6 +804,18 @@ BUNDLE_DEPTH = 100                # levels anywhere in a bundle file outside its
 _COLON = re.compile(r"\s*:")
 
 
+def _is_state_key(tok: str) -> bool:
+    """Is this string token the key `sod_state`, however it is spelled (a JSON escape decodes to the same key)?"""
+    if tok == '"sod_state"':
+        return True
+    if "\\" not in tok:
+        return False
+    try:
+        return json.loads(tok) == "sod_state"
+    except ValueError:
+        return False
+
+
 def _scan_bundle(text: str) -> None:
     """The bundle's depth guard: the `sod_state` member under the same limit as a state text (counted from the state
     object itself), the rest of the file under BUNDLE_DEPTH; unpaired surrogates anywhere."""
@@ -830,7 +842,7 @@ def _scan_bundle(text: str) -> None:
             pending = False
             if "\\u" in tok and _lone_surrogate(tok):
                 raise StateError("sod_state: invalid JSON: a string holds an unpaired surrogate")
-            if depth == 1 and state_depth is None and tok == '"sod_state"' and _COLON.match(text, m.end()):
+            if depth == 1 and state_depth is None and _is_state_key(tok) and _COLON.match(text, m.end()):
                 pending = True
 
 

@@ -37,6 +37,7 @@ class Row:
     error: str | None                  # a piece of the refusal; None: accepted by both, same bytes written back
     run: bool = False                  # accepted rows: also run the day and compare the end-of-day states
     text_only: bool = False            # cannot travel inside a bundle's sod_state as a dict (a text-level refusal)
+    escaped_key: bool = False          # its bundle file spells the `sod_state` key with an escape (the same key)
     bundle: bool = False               # a text_only row that is also spliced, as text, into a bundle file (the
                                        # constructor path: no dict stands between the file and the reader)
 
@@ -224,6 +225,9 @@ ROWS: tuple[Row, ...] = (
     Row("queued_notifications nested 100,000 deep, as a bundle's state would hold it (crash)", 2,
         replace('"queued_notifications":[]', '"queued_notifications":' + nested(100000)), "nested more than",
         text_only=True, bundle=True),
+    Row("queued_notifications nested 100,000 deep under an escaped sod_state key (crash)", 2,
+        replace('"queued_notifications":[]', '"queued_notifications":' + nested(100000)), "nested more than",
+        text_only=True, bundle=True, escaped_key=True),
     Row("strategy nested 20,000 deep (crash)", 2,
         replace('"strategy":{}', '"strategy":{"k":' + nested(20000) + "}"), "nested more than", text_only=True, bundle=True),
     Row("strategy nested 65 levels", 2, replace('"strategy":{}', '"strategy":{"k":' + nested(64) + "}"),
@@ -350,6 +354,9 @@ ROWS: tuple[Row, ...] = (
         "an integer outside 64 bits", text_only=True, bundle=True),
     Row("-2**63-1 in the strategy's state", 9, replace('"strategy":{}', '"strategy":{"n":-9223372036854775809}'),
         "an integer outside 64 bits", text_only=True, bundle=True),
+    Row("10**30 in the strategy's state under an escaped sod_state key", 9,
+        replace('"strategy":{}', '"strategy":{"n":1' + "0" * 30 + "}"), "an integer outside 64 bits",
+        text_only=True, bundle=True, escaped_key=True),
     Row("10**30 in the strategy's state", 9, replace('"strategy":{}', '"strategy":{"n":1' + "0" * 30 + "}"),
         "an integer outside 64 bits", text_only=True, bundle=True),
     Row("a 5,000-digit integer", 9, replace('"strategy":{}', '"strategy":{"n":' + "9" * 5000 + "}"),
@@ -480,5 +487,6 @@ ROWS: tuple[Row, ...] = (
 # them in the table by name.
 HANG_ROWS = ("a timer with a negative period (hang)", "a timer period near INT64_MAX (hang)",
              "a huge next_order with a live order runs")
-CRASH_ROWS = ("queued_notifications nested 5,000 deep (crash)", "strategy nested 20,000 deep (crash)",
+CRASH_ROWS = ("queued_notifications nested 100,000 deep under an escaped sod_state key (crash)",
+              "queued_notifications nested 5,000 deep (crash)", "strategy nested 20,000 deep (crash)",
               "queued_notifications nested 100,000 deep, as a bundle's state would hold it (crash)")

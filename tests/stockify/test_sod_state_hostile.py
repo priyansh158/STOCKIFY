@@ -129,17 +129,21 @@ def load_bundle(side, state: dict) -> tuple[str, str]:  # noqa: ANN001
         return attempt(side, lambda: side.from_bundle(state, Path(tmp)).eod_state())
 
 
-def bundle_text_with(state_text: str) -> str:
+def bundle_text_with(state_text: str, escaped_key: bool = False) -> str:
     """The fixture bundle's file text with `state_text` as its sod_state: the text goes in as it is, so what only a
     text can hold (a key twice, a huge integer, a very deep nesting) reaches the constructor's reader."""
     b = json.loads(BUNDLE_TEXT)
     b["sod_state"] = "@@STATE@@"
-    return numerics.dumps_canonical(b).replace('"@@STATE@@"', state_text)
+    text = numerics.dumps_canonical(b).replace('"@@STATE@@"', state_text)
+    if escaped_key:                       # the same key, spelled with a JSON escape (u+005f is the underscore)
+        assert text.count('"sod_state":') == 1
+        text = text.replace('"sod_state":', '"sod\\u005fstate":')
+    return text
 
 
-def load_bundle_text(side, state_text: str) -> tuple[str, str]:  # noqa: ANN001
+def load_bundle_text(side, state_text: str, escaped_key: bool = False) -> tuple[str, str]:  # noqa: ANN001
     """The same text through a bundle file's `sod_state`: ("ok", the state written back) or ("refused", …)."""
-    text = bundle_text_with(state_text)
+    text = bundle_text_with(state_text, escaped_key)
     with tempfile.TemporaryDirectory(prefix="sod-hostile-", dir=str(tests.support.SANDBOX_ROOT)) as tmp:
         return attempt(side, lambda: side.from_bundle_text(text, Path(tmp)).eod_state())
 
@@ -187,7 +191,7 @@ class RowChecks:
                 self.assertEqual(via_bundle[0], "refused", f"{side.name} accepted it inside a bundle")
                 self.assertIn(row.error, via_bundle[1])
         elif row.bundle:                      # a text-level refusal must hold on the constructor path too
-            via_bundle = load_bundle_text(side, text)
+            via_bundle = load_bundle_text(side, text, row.escaped_key)
             self.assertEqual(via_bundle[0], "refused", f"{side.name} accepted it inside a bundle file")
             self.assertIn(row.error, via_bundle[1])
             self.assertTrue(via_bundle[1].startswith("sod_state: "), via_bundle[1])
@@ -239,7 +243,8 @@ class EngineHostileStateTests(RowChecks, unittest.TestCase):
                 want = load_text(OracleSide, text, run=row.run)
                 self.assertTrue(same(got, want), f"engine {got[1][:300]!r} vs oracle {want[1][:300]!r}")
                 if row.bundle:
-                    got_b, want_b = load_bundle_text(EngineSide, text), load_bundle_text(OracleSide, text)
+                    got_b = load_bundle_text(EngineSide, text, row.escaped_key)
+                    want_b = load_bundle_text(OracleSide, text, row.escaped_key)
                     self.assertTrue(same(got_b, want_b), f"engine {got_b[1][:300]!r} vs oracle {want_b[1][:300]!r}")
 
     def test_the_size_limit_is_the_oracles(self):

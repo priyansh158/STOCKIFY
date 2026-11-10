@@ -1370,9 +1370,8 @@ void load_sod_state(Engine& e, std::string_view text) {  // runner.Engine.load_s
 Json parse_strategy_state(std::string_view text) { return parse_text(text, kMaxDepth); }
 
 std::optional<Json> bundle_sod_state(std::string_view bundle_text) {
-    if (bundle_text.find("\"sod_state\"") == std::string_view::npos) {
-        return std::nullopt;
-    }
+    // Always run: a key may be spelled with a JSON escape for one of its letters, which the bundle's own parse
+    // decodes, so looking for the literal text would let that spelling skip the checked reader.
     Extract extract;
     const bool ok = Json::sax_parse(bundle_text.begin(), bundle_text.end(), &extract, Json::input_format_t::json, true,
                                     false);
