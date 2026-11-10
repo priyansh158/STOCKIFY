@@ -188,7 +188,7 @@ def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     try:
         cfg = runconfig.load(config)
     except runconfig.RunConfigError as e:
-        raise HTTPException(status_code=422, detail=[str(e)])
+        raise HTTPException(status_code=422, detail=e.problems)     # one line per problem (REG 5.3)
     s = cfg["strategy"]
     if s["kind"] not in ("python", "cpp"):
         raise HTTPException(status_code=422, detail=[f"strategy.kind: {s['kind']!r} cannot be started from the API"])

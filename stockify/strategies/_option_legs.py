@@ -40,6 +40,8 @@ class OptionLegs(Strategy):
     def begin(self, ctx) -> None:  # noqa: ANN001
         if self.stop_pct <= 0:
             raise ValueError("stop_pct must be above 0")
+        if self.stop_pct > 1:                   # the same bound as the params schema, for a subclass built by hand
+            raise ValueError(f'stop_pct {self.stop_pct} is above 1: it is a fraction ("0.3" = 30 %)')
         rows = [r for r in ctx._rows() if r.get("underlying") == self.underlying or r["id"] in self._index_ids(ctx)]
         for r in rows:
             ctx.subscribe_ticks(r["id"])

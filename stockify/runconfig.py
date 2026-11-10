@@ -69,7 +69,12 @@ _PACK_SHA = re.compile(r"[0-9a-f]{64}")
 
 
 class RunConfigError(ValueError):
-    pass
+    """A run config that is refused. `problems` is the same refusal as a list, one entry per problem: more than
+    one only for a catalogue strategy's params, which are checked together (REG 5.3)."""
+
+    def __init__(self, message: str, problems: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.problems = list(problems) if problems else [str(message)]
 
 
 def seed_mode(cfg: dict) -> str:
@@ -136,7 +141,23 @@ def _strategy(s: dict) -> dict:
         _need(isinstance(s.get("actions"), list), "strategy.actions", "a script strategy needs a list of actions")
     params = s.get("params", {})
     _need(isinstance(params, dict), "strategy.params", "must be an object")
+    _catalogue_params(kind, s.get("ref"), params)
     return {**s, "params": params}
+
+
+def _catalogue_params(kind: str, ref, params: dict) -> None:  # noqa: ANN001
+    """REG 5.3 (audit M-3): a catalogue strategy's params are checked against its schema here, the one place
+    every way of starting a run passes through (runs.launch and queue, oracle.run, both CLIs, compare-strategies,
+    the API). A strategy outside the catalogue (a user's own module, a script) has no schema and is not checked."""
+    if kind == "script":
+        return
+    from stockify.strategies import _catalogue      # here, not at the top: it imports the strategy modules
+    schema = _catalogue.schema_of(kind, ref)
+    if schema is None:
+        return
+    problems = [f"strategy.params.{p}" for p in _catalogue.validate_params(schema, params)]
+    if problems:
+        raise RunConfigError("; ".join(problems), problems)
 
 
 def _spec(spec: dict, where: str) -> None:

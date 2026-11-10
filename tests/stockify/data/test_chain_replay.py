@@ -113,7 +113,7 @@ class StrategyViewTests(ChainReplayTest):
     def test_no_quote_before_staleness_after_and_nothing_invented(self):
         sha = packs.build(self.spec())
         cfg = runconfig.load({"schema": "stockify.run/1", "name": "chainreplay",
-                              "strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold"},
+                              "strategy": {"kind": "python", "ref": f"{__name__}:Watcher"},      # the one run below
                               "data": {"packs": [{"sha256": sha}]}, "capital_paise": 10**8, "price_basis": "raw",
                               "fill_model": {"kind": "snapshot_quote"}, "costs": {"allow_unverified": True}})
         b = bundle_mod.resolve_bundle(cfg)

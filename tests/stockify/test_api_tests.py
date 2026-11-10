@@ -144,6 +144,15 @@ class CreateTests(ApiTestBase):
                                               "strategy.params.fast: is not a whole number",
                                               "strategy.params.slow: required"])
 
+        # REG 5.3: the check now lives in runconfig; the API still answers with one line per problem
+        bound = copy.deepcopy(EXAMPLE)
+        bound["strategy"] = {"kind": "python", "ref": "stockify.strategies.short_straddle_stop:ShortStraddleStop",
+                             "params": {"stop_pct": "30", "colour": "red"}}
+        r = self.post(bound)
+        self.assertEqual((r.status_code, r.json()["detail"]), (422, [
+            "strategy.params.colour: unknown parameter",
+            """strategy.params.stop_pct: '30' is above 1: it is a fraction ("0.3" = 30 %)"""]))
+
         script = copy.deepcopy(EXAMPLE)
         script["strategy"] = {"kind": "script", "actions": []}
         self.assertEqual(self.post(script).status_code, 422)

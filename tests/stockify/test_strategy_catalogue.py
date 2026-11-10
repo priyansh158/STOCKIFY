@@ -28,8 +28,13 @@ class CatalogueTests(unittest.TestCase):
             names = [p["name"] for p in s["params"]]
             self.assertEqual(len(names), len(set(names)), s["ref"])
             for p in s["params"]:
-                self.assertEqual(set(p), {"name", "label", "type", "default", "required", "help"}, (s["ref"], p))
+                self.assertEqual(set(p) - {"max", "unit"}, {"name", "label", "type", "default", "required", "help"},
+                                 (s["ref"], p))
                 self.assertIn(p["type"], C.PARAM_TYPES)
+                if "max" in p:                      # REG 5.3: a bound is a decimal string and says its unit
+                    self.assertIn(p["type"], ("int", "decimal"), (s["ref"], p))
+                    self.assertIsInstance(p["max"], str)
+                    self.assertTrue(p.get("unit"), (s["ref"], p))
                 if p["required"]:
                     self.assertIsNone(p["default"])
                 else:
@@ -92,6 +97,47 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(v(EodShortStraddle.PARAMS, {"stop_multiple": "abc"}), ["stop_multiple: is not a decimal number"])
         self.assertEqual(v(EodShortStraddle.PARAMS, {"stop_multiple": 2}), [])
         self.assertEqual(v(SmaCross.PARAMS, []), ["params must be an object"])
+
+    def test_a_bound_is_checked_and_its_error_states_the_unit(self):
+        """REG 5.3 (dimensional F3): stop_pct is a fraction; "30" (meant as 30 %) is refused."""
+        from stockify.strategies.iron_fly import IronFly
+        from stockify.strategies.short_straddle_stop import ShortStraddleStop
+        for params in (IronFly.PARAMS, ShortStraddleStop.PARAMS):
+            entry = {p["name"]: p for p in params}["stop_pct"]
+            self.assertEqual((entry["max"], entry["unit"]), ("1", 'a fraction ("0.3" = 30 %)'))
+            for ok in ("0.3", "1", "1.00", 1, 0.5, "0"):
+                self.assertEqual(C.validate_params(params, {"stop_pct": ok}), [], ok)
+            for bad in ("30", "1.0001", 2, 1.5, "1e2"):
+                self.assertEqual(C.validate_params(params, {"stop_pct": bad}),
+                                 [f'stop_pct: {bad!r} is above 1: it is a fraction ("0.3" = 30 %)'], bad)
+            self.assertEqual(C.validate_params(params, {"stop_pct": "abc"}), ["stop_pct: is not a decimal number"])
+        whole = [{"name": "n", "label": "", "type": "int", "default": 1, "required": False, "help": "", "max": "10",
+                  "unit": "a count"}]
+        self.assertEqual(C.validate_params(whole, {"n": "10"}), [])
+        self.assertEqual(C.validate_params(whole, {"n": True}), [])
+        self.assertEqual(C.validate_params(whole, {"n": 11.0}), ["n: 11.0 is above 10: it is a count"])
+
+    def test_schema_of_finds_a_catalogue_strategy_without_listing_the_catalogue(self):
+        """REG 5.3: the lookup every run config passes through; it never loads the engine."""
+        from unittest import mock
+        with mock.patch.object(engine, "available", side_effect=AssertionError("the engine was asked for")), \
+                mock.patch.object(C, "catalogue", side_effect=AssertionError("the catalogue was listed")):
+            for ref in sorted(REFS):
+                module, cls = ref.split(":")
+                self.assertEqual(C.schema_of("python", ref), getattr(__import__(module, fromlist=["x"]), cls).PARAMS)
+            from stockify.strategies.opening_range_breakout import OpeningRangeBreakout
+            self.assertEqual(C.schema_of("cpp", "orb_cpp"), OpeningRangeBreakout.PARAMS)
+            for kind, ref in (("cpp", "noop_cpp"), ("cpp", ""), ("python", "stockify.strategies._script:Script"),
+                              ("python", "stockify.strategies._margin_watch:MarginWatch"),
+                              ("python", "stockify.strategies.nope:Nope"),
+                              ("python", "stockify.strategies.sma_cross:Nope"),
+                              ("python", "stockify.strategies.sma_cross:Strategy"),
+                              ("python", "stockify.strategies.sma_cross.x:SmaCross"),
+                              ("python", "tests.stockify.run_fixtures:FailOnSecondBar"), ("python", "os:path"),
+                              ("python", "nonsense"), ("script", "x"), ("python", None)):
+                self.assertIsNone(C.schema_of(kind, ref), (kind, ref))
+        for s in C.python_strategies():
+            self.assertEqual(C.schema_of("python", s["ref"]), s["params"])
 
 
 if __name__ == "__main__":

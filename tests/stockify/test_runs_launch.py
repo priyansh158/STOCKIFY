@@ -44,6 +44,55 @@ class RunsTestBase(BundleTest):
         return path
 
 
+class StrategyParamsEverywhereTests(RunsTestBase):
+    """REG 5.3 (audit M-3): every way of starting a run refuses bad params of a catalogue strategy, before a
+    folder or a row exists. Before, only the API did: from the command line `stop_pct: "30"` ran."""
+    BAD = {"kind": "python", "ref": "stockify.strategies.short_straddle_stop:ShortStraddleStop",
+           "params": {"stop_pct": "30"}}
+    WHY = """strategy.params.stop_pct: '30' is above 1: it is a fraction ("0.3" = 30 %)"""
+
+    def _nothing_started(self):
+        self.assertEqual(store.list_runs(), [])
+        self.assertEqual(sorted(p.name for p in paths.runs_dir().glob("*")) if paths.runs_dir().exists() else [], [])
+
+    def test_no_way_of_starting_a_run_takes_bad_params(self):
+        import re
+
+        from stockify import oracle, runconfig
+        path = self.config(self.BAD)
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        for way, start in (("runs.launch engine", lambda: runs.launch(cfg, impl="engine", report=False)),
+                           ("runs.launch oracle", lambda: runs.launch(cfg, impl="oracle", report=False)),
+                           ("runs.launch path", lambda: runs.launch(path, report=False)),
+                           ("runs.queue", lambda: runs.queue(cfg)),
+                           ("oracle.run", lambda: oracle.run(cfg)),
+                           ("oracle.run path", lambda: oracle.run(path))):
+            with self.subTest(way=way), self.assertRaisesRegex(runconfig.RunConfigError, "^" + re.escape(self.WHY)):
+                start()
+        for argv, exit_code in ((("run", "--config", str(path)), 2),
+                                (("run", "--config", str(path), "--impl", "oracle", "--no-report"), 2),
+                                (("oracle", "run", "--config", str(path)), 1)):
+            with self.subTest(argv=argv[:2] + argv[3:]):
+                code, out, err = _cli(*argv)
+                self.assertEqual((code, out, err.strip()), (exit_code, "", self.WHY))
+        self._nothing_started()
+
+    def test_compare_strategies_checks_every_run_before_it_starts_one(self):
+        from stockify.tools import compare_strategies as C
+        doc = {"schema": C.SCHEMA, "name": "cmp", "runs": [
+            {"title": "first", "config": run(name="a", strategy=BUY)},
+            {"title": "second", "config": run(name="b", strategy=self.BAD)}]}
+        with self.assertRaises(C.CompareError) as caught:
+            C.run(doc, impl="oracle")
+        self.assertEqual(str(caught.exception), f"runs[1] (second): {self.WHY}")
+        self._nothing_started()                                          # the good first run was not started
+        path = paths.lab_dir() / "cmp.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        code, out, err = _cli("tools", "compare-strategies", "--config", str(path), "--impl", "oracle")
+        self.assertEqual((code, out, err.strip()), (2, "", f"runs[1] (second): {self.WHY}"))
+        self._nothing_started()
+
+
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class LaunchTests(RunsTestBase):
 
@@ -186,6 +235,13 @@ class CppConfigTests(RunsTestBase):
                          hashlib.sha256(f"{build}:sma_cross_cpp".encode()).hexdigest())
         self.assertEqual(store.get_run(cpp.name)["status"], "done")
         self.assertTrue(runs.rerun(cpp.name)[1])
+
+    def test_bad_params_of_a_cpp_strategy_are_refused_before_anything_runs(self):
+        from stockify import runconfig
+        with self.assertRaisesRegex(runconfig.RunConfigError, r"^strategy\.params\.slow: required$"):
+            runs.launch(self.config({"kind": "cpp", "ref": "sma_cross_cpp",
+                                     "params": {"symbol": "NSE:RELIANCE", "fast": 2}}), report=False)
+        self.assertEqual(store.list_runs(), [])
 
     def test_an_unknown_cpp_name_is_a_failed_run(self):
         with self.assertRaises(runs.RunFailed) as ctx:

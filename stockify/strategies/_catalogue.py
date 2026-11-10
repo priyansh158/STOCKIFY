@@ -7,6 +7,11 @@ registers (STOCKSIM_STRATEGY); their params mirror the Python originals they por
 A params schema is a list of `{"name", "label", "type", "default", "required", "help"}` (`label` is the
 form's plain name for it), with `type` one of
 PARAM_TYPES. Values are checked the way the strategies read them (`int(...)`, `bool(...)`, `Decimal(str(...))`).
+An `int` or `decimal` entry may also carry `"max"` (a decimal string: the largest value accepted) together with
+`"unit"` (what the number is, with an example); a value above the bound is refused and the error states the unit.
+
+`schema_of` is the lookup every run config passes through (stockify.runconfig, REG 5.3): one strategy by its
+ref, without listing the catalogue or loading the engine.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ import importlib
 import inspect
 import pkgutil
 import re
+import sys
 from decimal import Decimal, InvalidOperation
 
 from stockify import strategy as S
@@ -22,6 +28,7 @@ PARAM_TYPES = ("int", "bool", "str", "decimal", "symbol", "hhmm", "underlying")
 
 _HHMM = re.compile(r"^\s*\d{1,2}:\d{1,2}(:\d{1,2})?\s*$")
 _SYMBOL = re.compile(r"^([A-Z]+:)?\S.*$")
+_REF = re.compile(r"^stockify\.strategies\.(?!_)\w+:\w+$")     # a non-underscore module of this package
 
 
 def _cpp_params() -> dict[str, list[dict]]:
@@ -78,6 +85,43 @@ def schema_for(kind: str, ref: str) -> list[dict] | None:
     return None
 
 
+def schema_of(kind: str, ref: str) -> list[dict] | None:
+    """The params schema of one catalogue strategy by its ref, or None when it is not a catalogue strategy (a
+    user's own module, a tool such as _margin_watch, a C++ name without a schema, a ref that does not load).
+    The same schemas as `catalogue()`, found without listing it: no engine, and no module is imported unchecked."""
+    if not isinstance(ref, str):
+        return None
+    if kind == "cpp":
+        known = _cpp_params().get(ref)
+        return None if known is None else list(known)
+    if kind != "python" or not _REF.match(ref):
+        return None
+    module_name, cls_name = ref.split(":")
+    module = sys.modules.get(module_name)
+    if module is None:
+        try:
+            S.check_module(module_name)       # before the import: top-level code never runs unchecked
+            import kite_client  # noqa: F401 - as strategy.load: the Kite SDK's client class is paper only (LCB 5.7)
+            module = importlib.import_module(module_name)
+        except (S.StrategyCodeError, ImportError):
+            return None                       # the run fails where it loads the strategy, with that error
+    cls = getattr(module, cls_name, None)
+    if not isinstance(cls, type) or cls is S.Strategy or not issubclass(cls, S.Strategy) \
+            or cls.__module__ != module.__name__:
+        return None
+    return list(getattr(cls, "PARAMS", []))
+
+
+def _bound_problem(p: dict, v) -> str | None:  # noqa: ANN001
+    """A value above the entry's `max`, said with the entry's `unit` (the value already passed `_type_problem`)."""
+    if "max" not in p or p["type"] not in ("int", "decimal"):
+        return None
+    number = Decimal(int(v)) if p["type"] == "int" else Decimal(str(v))
+    if number <= Decimal(p["max"]):
+        return None
+    return f"{v!r} is above {p['max']}" + (f": it is {p['unit']}" if p.get("unit") else "")
+
+
 def _type_problem(t: str, v) -> str | None:  # noqa: ANN001
     if t == "int":
         if isinstance(v, bool):
@@ -118,7 +162,8 @@ def _type_problem(t: str, v) -> str | None:  # noqa: ANN001
 
 
 def validate_params(schema: list[dict], params: dict) -> list[str]:
-    """Problems with `params` against `schema`: unknown keys, missing required ones, wrong types."""
+    """Problems with `params` against `schema`: unknown keys, missing required ones, wrong types, values above
+    an entry's `max`."""
     if not isinstance(params, dict):
         return ["params must be an object"]
     problems = []
@@ -131,7 +176,7 @@ def validate_params(schema: list[dict], params: dict) -> list[str]:
             if p.get("required"):
                 problems.append(f"{p['name']}: required")
             continue
-        why = _type_problem(p["type"], params[p["name"]])
+        why = _type_problem(p["type"], params[p["name"]]) or _bound_problem(p, params[p["name"]])
         if why:
             problems.append(f"{p['name']}: {why}")
     return problems
