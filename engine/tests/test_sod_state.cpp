@@ -108,6 +108,7 @@ TEST_CASE("sod_state round trip keeps every counter") {
 
 TEST_CASE("a state that is wrong is refused whole: the engine is left as it was") {
     const std::string text = read_text(kFixtures + "day0_state.json");
+    const Json st = Json::parse(text);
     const auto fresh = [] { return std::make_unique<Engine>(load_bundle(kFixtures + "day1_bundle.json")); };
     const auto refused = [&](const std::string& bad, const char* words) {
         const auto e = fresh();
@@ -125,7 +126,8 @@ TEST_CASE("a state that is wrong is refused whole: the engine is left as it was"
     refused(changed("\"strategy\":{}", "\"strategy\":{\"k\":" + std::string(64, '[') + "1" + std::string(64, ']') + "}"),
             "nested more than");
     refused(std::string(100000, '['), "nested more than");
-    refused(changed("\"cash_paise\":4974100", "\"cash_paise\":1,\"cash_paise\":4974100"), "duplicate key 'cash_paise'");
+    const std::string cash = "\"cash_paise\":" + std::to_string(st.at("cash_paise").get<std::int64_t>());
+    refused(changed(cash, "\"cash_paise\":1," + cash), "duplicate key 'cash_paise'");
     refused(changed("\"strategy\":{}", "\"strategy\":{\"n\":18446744073709551616}"), "an integer outside 64 bits");
     refused(changed("\"strategy\":{}", "\"strategy\":{\"x\":1e999}"), "a number is out of range");
     refused(text + std::string(1, static_cast<char>(0)), "the text has a NUL character");
@@ -133,7 +135,9 @@ TEST_CASE("a state that is wrong is refused whole: the engine is left as it was"
             "timer period_ns must not be negative");
     refused(changed("[1,1768244760000000000,2220000000000]", "[1,1768244760000000000,9223372036854775800]"),
             "does not fit in int64");
-    refused(changed("\"next_order\":41", "\"next_order\":40"), "is not below counters.next_order (40)");
+    const std::uint64_t next_order = st.at("counters").at("next_order").get<std::uint64_t>();  // the highest id is next_order - 1
+    refused(changed("\"next_order\":" + std::to_string(next_order), "\"next_order\":" + std::to_string(next_order - 1)),
+            ("is not below counters.next_order (" + std::to_string(next_order - 1) + ")").c_str());
     refused(changed("\"trade_date\":\"2026-01-12\"}", "\"trade_date\":\"2026-01-13\"}"), "must be before the bundle's first day");
 }
 

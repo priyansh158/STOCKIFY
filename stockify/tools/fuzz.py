@@ -433,7 +433,7 @@ class RandomTrader(Strategy):
             oid = self._pick(r, self.placed + [max(self.placed) + 5])
             changes = {}
             if r.below(2):
-                changes["qty"] = r.below(400)
+                changes["qty"] = 1 + r.below(399)   # never 0: a live order of no units cannot be saved (A1 §6.4), see ST 5.8
             if r.below(2):
                 o = ctx.order(oid)
                 changes["price"] = (o.price if o else 100_000) + 5 * (r.below(9) - 4)

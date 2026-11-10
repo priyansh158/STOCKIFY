@@ -22,6 +22,8 @@ from stockify import numerics
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "sod_state"
 GOOD_TEXT = (FIXTURES / "day0_state.json").read_text(encoding="utf-8")
 BUNDLE_PATH = FIXTURES / "day1_bundle.json"
+LAST_ORDER = json.loads(GOOD_TEXT)["counters"]["next_order"] - 1   # the highest order id the fixture holds
+CASH = f'"cash_paise":{json.loads(GOOD_TEXT)["cash_paise"]}'   # the fixture's cash, as its text spells it
 MAX_BYTES = 256 * 1024 * 1024          # sod_state.MAX_BYTES and the engine's SOD_STATE_MAX_BYTES (a test ties the three)
 INT64_MAX = 2**63 - 1
 BOUND = 2**62                          # the largest id counter or charge row a state may carry (sod_state.COUNTER_MAX)
@@ -256,9 +258,9 @@ ROWS: tuple[Row, ...] = (
     Row("next_timer 0", 3, put("counters.next_timer", 0), "counters.next_timer must be at least 1"),
 
     # ── 4: ids and counters ──────────────────────────────────────────────────
-    Row("next_order at the last order id", 4, put("counters.next_order", 40),
-        "final_orders: order 40 is not below counters.next_order (40)"),
-    Row("next_order 1 over forty orders", 4, put("counters.next_order", 1),
+    Row("next_order at the last order id", 4, put("counters.next_order", LAST_ORDER),
+        f"final_orders: order {LAST_ORDER} is not below counters.next_order ({LAST_ORDER})"),
+    Row("next_order 1 over many orders", 4, put("counters.next_order", 1),
         "final_orders: order 1 is not below counters.next_order (1)"),
     Row("next_order 0", 4, put("counters.next_order", 0), "counters.next_order must be at least 1"),
     Row("next_order 2**63", 4, put("counters.next_order", 2**63), "counters.next_order does not fit in int64"),
@@ -279,7 +281,7 @@ ROWS: tuple[Row, ...] = (
     Row("one order in both groups", 4, edit(_order_in_both_groups), "final_orders: order 31 is listed twice"),
     Row("one position listed twice", 4, edit(_dup_position), "ledger position 2 MIS is listed twice"),
     Row("order id 0", 4, final(1, order_id=0), "final_orders.order_id must be at least 1"),
-    Row("a key twice at the top", 4, replace('"cash_paise":4974100', '"cash_paise":1,"cash_paise":4974100'),
+    Row("a key twice at the top", 4, replace(CASH, CASH.replace(":", ":1,\"cash_paise\":", 1)),
         "duplicate key 'cash_paise'", text_only=True, bundle=True),
     Row("a key twice in the strategy's state", 4, replace('"strategy":{}', '"strategy":{"a":1,"b":2,"a":3}'),
         "duplicate key 'a'", text_only=True, bundle=True),
@@ -333,7 +335,7 @@ ROWS: tuple[Row, ...] = (
     # ── 8: numbers the two JSON readers treat differently ────────────────────
     Row("1e999 in the strategy's state", 8, replace('"strategy":{}', '"strategy":{"x":1e999}'),
         "a number is out of range", text_only=True, bundle=True),
-    Row("-1e999 as the cash", 8, replace('"cash_paise":4974100', '"cash_paise":-1e999'),
+    Row("-1e999 as the cash", 8, replace(CASH, '"cash_paise":-1e999'),
         "a number is out of range", text_only=True, bundle=True),
     Row("NaN in the strategy's state", 8, replace('"strategy":{}', '"strategy":{"x":NaN}'),
         "sod_state: invalid JSON", text_only=True),
@@ -361,7 +363,7 @@ ROWS: tuple[Row, ...] = (
         "an integer outside 64 bits", text_only=True, bundle=True),
     Row("a 5,000-digit integer", 9, replace('"strategy":{}', '"strategy":{"n":' + "9" * 5000 + "}"),
         "an integer outside 64 bits", text_only=True, bundle=True),
-    Row("2**64 as the cash", 9, replace('"cash_paise":4974100', '"cash_paise":18446744073709551616'),
+    Row("2**64 as the cash", 9, replace(CASH, '"cash_paise":18446744073709551616'),
         "an integer outside 64 bits", text_only=True, bundle=True),
 
     # ── 10: the state's date ─────────────────────────────────────────────────
