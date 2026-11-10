@@ -455,11 +455,15 @@ class CreatedPlausibilityTests(MarginFilesTest):
 class OpeningFileTests(MarginFilesTest):
     """I-2: the bundle's opening `.s` steps back over days with no archived file at all (NSE published nothing:
     a holiday the calendar does not hold, or a gap in the archive), at most 5 of them; a day with any file stops
-    the walk. The calendar holds the holidays from 2009 on (D-75): 26 Jan and 7 Mar 2023 are in it, so the empty
-    days below are trading days of the calendar."""
+    the walk. The calendar holds the holidays from 2009 on (D-75): 26 Jan and 7 Mar 2023 are in it. So in the
+    first test the walk passes a holiday of the calendar, which uses up none of the 5; in the tests after it the
+    empty days that count are trading days of the calendar."""
 
-    def test_a_holiday_gap_uses_the_end_of_day_file_before_it(self):
-        self.archived(date(2023, 1, 25), "s", "202301251700")              # 26 Jan 2023: Republic Day, no files
+    def test_a_calendar_holiday_with_no_file_is_passed_to_the_session_before_it(self):
+        """26 Jan 2023 (Republic Day) is a holiday of the calendar and has no file, as NSE published none: 27 Jan
+        opens with the end-of-day file of 25 Jan, the last session before the holiday."""
+        self.assertFalse(cal.is_trading_day("FO", date(2023, 1, 26)))
+        self.archived(date(2023, 1, 25), "s", "202301251700")
         files = M.usable_files(date(2023, 1, 27))
         self.assertEqual([Path_name(p) for p, _ in files], ["nsccl.20230125.s.zip"])
 

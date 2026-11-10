@@ -105,6 +105,22 @@ class ShippedHolidayListTests(unittest.TestCase):
                     self.assertTrue(r["source"].startswith("regular session closed, Muhurat trading only: "))
                     self.assertTrue(r["source"].endswith("the lab has a .s SPAN file for the day"))
 
+    def test_three_labels_are_the_ones_their_one_source_prints(self):
+        # Review F5. NSE/CMTR/13713 prints "Moharum" (NSE/FAOP/13715 has "Moharram"); NSE/CMTR/19539 and
+        # NSE/FAOP/19544 print "Diwali", a dash (U+2013, written here as " - " so that the file stays ASCII) and
+        # "Laxmi Puja*"; NSE/CMTR/16348 prints "Laxmi Puja*" where the API has "Diwali (Laxmi Pujan)*".
+        row = {r["date"]: r for r in self.rows}
+        self.assertEqual(row["2010-12-17"]["description"], "Moharum")
+        self.assertIn("NSE/CMTR/13713 of ", row["2010-12-17"]["source"])
+        self.assertNotIn("FAOP", row["2010-12-17"]["source"])
+        self.assertEqual(row["2012-11-13"]["description"], "Diwali - Laxmi Puja* (Muhurat session only)")
+        self.assertIn("NSE/CMTR/19539 and NSE/FAOP/19544 of ", row["2012-11-13"]["source"])
+        self.assertEqual(row["2011-10-26"]["description"], "Laxmi Puja* (Muhurat session only)")
+        self.assertIn("NSE/CMTR/16348 of ", row["2011-10-26"]["source"])
+        self.assertNotIn("API", row["2011-10-26"]["source"])
+        for r in self.rows:
+            self.assertTrue((r["description"] + r["source"]).isascii(), r["date"])
+
     def test_an_archive_gap_is_not_a_holiday(self):
         # 2021-10-11 has no .s file because NSE served a non-zip body, and no NSE list calls it a holiday.
         self.assertTrue(cal.is_trading_day("FO", date(2021, 10, 11)))

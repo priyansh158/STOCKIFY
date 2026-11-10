@@ -708,7 +708,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 ## 2026-11-09 — the margin staircase: real numbers (ENG 4.3, D-64)
 
 **NSE SPAN archive** (`$LAB/nse/margin/span`, end-of-day `.s` files, fetched with `stockify nse margin-files --backfill`):
-- Range 2009-01-02..2026-11-06: 4,399 files stored, 212 days missing (holidays, 10–19 a year), 1 rejected, 22 GB.
+- Range 2009-01-01..2026-11-06: 4,399 files stored, 212 days missing (holidays, 10–19 a year), 1 rejected, 22 GB. (Corrected in CDM 4.5: this line said 2009-01-02; the first file is `nsccl.20090101.s.zip`, stored in the same backfill.)
 - The rejected file is 2021-10-11 `.s`: NSE served a 7.7 MB body that is not a zip (HTTP 200). The fetcher refused it and archived nothing. That one file is why the backfill command exits 1.
 - Intraday files (i1–i4) and the ELM file are kept for recent days only (S-7). The first contract-wise ELM file is available about 1 Sep 2026.
 
@@ -923,3 +923,20 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
     after. 4,657 weekdays, 4,402 with data, 265 holidays; one trading day without data (2021-10-11); eleven
     holidays with data (the ten Muhurat-only days and 2025-10-21).
   - F4, no change: `stockify.paths` makes a lab folder that is missing, as for every reader (documented).
+- **Small ones from the review (CDM 4.5).**
+  - F5, three labels now match the one source their row cites, as printed there (read again from the saved PDFs):
+    - `2010-12-17`: "Moharum" (was "Moharram"), citing NSE/CMTR/13713 alone. The two circulars of that year differ:
+      NSE/FAOP/13715 prints "Moharram".
+    - `2012-11-13`: "Diwali - Laxmi Puja* (Muhurat session only)" (was "Diwali-Laxmi Puja*"). NSE/CMTR/19539 and
+      NSE/FAOP/19544 both print "Diwali", a dash with a space on each side (U+2013 by the PDF's own character map)
+      and "Laxmi Puja*"; a text dump that drops the dash reads "Diwali Laxmi Puja*". The dash is written as a
+      hyphen so that the file stays ASCII (a test holds it to that): the audit prints the label, and a piped
+      Windows console turns U+2013 into a wrong character. The same circular prints the next day as "Diwali -
+      Balipratipada", with a hyphen.
+    - `2011-10-26`: the label "Laxmi Puja*" stays; the row now cites NSE/CMTR/16348 alone (it also named the API,
+      which has "Diwali (Laxmi Pujan)*").
+    - Open or closed is not touched by any of the three; X-14 says the same.
+  - F6: `test_a_holiday_gap_uses_the_end_of_day_file_before_it` is now
+    `test_a_calendar_holiday_with_no_file_is_passed_to_the_session_before_it`, with a docstring, and the class
+    docstring says which test passes a holiday and which step over empty trading days.
+  - F7: the archive starts 2009-01-01 (`nsccl.20090101.s.zip`); the ENG 4.3 entry above said 2009-01-02.
