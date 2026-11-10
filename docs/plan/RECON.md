@@ -760,19 +760,21 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   before the previous trading day of B (a Monday: Thursday 12:00) and B+1 06:00 IST. The first ruling, B−2 12:00, was
   wrong (CAM 4.5): NSE makes a Monday's i1 on Friday night or early Saturday. Real stamps (IST): 2026-06-01 i1
   202605292247 (Fri 22:47); 2025-01-06 i1 202501040159 (Sat 01:59); 2026-10-26 i1 202610240125 (Sat 01:25);
-  2026-11-02 i1 202610310013 (Sat 00:13). The extra day covers a weekday holiday the calendar lacks (pre-2024). Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
+  2026-11-02 i1 202610310013 (Sat 00:13). The extra day covers a weekday holiday the calendar lacks (it holds the holidays from 2009 on since D-75). Fetch rejects it; an already archived file outside the window is left out of bundles and recorded in
   `span_skipped`. Not yet checked against the real 2009–2026 archive (this round did not open the lab). **Controller /
   owner check (read-only):**
   `.\.venv\Scripts\python.exe -c "from datetime import date; from stockify.data import calendar as c, nse_margin_files as m; bad=[]; [m.in_force_files(d, bad) for d in c.trading_days('FO', date(2009,1,1), date(2026,11,6))]; print(len(bad)); print(bad[:20])"`
   If NSE re-stamped old `.s` files later than B+1 06:00, they show up here and the window needs a dated exception.
 - **The opening `.s` (I-2 ruling):** a bundle day D opens with the `.s` of the previous NSE session: walk back over
   calendar trading days with no archived file of any suffix (at most 5) and stop at the first day with any file
-  (its `.s`, else nothing). Before 2024 the calendar has no holidays, so the day after each holiday (10–19 a year)
-  used to get no SPAN at all; it now gets the `.s` before the holiday.
+  (its `.s`, else nothing). When this was written the calendar had no holidays before 2024, so the day after each
+  holiday (10–19 a year) used to get no SPAN at all; the walk-back gave it the `.s` before the holiday. The calendar
+  now holds the 2009–2023 holidays (D-75, entry below), so the walk-back is a safety net.
   - Known exception: 2021-10-11 has no file because NSE served a non-zip body (the one rejected backfill file), so
     2021-10-12 opens with 2021-10-08's `.s` (one session stale) until that day's `.s` is fetched again.
-  - **Owner item:** add the 2009–2023 NSE holidays to `stockify/config/calendar/nse_holidays.csv` with cited
-    sources (the backfill's 212 missing weekdays are the candidate list). Then the walk-back is only a safety net.
+  - **Owner item, done (CDM 4.1, D-75):** the 2009–2023 NSE holidays are in
+    `stockify/config/calendar/nse_holidays.csv` with cited sources (the backfill's 212 missing weekdays, and nine
+    Muhurat-only days). The walk-back is now only a safety net.
 - **ELM % form (M-3):** both models use an ELM % only as 1–3 integer digits with at most 8 fraction digits (no sign,
   space or exponent); `read_elm` keeps only such values. Strikes must be whole paise (L-6).
 - **An unreadable archived ELM file** is skipped and recorded in `elm_skipped` (label `margin_elm:skipped_files`);
@@ -808,3 +810,51 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   `stocksim_tests.exe` and `stockify/_engine.cp312-win_amd64.pyd`.
 - Speed, synthetic 600,000-event tick pack, median of 9: `noop_cpp` 488.6 -> 483.6 / 488.8 ms (two runs, within
   noise); Python no-op 1812.6 -> 1827.7 / 1791.2 ms; Python SMA 673.9 -> 672.7 / 674.4 ms. No measurable change.
+
+## 2026-11-09 - the 2009-2023 holidays, from the lab's data (CDM 4.1, D-75)
+
+- **Method.** A weekday with no end-of-day SPAN file (`.s`) and no data in any other store is a holiday. Checked
+  2026-11-09 against `$LAB` (read-only): `.s` files under `nse/margin/span`, `bars.sqlite`, the three EOD tables of
+  `refdata.sqlite` and the raw NSE files (the bars hold three instruments' day bars from 2022-01-03; the EOD tables
+  and raw files begin 2023-12-28). The archive now has 4,401 `.s` files for 2009-01-01..2026-11-06, none on a
+  Saturday or Sunday (the backfill asks for calendar trading days, so no weekend was ever asked for).
+- **The method holds where the calendar was already sourced.** For 2024-01-01..2026-11-06 the weekdays without a `.s`
+  file are exactly the calendar's weekday holidays.
+- **Result: 221 rows added** to `stockify/config/calendar/nse_holidays.csv`, for CM and FO: 212 weekdays without data
+  and 9 Muhurat-only days. Every row is named from an NSE list (X-14); none needed the "name not sourced" label.
+
+| Year | Weekdays | With a `.s` file | Without | Rows added | Of them Muhurat only |
+|---|---|---|---|---|---|
+| 2009 | 261 | 242 | 19 | 19 | 0 |
+| 2010 | 261 | 251 | 10 | 11 | 1 |
+| 2011 | 260 | 247 | 13 | 14 | 1 |
+| 2012 | 261 | 247 | 14 | 15 | 1 |
+| 2013 | 261 | 248 | 13 | 13 | 0 |
+| 2014 | 261 | 243 | 18 | 19 | 1 |
+| 2015 | 261 | 247 | 14 | 15 | 1 |
+| 2016 | 261 | 246 | 15 | 15 | 0 |
+| 2017 | 260 | 248 | 12 | 13 | 1 |
+| 2018 | 261 | 246 | 15 | 16 | 1 |
+| 2019 | 261 | 244 | 17 | 17 | 0 |
+| 2020 | 262 | 250 | 12 | 12 | 0 |
+| 2021 | 261 | 247 | 14 | 14 | 1 |
+| 2022 | 260 | 248 | 12 | 13 | 1 |
+| 2023 | 260 | 245 | 15 | 15 | 0 |
+| Total | 3,912 | 3,699 | 213 | 221 | 9 |
+
+- **2021: 14 weekdays without a file, 13 of them holidays.** The other is 2021-10-11, the one file the backfill
+  rejected (above). It is in no NSE holiday list, so it stays a trading day and the walk-back still steps over it.
+  The 14 rows of 2021 are those 13 and the Muhurat day.
+- **Muhurat-only days (holidays that have a `.s` file):** 2010-11-05, 2011-10-26, 2012-11-13, 2014-10-23, 2015-11-11,
+  2017-10-19, 2018-11-07, 2021-11-04, 2022-10-24. NSE's yearly holiday circular lists each as a trading holiday with
+  "Muhurat Trading" that evening (2010: normal market 18:15-19:00), so the regular session was closed. No other
+  weekday holiday of 2009-2023 has a `.s` file. The day after such a day now opens with the `.s` of the last full
+  session (the calendar's previous trading day), not with the Muhurat day's own `.s`.
+- **Left as they are (outside this change):** 2024-11-01 (Diwali Laxmi Pujan 2024, a Friday with a `.s` file) is not
+  in the 2024 rows, so the calendar calls it a trading day; 2025-10-21 (Diwali Laxmi Pujan) is a holiday that has day bars. NSE's
+  lists also carry weekend entries (2012-04-28 and 2012-09-08 "Special Live Trading", 2012-11-11 "Dhanteras Trading"
+  for CM, holidays that fell on a weekend): no rows, weekends are never trading days here.
+- **The audit command** (`python -m stockify calendar audit --from 2009-01-01 --to 2023-12-31`, about 1 s, writes
+  nothing; an idle WAL database is opened as immutable so not even its `-shm` is touched) on 2026-11-09: 3,912
+  weekdays, 3,699 with data, 221 holidays; trading days with no data: 2021-10-11; holidays with data: the nine
+  Muhurat days (`span`; 2022-10-24 also `bars`). For 2024-01-01..2026-11-06: none without data; 2025-10-21 with `bars`.

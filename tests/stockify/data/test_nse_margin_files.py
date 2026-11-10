@@ -452,25 +452,32 @@ class CreatedPlausibilityTests(MarginFilesTest):
 
 class OpeningFileTests(MarginFilesTest):
     """I-2: the bundle's opening `.s` steps back over days with no archived file at all (NSE published nothing:
-    a holiday the calendar does not know before 2024), at most 5 of them; a day with any file stops the walk."""
+    a holiday the calendar does not hold, or a gap in the archive), at most 5 of them; a day with any file stops
+    the walk. The calendar holds the holidays from 2009 on (D-75): 26 Jan and 7 Mar 2023 are in it, so the empty
+    days below are trading days of the calendar."""
 
     def test_a_holiday_gap_uses_the_end_of_day_file_before_it(self):
         self.archived(date(2023, 1, 25), "s", "202301251700")              # 26 Jan 2023: Republic Day, no files
         files = M.usable_files(date(2023, 1, 27))
         self.assertEqual([Path_name(p) for p, _ in files], ["nsccl.20230125.s.zip"])
 
+    def test_a_trading_day_missing_from_the_archive_is_stepped_over(self):
+        self.archived(date(2021, 10, 8), "s", "202110081700")              # Mon 11 Oct 2021: the archive's one gap
+        files = M.usable_files(date(2021, 10, 12))
+        self.assertEqual([Path_name(p) for p, _ in files], ["nsccl.20211008.s.zip"])
+
     def test_a_previous_day_with_only_intraday_files_gives_nothing(self):
-        self.archived(date(2023, 1, 25), "s", "202301251700")
-        self.archived(date(2023, 1, 26), "i1", "202301252000")              # a file, but no .s: never older ones
-        self.assertEqual(M.usable_files(date(2023, 1, 27)), [])
+        self.archived(date(2023, 1, 24), "s", "202301241700")
+        self.archived(date(2023, 1, 25), "i1", "202301242000")              # a file, but no .s: never older ones
+        self.assertEqual(M.usable_files(date(2023, 1, 27)), [])            # 26 Jan is a holiday of the calendar
 
     def test_more_than_five_empty_days_give_nothing(self):
-        # 2023-03-01 (Wed) .s; 2..9 Mar has 6 weekdays; the run day is 10 Mar.
+        # 2023-03-01 (Wed) .s; 2..10 Mar has 6 trading days (7 Mar is Holi); the run day is Mon 13 Mar.
         self.archived(date(2023, 3, 1), "s", "202303011700")
-        self.assertEqual(M.usable_files(date(2023, 3, 10)), [])
-        self.assertEqual(M.opening_eod(date(2023, 3, 10)), None)
-        self.archived(date(2023, 3, 2), "s", "202303021700")                # now 5 empty weekdays: 3, 6, 7, 8, 9
-        self.assertEqual(Path_name(M.opening_eod(date(2023, 3, 10))[0]), "nsccl.20230302.s.zip")
+        self.assertEqual(M.usable_files(date(2023, 3, 13)), [])
+        self.assertEqual(M.opening_eod(date(2023, 3, 13)), None)
+        self.archived(date(2023, 3, 2), "s", "202303021700")                # now 5 empty trading days: 3, 6, 8, 9, 10
+        self.assertEqual(Path_name(M.opening_eod(date(2023, 3, 13))[0]), "nsccl.20230302.s.zip")
 
     def test_reading_the_archive_creates_no_year_folders(self):
         M.usable_files(date(2015, 6, 10))

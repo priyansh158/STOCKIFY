@@ -374,8 +374,9 @@ steps down to B3–B5 as always.
 the evening before). **The previous session (CAM 4.4, D-64 ruling 2):** walk back over F&O calendar trading days that
 have no archived SPAN file of any suffix, at most 5 of them, and stop at the first day that has any archived file;
 use its `.s` if archived, else nothing (a day with intraday files but no `.s` never hands D an older file; more than 5
-empty days give nothing). The 2009–2026 backfill ended with no errors, so a day without any file is one NSE never
-published: a holiday the calendar does not hold (it holds none before 2024). D's own `.s` is never listed: it comes after the
+empty days give nothing). A day without any file is one NSE published no file for: a holiday the calendar does not
+hold. The calendar holds the holidays from 2009 on (D-75), so the walk is a safety net; the one archive gap,
+2021-10-11, is in RECON. D's own `.s` is never listed: it comes after the
 close. **Each entry applies from its own `created_ns`: the file in force at t is the last entry with
 `created_ns <= t`. Before the first entry nothing is in force (the underlying steps down); an entry is never applied
 earlier than its `created_ns`**, so a late `i1` (created after 09:15 on D) leaves the previous `.s` in force until
@@ -614,6 +615,6 @@ one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches
 
 - `sources.json`: per dataset `{url_template, valid_from, valid_to, parser, verified, evidence}` (S-1…S-7).
 - `kite_limits.json`: `historical_rps` 3, `quote_rps` 1, `quote_max_instruments` 500, `ws_max_instruments` 3000, `ws_max_connections` 3, `historical_max_days` per interval (⚠ defaults), `learned` (written by M1.4).
-- `calendar/nse_holidays.csv`: `date,segments,description,source`. `calendar/special_sessions.csv`: `date,group,phase,start,end,name,source`.
+- `calendar/nse_holidays.csv`: `date,segments,description,source`. `calendar/special_sessions.csv`: `date,group,phase,start,end,name,source`. Holiday rows from 2024 come from NSE's holiday-master API; the 2009–2023 rows are the weekdays with no NSE data in the lab, named from NSE's own lists (D-75, X-14). A day with only a Muhurat session is a holiday, its description ending `(Muhurat session only)`. `python -m stockify calendar audit --from D --to D` compares the list with the lab's data.
 - `freeze_limits.json`: index quantity-freeze limits from NSE circulars, dated per `underlying` (`{underlying, effective_from, freeze_qty, source, verified}`, X-5). They decide for the underlyings they list; the refdata `freeze_limits` table (`qtyfreeze.csv` snapshots, S-6) covers the rest and cross-checks them (D-54).
 - `notify.json`: channel type and per-event switches (secrets elsewhere). `research.json`: `holdout_from`, default walk-forward settings.

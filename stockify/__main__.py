@@ -121,6 +121,19 @@ def _cmd_calendar(args) -> int:
     return 0
 
 
+def _cmd_calendar_audit(args) -> int:
+    from datetime import date
+
+    from stockify.tools import holiday_audit
+
+    start, end = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to)
+    if end < start:
+        print(f"--to {end} is before --from {start}", file=sys.stderr)
+        return 1
+    print(holiday_audit.report(holiday_audit.audit(start, end, args.segment)))
+    return 0
+
+
 def _cmd_data_report(args) -> int:
     from datetime import date
 
@@ -778,6 +791,13 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--start", help="first IST trade date YYYY-MM-DD (default: today in IST)")
     c.add_argument("--days", type=int, default=14, help="number of calendar days (default 14)")
     c.set_defaults(func=_cmd_calendar)
+    csub = c.add_subparsers(dest="calendar_command")
+    au = csub.add_parser("audit", help="the holiday list against the lab's data: trading days with no data and "
+                                       "holidays with data (D-75); reads the lab, writes nothing")
+    au.add_argument("--from", dest="date_from", required=True, help="first date YYYY-MM-DD")
+    au.add_argument("--to", dest="date_to", required=True, help="last date YYYY-MM-DD")
+    au.add_argument("--segment", default="FO", choices=["CM", "FO"], help="calendar segment (default FO)")
+    au.set_defaults(func=_cmd_calendar_audit)
 
     k = sub.add_parser("kite", help="Kite Connect checks")
     ksub = k.add_subparsers(dest="kite_command", required=True)

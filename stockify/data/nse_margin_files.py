@@ -60,7 +60,8 @@ ELM_MIN_COLUMNS = 7                      # instrument, symbol, expiry, strike, C
 ELM_PCT = re.compile(r"[0-9]{1,3}(\.[0-9]{1,8})?")        # ASCII digits only: \d takes any Unicode digit
 # The plausible created time of a SPAN file of business day D (L-4 ruling, CAM 4.5): from 12:00 IST on the calendar
 # day before D's previous trading day to D+1 06:00 IST. NSE makes a Monday's i1 on the Friday night or early Saturday
-# (22:47 Fri .. 01:59 Sat seen); the extra day covers a weekday holiday the calendar does not know (pre-2024).
+# (22:47 Fri .. 01:59 Sat seen); the extra day covers a weekday holiday missing from the calendar (it holds the
+# holidays from 2009 on, D-75).
 CREATED_FROM = (-1, "12:00")           # days relative to the previous trading day of D
 CREATED_UNTIL = (1, "06:00")
 
@@ -353,6 +354,12 @@ def _any_archived(day: date) -> bool:
     return any(_span_path(day, s).exists() for s in SPAN_SUFFIXES)
 
 
+def eod_archived(day: date) -> bool:
+    """Whether the end-of-day (`.s`) file of `day` is in the archive: NSE makes one for every day it trades, so
+    the calendar audit reads its absence on a weekday as a closed exchange (D-75)."""
+    return _archived(day, ("s",))
+
+
 def in_force_files(day: date, skipped: list | None = None) -> list[tuple[str, int]]:
     """Archived SPAN files of trade date `day` as (path, created_ns), oldest first. A file without a readable
     created time, or whose created time is not plausible for `day` (L-4), is not used; with `skipped`, it is
@@ -408,9 +415,10 @@ def opening_eod(day: date, *, max_empty: int = OPENING_MAX_EMPTY_DAYS,
                 skipped: list | None = None) -> tuple[str, int] | None:
     """The end-of-day file a backtest opens trade date `day` with (CAM 4.4, I-2 ruling): walk back over F&O
     calendar trading days that have NO archived SPAN file of any suffix, at most `max_empty` of them, and stop at the
-    first day that has any file: its `.s` if archived (and usable), else nothing. The 2009-2026 backfill finished
-    with no errors, so a day without any file is one NSE never published: a holiday the calendar does not hold
-    (before 2024 it holds none). A day with intraday files but no `.s` gives nothing (never an older file)."""
+    first day that has any file: its `.s` if archived (and usable), else nothing. A day without any file is one NSE
+    published no file for: a holiday the calendar does not hold. The calendar holds the holidays from 2009 on
+    (D-75), so the walk is a safety net (and steps over the one archive gap, 2021-10-11). A day with intraday
+    files but no `.s` gives nothing (never an older file)."""
     d = day
     for _ in range(max_empty + 1):
         d = calendar.previous_trading_day(SEGMENT, d)
