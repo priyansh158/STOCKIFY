@@ -490,6 +490,39 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
     return heapq.merge(ticks_sorted, side), t_lo, t_hi
 
 
+def _fo_units(day: date, iid: int, contracts, row_lot):  # noqa: ANN001, ANN202
+    """An `fo_eod` row's traded volume in units (D-79).
+
+    NSE's F&O daily file gives volume in contracts (lots) and `fo_eod` keeps it as published; a bar's volume is in
+    units for every source, so it is converted here, once: contracts × lot. The lot is the row's own `lot_size`
+    or, where that is NULL (old-format files), the dated contract spec in force on the trade date. No lot from
+    either fails the build: never a guessed lot, never contracts passed off as units. The product is taken in
+    Python (SQLite would turn an overflowing one into a float) and must fit an int64."""
+    from stockify.data import instruments
+
+    def fail(why: str) -> PackError:
+        info = instruments.get(iid) or {}
+        return PackError(f"fo_eod {day.isoformat()} instrument {iid} "
+                         f"({info.get('exchange')}:{info.get('tradingsymbol')}): {why}")
+
+    lot, source = row_lot, "fo_eod.lot_size"
+    if lot is None:
+        lot, source = (instruments.spec_at(iid, day) or {}).get("lot_size"), "contract_specs"
+        if lot is None:
+            raise fail("no lot size in the row and no contract spec in force on that date, so its volume in "
+                       "contracts cannot be turned into units (D-79)")
+    if type(lot) is not int or lot < 1:
+        raise fail(f"lot size {lot!r} ({source}) is not a positive whole number")
+    if contracts is None:
+        return None
+    if type(contracts) is not int:
+        raise fail(f"volume {contracts!r} is not a whole number of contracts")
+    units = contracts * lot
+    if not numerics.INT64_MIN <= units <= numerics.INT64_MAX:
+        raise fail(f"volume {contracts} contracts × lot {lot} does not fit an int64")
+    return units
+
+
 def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
     """bars / bhav_eod: every record in memory (one row per instrument per bar)."""
     from stockify.data import calendar, history, refdata
@@ -508,13 +541,17 @@ def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
             t = _ist(day, pricing["eod_publication_ist"])
             conn = refdata._connect()
             marks = ",".join("?" * len(ids)) or "NULL"
-            q = {"fo_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, oi FROM fo_eod",
+            # fo_eod.volume is in contracts and is turned into units below (D-79); oi is units already
+            q = {"fo_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, oi, lot_size "
+                           "FROM fo_eod",
                  "cm_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, NULL FROM cm_eod",
                  "index_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, NULL, NULL FROM index_eod"}
             for table, sql in q.items():
                 extra = " AND series='EQ'" if table == "cm_eod" else ""
                 for r in conn.execute(f"{sql} WHERE trade_date=? AND instrument_id IN ({marks}){extra} "
                                       "ORDER BY instrument_id", (d, *sorted(ids))):
+                    if table == "fo_eod":
+                        r = (*r[:5], _fo_units(day, r[0], r[5], r[7]), r[6])
                     rows_digest.update(numerics.dumps_canonical([table, d, *r]).encode())
                     all_events.append(((t, 4, len(all_events), r[0]),
                                        enc_bar(r[0], t, 86400, _ist(day, "00:00"), *r[1:])))

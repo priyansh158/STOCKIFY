@@ -171,7 +171,8 @@ bars in the lab so far):
 - `price_basis` must match the data: Kite bars are stored adjusted for splits and bonuses, so this is `adjusted`.
 - `capital_paise` is the starting money: ₹1,00,000.
 - `fill_model` `bar` fills an order on the next bar (A4 §4.1), taking at most 10 % of that bar's volume, with
-  0.05 % slippage against you.
+  0.05 % slippage against you. `bar.volume` is in units (shares; for F&O, contracts × lot size) whatever the
+  data source: NSE's daily F&O file counts contracts and is converted when the pack is built (A1 §5, D-79).
 
 ## 3. Run it from the command line
 

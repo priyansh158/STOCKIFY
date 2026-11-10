@@ -14,6 +14,10 @@ Units, as published (checked on 2024-07-05, where both formats exist):
 * F&O `volume` is **contracts** in both formats; `oi` and `oi_change` are
   units (shares); turnover is rupees in UDiFF and lakhs in legacy, stored
   as paise either way. Legacy F&O has no lot size (`lot_size` = None).
+  `fo_eod` keeps these as published. A bar's volume is units for every
+  source (D-79): `stockify.data.packs` turns contracts into units
+  (× `lot_size`, or the dated contract spec where that is None) when it
+  reads `fo_eod`. Anything else that reads `fo_eod.volume` gets contracts.
 * CM `volume` is shares.
 * `actual_expiry` (UDiFF only) is set when NSE expired the contract before
   its scheduled `expiry` (corporate actions, D-41).

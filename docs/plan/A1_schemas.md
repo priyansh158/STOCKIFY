@@ -67,6 +67,7 @@ CREATE TABLE fo_eod (
   open_paise INTEGER, high_paise INTEGER, low_paise INTEGER, close_paise INTEGER, last_paise INTEGER,
   prev_close_paise INTEGER, settle_paise INTEGER, underlying_paise INTEGER,
   oi INTEGER, oi_change INTEGER, volume INTEGER, turnover_paise INTEGER, lot_size INTEGER,
+  -- volume: contracts, as published (packs turn it into units, D-79); oi, oi_change: units
   PRIMARY KEY (trade_date, instrument_id)
 );
 CREATE TABLE cm_eod (    -- equities, series EQ (others optional)
@@ -258,7 +259,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 | 1 | `TICK_QUOTE` | 4 | i64 × 10: ltp, last_qty, atp, volume, buy_qty, sell_qty, open, high, low, close | 104 |
 | 2 | `TICK_FULL` | 4 | the 10 quote fields; i64 × 5: last_trade_ts_s, oi, oi_high, oi_low, exch_ts_s; depth 10 × {i64 price, i64 qty, i32 orders, i32 pad} (bids 1–5 then asks 1–5) | 384 |
 | 3 | `INDEX` | 4 | i64 × 7: value, high, low, open, close, change, exch_ts_s (0 if absent) | 80 |
-| 4 | `BAR` | 4 | i32 interval_s, i32 pad, i64 start_ns, i64 × 4 OHLC, i64 volume, i64 oi | 88 |
+| 4 | `BAR` | 4 | i32 interval_s, i32 pad, i64 start_ns, i64 × 4 OHLC, i64 volume (units, see below), i64 oi | 88 |
 | 5 | `CLOCK` | 5 | none | 24 |
 | 6 | `GAP` | 1 | u8 phase (0 start, 1 end), u8 pad, u16 reason, u32 scope (0 all; 1 the instrument in the prefix) | 32 |
 | 7 | `REFDATA` | 2 | u16 subtype, u16 pad, u32 len, then `len` bytes of canonical JSON (sorted keys, no whitespace) | 32 + len |
@@ -274,6 +275,13 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 <!-- </block> -->
 - Sorting inside a file: `(t_event, rank, seq)`. In packs, `seq` is reassigned 1…N after sorting by `(t_event, rank, source seq, instrument_id)`, where bars' source seq is their row order by `(instrument_id, start_ns)`. Several packs in one run are merged by `(t_event, rank, pack index, seq)` (A4 §1.3). In journals, `seq` is the dispatcher's per-day counter.
 - Prices are paise; index values are points × 100. Unknown kinds are an error, never skipped.
+- `BAR.volume` is in **units** for every source (D-79); both runners cap a fill at their share of it (A4 §4.1).
+  Kite candles and `cm_eod` (shares) are in units as stored. NSE's F&O daily file gives volume in contracts
+  (lots) and `fo_eod.volume` keeps it as published, so the pack builder converts it once, where it reads
+  `fo_eod`: contracts × lot, the lot from the row's `lot_size` or, where that is NULL (old-format files), from
+  the dated `contract_specs` row in force on the trade date. A row with no lot from either fails the pack
+  build with an error naming the instrument and the day: a lot is never guessed. `fo_eod.oi` is units already
+  and is copied as it is.
 
 ## §6 Runs
 
