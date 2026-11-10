@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import random
+import shutil
 import unittest
+from contextlib import contextmanager
 from datetime import date
 from unittest.mock import patch
 
@@ -49,6 +53,57 @@ def record_day() -> LandingDB:
     return landing
 
 
+def record_packets(n: int) -> None:
+    """Add n LTP packets to the day's landing file, creating the file if it is not there."""
+    landing = LandingDB(DAY)
+    clock = ManualClock(timeutil.ist_ns(DAY, "09:15") + landing.max_seq() * SEC, 1_000)
+    rec = Recorder(landing, {EQ: 7}.get, clock)
+    rec.begin()
+    for i in range(n):
+        clock.advance(SEC)
+        rec.on_message(None, kp.build_frame([pf.ltp(EQ, 75_000 + i)]), True)
+        rec.process(rec.queue.get_nowait())
+    rec.flush()
+    landing.close()
+
+
+def drop_landing() -> None:
+    """Remove the day's landing file by hand (in the product only retention does this)."""
+    landing = paths.ticks_landing_file(DAY)
+    for p in (landing, landing.with_name(landing.name + "-wal"), landing.with_name(landing.name + "-shm")):
+        p.unlink(missing_ok=True)
+
+
+def landing_packets() -> int:
+    landing = LandingDB(DAY, readonly=True)
+    try:
+        return landing.packet_count()
+    finally:
+        landing.close()
+
+
+def archive_folder():
+    return paths.ticks_archive_dir() / f"date={DAY:%Y-%m-%d}"
+
+
+def archive_bytes() -> dict[str, bytes]:
+    """Every file of the day's archive: name -> content."""
+    return {p.name: p.read_bytes() for p in sorted(archive_folder().iterdir())}
+
+
+def archived_packets() -> int:
+    """Packets in the day's archive on disk; 0 when there is none."""
+    folder = archive_folder()
+    if not folder.exists():
+        return 0
+    return sum(pq.ParquetFile(folder / f"{name}.parquet").metadata.num_rows for name in ("full", "quote", "index"))
+
+
+def tick_days_row() -> dict | None:
+    row = refdata._connect().execute("SELECT * FROM tick_days WHERE trade_date=?", (DAY.isoformat(),)).fetchone()
+    return None if row is None else dict(row)
+
+
 class CompactTest(unittest.TestCase):
     def setUp(self):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
@@ -64,6 +119,17 @@ class CompactTest(unittest.TestCase):
 
     def folder(self):
         return paths.ticks_archive_dir() / f"date={DAY:%Y-%m-%d}"
+
+    @contextmanager
+    def logs(self, level: str):
+        """assertLogs on the compaction logger (tests/run_tests.py silences logging; re-enable it meanwhile)."""
+        previous = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        try:
+            with self.assertLogs("stockify.data.compact", level=level) as captured:
+                yield captured
+        finally:
+            logging.disable(previous)
 
 
 class ArchiveTests(CompactTest):
@@ -171,6 +237,162 @@ class VerificationTests(CompactTest):
         self.assertTrue(paths.ticks_landing_file(DAY).exists())
         row = refdata._connect().execute("SELECT status FROM tick_days").fetchone()
         self.assertEqual(row["status"], "landing")
+
+
+class ArchiveKeptTests(CompactTest):
+    """I-13: once a day is archived, no later compaction makes the archive smaller."""
+
+    def setUp(self):
+        super().setUp()
+        self.first = compact.compact(DAY)
+        self.assertEqual((self.first.status, self.first.packets), ("verified", 701))
+
+    def retain(self):
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertEqual(tick_days_row()["status"], "landing_deleted")
+
+    def state(self):
+        return archive_bytes(), tick_days_row()
+
+    def assert_no_leftovers(self):
+        self.assertEqual([p.name for p in paths.ticks_archive_dir().iterdir()], [archive_folder().name])
+
+    def test_an_empty_landing_file_after_retention_never_replaces_the_archive(self):
+        self.retain()
+        before = self.state()
+        LandingDB(DAY).close()                       # what a daemon restart after the close left behind
+        with self.logs("WARNING") as logs:
+            again = compact.compact(DAY)
+            self.assertEqual(self.state(), before)                                     # bytes, meta.json, row
+        self.assertEqual((again.status, again.digest, again.packets, again.archive_path),
+                         ("verified", self.first.digest, 701, str(archive_folder())))
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())                        # the stray file is left
+        self.assertIn("landing file", again.error)
+        self.assertTrue(any(str(paths.ticks_landing_file(DAY)) in line for line in logs.output), logs.output)
+        self.assert_no_leftovers()
+        self.assertEqual(compact.apply_retention(DAY), [])                             # retention leaves it too
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())
+        self.assertEqual(self.state(), before)
+
+    def test_a_stray_landing_file_with_packets_is_left_and_reported_too(self):
+        self.retain()
+        before = self.state()
+        record_packets(12)
+        with self.logs("WARNING"):
+            again = compact.compact(DAY)
+        self.assertEqual((again.status, again.packets), ("verified", 701))
+        self.assertIn("12 packets", again.error)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(landing_packets(), 12)
+
+    def test_a_verified_day_is_not_rebuilt_from_a_recreated_landing_file(self):
+        before = self.state()
+        drop_landing()
+        LandingDB(DAY).close()
+        again = compact.compact(DAY)
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", self.first.digest, 701))
+        self.assertEqual(self.state(), before)
+
+    def test_force_never_replaces_the_archive_with_a_smaller_one(self):
+        self.retain()
+        before = self.state()
+        record_packets(12)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+            self.assertEqual(self.state(), before)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertIn("12", res.error)
+        self.assert_no_leftovers()                                                     # its own .tmp is gone
+        self.assertEqual(landing_packets(), 12)                                        # the landing file is kept
+
+    def test_force_on_a_verified_day_refuses_a_smaller_landing_file(self):
+        before = self.state()
+        drop_landing()
+        record_packets(700)
+        res = compact.compact(DAY, force=True)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertIn("700", res.error)
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+
+    def test_force_rebuilds_when_the_landing_file_has_grown(self):
+        record_packets(5)                                                              # late frames
+        res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets), ("verified", 706))
+        self.assertEqual(archived_packets(), 706)
+        self.assertEqual(tick_days_row()["packets"], 706)
+
+    def test_a_day_back_at_status_landing_still_keeps_its_larger_archive(self):
+        # apply_retention puts a day back to 'landing' when re-verification fails; the archive is still on disk.
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        before = self.state()
+        drop_landing()
+        record_packets(3)
+        res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+
+    def test_a_lost_archive_is_not_papered_over_by_a_smaller_landing_file(self):
+        self.retain()
+        row = tick_days_row()
+        shutil.rmtree(archive_folder())
+        LandingDB(DAY).close()
+        res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertEqual(tick_days_row(), row)                 # the row still says what the day held
+        self.assertEqual(list(paths.ticks_archive_dir().iterdir()), [])
+
+
+class NeverShrinksPropertyTests(unittest.TestCase):
+    """Property (I-13): whatever happens to the landing file, the day's archived packet count never goes down."""
+
+    OPS = ("record", "compact", "retain", "recreate", "compact", "force")
+    SEEDS = 40
+    MOST = 12                                    # packets per step: small, so smaller, equal and larger all occur
+
+    def setUp(self):
+        over = patch.object(compact, "session_over", return_value=True)
+        over.start()
+        self.addCleanup(over.stop)
+        self.addCleanup(support.reset_sqlite_singleton, refdata)
+
+    def step(self, op: str, rng: random.Random) -> str:
+        if op == "record":
+            n = rng.randint(0, self.MOST)
+            record_packets(n)
+            return f"record {n}"
+        if op == "recreate":
+            m = rng.randint(0, self.MOST)
+            drop_landing()
+            record_packets(m) if m else LandingDB(DAY).close()
+            return f"recreate {m}"
+        if op == "retain":
+            return f"retain -> {compact.apply_retention(DAY)}"
+        res = compact.compact(DAY, force=op == "force")
+        return f"{op} -> {res.status} {res.packets}"
+
+    def test_archived_packet_count_never_decreases(self):
+        for seed in range(self.SEEDS):
+            rng = random.Random(seed)
+            support.fresh_cache_dir(f"never_shrinks_{seed}")
+            support.reset_sqlite_singleton(refdata)
+            archived, trace = 0, []
+            ops = ["record"] + [rng.choice(self.OPS) for _ in range(rng.randint(5, 14))]
+            for op in ops:
+                trace.append(self.step(op, rng))
+                now = archived_packets()
+                self.assertGreaterEqual(now, archived, f"seed {seed}: {trace}")
+                if archived:
+                    self.assertTrue((archive_folder() / "meta.json").exists(), f"seed {seed}: {trace}")
+                archived = now
+            leftovers = [p.name for p in paths.ticks_archive_dir().iterdir() if p.name.endswith(".tmp")]
+            self.assertEqual(leftovers, [], f"seed {seed}: {trace}")
 
 
 class RetentionTests(CompactTest):

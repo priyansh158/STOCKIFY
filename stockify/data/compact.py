@@ -23,6 +23,11 @@ verification. Landing files are deleted only by `apply_retention`: once the day 
 `retention_days` old; 0 means right after the close (D-38), null never.
 After that the archive is the day's only record and every reader uses it
 (`stockify.data.ticks`).
+
+An archive is never made smaller (I-13). A day that is `verified` or
+`landing_deleted` is not compacted again unless `force=True`, and no run, forced
+or not, replaces an archive with one that holds fewer packets. A landing file
+that turns up for a `landing_deleted` day is left where it is and reported.
 """
 from __future__ import annotations
 
@@ -54,6 +59,8 @@ COMPACT_VERSION = "2"
 LAYOUT = "rowgroup_by_instrument_delta"
 ROW_GROUP = 1_000_000
 FETCH = 100_000
+ARCHIVED = ("verified", "landing_deleted")     # tick_days statuses of a day whose archive is the record
+PACKET_FILES = ("full", "quote", "index")
 
 PACKET_COLS = ["seq", "frame_no", "recv_ns", "mono_ns", "instrument_id", "instrument_token", "mode",
                "pkt_len", "ltp", "last_qty", "atp", "volume", "buy_qty", "sell_qty", "open", "high",
@@ -203,7 +210,7 @@ def iter_rows(path: Path, columns: list[str]):
 def _iter_archive(folder: Path):
     """(seq, frame_no, instrument_id, raw) merged across the three packet files by seq."""
     cols = ["seq", "frame_no", "instrument_id", "raw"]
-    return heapq.merge(*(iter_rows(folder / f"{name}.parquet", cols) for name in ("full", "quote", "index")),
+    return heapq.merge(*(iter_rows(folder / f"{name}.parquet", cols) for name in PACKET_FILES),
                        key=lambda r: r[0])
 
 
@@ -247,27 +254,78 @@ def _landing_size(landing: Path) -> int:
     return sum(p.stat().st_size for p in (landing, Path(str(landing) + "-wal")) if p.exists())
 
 
+def _landing_packets(landing: Path) -> int:
+    """Packets in a landing file, counted through a read-only connection."""
+    conn = sqlite3.connect(f"file:{landing.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _archived_packets(target: Path, row: sqlite3.Row | None) -> int:
+    """The most packets any record says the day's archive holds (I-13: the floor for a replacement).
+
+    Asks the archive's Parquet footers and its meta.json, and the tick_days row of a day that was verified.
+    A part that cannot be read counts as 0, so a damaged archive can still be rebuilt from a full landing file.
+    """
+    known = [0]
+    if row is not None and row["status"] in ARCHIVED and row["packets"] is not None:
+        known.append(int(row["packets"]))
+    if target.exists():
+        try:
+            known.append(int(json.loads((target / "meta.json").read_text(encoding="utf-8"))["packets"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        in_files = 0
+        for name in PACKET_FILES:
+            try:
+                in_files += pq.read_metadata(target / f"{name}.parquet").num_rows
+            except (OSError, ValueError, pa.ArrowException):
+                pass
+        known.append(in_files)
+    return max(known)
+
+
 def compact(day: date, *, landing: Path | None = None, archive_root: Path | None = None,
             force: bool = False) -> Result:
+    """Build and verify the day's archive from its landing file.
+
+    A day already `verified` or `landing_deleted` is left alone and reported as `verified` unless `force` is
+    given. With or without `force`, an archive is never replaced by one holding fewer packets: the result is
+    `failed`, its error names both counts, and only this run's temporary folder is removed (I-13).
+    """
     landing = landing or paths.ticks_landing_file(day)
     archive_root = archive_root or paths.ticks_archive_dir()
     target = archive_root / f"date={day:%Y-%m-%d}"
     res = Result(day=day.isoformat(), status="no_landing")
+    existing = refdata._connect().execute(
+        "SELECT status, digest, packets FROM tick_days WHERE trade_date=?", (day.isoformat(),)).fetchone()
     if not landing.exists():
-        done = refdata._connect().execute(
-            "SELECT status, digest, packets FROM tick_days WHERE trade_date=?", (day.isoformat(),)).fetchone()
-        if done and done["status"] == "landing_deleted" and (target / "meta.json").exists():
-            res.status, res.digest, res.packets, res.archive_path = "verified", done["digest"], done["packets"], str(target)
+        if existing and existing["status"] == "landing_deleted" and (target / "meta.json").exists():
+            res.status, res.digest, res.packets, res.archive_path = \
+                "verified", existing["digest"], existing["packets"], str(target)
         return res
     if landing == paths.ticks_landing_file(day) and not session_over(day):
         res.status, res.error = "session_open", "the day is still being recorded; compact it after the close"
         return res
     level = int(loader.load_json("storage.json")["parquet_zstd_level"])
-    existing = refdata._connect().execute(
-        "SELECT status, digest FROM tick_days WHERE trade_date=?", (day.isoformat(),)).fetchone()
-    if existing and existing["status"] == "verified" and target.exists() and not force:
-        res.status, res.digest, res.archive_path = "verified", existing["digest"], str(target)
-        log.info("%s already compacted and verified", day)
+    if existing and existing["status"] in ARCHIVED and target.exists() and not force:
+        res.status, res.digest, res.packets, res.archive_path = \
+            "verified", existing["digest"], existing["packets"], str(target)
+        if existing["status"] == "landing_deleted":
+            # The day's landing file was deleted after verification, yet one is here again. It is not the
+            # day's record: leave it where it is, say so, and keep the archive (I-13).
+            try:
+                found = f"{_landing_packets(landing)} packets"
+            except sqlite3.Error as e:
+                found = f"unreadable: {e}"
+            res.error = (f"a landing file is present again ({found}) although the day's landing file was deleted "
+                         f"after its archive was verified ({existing['packets']} packets); the file was left in "
+                         f"place and not compacted, and the archive is unchanged: {landing}")
+            log.warning("%s: %s", day, res.error)
+        else:
+            log.info("%s already compacted and verified", day)
         return res
 
     tmp = archive_root / f"date={day:%Y-%m-%d}.tmp"
@@ -300,6 +358,16 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
         meta_rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM recorder_meta")}
     finally:
         conn.close()
+
+    archived = _archived_packets(target, existing)
+    if res.packets < archived:
+        shutil.rmtree(tmp, ignore_errors=True)
+        res.status = "failed"
+        res.error = (f"refused: the landing file holds {res.packets} packets and the day's archive holds {archived}; "
+                     "an archive is never replaced by a smaller one, so the archive and the landing file are "
+                     "left as they were")
+        log.error("compaction of %s %s", day, res.error)
+        return res
 
     files = {p.name: _sha256_file(p) for p in sorted(tmp.glob("*.parquet"))}
     (tmp / "meta.json").write_text(numerics.dumps_canonical({
