@@ -265,7 +265,7 @@ class EngineCarriedPartsTests(WorldChecks):
                 world = world_of()
                 folder = Path(tempfile.mkdtemp(prefix="sod-carried-", dir=str(tests.support.SANDBOX_ROOT)))
                 bundle, pack = _world_inputs(world, folder)
-                o = self.assert_engine_world(bundle, pack, lambda b=bundle: _script(b), world["id"])
+                o = self.assert_engine_world(bundle, pack, _script(bundle), world["id"])
                 self.assertIsNone(o.error, o.error)
 
 
@@ -289,7 +289,7 @@ class EngineShippedStrategyTests(WorldChecks):
             with self.subTest(golden=g["id"]):
                 folder = Path(tempfile.mkdtemp(prefix="sod-golden-", dir=str(tests.support.SANDBOX_ROOT)))
                 bundle, pack = _world_inputs(g, folder)
-                self.assert_engine_world(bundle, pack, lambda b=bundle: _script(b), g["id"])
+                self.assert_engine_world(bundle, pack, _script(bundle), g["id"])
 
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
