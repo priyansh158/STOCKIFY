@@ -732,6 +732,20 @@ class RecoveryTests(CompactTest):
         self.assert_restored(res)
         self.assertEqual(tick_days_row(), self.before[1])
 
+    def test_a_set_aside_copy_is_kept_when_the_archive_in_place_does_not_hash_to_its_digest(self):
+        shutil.copytree(archive_folder(), self.aside)
+        real = compact.verify
+
+        def verify(folder, *args, **kwargs):                                       # meta.json says "verified",
+            if Path(folder) == archive_folder():                                   # the packets say otherwise
+                raise compact.CompactionError("archive digest does not match the landing file")
+            return real(folder, *args, **kwargs)
+
+        with patch.object(compact, "verify", verify), self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+
     def test_a_replacement_stopped_before_it_was_recorded_is_undone(self):
         record_packets(19)
         with patch.object(compact, "_record", side_effect=KeyboardInterrupt):      # the process died right here

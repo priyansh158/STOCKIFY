@@ -310,6 +310,13 @@ def _recover(target: Path, recorded_digest: str | None) -> str:
         return ""
     live = _archive_state(target)
     if live is not None and recorded_digest and live[1] == recorded_digest:
+        try:                                     # the recorded digest in meta.json is not proof: hash the packets
+            verify(target, recorded_digest, live[0])
+        except CompactionError as e:
+            log.warning("the archive in %s does not hash to its recorded digest (%s); the set-aside copy is kept",
+                        target, e)
+            live = None
+    if live is not None and recorded_digest and live[1] == recorded_digest:
         try:
             shutil.rmtree(aside)
         except OSError as e:
