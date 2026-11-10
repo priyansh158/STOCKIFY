@@ -10,6 +10,7 @@ config raises `RunConfigError` naming the field; nothing runs on a guess.
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 import re
 from pathlib import Path
@@ -40,6 +41,22 @@ DEFAULTS = {
 }
 FILL_DEFAULTS = {"limit_touch_policy": "through", "participation": "0.10", "depth_take": "0.50",
                  "slippage": {"kind": "none"}, "half_spread_ticks": 1}
+# REG 5.1: the keys a run config may carry, section by section. Any other key is refused (`_known`), so a
+# misspelt key is an error and never a silent default. The sets are the tables above plus the keys that have
+# no default; the keys of a pack spec are the pack builder's own tables (stockify.data.packs).
+REQUIRED = ("schema", "name", "strategy", "data", "capital_paise", "fill_model")
+RUN_KEYS = (*REQUIRED, *DEFAULTS, "seed_mode")
+FILL_KEYS = ("kind", *FILL_DEFAULTS)
+# What `validate` adds to the normalised form, by the key it is computed from. A stored normalised config is
+# validated again when its run starts (runs.launch), so a derived key is accepted when it is what its source
+# gives, and refused when it is anything else.
+FILL_DERIVED = {"participation": "participation_ppm", "depth_take": "depth_take_ppm"}
+SLIPPAGE_KEYS = {"none": ("kind",), "fixed_ticks": ("kind", "k"), "random_ticks": ("kind", "k"),
+                 "bps": ("kind", "x", "bp")}                                        # bp is derived from x
+STRATEGY_KEYS = {"python": ("kind", "ref", "params"), "cpp": ("kind", "ref", "params"),
+                 "script": ("kind", "actions", "params")}
+DATA_KEYS = ("packs",)
+PACK_KEYS = ("spec", "sha256")
 
 
 # A pack's hash names its file (packs/<sha>.evt). Exactly this and nothing else, so a config can never
@@ -74,6 +91,26 @@ def _int(value, where: str, minimum: int | None = None) -> int:  # noqa: ANN001
     return value
 
 
+def _known(given: dict, known, where: str) -> None:  # noqa: ANN001
+    """REG 5.1: every key of `given` is one of `known`; else an error that names the key, its section and the
+    closest known key."""
+    known = list(known)
+    for key in given:
+        if key in known:
+            continue
+        close = difflib.get_close_matches(str(key), known, n=1)
+        hint = f"did you mean {close[0]!r}?" if close else f"known keys: {', '.join(known)}"
+        raise RunConfigError(f"{where}: unknown key {key!r} ({hint})")
+
+
+def _derived(section: dict, key: str, value: int, where: str, source: str) -> None:
+    """Set a derived key. One that is already there (a normalised config validated again) must be that value."""
+    given = section.get(key, value)
+    _need(isinstance(given, int) and not isinstance(given, bool) and given == value, f"{where}.{key}",
+          f"is derived from {source} (here {value}): leave it out")
+    section[key] = value
+
+
 def _merge(defaults: dict, given: dict | None) -> dict:
     out = copy.deepcopy(defaults)
     for k, v in (given or {}).items():
@@ -83,7 +120,8 @@ def _merge(defaults: dict, given: dict | None) -> dict:
 
 def _strategy(s: dict) -> dict:
     _need(isinstance(s, dict), "strategy", "must be an object")
-    kind = _choice(s.get("kind"), ("python", "cpp", "script"), "strategy.kind")
+    kind = _choice(s.get("kind"), tuple(STRATEGY_KEYS), "strategy.kind")
+    _known(s, STRATEGY_KEYS[kind], "strategy")
     if kind == "python":
         ref = s.get("ref", "")
         _need(isinstance(ref, str) and ref.count(":") == 1 and all(ref.split(":")), "strategy.ref",
@@ -97,40 +135,67 @@ def _strategy(s: dict) -> dict:
     return {**s, "params": params}
 
 
+def _spec(spec: dict, where: str) -> None:
+    """The keys of a pack spec, down to its instrument selectors. The values are the pack builder's to check."""
+    from stockify.data import packs
+    _need(isinstance(spec, dict), where, "must be an object")
+    _known(spec, packs.SPEC_KEYS, where)
+    selectors = spec.get("instruments")
+    for n, sel in enumerate(selectors if isinstance(selectors, list) else []):
+        if not isinstance(sel, dict):
+            continue
+        at = f"{where}.instruments[{n}]"
+        _known(sel, packs.SELECTOR_KEYS, at)
+        # The builder reads the first form it finds, so a second one would be dropped without a word.
+        _need(len(sel) == 1, at, f"needs exactly one of {', '.join(packs.SELECTOR_KEYS)}")
+        if isinstance(sel.get("chain"), dict):
+            _known(sel["chain"], packs.CHAIN_KEYS, at + ".chain")
+
+
 def _packs(data: dict) -> list[dict]:
     _need(isinstance(data, dict) and isinstance(data.get("packs"), list) and data["packs"], "data.packs",
           "must be a non-empty list")
+    _known(data, DATA_KEYS, "data")
     out = []
     for i, p in enumerate(data["packs"]):
         where = f"data.packs[{i}]"
-        _need(isinstance(p, dict) and (("spec" in p) != ("sha256" in p)), where, "needs exactly one of spec or sha256")
+        _need(isinstance(p, dict), where, "needs exactly one of spec or sha256")
+        _known(p, PACK_KEYS, where)
+        _need(("spec" in p) != ("sha256" in p), where, "needs exactly one of spec or sha256")
         if "sha256" in p:
             _need(isinstance(p["sha256"], str) and _PACK_SHA.fullmatch(p["sha256"]) is not None, where + ".sha256",
                   "must be exactly 64 lower-case hex digits")
+        else:
+            _spec(p["spec"], where + ".spec")
         out.append(p)
     return out
 
 
 def _fill(f: dict) -> dict:
     _need(isinstance(f, dict), "fill_model", "must be an object")
+    _known(f, (*FILL_KEYS, *FILL_DERIVED.values()), "fill_model")
     f = _merge(FILL_DEFAULTS, f)
     _choice(f.get("kind"), FILL_KINDS, "fill_model.kind")
     _choice(f["limit_touch_policy"], ("through", "touch"), "fill_model.limit_touch_policy")
-    for key in ("participation", "depth_take"):
+    for key, derived in FILL_DERIVED.items():
         try:
-            f[f"{key}_ppm"] = numerics.to_ppm(str(f[key]))
+            ppm = numerics.to_ppm(str(f[key]))
         except numerics.NumericError as e:
             raise RunConfigError(f"fill_model.{key}: {e}") from e
-        _need(0 < f[f"{key}_ppm"] <= 1_000_000, f"fill_model.{key}", "must be in (0, 1]")
+        _need(0 < ppm <= 1_000_000, f"fill_model.{key}", "must be in (0, 1]")
+        _derived(f, derived, ppm, "fill_model", key)
     slip = f["slippage"]
-    _choice(slip.get("kind"), SLIPPAGE_KINDS, "fill_model.slippage.kind")
+    _need(isinstance(slip, dict), "fill_model.slippage", "must be an object")
+    _known(slip, SLIPPAGE_KEYS[_choice(slip.get("kind"), SLIPPAGE_KINDS, "fill_model.slippage.kind")],
+           "fill_model.slippage")
     if slip["kind"] in ("fixed_ticks", "random_ticks"):
         _int(slip.get("k"), "fill_model.slippage.k", 0)
     if slip["kind"] == "bps":
         try:
-            slip["bp"] = numerics.to_bp(str(slip.get("x")))
+            bp = numerics.to_bp(str(slip.get("x")))
         except numerics.NumericError as e:
             raise RunConfigError(f"fill_model.slippage.x: {e}") from e
+        _derived(slip, "bp", bp, "fill_model.slippage", "x")
     _int(f["half_spread_ticks"], "fill_model.half_spread_ticks", 0)
     return f
 
@@ -147,9 +212,13 @@ def validate(raw: dict) -> dict:
     _need(fam is None or (isinstance(fam, str) and len(fam) <= 128
                           and all(paths.safe_segment(part, 64) for part in fam.split("/"))), "family_id",
           "must be up to 128 characters: segments like a name, separated by '/'")
+    _known(raw, RUN_KEYS, "run")
+    for section in ("costs", "margin", "policies"):
+        _need(isinstance(raw.get(section, {}), dict), section, "must be an object")
+        _known(raw.get(section, {}), DEFAULTS[section], section)
     cfg = _merge(DEFAULTS, {k: v for k, v in raw.items()})
     cfg["strategy"] = _strategy(raw.get("strategy"))
-    cfg["data"] = {**raw.get("data", {}), "packs": _packs(raw.get("data"))}
+    cfg["data"] = {"packs": _packs(raw.get("data"))}
     _choice(cfg["price_basis"], ("raw", "adjusted"), "price_basis")
     _int(cfg.get("capital_paise"), "capital_paise", 1)
     cfg["fill_model"] = _fill(raw.get("fill_model"))

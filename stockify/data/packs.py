@@ -91,6 +91,13 @@ MAX_JSON = 65_535 - 32
 INTERVAL_S = {"minute": 60, "3minute": 180, "5minute": 300, "10minute": 600, "15minute": 900,
               "30minute": 1800, "60minute": 3600, "day": 86400}
 # </block>
+# REG 5.1: every key a pack spec may carry (the ones `build` and its helpers read), the forms of an instrument
+# selector (`resolve`) and the keys of an option-chain selector (`_chain`). A run config with any other key is
+# refused by stockify.runconfig, so add a key here when the builder starts reading it.
+SPEC_KEYS = ("dataset", "from", "to", "interval", "instruments", "tiers", "clock_cadence_ms", "skip_missing_days",
+             "include_gaps")
+SELECTOR_KEYS = ("ids", "symbols", "chain")
+CHAIN_KEYS = ("underlying", "kinds", "expiry", "strikes", "futures")
 SEC = 1_000_000_000
 
 
