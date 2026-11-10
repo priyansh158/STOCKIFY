@@ -100,8 +100,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # The API serves this machine's own UI only (server/local_only.py). The middleware added last
-# runs first: the Host is checked, then the Origin, and only then CORS and the routes.
+# runs first: the Host is checked, then the X-Forwarded-Host the web server's rewrite adds, then
+# the Origin, and only then CORS and the routes.
 app.add_middleware(local_only.WebOriginOnly, web_origin=_WEB_ORIGIN)
+app.add_middleware(local_only.ForwardedHostOnly)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(local_only.LOOPBACK_HOSTS), www_redirect=False)
 
 

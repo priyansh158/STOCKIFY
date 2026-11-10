@@ -1,7 +1,9 @@
 """The local API answers this machine's own UI only (audit 2026-11-09: M2, M4, L1).
 
 Three rules, each tested against the real app:
-  * the `Host` must be loopback (a rebound DNS name is refused);
+  * the `Host` must be loopback, and so must every `X-Forwarded-Host` (the web server's /api rewrite
+    replaces the Host with the API's own and carries the browser's there: a rebound DNS name is refused
+    on both paths);
   * a state-changing request or a WebSocket handshake that carries an `Origin` must carry the
     configured web origin (another site's page cannot log the owner out or open the tick stream);
   * one ticks-WebSocket client may hold a bounded number of tokens.
@@ -128,10 +130,11 @@ class OriginTests(LocalOnlyBase):
         from starlette.middleware.trustedhost import TrustedHostMiddleware
         from server import local_only
         stack = self.main.app.user_middleware                   # outermost first
-        self.assertEqual([m.cls for m in stack], [TrustedHostMiddleware, local_only.WebOriginOnly, CORSMiddleware])
+        self.assertEqual([m.cls for m in stack], [TrustedHostMiddleware, local_only.ForwardedHostOnly,
+                                                  local_only.WebOriginOnly, CORSMiddleware])
         self.assertEqual(list(stack[0].kwargs["allowed_hosts"]), ["127.0.0.1", "localhost"])
-        self.assertEqual(stack[1].kwargs["web_origin"], self.main._WEB_ORIGIN)
-        self.assertEqual(stack[2].kwargs["allow_origins"], [self.main._WEB_ORIGIN])
+        self.assertEqual(stack[2].kwargs["web_origin"], self.main._WEB_ORIGIN)
+        self.assertEqual(stack[3].kwargs["allow_origins"], [self.main._WEB_ORIGIN])
 
 
 class HostTests(LocalOnlyBase):
@@ -155,6 +158,55 @@ class HostTests(LocalOnlyBase):
         r = self.client.post("/api/kite/logout", headers={"Host": "evil.example", "Origin": self.web})
         self.assertEqual(r.status_code, 400)
         self.assertTrue(kite_client._token_file().exists())
+
+    # ── the same name arriving through the web server's /api rewrite (review I-1) ──
+    # Next's rewrite proxies with changeOrigin: the API sees `Host: 127.0.0.1:8001` and the
+    # browser's own Host in `X-Forwarded-Host` (next/dist/server/lib/router-utils/proxy-request.js).
+    # A page at a rebound name reads the API through the rewrite unless that header is checked too.
+
+    REWRITE = {"Host": "127.0.0.1:8001"}
+
+    def test_a_rebound_name_coming_through_the_rewrite_is_refused(self):
+        self._fake_login()
+        for forwarded in ("evil.example:3000", "evil.example", "127.0.0.1.evil.example:3000",
+                          "localhost.evil.example", "www.localhost:3000", "[::1]:3000", "192.168.1.10:3000",
+                          "", "evil.example:3000, 127.0.0.1:3000", "127.0.0.1:3000, evil.example:3000"):
+            for path in ("/api/portfolio/snapshot", "/api/kite/status", "/api/health", "/no/such/route"):
+                with self.subTest(forwarded=forwarded, path=path):
+                    r = self.client.get(path, headers={**self.REWRITE, "X-Forwarded-Host": forwarded})
+                    self.assertEqual(r.status_code, 400)
+                    self.assertNotIn("stockify-api", r.text)
+                    self.assertNotIn("authenticated", r.text)
+        r = self.client.post("/api/kite/logout",
+                             headers={**self.REWRITE, "X-Forwarded-Host": "evil.example:3000", "Origin": self.web})
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(kite_client._token_file().exists())
+
+    def test_two_forwarded_host_headers_are_refused_when_either_is_foreign(self):
+        for pair in ([("X-Forwarded-Host", "127.0.0.1:3000"), ("X-Forwarded-Host", "evil.example:3000")],
+                     [("X-Forwarded-Host", "evil.example:3000"), ("X-Forwarded-Host", "127.0.0.1:3000")]):
+            with self.subTest(pair=pair):
+                r = self.client.get("/api/health", headers=[("Host", "127.0.0.1:8001"), *pair])
+                self.assertEqual(r.status_code, 400)
+
+    def test_the_rewrite_from_a_loopback_page_is_served(self):
+        for forwarded in ("127.0.0.1:3000", "localhost:3000", "127.0.0.1", "localhost", "localhost:9999"):
+            with self.subTest(forwarded=forwarded):
+                r = self.client.get("/api/health", headers={**self.REWRITE, "X-Forwarded-Host": forwarded})
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.json(), {"ok": True, "service": "stockify-api"})
+
+    def test_the_forwarded_host_check_is_the_host_check(self):
+        from server import local_only
+        guard = local_only.ForwardedHostOnly(None)
+        for value, refused in ((b"127.0.0.1:8001", False), (b"localhost", False), (b"LOCALHOST", True),
+                               (b"localhost.", True), (b"[::1]", True), (b"127.0.0.1:3000,localhost:3000", False),
+                               (b"127.0.0.1:3000,evil.example", True), (b" 127.0.0.1:3000 ", False), (b"", True)):
+            with self.subTest(value=value):
+                scope = {"type": "http", "method": "GET", "headers": [(b"x-forwarded-host", value)]}
+                self.assertEqual(guard.refuses(scope), refused)
+        self.assertFalse(guard.refuses({"type": "http", "method": "GET", "headers": []}))
+        self.assertFalse(guard.refuses({"type": "lifespan", "headers": [(b"x-forwarded-host", b"evil")]}))
 
 
 class TicksSocketTests(LocalOnlyBase):
@@ -204,6 +256,13 @@ class TicksSocketTests(LocalOnlyBase):
         from starlette.testclient import WebSocketDenialResponse
         self._logged_in(True)
         why = self._refused({"Host": "evil.example", "Origin": self.web})
+        self.assertIsInstance(why, WebSocketDenialResponse)
+        self.assertEqual(why.status_code, 400)
+
+    def test_a_rebound_name_coming_through_the_rewrite_cannot_open_the_tick_stream(self):
+        from starlette.testclient import WebSocketDenialResponse
+        self._logged_in(True)
+        why = self._refused({"Host": "127.0.0.1:8001", "X-Forwarded-Host": "evil.example:3000", "Origin": self.web})
         self.assertIsInstance(why, WebSocketDenialResponse)
         self.assertEqual(why.status_code, 400)
 
