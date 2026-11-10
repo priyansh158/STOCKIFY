@@ -422,6 +422,73 @@ class ArchiveKeptTests(CompactTest):
         self.assertEqual(compact.compact(DAY).status, "verified")
         self.assertEqual(self.state(), before)
 
+    def unreadable_counts(self):
+        """The archive's meta.json is damaged and its Parquet footers cannot be read (a sharing violation)."""
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        return patch.object(compact.pq, "read_metadata", side_effect=OSError("sharing violation"))
+
+    def test_an_archive_whose_packet_count_cannot_be_read_is_never_replaced(self):
+        with refdata.transaction() as conn:                    # what retention sets when re-verification fails
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        drop_landing()
+        LandingDB(DAY).close()                                 # an empty landing file
+        unreadable = self.unreadable_counts()
+        before = self.state()
+        for force in (False, True):
+            with unreadable, self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assertEqual(res.status, "failed", f"force={force}: {res}")
+            self.assertIn(str(archive_folder()), res.error)                            # it names the folder
+            self.assertEqual(self.state(), before)
+            self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), 0)
+
+    def test_it_is_not_replaced_by_a_larger_landing_file_either(self):
+        record_packets(19)
+        unreadable = self.unreadable_counts()
+        before = self.state()
+        for force in (False, True):
+            with refdata.transaction() as conn:
+                conn.execute("UPDATE tick_days SET status=? WHERE trade_date=?",
+                             ("verified" if force else "landing", DAY.isoformat()))
+            row = tick_days_row()
+            with unreadable, self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assertEqual(res.status, "failed", f"force={force}: {res}")
+            self.assertIn(str(archive_folder()), res.error)
+            self.assertEqual((archive_bytes(), tick_days_row()), (before[0], row))
+            self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), 720)
+
+    def test_a_readable_meta_json_is_enough_to_rebuild_a_damaged_archive(self):
+        quote = archive_folder() / "quote.parquet"
+        quote.write_bytes(quote.read_bytes()[:200])                                    # its footer is gone
+        res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        compact.verify(archive_folder(), self.first.digest, 701)
+        self.assert_no_leftovers()
+
+    def test_readable_footers_are_enough_when_meta_json_is_damaged(self):
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        compact.verify(archive_folder(), self.first.digest, 701)
+        self.assert_no_leftovers()
+
+    def test_the_floor_of_a_day_back_at_status_landing_holds_when_its_archive_is_gone(self):
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        row = tick_days_row()
+        shutil.rmtree(archive_folder())
+        drop_landing()
+        record_packets(3)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertEqual(tick_days_row(), row)
+        self.assertEqual(list(paths.ticks_archive_dir().iterdir()), [])
+
     def test_a_lost_archive_is_not_papered_over_by_a_smaller_landing_file(self):
         self.retain()
         row = tick_days_row()

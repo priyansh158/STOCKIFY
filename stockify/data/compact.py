@@ -371,28 +371,32 @@ def _landing_packets(landing: Path) -> int:
         conn.close()
 
 
-def _archived_packets(target: Path, row: sqlite3.Row | None) -> int:
+def _archived_packets(target: Path, row: sqlite3.Row | None) -> int | None:
     """The most packets any record says the day's archive holds (I-13: the floor for a replacement).
 
-    Asks the archive's Parquet footers and its meta.json, and the tick_days row of a day that was verified.
-    A part that cannot be read counts as 0, so a damaged archive can still be rebuilt from a full landing file.
+    The archive on disk decides, whatever the row's status: the count in its meta.json, and the sum of its
+    packet files' Parquet footers when all of them can be read. The row's count is added for a day whose row
+    says an archive was made, so an archive that has gone missing is not papered over by a smaller landing file.
+
+    None when an archive folder exists and neither source gives its count: an unreadable count is never 0.
     """
-    known = [0]
-    if row is not None and row["status"] in ARCHIVED and row["packets"] is not None:
+    known = []
+    if _has_archive(row) and row["packets"] is not None:
         known.append(int(row["packets"]))
     if target.exists():
+        on_disk = []
         try:
-            known.append(int(json.loads((target / "meta.json").read_text(encoding="utf-8"))["packets"]))
+            on_disk.append(int(json.loads((target / "meta.json").read_text(encoding="utf-8"))["packets"]))
         except (OSError, ValueError, KeyError, TypeError):
             pass
-        in_files = 0
-        for name in PACKET_FILES:
-            try:
-                in_files += pq.read_metadata(target / f"{name}.parquet").num_rows
-            except (OSError, ValueError, pa.ArrowException):
-                pass
-        known.append(in_files)
-    return max(known)
+        try:
+            on_disk.append(sum(pq.read_metadata(target / f"{name}.parquet").num_rows for name in PACKET_FILES))
+        except (OSError, ValueError, pa.ArrowException):
+            pass
+        if not on_disk:
+            return None
+        known += on_disk
+    return max(known, default=0)
 
 
 def compact(day: date, *, landing: Path | None = None, archive_root: Path | None = None,
@@ -401,7 +405,9 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
 
     A day already `verified` or `landing_deleted` is left alone and reported as `verified` unless `force` is
     given. With or without `force`, an archive is never replaced by one holding fewer packets: the result is
-    `failed`, its error names both counts, and only this run's temporary folder is removed (I-13).
+    `failed`, its error names both counts, and only this run's temporary folder is removed (I-13). The count
+    to beat is the one of the archive on disk, whatever the row's status; an archive folder whose count cannot
+    be read is not replaced at all, forced or not.
 
     A run that fails on a day that has, or had, an archive leaves its tick_days row exactly as it was; the
     failure is in the result only.
@@ -455,6 +461,14 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
         log.info("%s already compacted and verified", day)
         return done("verified")
 
+    archived = _archived_packets(target, existing)
+    if archived is None:
+        refusal = (f"refused: the packet count of the archive in {target} cannot be read (neither its meta.json "
+                   "nor its Parquet footers), and an unreadable count is never taken as 0; the archive is not "
+                   "replaced, with or without force, and its tick_days row and the landing file are left as they "
+                   "were")
+        log.error("compaction of %s %s", day, refusal)
+        return done("failed", refusal)
     tmp = _tmp(target)
     if not target.exists() and _has_archive(existing) and _archive_state(tmp) is not None:
         # Versions before the rename-aside replacement removed the old archive first; one stopped right there
@@ -494,7 +508,6 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     finally:
         conn.close()
 
-    archived = _archived_packets(target, existing)
     if res.packets < archived:
         shutil.rmtree(tmp, ignore_errors=True)
         refusal = (f"refused: the landing file holds {res.packets} packets and the day's archive holds {archived}; "
