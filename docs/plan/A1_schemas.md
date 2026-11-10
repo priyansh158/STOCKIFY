@@ -371,12 +371,13 @@ steps down to B3–B5 as always.
 
 `span[D]` lists every NSE SPAN file a backtest may use on run day D, in `created_ns` order, with no lookahead (spec
 §5.1): the end-of-day `.s` of the previous NSE session when archived, then D's `i1`..`i4` (`i1` is normally created
-the evening before). **The previous session (CAM 4.4, D-64 ruling 2):** walk back over F&O calendar trading days that
-have no archived SPAN file of any suffix, at most 5 of them, and stop at the first day that has any archived file;
-use its `.s` if archived, else nothing (a day with intraday files but no `.s` never hands D an older file; more than 5
-empty days give nothing). A day without any file is one NSE published no file for: a holiday the calendar does not
-hold. The calendar holds the holidays from 2009 on (D-75), so the walk is a safety net; the one archive gap,
-2021-10-11, is in RECON. D's own `.s` is never listed: it comes after the
+the evening before). **The previous session (CAM 4.4, D-64 ruling 2; CDM 4.2):** the latest weekday before D that
+has an archived SPAN file of any suffix, whether or not the F&O calendar calls it a trading day (a Muhurat-only day is
+a holiday of the calendar that has a `.s`, and NSE had that file in force the next morning; D-75). Walk back over
+weekdays with no file and stop at the first that has one; use its `.s` if archived, else nothing (a day with intraday
+files but no `.s` never hands D an older file). A calendar trading day without any file uses up one of 5 empty days
+(a holiday the calendar does not hold, or the one archive gap, 2021-10-11, in RECON); a calendar holiday without a
+file uses up none; more than 5 empty trading days give nothing. D's own `.s` is never listed: it comes after the
 close. **Each entry applies from its own `created_ns`: the file in force at t is the last entry with
 `created_ns <= t`. Before the first entry nothing is in force (the underlying steps down); an entry is never applied
 earlier than its `created_ns`**, so a late `i1` (created after 09:15 on D) leaves the previous `.s` in force until

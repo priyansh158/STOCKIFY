@@ -770,6 +770,10 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   (its `.s`, else nothing). When this was written the calendar had no holidays before 2024, so the day after each
   holiday (10–19 a year) used to get no SPAN at all; the walk-back gave it the `.s` before the holiday. The calendar
   now holds the 2009–2023 holidays (D-75, entry below), so the walk-back is a safety net.
+  - **Changed (CDM 4.2, D-75 fix round 1):** the walk goes back over weekdays, not over calendar trading days, and
+    stops at the first weekday with any archived file (`nse_margin_files.opening_day`). A calendar trading day with
+    no file uses up one of the 5 empty days; a calendar holiday with no file uses up none. So a Muhurat-only day's
+    `.s` (a holiday that has a file) opens the next session.
   - Known exception: 2021-10-11 has no file because NSE served a non-zip body (the one rejected backfill file), so
     2021-10-12 opens with 2021-10-08's `.s` (one session stale) until that day's `.s` is fetched again.
   - **Owner item, done (CDM 4.1, D-75):** the 2009–2023 NSE holidays are in
@@ -848,8 +852,8 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
 - **Muhurat-only days (holidays that have a `.s` file):** 2010-11-05, 2011-10-26, 2012-11-13, 2014-10-23, 2015-11-11,
   2017-10-19, 2018-11-07, 2021-11-04, 2022-10-24. NSE's yearly holiday circular lists each as a trading holiday with
   "Muhurat Trading" that evening (2010: normal market 18:15-19:00), so the regular session was closed. No other
-  weekday holiday of 2009-2023 has a `.s` file. The day after such a day now opens with the `.s` of the last full
-  session (the calendar's previous trading day), not with the Muhurat day's own `.s`.
+  weekday holiday of 2009-2023 has a `.s` file. In CDM 4.1 the day after such a day opened with the `.s` of the last
+  full session (the calendar's previous trading day); fix round 1 below changed that.
 - **Left as they are (outside this change):** 2024-11-01 (Diwali Laxmi Pujan 2024, a Friday with a `.s` file) is not
   in the 2024 rows, so the calendar calls it a trading day; 2025-10-21 (Diwali Laxmi Pujan) is a holiday that has day bars. NSE's
   lists also carry weekend entries (2012-04-28 and 2012-09-08 "Special Live Trading", 2012-11-11 "Dhanteras Trading"
@@ -858,3 +862,25 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   nothing; an idle WAL database is opened as immutable so not even its `-shm` is touched) on 2026-11-09: 3,912
   weekdays, 3,699 with data, 221 holidays; trading days with no data: 2021-10-11; holidays with data: the nine
   Muhurat days (`span`; 2022-10-24 also `bars`). For 2024-01-01..2026-11-06: none without data; 2025-10-21 with `bars`.
+
+### Fix round 1 (CDM 4.2 onwards, after the task review)
+
+- **The morning after a Muhurat-only day (review F1, ruling: option b; CDM 4.2).** The opening file of trading day D
+  is the `.s` of the latest earlier weekday that has a file in the archive, whether or not the calendar calls that
+  weekday a trading day. `nse_margin_files.opening_day(D)` gives that weekday and `opening_eod(D)` its `.s`.
+  - The sessions it changes back: 2010-11-08, 2011-10-28, 2012-11-15, 2014-10-27, 2015-11-13, 2017-10-23,
+    2018-11-09, 2021-11-08 and 2022-10-25 open with the Muhurat day's `.s` again (CDM 4.1 gave them the file of the
+    last full session, one session stale and labelled exact). 2024-11-04 opens with `nsccl.20241101.s.zip`.
+  - Checked over file names for every trading day 2009-01-01..2026-11-06
+    (`test_no_day_opens_with_an_older_file_than_before_the_holidays_were_added`): the opening day is the one the old
+    walk gave over the old calendar (no holiday before 2024, no Muhurat-only holiday). No day differs.
+  - Unchanged: at most 5 empty trading days; a weekday with intraday files but no `.s` gives nothing; a file is
+    never used for its own day or an earlier one; 2021-10-12 still opens with 2021-10-08's `.s`. Weekends are
+    never looked at (the archive has no weekend file).
+  - Not touched: previous close and bars come from the last full session (owner: no Muhurat session is simulated).
+    Cost if the ruling is wrong: on those mornings the margin reflects the Muhurat hour's prices while the previous
+    close does not.
+  - Left as it is: `previous_eod` (the validator's lookup of the file Kite had) and the fetch and backfill loops
+    still go by calendar trading days, so they never ask for a Muhurat-only day's `.s`. The archive already holds
+    the ten files of 2010 to 2024. 2025-10-21's is not there, so 2025-10-23 opens with 2025-10-20's `.s` (labelled
+    exact) until that file is fetched: an open point for the owner.
