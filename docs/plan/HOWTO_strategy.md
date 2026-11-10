@@ -178,6 +178,9 @@ bars in the lab so far):
   data source: NSE's daily F&O file counts contracts and is converted when the pack is built (A1 §5, D-79).
   Known data hole: 2023-12-28 and 2023-12-29 carry no sourced lot size, so an F&O `bhav_eod` pack over those two
   days fails to build; start such a pack on 2024-01-01 or later.
+- The `x` of `bps` slippage is a fraction of the price, written as a decimal string: `"0.0005"` = 5 bp = 0.05 %.
+  It is not a number of basis points: `"5"` is refused, as is anything outside `"0"` to `"0.1"` (0 to 1,000 bp)
+  and anything that is not a string. `participation` is a fraction too (`"0.10"` = 10 %).
 
 ## 3. Run it from the command line
 

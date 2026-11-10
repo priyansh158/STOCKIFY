@@ -118,5 +118,67 @@ class UnknownKeyTests(unittest.TestCase):
                 runconfig.load(run(**{section: "flat"}))
 
 
+def _bps(x) -> dict:  # noqa: ANN001
+    return run(fill_model={"kind": "bar", "slippage": {"kind": "bps", "x": x}})
+
+
+class BpsSlippageTests(unittest.TestCase):
+    """REG 5.2 (audit H-2): `x` of bps slippage is a fraction written as a decimal string, from "0" to "0.1"
+    (0 to 1,000 bp). Before, `"x": "5"` (meant as 5 bp) ran as 50,000 bp, and a float was read through str()."""
+
+    UNIT = 'a fraction written as a decimal string, from "0" to "0.1" ("0.0005" = 5 bp)'
+
+    def test_a_fraction_in_range_gives_its_basis_points(self):
+        for x, bp in (("0.0005", 5), ("0", 0), ("0.0001", 1), ("0.1", 1000), ("0.10", 1000), ("1e-3", 10)):
+            with self.subTest(x=x):
+                slip = runconfig.load(_bps(x))["fill_model"]["slippage"]
+                self.assertEqual(slip, {"kind": "bps", "x": x, "bp": bp})
+
+    def test_a_value_outside_the_range_is_refused_with_the_unit(self):
+        for x in ("5", "0.1001", "0.11", "1", "-0.0005", "-1", "1e30", "-1e30"):
+            with self.subTest(x=x), self.assertRaises(runconfig.RunConfigError) as caught:
+                runconfig.load(_bps(x))
+            text = str(caught.exception)
+            self.assertTrue(text.startswith(f"fill_model.slippage.x: {x!r} is outside the range: it must be"), text)
+            self.assertIn(self.UNIT, text)
+
+    def test_a_value_that_is_not_a_string_is_refused_with_the_unit(self):
+        for x in (0.0005, 5, 0, True, None, ["0.0005"]):
+            with self.subTest(x=x), self.assertRaises(runconfig.RunConfigError) as caught:
+                runconfig.load(_bps(x))
+            text = str(caught.exception)
+            self.assertTrue(text.startswith(f"fill_model.slippage.x: {x!r} is not a string: it must be"), text)
+            self.assertIn(self.UNIT, text)
+
+    def test_a_missing_x_is_refused_with_the_unit(self):
+        with self.assertRaises(runconfig.RunConfigError) as caught:
+            runconfig.load(run(fill_model={"kind": "bar", "slippage": {"kind": "bps"}}))
+        self.assertIn("fill_model.slippage.x: None is not a string", str(caught.exception))
+
+    def test_a_string_that_is_not_a_whole_number_of_basis_points_is_refused_with_the_unit(self):
+        for x in ("0.00005", "five", "", "NaN", "Infinity", "0,0005"):
+            with self.subTest(x=x), self.assertRaises(runconfig.RunConfigError) as caught:
+                runconfig.load(_bps(x))
+            text = str(caught.exception)
+            self.assertTrue(text.startswith("fill_model.slippage.x: "), text)
+            self.assertIn(self.UNIT, text)
+
+    def test_the_examples_and_the_how_to_state_the_unit(self):
+        import json
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        seen = 0
+        for path in sorted((root / "examples" / "runs").glob("*.json")):
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            for cfg in [r["config"] for r in doc["runs"]] if "runs" in doc else [doc]:
+                slip = cfg.get("fill_model", {}).get("slippage", {})
+                if slip.get("kind") == "bps":
+                    seen += 1
+                    self.assertEqual(runconfig.load(cfg)["fill_model"]["slippage"]["bp"], 5, path.name)
+        self.assertGreater(seen, 0)
+        howto = (root / "docs" / "plan" / "HOWTO_strategy.md").read_text(encoding="utf-8")
+        self.assertIn('`"0.0005"` = 5 bp', howto)
+
+
 if __name__ == "__main__":
     unittest.main()

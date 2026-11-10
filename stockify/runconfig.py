@@ -57,6 +57,10 @@ STRATEGY_KEYS = {"python": ("kind", "ref", "params"), "cpp": ("kind", "ref", "pa
                  "script": ("kind", "actions", "params")}
 DATA_KEYS = ("packs",)
 PACK_KEYS = ("spec", "sha256")
+# REG 5.2 (audit H-2): `x` of bps slippage is a fraction of the price written as a decimal string, like every
+# other rate in a run config. It is bounded, so "5" (meant as 5 bp) is refused and does not run as 50,000 bp.
+MAX_SLIPPAGE_BP = 1000
+SLIPPAGE_X_UNIT = 'a fraction written as a decimal string, from "0" to "0.1" ("0.0005" = 5 bp)'
 
 
 # A pack's hash names its file (packs/<sha>.evt). Exactly this and nothing else, so a config can never
@@ -191,10 +195,16 @@ def _fill(f: dict) -> dict:
     if slip["kind"] in ("fixed_ticks", "random_ticks"):
         _int(slip.get("k"), "fill_model.slippage.k", 0)
     if slip["kind"] == "bps":
+        x = slip.get("x")
+        _need(isinstance(x, str), "fill_model.slippage.x", f"{x!r} is not a string: it must be {SLIPPAGE_X_UNIT}")
         try:
-            bp = numerics.to_bp(str(slip.get("x")))
+            bp = numerics.to_bp(x)
+        except OverflowError:
+            bp = MAX_SLIPPAGE_BP + 1
         except numerics.NumericError as e:
-            raise RunConfigError(f"fill_model.slippage.x: {e}") from e
+            raise RunConfigError(f"fill_model.slippage.x: {e}: it must be {SLIPPAGE_X_UNIT}") from e
+        _need(0 <= bp <= MAX_SLIPPAGE_BP, "fill_model.slippage.x",
+              f"{x!r} is outside the range: it must be {SLIPPAGE_X_UNIT}")
         _derived(slip, "bp", bp, "fill_model.slippage", "x")
     _int(f["half_spread_ticks"], "fill_model.half_spread_ticks", 0)
     return f
