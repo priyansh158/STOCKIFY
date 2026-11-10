@@ -127,14 +127,17 @@ class Outcome:
             run_whole(bundle, records, make, folder / "oracle")
         except Exception as e:  # noqa: BLE001 — then every other run must fail with the same error
             self.error = e
-            for go in (lambda: run_day_by_day(bundle, records, make, folder / "oracle"),
-                       lambda: engine_whole(bundle, pack, make, folder / "engine"),
-                       lambda: engine_day_by_day(bundle, pack, make, folder / "engine")):
+            # The same words on every path, and the same class within a runner: the oracle's own errors (its
+            # SpanMissingError and the like) reach the C++ engine's callers as its RunError.
+            for engine_side, go in ((False, lambda: run_day_by_day(bundle, records, make, folder / "oracle")),
+                                    (True, lambda: engine_whole(bundle, pack, make, folder / "engine")),
+                                    (True, lambda: engine_day_by_day(bundle, pack, make, folder / "engine"))):
                 try:
                     go()
                 except Exception as x:  # noqa: BLE001
-                    if model == "span_exact" and str(x) != str(e):
-                        raise AssertionError(f"failed differently: {x!r} vs {e!r}") from x
+                    want_class = "RunError" if engine_side else type(e).__name__
+                    if type(x).__name__ != want_class or str(x) != str(e):
+                        raise AssertionError(f"failed differently: {x!r} vs {e!r} (class {want_class})") from x
                 else:
                     raise AssertionError(f"the whole oracle run failed ({e!r}) but another run did not")
             return
@@ -356,6 +359,32 @@ class EngineStateBindingTests(unittest.TestCase):
                     fresh().load_sod_state(numerics.dumps_canonical(bad))
             with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
                 fresh().load_sod_state("{not json")
+
+    def test_eod_state_refuses_after_events_since_the_last_day_end(self):
+        """A day has ended and nothing was processed since: only then is there a state to write. Straight after a
+        load the loaded state is it; once a record has been pushed it is not."""
+        folder = Path(tempfile.mkdtemp(prefix="sod-settled-", dir=str(tests.support.SANDBOX_ROOT)))
+        world = fuzz.fuzz_world(4002)
+        world["run"]["seed_mode"] = "per_day"
+        bundle, pack = _world_inputs(world, folder)
+        ids = [i["id"] for i in world["bundle"]["instruments"]]
+        packs = split_pack(pack, bundle["days"], folder)
+        day = next(i for i in range(1, len(packs)) if packs[i] is not None)
+        state = None
+        for i, b in enumerate(day_bundles(bundle)[:day + 1]):
+            b["sod_state"] = json.loads(state) if state is not None else None
+            if i == day:
+                break
+            state = engine_run(b, packs[i], fuzz.RandomTrader(ids, 40), folder / f"d{i}")
+        (folder / "live").mkdir()
+        bundle_mod.write(json.loads(bundle_mod.dumps(b)), folder / "live")
+        e = engine.load().Engine(str(folder / "live" / "bundle.json"))
+        e.set_strategy_py(fuzz.RandomTrader(ids, 40))
+        self.assertEqual(e.eod_state(), state)
+        e.push(_records(packs[day])[0])
+        with self.assertRaises(engine.load().RunError) as c:
+            e.eod_state()
+        self.assertEqual(str(c.exception), "sod_state: events were processed after the last day ended")
 
     def test_book_lists_open_positions(self):
         with tempfile.TemporaryDirectory(prefix="sod-book-") as tmp:
