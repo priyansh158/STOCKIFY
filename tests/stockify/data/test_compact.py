@@ -106,6 +106,27 @@ def tick_days_row() -> dict | None:
     return None if row is None else dict(row)
 
 
+def archive_rows() -> set:
+    """Every packet in the day's archive as (seq, frame_no, instrument_id, raw); empty when there is none."""
+    folder = archive_folder()
+    if not (folder / "meta.json").exists():
+        return set()
+    return {(seq, frame_no, iid, bytes(raw)) for seq, frame_no, iid, raw in compact._iter_archive(folder)}
+
+
+def landing_rows() -> set:
+    """Every packet in the day's landing file, in the same form; empty when there is no file."""
+    path = paths.ticks_landing_file(DAY)
+    if not path.exists():
+        return set()
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        return {(seq, frame_no, iid, bytes(raw)) for seq, frame_no, iid, raw in
+                conn.execute("SELECT seq, frame_no, instrument_id, raw FROM packets")}
+    finally:
+        conn.close()
+
+
 def archive_dir_names() -> list[str]:
     """Everything in the archive folder: after a run, only the day's archive may be there."""
     return sorted(p.name for p in paths.ticks_archive_dir().iterdir())
@@ -769,7 +790,14 @@ class RecoveryTests(CompactTest):
 
 
 class NeverShrinksPropertyTests(unittest.TestCase):
-    """Property (I-13): whatever happens to the landing file, the day's archived packet count never goes down."""
+    """Properties (I-13), whatever happens to the landing file:
+
+    * the day's archived packet count never goes down, and no packet that was archived leaves the archive;
+    * once the day is `verified` or `landing_deleted`, only a forced run changes the archive's bytes or its
+      tick_days row (retention alone may move the status from `verified` to `landing_deleted`);
+    * no step but a hand deletion of the landing file (`recreate`) loses a packet: what the landing file held
+      before a step is afterwards in the landing file or in the archive.
+    """
 
     OPS = ("record", "compact", "retain", "recreate", "compact", "force")
     SEEDS = 40
@@ -796,22 +824,38 @@ class NeverShrinksPropertyTests(unittest.TestCase):
         res = compact.compact(DAY, force=op == "force")
         return f"{op} -> {res.status} {res.packets}"
 
-    def test_archived_packet_count_never_decreases(self):
+    @staticmethod
+    def snapshot() -> dict:
+        return {"packets": archived_packets(), "files": archive_bytes() if archive_folder().exists() else {},
+                "row": tick_days_row(), "archived": archive_rows(), "landing": landing_rows()}
+
+    def test_an_archived_day_only_grows_and_only_under_force(self):
         for seed in range(self.SEEDS):
             rng = random.Random(seed)
             support.fresh_cache_dir(f"never_shrinks_{seed}")
             support.reset_sqlite_singleton(refdata)
-            archived, trace = 0, []
+            trace = []
             ops = ["record"] + [rng.choice(self.OPS) for _ in range(rng.randint(5, 14))]
             for op in ops:
+                before = self.snapshot()
                 trace.append(self.step(op, rng))
-                now = archived_packets()
-                self.assertGreaterEqual(now, archived, f"seed {seed}: {trace}")
-                if archived:
-                    self.assertTrue((archive_folder() / "meta.json").exists(), f"seed {seed}: {trace}")
-                archived = now
-            leftovers = [p.name for p in paths.ticks_archive_dir().iterdir() if p.name.endswith(".tmp")]
-            self.assertEqual(leftovers, [], f"seed {seed}: {trace}")
+                after = self.snapshot()
+                where = f"seed {seed}: {trace}"
+                self.assertGreaterEqual(after["packets"], before["packets"], where)
+                self.assertLessEqual(before["archived"], after["archived"], where)     # nothing leaves the archive
+                if before["packets"]:
+                    self.assertTrue((archive_folder() / "meta.json").exists(), where)
+                if op != "recreate":
+                    self.assertLessEqual(before["landing"], after["landing"] | after["archived"], where)
+                row = before["row"]
+                if op != "force" and row and row["status"] in ("verified", "landing_deleted") and before["files"]:
+                    self.assertEqual(after["files"], before["files"], where)           # not one byte of it
+                    if op == "retain" and row["status"] == "verified":
+                        row = dict(row, status=after["row"]["status"])
+                        self.assertIn(row["status"], ("verified", "landing_deleted"), where)
+                    self.assertEqual(after["row"], row, where)
+            self.assertEqual(archive_dir_names(), [archive_folder().name] if archive_folder().exists() else [],
+                             f"seed {seed}: {trace}")
 
 
 class RetentionTests(CompactTest):
