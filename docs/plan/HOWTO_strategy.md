@@ -131,6 +131,9 @@ Things to know when you write your own (the full API is A2 §4):
     `__import__`, `exec`, `eval` and `compile`, and the names `__builtins__`, `__loader__` and `__spec__`;
   - the wall clock: the attributes `now`, `today`, `utcnow`, `time_ns`, `monotonic` and `perf_counter` on anything
     but the strategy context (`ctx.now()` and `ctx.today()` are the API), and `fromtimestamp` without a time and an explicit `tz`;
+  - the wall-clock functions of `stockify.timeutil` (LCB 5.14): `now_ns`, `now_ist` and `ist_today` may not be
+    imported (under any name), nor used as an attribute of any object, the context included. The rest of
+    `stockify.timeutil` (`ist_ns`, `ns_to_ist`, `parse_hhmm`, …) only converts times and is fine;
   - the attributes `exec`, `eval`, `compile`, `bltns` and `builtins` on any object, and anything that evaluates a
     string as code: `get_type_hints`, `ForwardRef`, `evaluate_forward_ref`, `get_annotations`, `.register`, and any
     string inside an annotation (`def f(a: "X")`, `-> "X"`, `x: "int"`); write annotations as plain names (with

@@ -319,6 +319,16 @@ def own_package(module_name: str, package: str) -> str:
 
 _FORMAT_ESCAPE = re.compile(r"\{[^{}]*[.\[]\s*_")      # str.format field reaching `._x` or `[_x]`
 _UNSAFE_FROM_NAMES = {"ast", "importlib", "sys", "time", "os", "builtins", "inspect"}
+# `stockify.timeutil` is an allowed import (for `ist_ns`, `ns_to_ist`, …), and these three of its functions read
+# the wall clock (I-2). They are refused by name, on import and as an attribute of any object, and by what they
+# are, whatever name an allowed module holds them under (LCB 5.14).
+_TIMEUTIL_CLOCK = ("now_ns", "now_ist", "ist_today")
+_USE_CTX_CLOCK = "the wall clock; use ctx.now() / ctx.today()"
+
+
+def _is_timeutil_clock(obj: object) -> bool:
+    from stockify import timeutil
+    return any(obj is vars(timeutil).get(n) for n in _TIMEUTIL_CLOCK) and obj is not None
 
 
 def _bad_imported_name(module: str, names: list[str], own: str) -> str | None:
@@ -328,7 +338,8 @@ def _bad_imported_name(module: str, names: list[str], own: str) -> str | None:
     allowlisted platform or stdlib module (imported here for the check: they are trusted), also any name that is
     itself a module or part of the import machinery. A strategy's own package is never imported for the check."""
     for n in names:
-        if n == "*" or n.startswith("_") or n in BANNED_ATTR_NAMES or n in _UNSAFE_FROM_NAMES:
+        if n == "*" or n.startswith("_") or n in BANNED_ATTR_NAMES or n in _UNSAFE_FROM_NAMES \
+                or n in _TIMEUTIL_CLOCK:
             return n
     if own and (module == own or module.startswith(own + ".")):
         return None
@@ -345,7 +356,8 @@ def _bad_imported_name(module: str, names: list[str], own: str) -> str | None:
         kind = getattr(type(obj), "__module__", "") or ""
         if isinstance(obj, types.ModuleType) or kind.startswith(("importlib", "_frozen_importlib")) \
                 or any(obj is f for f in (builtins.__import__, importlib.import_module, builtins.exec,
-                                          builtins.eval, builtins.compile, builtins.open)):
+                                          builtins.eval, builtins.compile, builtins.open)) \
+                or _is_timeutil_clock(obj):
             return n
     return None
 
@@ -382,7 +394,12 @@ def check_source(source: str, name: str = "<strategy>", package: str = "") -> li
                     if isinstance(node, ast.ImportFrom):
                         bad = _bad_imported_name(module, names, own)
                         if bad:
-                            refuse(node, f"importing {bad!r} from {module!r}")
+                            clock = bad in _TIMEUTIL_CLOCK or any(a.asname in _TIMEUTIL_CLOCK for a in node.names)
+                            refuse(node, f"importing {bad!r} from {module!r}"
+                                         + (f" ({_USE_CTX_CLOCK})" if clock else ""))
+                        named = next((a.asname for a in node.names if a.asname in _TIMEUTIL_CLOCK), None)
+                        if named:
+                            refuse(node, f"importing a name as {named!r} ({_USE_CTX_CLOCK})")
                     module_names = [module] + ([f"{module}.{n}" for n in names if n != "*"]
                                                if isinstance(node, ast.ImportFrom) else [])
                 local.extend(m for m in module_names if own and (m == own or m.startswith(own + ".")))
@@ -521,6 +538,8 @@ def _danger(obj: object) -> str | None:
               builtins.breakpoint, builtins.input, importlib.import_module):
         if obj is f:
             return f"the builtin {f.__name__}"
+    if _is_timeutil_clock(obj):
+        return f"stockify.timeutil.{obj.__name__} ({_USE_CTX_CLOCK})"
     return None
 
 
@@ -568,9 +587,11 @@ def _check_chains(tree: ast.AST, package: str, own: str, refuse) -> None:  # noq
         if isinstance(node, ast.Attribute):
             if node.attr in _ANY_OBJECT_ATTRS:
                 refuse(node, f"the attribute .{node.attr}")
+            if node.attr in _TIMEUTIL_CLOCK:        # the context has no such names: refused on `ctx` too
+                refuse(node, f".{node.attr} ({_USE_CTX_CLOCK})")
             if node.attr in _CLOCK_ATTRS and not (isinstance(node.value, ast.Name) and node.value.id == "ctx"
                                                   and "ctx" not in bound):
-                refuse(node, f".{node.attr} (the wall clock; use ctx.now() / ctx.today())")
+                refuse(node, f".{node.attr} ({_USE_CTX_CLOCK})")
             root, names = _chain(node)
             if not (isinstance(root, ast.Name) and root.id in bound) or bound[root.id] is _OWN:
                 continue

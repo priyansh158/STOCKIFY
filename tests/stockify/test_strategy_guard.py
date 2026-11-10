@@ -4,17 +4,22 @@ from __future__ import annotations
 import copy
 import hashlib
 import inspect
+import re
 import shutil
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
-from stockify import golden
+from stockify import golden, timeutil
 from stockify import strategy as S
+
+REPO = Path(__file__).resolve().parents[2]
+TIMEUTIL_CLOCK = ("now_ns", "now_ist", "ist_today")
 
 GOOD = """
 from stockify.strategy import Strategy
@@ -291,6 +296,115 @@ class StrategyGuardTest(unittest.TestCase):
     def test_a_missing_module_is_a_strategy_error(self):
         with self.assertRaises(S.StrategyCodeError):
             S.load(f"{self.pkg}.nope:X")
+
+    # ── stockify.timeutil's own wall clock (LCB 5.14) ────────────────────────
+
+    def test_the_three_names_are_timeutil_s_wall_clock(self):
+        # If timeutil grows another clock function, it belongs in the guard as well.
+        clocks = sorted(n for n, f in vars(timeutil).items()
+                        if callable(f) and getattr(f, "__module__", "") == timeutil.__name__
+                        and not inspect.signature(f).parameters)
+        self.assertEqual(clocks, sorted(TIMEUTIL_CLOCK))
+
+    def test_timeutil_s_wall_clock_is_refused_imported_by_name(self):
+        for fn in TIMEUTIL_CLOCK:
+            for code in (f"from stockify.timeutil import {fn}",                      # the import alone
+                         f"from stockify.timeutil import {fn}\nT = {fn}()",
+                         f"from stockify.timeutil import ist_ns, {fn}\nT = {fn}()",
+                         f"from stockify.timeutil import (\n    ns_to_ist,\n    {fn},\n)",
+                         f"def f(ctx):\n    from stockify.timeutil import {fn}\n    return {fn}()"):
+                with self.subTest(code=code), self.assertRaisesRegex(S.StrategyCodeError, fn):
+                    S.check_source(code)
+
+    def test_timeutil_s_wall_clock_is_refused_under_another_name(self):
+        for fn in TIMEUTIL_CLOCK:
+            for code in (f"from stockify.timeutil import {fn} as clock\nT = clock()",
+                         f"from stockify.timeutil import {fn} as ist_ns\nT = ist_ns()",
+                         f"from stockify.timeutil import ist_ns as {fn}",              # a harmless thing under its name
+                         f"from stockify import timeutil\nclock = timeutil.{fn}\nT = clock()",
+                         f"from stockify import timeutil\nclocks = [timeutil.{fn}]\nT = clocks[0]()",
+                         f"from stockify import timeutil\nclass A:\n    clock = staticmethod(timeutil.{fn})"):
+                with self.subTest(code=code), self.assertRaisesRegex(S.StrategyCodeError, fn):
+                    S.check_source(code)
+
+    def test_timeutil_s_wall_clock_is_refused_through_the_module(self):
+        for fn in TIMEUTIL_CLOCK:
+            for code in (f"from stockify import timeutil\nT = timeutil.{fn}()",
+                         f"from stockify import timeutil as t\nT = t.{fn}()",
+                         f"import stockify.timeutil as t\nT = t.{fn}()",
+                         f"import stockify.timeutil as timeutil\ndef f(ctx):\n    return timeutil.{fn}()",
+                         f"from stockify import timeutil\ndef f(ctx, m=timeutil):\n    return m.{fn}()",
+                         f"from stockify import timeutil\nT = (timeutil).{fn}()",
+                         f"from stockify import timeutil\nT = [timeutil][0].{fn}()"):
+                with self.subTest(code=code), self.assertRaisesRegex(S.StrategyCodeError, fn):
+                    S.check_source(code)
+            for code in (f"from .. import timeutil\nT = timeutil.{fn}()", f"from ..timeutil import {fn}\nT = {fn}()",
+                         f"from ..timeutil import {fn} as clock\nT = clock()"):
+                with self.subTest(code=code), self.assertRaisesRegex(S.StrategyCodeError, fn):
+                    S.check_source(code, "stockify.strategies.probe", "stockify.strategies")
+
+    def test_timeutil_s_wall_clock_is_refused_on_any_object_even_ctx(self):
+        # The context has no such names, so `ctx` is no exception here: a helper handed the timeutil module
+        # as its `ctx` gets nowhere.
+        for fn in TIMEUTIL_CLOCK:
+            for code in (f"def f(o):\n    return o.{fn}()", f"def f(ctx):\n    return ctx.{fn}()",
+                         f"class A:\n    def on_bar(self, ctx, bar):\n        return ctx.{fn}",
+                         f"class A:\n    def on_bar(self, ctx, bar):\n        return self.clock.{fn}()"):
+                with self.subTest(code=code), self.assertRaisesRegex(S.StrategyCodeError, fn):
+                    S.check_source(code)
+
+    def test_timeutil_s_wall_clock_is_refused_whatever_an_allowed_module_calls_it(self):
+        # By what the object is, not only by its name: an allowed module that kept the clock under another name.
+        for fn in TIMEUTIL_CLOCK:
+            with mock.patch.object(timeutil, "started", vars(timeutil)[fn], create=True):
+                for code in ("from stockify.timeutil import started", "from stockify.timeutil import started as s",
+                             "from stockify import timeutil\nT = timeutil.started()",
+                             "import stockify.timeutil as t\nf = t.started"):
+                    with self.subTest(fn=fn, code=code), self.assertRaises(S.StrategyCodeError):
+                        S.check_source(code)
+        S.check_source("from stockify import timeutil\nT = timeutil.NS_PER_S")      # and nothing else is caught by it
+
+    def test_a_strategy_file_using_timeutil_s_wall_clock_is_never_imported(self):
+        for n, code in enumerate(("from stockify.timeutil import now_ns\nT = now_ns()\n",
+                                  "from stockify.timeutil import now_ist as clock\nT = clock()\n",
+                                  "from stockify import timeutil\nT = timeutil.ist_today()\n")):
+            ref = self._module(f"clock{n}", code + GOOD)
+            with self.subTest(code=code), self.assertRaises(S.StrategyCodeError):
+                S.load(ref + ":Fine")
+            self.assertNotIn(ref, sys.modules)
+
+    def test_the_rest_of_timeutil_and_the_context_s_clock_still_pass(self):
+        for code in ("from stockify import timeutil\ndef f(ctx, bar):\n"
+                     "    return timeutil.ns_to_ist(bar.start_ns).date() == ctx.today()",
+                     "from stockify import timeutil\ndef f(ctx):\n    return timeutil.ist_ns(ctx.today(), '09:15')",
+                     "from stockify.timeutil import IST, NS_PER_S, ist_ns, ist_to_ns, ns_to_ist, parse_hhmm, s_to_ist",
+                     "import stockify.timeutil as t\nX = t.NS_PER_S\nY = t.parse_hhmm('09:15')",
+                     "def f(ctx):\n    now_ns = ctx.now()\n    ist_today = ctx.today()\n    return now_ns, ist_today",
+                     "def f(ctx, now_ist=None):\n    return now_ist"):
+            with self.subTest(code=code):
+                S.check_source(code)
+
+    def test_no_shipped_strategy_or_how_to_example_uses_timeutil_s_wall_clock(self):
+        word = re.compile(r"\b(" + "|".join(TIMEUTIL_CLOCK) + r")\b")
+        shipped = sorted((REPO / "stockify" / "strategies").glob("*.py")) + [REPO / "stockify" / "tools" / "replay.py"]
+        self.assertGreater(len(shipped), 5)
+        for path in shipped:
+            with self.subTest(file=path.name):
+                self.assertIsNone(word.search(path.read_text(encoding="utf-8")))
+                if path.name not in ("__init__.py", "_catalogue.py"):       # the catalogue is not a strategy
+                    S.check_module(".".join(path.relative_to(REPO).with_suffix("").parts))
+        examples = 0
+        for doc in sorted((REPO / "docs" / "plan").glob("HOWTO_*.md")):
+            for block in re.findall(r"```python\n(.*?)```", doc.read_text(encoding="utf-8"), flags=re.S):
+                examples += 1
+                with self.subTest(doc=doc.name):
+                    self.assertIsNone(word.search(block))
+        self.assertGreater(examples, 0)
+
+    def test_the_how_to_names_the_rule(self):
+        text = (REPO / "docs" / "plan" / "HOWTO_strategy.md").read_text(encoding="utf-8")
+        for fn in TIMEUTIL_CLOCK:
+            self.assertIn(f"`{fn}`", text)
 
     # ── Goldens name strategies too (LCB 5.13) ───────────────────────────────
 
