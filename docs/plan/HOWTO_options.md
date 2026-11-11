@@ -158,14 +158,15 @@ trading day's end-of-day file and then that day's intraday files as they appear,
 A file older than one trading day is not used. The pre-trade margin check compares "before" and "after" at one common
 step, so a change of step cannot make an order look free.
 
-Against 405 stored Kite answers, B1 is off by a median of ₹14.17; B4 by ₹14,150 and B5 by ₹1,84,640.
+Against 405 stored Kite answers, B1 is off by a median of ₹14.17; B3 (the fit adopted on 2026-11-09 for NIFTY and
+BANKNIFTY, D-74) by ₹360.39; B4 by ₹14,150 and B5 by ₹1,84,640.
 
 ### Checking a basket: `margin check`
 
 `margin check` prices a basket offline from the archived NSE files. It writes nothing.
 
 ```
-python -m stockify margin check --leg "SELL 65 NIFTY26N1724950CE" --leg "SELL 65 NIFTY26N1724950PE" --date 2026-11-09 --at 10:00
+.\.venv\Scripts\python.exe -m stockify margin check --leg "SELL 65 NIFTY26N1724950CE" --leg "SELL 65 NIFTY26N1724950PE" --date 2026-11-09 --at 10:00
 ```
 
 It prints the SPAN file in force at that time, the step, and the parts. For that basket:
@@ -177,18 +178,21 @@ NIFTY: step B1_span_nse_elm (exact SPAN + NSE's ELM file)
   total               Rs 2,23,554.00
 ```
 
-`--date` defaults to the newest archived day and `--at` to 15:30 IST. Exit code 2 means a bad leg or unknown symbol;
+`--date` defaults to the newest archived day and `--at` to 15:30 IST. That default is not the F&O close: the close
+is 15:30 IST before 2026-08-03 and 15:40 IST from then (X-7), so on a late day pass `--at 15:40` to price with the
+closing file. Exit code 2 means a bad leg or unknown symbol;
 1 means no SPAN file was in force at that time. Live prices move the exposure part a little.
 
 ### How good is each step: `margin scorecard`
 
 `margin scorecard` prices every stored Kite basket-margin answer with every step and prints the median and 90th
 percentile error, overall and per basket type. It also says when a less exact step beats a more exact one (an
-inversion), notes that B3 is not scored until a calibrated row is adopted (section 6), and warns that the expiry-day
+inversion), scores B3 only for an underlying whose calibrated row is adopted (NIFTY and BANKNIFTY since 2026-11-09,
+D-74; section 6 shows how to adopt another), and warns that the expiry-day
 extra has not been tested against NSE.
 
 ```
-python -m stockify margin scorecard
+.\.venv\Scripts\python.exe -m stockify margin scorecard
 ```
 
 Its first rows read: B1 priced 405, median ₹14.17, 90th percentile ₹40.90, median relative error 0.01 % (the 90th
@@ -221,7 +225,9 @@ this whole position lose in a bad day?":
 - Each part is rounded up to the next whole rupee. The breakdown is saved per day in `margin_daily.csv`.
 
 Because the loss is worked out for the whole position, the long wings of an iron fly cut its margin, as they do at
-the broker. **Today's SPAN-lite settings are placeholders** until the calibration in section 5 is done.
+the broker. SPAN-lite's settings are fitted for NIFTY and BANKNIFTY from 2026-11-09 (D-74, `verified: false`, fitted numbers,
+not NSE's). Every earlier day and every other underlying still uses the labelled placeholders, until the
+calibration in section 5 is done for it.
 
 For one day of the comparison in section 4 (2026-10-05, one short NIFTY option), SPAN-lite's
 `margin_daily.csv` reads: worst scenario loss ₹92,130, short-option floor ₹2,000, exposure margin ₹29,323, total
@@ -305,7 +311,11 @@ If the FSP is not in the lab, the last underlying price is used and the run is l
     day;
   - long out-of-the-money options within 1 % of the stock price: 25 % of the contract value on expiry day;
   - futures and short options on expiry day: the smaller of 50 % of the contract value and 1.5 × their usual margin.
-- New out-of-the-money long stock options cannot be bought on the Monday and Tuesday of expiry week.
+- **Not applied yet:** the broker does not allow new out-of-the-money long stock options on the Monday and Tuesday of
+  expiry week. The row for that rule is in `stockify/config/broker_policy.json`
+  (`block_new_long_otm_stock_options_expiry_week`, fact in `01_facts.md`), but nothing reads it: neither engine
+  rejects such an order, so a run can buy one on those days and it fills with no label. This is an open item: the
+  rule is still to be modelled in the oracle and the engine, with a run label.
 - Delivering shares the account does not hold is labelled `short_delivery`: at the exchange it would end in an
   auction and a penalty.
 
