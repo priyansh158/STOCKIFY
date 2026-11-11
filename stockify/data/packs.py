@@ -326,6 +326,17 @@ class _Build:
     added: set = field(default_factory=set)
     first_day: dict = field(default_factory=dict)
     counter: int = 0
+    gaps: dict = field(default_factory=dict)         # IST day -> instrument ids with no event that day (M-4)
+
+    def note_gaps(self, day: date | str, wanted: set[int], seen: set[int]) -> None:
+        """Record the instruments a day asked for and got no event for. Nothing is made up for them (I-7)."""
+        missing = sorted(wanted - seen)
+        if missing:
+            self.gaps[day if isinstance(day, str) else day.isoformat()] = missing
+
+    def gaps_manifest(self) -> dict:
+        days = dict(sorted(self.gaps.items()))
+        return {"count": sum(len(v) for v in days.values()), "days": days}
 
     def add(self, t: int, rank: int, iid: int, rec: bytes, src_seq: int | None = None) -> None:
         if src_seq is None:
@@ -473,11 +484,13 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
     out = []
     monotonic = True
     last_t = None
+    seen_ids: set[int] = set()
     for p in tick_day.packets(["seq", "recv_ns", "instrument_id", "raw"], instrument_ids=ids or {-1}, kinds=tiers):
         if p["instrument_id"] is None:
             unknown += 1
             continue
         digest.update(struct.pack("<qq", p["seq"], p["instrument_id"]) + p["raw"])
+        seen_ids.add(p["instrument_id"])
         kind, rec = enc_tick(p, p["instrument_id"], p["recv_ns"])
         t = p["recv_ns"]
         if last_t is not None and t < last_t:
@@ -486,6 +499,7 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
         t_lo = t if t_lo is None else min(t_lo, t)
         t_hi = t if t_hi is None else max(t_hi, t)
         out.append(((t, 4, p["seq"], p["instrument_id"]), rec))
+    b.note_gaps(day, ids, seen_ids)
     b.events = []
     _refdata_events(b, ids, day, learned)
     _settle_events(b, ids, day)
@@ -567,6 +581,7 @@ def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
                            "FROM fo_eod",
                  "cm_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, NULL FROM cm_eod",
                  "index_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, NULL, NULL FROM index_eod"}
+            seen_ids: set[int] = set()
             for table, sql in q.items():
                 extra = " AND series='EQ'" if table == "cm_eod" else ""
                 for r in conn.execute(f"{sql} WHERE trade_date=? AND instrument_id IN ({marks}){extra} "
@@ -574,18 +589,27 @@ def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
                     if table == "fo_eod":
                         r = (*r[:5], _fo_units(day, r[0], r[5], r[7]), r[6])
                     rows_digest.update(numerics.dumps_canonical([table, d, *r]).encode())
+                    seen_ids.add(r[0])
                     all_events.append(((t, 4, len(all_events), r[0]),
                                        enc_bar(r[0], t, 86400, _ist(day, "00:00"), *r[1:])))
+            b.note_gaps(day, ids, seen_ids)
     if spec["dataset"] == "bars":
         interval = spec.get("interval")
         if interval not in INTERVAL_S:
             raise PackError(f"bars pack needs an interval from {', '.join(INTERVAL_S)}")
         isec = INTERVAL_S[interval]
         ids = set()
+        day_ids: dict[str, set[int]] = {}
         for day in calendar.trading_days("FO", start, end):
-            ids |= resolve(spec.get("instruments"), day)
+            day_ids[day.isoformat()] = resolve(spec.get("instruments"), day)
+            ids |= day_ids[day.isoformat()]
         lo, hi = _ist(start, "00:00"), _ist(end, "23:59") + 59 * SEC
         rows = [(iid, r) for iid in sorted(ids) for r in history.bars(iid, interval, lo, hi)]
+        with_bars: dict[str, set[int]] = {}
+        for iid, r in rows:
+            with_bars.setdefault(timeutil.ns_to_ist(r["ts_ns"]).date().isoformat(), set()).add(iid)
+        for d, wanted in day_ids.items():
+            b.note_gaps(d, wanted, with_bars.get(d, set()))
         for n, (iid, r) in enumerate(rows):     # source seq = row order by (instrument_id, start)
             rows_digest.update(numerics.dumps_canonical([iid, r["ts_ns"], r["close_paise"], r["fetched_on"]]).encode())
             t = r["ts_ns"] + isec * SEC
@@ -714,6 +738,7 @@ def build(spec: dict) -> str:
     counts = dict(sorted(b.counts.items()))
     manifest = {"sha256": digest, "format": "evt/1", "spec": spec, "price_basis": basis, "records": count,
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
+                "gaps": b.gaps_manifest(),
                 "bytes": _refused_retry(lambda p: p.stat().st_size, target)}
     _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest

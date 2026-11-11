@@ -314,7 +314,10 @@ def resolve_packs(cfg: dict) -> list[dict]:
         if actual != sha:
             raise BundleError(f"data.packs[{i}]: pack hash mismatch: file {path.name} hashes to {actual}")
         m = packs.manifest(sha)
-        out.append({"sha256": sha, "path": f"packs/{sha}.evt", "price_basis": m["price_basis"], "spec": m["spec"]})
+        row = {"sha256": sha, "path": f"packs/{sha}.evt", "price_basis": m["price_basis"], "spec": m["spec"]}
+        if m.get("gaps", {}).get("count"):          # only a pack with gaps says so: other bundles stay as they were
+            row["gaps"] = m["gaps"]
+        out.append(row)
     bases = {p["price_basis"] for p in out}
     if len(bases) > 1:
         raise BundleError(f"packs mix price bases {sorted(bases)} (I-5)")
@@ -663,6 +666,9 @@ def resolve_bundle(cfg: dict) -> dict:
                                                                           instruments_rows, days)))
     if cfg["fill_model"]["kind"] == "eod_close":
         labels.append("eod_approx")
+    gap_days = {d for p in pack_rows for d in p.get("gaps", {}).get("days", {})}
+    if gap_days:                                 # CAM 5.3: instruments with no data on a day; nothing is filled in (I-7)
+        labels.append(f"data:gaps={len(gap_days)}")
     if cfg["fill_model"]["kind"] == "snapshot_ltp":
         labels.append("fill:approximate")
     unverified = _charge_rows_unverified(charges, instruments_rows)

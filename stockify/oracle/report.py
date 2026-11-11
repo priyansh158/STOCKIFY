@@ -66,6 +66,23 @@ def equity_png(folder: Path) -> Path | None:
     return out
 
 
+def _gap_lines(folder: Path) -> list[str]:
+    """The days on which a pack had instruments with no events, as listed in the bundle (nothing is filled in)."""
+    path = folder / "bundle.json"
+    if not path.exists():
+        return []
+    days: dict[str, set[int]] = {}
+    for p in json.loads(path.read_text(encoding="utf-8")).get("packs", []):
+        for day, ids in p.get("gaps", {}).get("days", {}).items():
+            days.setdefault(day, set()).update(ids)
+    if not days:
+        return []
+    return (["## Data gaps", "",
+             f"`data:gaps={len(days)}`: on these days some instruments had no data in the packs. Nothing was filled in.", ""]
+            + [f"- {day}: instrument ids {', '.join(str(i) for i in sorted(ids))}" for day, ids in sorted(days.items())]
+            + [""])
+
+
 def write(folder: Path) -> Path:
     m = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
@@ -77,6 +94,9 @@ def write(folder: Path) -> Path:
              f"engine {manifest.get('engine')} · run `{manifest['run_id']}`", ""]
     if labels:
         lines += ["**Labels**", ""] + [f"- `{lab}`: {LABEL_TEXT.get(lab, '')}".rstrip(": ") for lab in labels] + [""]
+    gaps = _gap_lines(folder)
+    if gaps:
+        lines += gaps
     lines += ["## Headline", "", "| metric | value |", "|---|---|",
               f"| Start → end NAV | {_rupees(m['nav_start_paise'])} → {_rupees(m['nav_end_paise'])} |",
               f"| CAGR | {_pct(m['cagr'])} |", f"| Volatility | {_pct(m['volatility'])} |",

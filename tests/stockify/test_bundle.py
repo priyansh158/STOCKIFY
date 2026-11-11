@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import unittest
 from unittest import mock
 from datetime import date
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
+from stockify.strategies.buy_and_hold import BuyAndHold as strategy_buy_and_hold
 from stockify import bundle, paths, runconfig, strategy, timeutil
 from stockify.data import history, instruments, packs, refdata
 
@@ -143,6 +145,49 @@ class BundleTests(BundleTest):
         fut = [r for r in rows if r.get("applies", {}).get("kind") == ["FUT"]]
         self.assertEqual([r["effective_from"] for r in fut], ["2024-10-01"])           # 2026-04-01 row not yet
         self.assertEqual(fut[0]["sell_ppb"], 200_000)
+
+    GAP_SPEC = {"dataset": "bars", "interval": "day", "from": "2025-12-22", "to": "2025-12-31"}
+
+    def _gap_spec(self):
+        return {**self.GAP_SPEC, "instruments": [{"ids": [self.rel, self.fut]}]}
+
+    def _drop_future_bars(self):
+        with history._Tx() as conn:
+            for d in (24, 29):
+                ts = timeutil.ist_ns(date(2025, 12, d), "00:00")
+                conn.execute("DELETE FROM bars WHERE instrument_id=? AND ts_ns=?", (self.fut, ts))
+
+    def test_a_pack_records_the_instruments_with_no_events_each_day(self):
+        self._drop_future_bars()
+        m = packs.manifest(packs.build(self._gap_spec()))
+        self.assertEqual(m["gaps"], {"count": 2, "days": {"2025-12-24": [self.fut], "2025-12-29": [self.fut]}})
+        # Nothing is filled in (I-7): the records are the rows there are.
+        self.assertEqual(m["counts_by_kind"]["BAR"], 12)
+
+    def test_a_pack_without_gaps_says_so(self):
+        m = packs.manifest(packs.build(self._gap_spec()))
+        self.assertEqual(m["gaps"], {"count": 0, "days": {}})
+
+    def test_a_run_over_a_pack_with_gaps_is_labelled_and_the_report_lists_them(self):
+        self._drop_future_bars()
+        b = self.resolve(data={"packs": [{"spec": self._gap_spec()}]})
+        self.assertIn("data:gaps=2", b["labels"])
+        self.assertEqual(b["packs"][0]["gaps"], {"count": 2, "days": {"2025-12-24": [self.fut], "2025-12-29": [self.fut]}})
+        b["strategy"]["params"] = {"symbol": "NSE:RELIANCE"}
+        import tempfile
+        from pathlib import Path
+        from stockify.oracle import run_bundle
+        folder = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+        run_bundle(b, [paths.packs_dir() / f"{b['packs'][0]['sha256']}.evt"], folder / "run",
+                   strategy=strategy_buy_and_hold())
+        text = (folder / "run" / "report.md").read_text(encoding="utf-8")
+        self.assertIn("data:gaps=2", text)
+        self.assertIn("2025-12-24", text)
+        self.assertIn(f"{self.fut}", text)
+        # No gaps: no label and no key in the bundle.
+        clean = self.resolve()
+        self.assertFalse([x for x in clean["labels"] if x.startswith("data:gaps")])
+        self.assertNotIn("gaps", clean["packs"][0])
 
     def test_pack_problems(self):
         sha = packs.build(run()["data"]["packs"][0]["spec"])
