@@ -48,7 +48,7 @@ HEADER_SIZE = 64
 FLAG_JOURNAL = 1                       # A1 §5 header flags: bit 0 journal, bit 1 has CLOCK, bit 2 finalised
 FLAG_FINAL = 4
 TORN_MAGIC = b"STKTORN1"
-TORN_HEAD = struct.Struct("<8sQQ")     # marker, source offset, length; the bytes follow
+TORN_HEAD = struct.Struct("<8sQQI")    # marker, source offset, length, CRC32 of the bytes; the bytes follow
 
 
 class JournalError(ValueError):
@@ -183,22 +183,74 @@ def read(path: Path) -> tuple[dict, bytes, int]:
     if len(data) < HEADER_SIZE:
         raise JournalError(f"{path}: {len(data)} bytes, shorter than the {HEADER_SIZE}-byte header")
     header = _check_header(data)
-    end, _, _, _, _, _, torn = _scan(data, header, _load_crcs(path, header, data))
+    end, n, _, _, _, _, torn = _scan(data, header, _load_crcs(path, header, data))
+    if _final(header) and header["count"] != n:
+        raise JournalError(f"{path} is finalised with count {header['count']} but holds {n} whole records")
     return header, data[HEADER_SIZE:end], torn
 
 
-def torn_entries(path: Path) -> list[tuple[int, bytes]]:
-    """What `<journal>.torn` holds: (source offset, bytes) for each set-aside. A partial last entry is ignored."""
-    f = _torn_path(Path(path))
-    data = f.read_bytes() if f.exists() else b""
-    out, pos = [], 0
-    while pos + TORN_HEAD.size <= len(data):
-        magic, offset, length = TORN_HEAD.unpack_from(data, pos)
-        if magic != TORN_MAGIC or pos + TORN_HEAD.size + length > len(data):
+def _parse_torn(data: bytes) -> tuple[list[tuple[int, bytes]], list[tuple[int, bytes]]]:
+    """(whole entries, partial pieces) of a `.torn` file. An entry is whole when its marker, length and CRC agree. A
+    piece that is not (a crash cut the write short) is reported and skipped by searching for the next marker, so
+    entries written after it are never hidden."""
+    entries, partial, pos = [], [], 0
+    while pos < len(data):
+        if data[pos:pos + 8] == TORN_MAGIC and pos + TORN_HEAD.size <= len(data):
+            _, offset, length, crc = TORN_HEAD.unpack_from(data, pos)
+            body = data[pos + TORN_HEAD.size:pos + TORN_HEAD.size + length]
+            if len(body) == length and zlib.crc32(body) == crc:
+                entries.append((offset, body))
+                pos += TORN_HEAD.size + length
+                continue
+        nxt = data.find(TORN_MAGIC, pos + 1)
+        partial.append((pos, data[pos:] if nxt < 0 else data[pos:nxt]))
+        if nxt < 0:
             break
-        out.append((offset, data[pos + TORN_HEAD.size:pos + TORN_HEAD.size + length]))
-        pos += TORN_HEAD.size + length
-    return out
+        pos = nxt
+    return entries, partial
+
+
+def torn_entries(path: Path, *, with_partial: bool = False):
+    """What `<journal>.torn` holds: [(source offset, bytes)] for each whole set-aside. With `with_partial`, returns
+    (entries, pieces) where pieces are [(file offset, bytes)] of entries a crash cut short; they never hide a whole
+    entry written after them."""
+    f = _torn_path(Path(path))
+    entries, partial = _parse_torn(f.read_bytes() if f.exists() else b"")
+    return (entries, partial) if with_partial else entries
+
+
+def adopt(path: Path) -> int:
+    """Owner-run (never called by the daemon): rebuild the checksum file of a journal whose sidecar is missing or
+    short, from the journal's own bytes. The journal is read and never written; every whole record must parse and
+    be in strict seq and key order, else JournalError and nothing changes. An existing sidecar is kept beside the
+    new one as `.crc.before-adopt` (a numbered copy if that exists). Returns the number of records covered. A torn
+    tail, if any, is left for the writer to set aside as usual."""
+    path = Path(path)
+    data = path.read_bytes()
+    if len(data) < HEADER_SIZE:
+        raise JournalError(f"{path}: {len(data)} bytes, shorter than the {HEADER_SIZE}-byte header")
+    header = _check_header(data)
+    end, n, _, _, _, _, _ = _scan(data, header, None)
+    crcs, pos = bytearray(), HEADER_SIZE
+    while pos < end:
+        size = struct.unpack_from("<H", data, pos + 2)[0]
+        crcs += struct.pack("<I", zlib.crc32(data[pos:pos + size]))
+        pos += size
+    crc = _crc_path(path)
+    tmp = Path(str(crc) + ".adopt")
+    with open(tmp, "wb") as f:
+        f.write(bytes(crcs))
+        f.flush()
+        os.fsync(f.fileno())
+    if crc.exists():
+        keep, i = Path(str(crc) + ".before-adopt"), 1
+        while keep.exists():
+            i += 1
+            keep = Path(str(crc) + f".before-adopt{i}")
+        os.replace(crc, keep)
+    os.replace(tmp, crc)
+    log.warning("journal %s: checksum file rebuilt from the journal's bytes for %d records (adopt)", path, n)
+    return n
 
 
 class JournalWriter:
@@ -266,6 +318,7 @@ class JournalWriter:
         self._f = open(self.path, "r+b")
         self._c = open(_crc_path(self.path), "r+b" if _crc_path(self.path).exists() else "w+b")
         if torn:
+            self._warn_unchecked(data, end, len(crcs or ()))
             self._set_aside(data[end:], end)
             self._cut(end)
             self.torn_bytes = torn
@@ -274,6 +327,27 @@ class JournalWriter:
         os.fsync(self._c.fileno())
         self._f.seek(end)
         self._c.seek(self.records * 4)
+
+    def _warn_unchecked(self, data: bytes, end: int, entries: int) -> None:
+        """Be loud when the tail being set aside is whole, well-formed records that only lack a checksum entry (a short
+        or empty checksum file): they are kept in `.torn`, and `adopt` can rebuild the sidecar instead."""
+        pos, seq, slot, found = end, self.records + 1, self.records, 0
+        while pos + PREFIX.size <= len(data) and slot >= entries:
+            kind, size = struct.unpack_from("<HH", data, pos)
+            if kind not in packs.KIND_NAMES or size < PREFIX.size or pos + size > len(data):
+                break
+            try:
+                rec, _ = packs.decode(data, pos)
+            except (packs.PackError, struct.error, ValueError, KeyError):
+                break
+            if rec["seq"] != seq:
+                break
+            found, pos, seq, slot = found + 1, pos + size, seq + 1, slot + 1
+        if found:
+            log.warning("journal %s: checksum file has %d entries but %d whole records without checksums follow "
+                        "the %d verified ones (seq %d..%d); they are being moved to %s. If they are good, stop and "
+                        "run journal.adopt(path) to rebuild the checksum file instead", self.path, entries,
+                        found, self.records, self.records + 1, self.records + found, _torn_path(self.path).name)
 
     @property
     def next_seq(self) -> int:
@@ -290,7 +364,7 @@ class JournalWriter:
         if (offset, torn) in torn_entries(self.path):
             return
         with open(_torn_path(self.path), "ab") as f:
-            f.write(TORN_HEAD.pack(TORN_MAGIC, offset, len(torn)) + torn)
+            f.write(TORN_HEAD.pack(TORN_MAGIC, offset, len(torn), zlib.crc32(torn)) + torn)
             f.flush()
             os.fsync(f.fileno())
 
@@ -302,7 +376,10 @@ class JournalWriter:
     def append(self, records: list[tuple[int, int, bytes]]) -> bytes:
         """Write (intended t, rank, record) triples, in order, as one batch; return the bytes written, to be
         pushed to the engine as they are. The whole batch is checked first: one bad record writes nothing. If the
-        write itself fails, the writer is failed: it refuses further appends until the file is reopened."""
+        write itself fails, or the fsync that follows it does, the writer is failed: it refuses further appends until the
+        file is reopened. After ANY error from `append` or `fsync` the caller must reopen the journal and replay from
+        it, not retry: the records of the failed batch may already be in the file (and then are valid), though the
+        caller never received their bytes."""
         if self._closed:
             raise JournalError("the journal is closed")
         if self._failed:
@@ -350,8 +427,8 @@ class JournalWriter:
         try:
             self._f.flush()
             self._c.flush()
+            os.fsync(self._c.fileno())              # the checksums first: a record is never durable without its check
             os.fsync(self._f.fileno())
-            os.fsync(self._c.fileno())
         except BaseException as e:
             self._failed = True
             raise JournalError(f"sync of {self.path} failed ({e}); the writer is failed until the journal is "
@@ -372,8 +449,8 @@ class JournalWriter:
                 return
             self._f.flush()
             self._c.flush()
-            os.fsync(self._f.fileno())                      # records (and their checksums) are on disk first ...
-            os.fsync(self._c.fileno())
+            os.fsync(self._c.fileno())                      # checksums, then records, are on disk first ...
+            os.fsync(self._f.fileno())
             if finalise:
                 self._f.seek(0)
                 self._f.write(self._header(self.records, self._first_t or 0, self.last_t or 0, self._has_clock, True))

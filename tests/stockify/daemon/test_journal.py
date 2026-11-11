@@ -447,6 +447,181 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(journal.torn_entries(self.path), [(64 + 3 * 24, whole[64 + 72:-5])])
         self.assertTrue(Path(str(self.path) + ".torn").exists())
 
+    # ── DM 5.3 (re-review of DM 5.2) ─────────────────────────────────────────
+
+    def sync_log(self, w):
+        """Patch os.fsync to log which of the writer's two files each call syncs ('crc' or 'journal')."""
+        names = {w._c.fileno(): "crc", w._f.fileno(): "journal"}
+        events = []
+        real = journal.os.fsync
+
+        def logging_fsync(fd):
+            real(fd)
+            events.append(names.get(fd, "other"))
+        return events, patch.object(journal.os, "fsync", logging_fsync)
+
+    def test_the_checksum_file_is_synced_before_the_journal(self):
+        w = writer(self.path)
+        w.append(clock_records(2))
+        events, p = self.sync_log(w)
+        with p:
+            w.fsync()
+        self.assertEqual(events, ["crc", "journal"])
+        w.close(finalise=False)
+
+    def test_a_failure_between_the_two_syncs_fails_the_writer_and_loses_nothing(self):
+        w = writer(self.path)
+        w.append(clock_records(2))
+        real = journal.os.fsync
+        calls = []
+
+        def failing(fd):
+            calls.append(fd)
+            if len(calls) == 2:                     # the checksums were synced, the journal's sync never happens
+                raise OSError("power cut")
+            real(fd)
+        with patch.object(journal.os, "fsync", failing):
+            with self.assertRaises(journal.JournalError):
+                w.fsync()
+        self.assertEqual(calls[0], w._c.fileno())
+        with self.assertRaisesRegex(journal.JournalError, "failed"):
+            w.append(clock_records(1, t0=9_000))
+        w.close(finalise=False)
+        self.assertEqual((len(journal.read(self.path)[1]), journal.read(self.path)[2]), (48, 0))
+
+    def test_finalise_syncs_checksums_then_records_then_writes_the_header_then_syncs(self):
+        w = writer(self.path)
+        w.append(clock_records(2))
+        events, p = self.sync_log(w)
+        real_header = w._header
+
+        def header(*a, **k):
+            events.append("header")
+            return real_header(*a, **k)
+        with p, patch.object(w, "_header", header):
+            w.close(finalise=True)
+        self.assertEqual(events, ["crc", "journal", "header", "journal"])
+
+    def test_a_sidecar_one_entry_ahead_is_harmless_and_is_cut_back(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        w.close(finalise=False)
+        crc = Path(str(self.path) + ".crc")
+        crc.write_bytes(crc.read_bytes() + struct.pack("<I", 0xDEADBEEF))      # the entry of a record that never landed
+        _, body, torn = journal.read(self.path)
+        self.assertEqual((len(body), torn), (96, 0))
+        w = writer(self.path)
+        self.assertEqual((w.records, w.torn_bytes), (4, 0))
+        w.append(clock_records(1, t0=9_000))                                     # the stale entry cannot match this one
+        w.close(finalise=False)
+        self.assertEqual((len(journal.read(self.path)[1]), journal.read(self.path)[2]), (120, 0))
+        self.assertEqual(crc.stat().st_size, 20)
+
+    def test_a_torn_last_checksum_entry_makes_the_last_record_unverified_and_keeps_it(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        w.close(finalise=False)
+        crc = Path(str(self.path) + ".crc")
+        whole = self.path.read_bytes()
+        crc.write_bytes(crc.read_bytes()[:-2])
+        _, body, torn = journal.read(self.path)
+        self.assertEqual((len(body), torn), (72, 24))
+        with patch.object(journal, "log") as log:
+            w = writer(self.path)
+        self.assertEqual((w.records, w.torn_bytes), (3, 24))
+        self.assertEqual(journal.torn_entries(self.path), [(64 + 72, whole[-24:])])    # the record is not lost
+        self.assertTrue(log.warning.called)
+        w.close(finalise=False)
+
+    def test_a_short_sidecar_is_loud_and_adopt_rebuilds_it_without_touching_the_journal(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        w.close(finalise=False)
+        crc = Path(str(self.path) + ".crc")
+        before = self.path.read_bytes()
+        for name, keep in (("short", 8), ("empty", 0), ("missing", None)):
+            with self.subTest(name):
+                self.path.write_bytes(before)
+                if keep is None:
+                    crc.unlink()
+                else:
+                    recrc(self.path)
+                    crc.write_bytes(crc.read_bytes()[:keep])
+                for f in self.path.parent.glob("*.torn"):
+                    f.unlink()
+                if keep is not None:
+                    with patch.object(journal, "log") as log:           # opening names the counts and moves nothing silently
+                        w = writer(self.path)
+                    msg = " ".join(str(a) for a in log.warning.call_args[0])
+                    self.assertIn("adopt", msg)
+                    self.assertEqual(w.records, keep // 4)
+                    w.close(finalise=False)
+                    self.path.write_bytes(before)
+                    recrc(self.path)
+                    crc.write_bytes(crc.read_bytes()[:keep])
+                n = journal.adopt(self.path)
+                self.assertEqual(n, 4)
+                self.assertEqual(self.path.read_bytes(), before)           # the journal bytes are never touched
+                self.assertEqual(len(journal.read(self.path)[1]), 96)
+                w = writer(self.path)
+                self.assertEqual((w.records, w.torn_bytes), (4, 0))
+                w.close(finalise=False)
+
+    def test_adopt_refuses_a_journal_that_is_not_whole_records(self):
+        w = writer(self.path)
+        w.append(clock_records(3))
+        w.close(finalise=False)
+        data = bytearray(self.path.read_bytes())
+        struct.pack_into("<Q", data, 64 + 24 + 16, 9)                       # record 2 has seq 9
+        self.path.write_bytes(bytes(data))
+        with self.assertRaises(journal.JournalError):
+            journal.adopt(self.path)
+        self.assertEqual(self.path.read_bytes(), bytes(data))
+
+    def test_a_partial_torn_entry_does_not_hide_the_ones_after_it(self):
+        sidecar = Path(str(self.path) + ".torn")
+        a = journal.TORN_HEAD.pack(journal.TORN_MAGIC, 100, 5, __import__("zlib").crc32(b"AAAAA")) + b"AAAAA"
+        b = journal.TORN_HEAD.pack(journal.TORN_MAGIC, 200, 9, __import__("zlib").crc32(b"BBBBBBBBB")) + b"BBBBBBBBB"
+        sidecar.write_bytes(a + b[:-4])                                    # the crash cut the second entry short
+        w = writer(self.path)
+        w.append(clock_records(3))
+        w.close(finalise=False)
+        self.path.write_bytes(self.path.read_bytes()[:-5])
+        w = writer(self.path)                                              # appends a third entry after the partial one
+        w.close(finalise=False)
+        entries, partial = journal.torn_entries(self.path, with_partial=True)
+        self.assertEqual([e[1] for e in entries][0], b"AAAAA")
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[1][0], 64 + 48)
+        self.assertEqual(len(partial), 1)
+        self.assertEqual(partial[0][1], b[:-4])
+        self.assertEqual(journal.torn_entries(self.path), entries)
+
+    def test_an_fsync_failure_inside_append_fails_the_writer_but_the_records_are_in_the_file(self):
+        w = writer(self.path, fsync_every_mono_ns=0)
+        with patch.object(journal.os, "fsync", side_effect=OSError("disk gone")):
+            with self.assertRaises(journal.JournalError):
+                w.append(clock_records(2))                     # written and flushed, then the sync failed
+        with self.assertRaisesRegex(journal.JournalError, "failed"):
+            w.append(clock_records(1, t0=9_000))
+        w.close(finalise=False)
+        w = writer(self.path)                                  # the caller reopens and replays from the journal
+        self.assertEqual(w.records, 2)
+        w.close(finalise=False)
+        self.assertIn("reopen", journal.JournalWriter.append.__doc__)
+
+    def test_a_finalised_journal_must_hold_exactly_the_records_its_header_counts(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        w.close(finalise=True)
+        whole = self.path.read_bytes()
+        Path(str(self.path) + ".crc").unlink()
+        self.path.write_bytes(whole[:-24])                               # a whole record gone: no torn bytes to notice
+        with self.assertRaisesRegex(journal.JournalError, "count"):
+            journal.read(self.path)
+        self.path.write_bytes(whole)
+        self.assertEqual(len(journal.read(self.path)[1]), 96)
+
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class DayJournalTests(pf.PaperDayTest):
