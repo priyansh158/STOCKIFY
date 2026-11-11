@@ -1,4 +1,11 @@
 {
   "schema": "stockify.paper/1",
+  "clock_every_s": 1,
+  "journal": {"fsync_every_s": 5},
+  "dispatcher_queue_max": 200000,
+  "margin_poll": {"debounce_s": 2, "every_s": 300, "max_rps": 10},
+  "token_poll_s": 15,
+  "coverage_threshold": "0.98",
+  "commands_every_s": 1,
   "sod_state_warn_mb": 64
 }

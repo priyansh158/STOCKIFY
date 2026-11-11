@@ -44,6 +44,7 @@ class RecorderStats:
     bad_frames: int = 0
     unknown_tokens: int = 0
     dropped_frames: int = 0
+    tap_errors: int = 0
     batches: int = 0
     alarms: list[str] = field(default_factory=list)
 
@@ -70,6 +71,9 @@ class Recorder:
         self._started_meta = dict(meta or {})
         # Optional writer-thread hook: on_packet(instrument_id, token, ltp, recv_ns). Must be cheap.
         self.on_packet: Callable[[int | None, int, int, int], None] | None = None
+        # Frame taps (M5.1 fan-out): each gets the same stamped item the writer queue gets, heartbeats and text
+        # frames included. A tap must be a `put_nowait` onto its own queue: it runs on the KiteTicker thread.
+        self.taps: list[Callable[[tuple], None]] = []
 
     # ── start / stop ─────────────────────────────────────────────────────────
     def begin(self) -> None:
@@ -118,6 +122,14 @@ class Recorder:
             if self.stats.dropped_frames == 1:
                 self.stats.alarms.append("queue_full")
             log.error("recorder queue full: frame dropped (%d so far)", self.stats.dropped_frames)
+        # After the landing queue, so a tap can never cost the recorder a frame; a failing tap is counted, not raised.
+        for tap in self.taps:
+            try:
+                tap(item)
+            except Exception:  # noqa: BLE001
+                self.stats.tap_errors += 1
+                if self.stats.tap_errors == 1:
+                    log.exception("frame tap failed (counted in tap_errors; further failures are not logged)")
 
     # ── writer side ──────────────────────────────────────────────────────────
     def _run(self) -> None:

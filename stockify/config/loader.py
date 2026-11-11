@@ -168,6 +168,41 @@ def _check_mis_margin(doc: dict) -> None:
                               '"1" (the full NRML margin) is accepted: intraday F&O leverage is not modelled (D-80)')
 
 
+def _pos_int(value, where: str) -> int:  # noqa: ANN001
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError(f"{where}: must be a whole number of at least 1, got {value!r}")
+    return value
+
+
+def _check_paper(doc: dict) -> None:
+    """paper.json (stockify.paper/1): every key present, whole positive numbers, a fraction in (0, 1]."""
+    shape = {"clock_every_s": None, "journal": ("fsync_every_s",), "dispatcher_queue_max": None,
+             "margin_poll": ("debounce_s", "every_s", "max_rps"), "token_poll_s": None,
+             "coverage_threshold": "fraction", "commands_every_s": None, "sod_state_warn_mb": None}
+    extra = set(doc) - set(shape) - {"schema"}
+    if extra:
+        raise ConfigError(f"paper.json: unknown keys {sorted(extra)}")
+    for key, kind in shape.items():
+        if key not in doc:
+            raise ConfigError(f"paper.json: {key} is missing")
+        where = f"paper.json: {key}"
+        if kind is None:
+            _pos_int(doc[key], where)
+        elif kind == "fraction":
+            try:
+                frac = numerics.to_ppb(doc[key])
+            except (numerics.NumericError, OverflowError):
+                frac = None
+            if frac is None or not 0 < frac <= numerics.PPB:
+                raise ConfigError(f"{where}: must be a decimal string in (0, 1], got {doc[key]!r}")
+        else:
+            sub = doc[key]
+            if not isinstance(sub, dict) or set(sub) != set(kind):
+                raise ConfigError(f"{where}: must be an object with exactly {list(kind)}")
+            for k in kind:
+                _pos_int(sub[k], f"{where}.{k}")
+
+
 def load_json(name: str, config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
@@ -183,6 +218,8 @@ def load_json(name: str, config_dir: Path | None = None) -> dict:
         _convert_charge_rates(doc)
     if name == "broker_policy.json":
         _check_mis_margin(doc)
+    if name == "paper.json":
+        _check_paper(doc)
     return doc
 
 
