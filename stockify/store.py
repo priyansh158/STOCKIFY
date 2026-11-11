@@ -513,14 +513,21 @@ _EVENT_STATUS = {"ACTIVATE": "OPEN", "TRIGGER": "OPEN", "COMPLETE": "COMPLETE", 
 
 
 def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, first_event_no: int,
-                          last_frame: tuple[int, int] | None) -> int:
+                          last_frame: tuple[int, int] | None, carried: list[int] | None = None) -> int:
     """Store what `Engine.drain_outputs()` returned for one batch, in ONE transaction. Orders, fills and charges are
     upserted by their ids and order events are numbered from `first_event_no`, so applying the same outputs again
     changes nothing. The engine drains an order's row once, when it is created; its later changes arrive as events
     alone, so an order's `status` follows its newest status-changing event (`_EVENT_STATUS`). A batch that is older
     than what is stored for an order (a stale repeat) leaves that order as it is. `last_frame` = (frame_no,
     recv_ns), when given, is stored on the (session, day) row. If any row is bad, nothing is stored. Returns the
-    next event_no."""
+    next event_no.
+
+    After the fills are in, each order they or the batch's events touch has `filled_qty`, `avg_price_paise`
+    (`floor(SUM(qty * price) / SUM(qty))`, the engine's own formula), `reason` (its newest CANCEL or REJECT event's
+    detail) and `t_activate_ns` (its newest ACTIVATE event's time) recomputed from the stored fills and events: a
+    pure function of the tables, so a repeat or a replay gives the same row. An order with no stored row (one
+    carried from a prior day, which the engine never drained today) cannot be refreshed; its ids are appended to
+    `carried`, when given, and its events and fills are stored regardless."""
     events = list(outputs.get("order_events", ()))
     conn = _connect()
     with _lock:
@@ -551,7 +558,7 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
                                        "AND order_id = ?", (session_id, trade_date, oid)).fetchone()
                     status = next((_EVENT_STATUS[ev] for ev in reversed(changes[oid]) if ev in _EVENT_STATUS), None)
                     if old is None or status is None:
-                        continue
+                        continue                                    # (an order carried from a prior day: reported below)
                     row = {**json.loads(old["row_json"]), "status": status}
                 conn.execute("INSERT OR REPLACE INTO session_orders (session_id, trade_date, order_id, row_json) "
                              "VALUES (?, ?, ?, ?)", (session_id, trade_date, oid, json.dumps(row, sort_keys=True)))
@@ -564,6 +571,10 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
                 "VALUES (?, ?, ?, ?)",
                 [(session_id, trade_date, int(c["row_no"]), json.dumps(c, sort_keys=True))
                  for c in outputs.get("charges", ())])
+            touched = set(newest) | {int(f["order_id"]) for f in outputs.get("fills", ())}
+            for oid in sorted(touched):
+                if not _refresh_order(conn, session_id, trade_date, oid) and carried is not None:
+                    carried.append(oid)
             if last_frame is not None:
                 conn.execute(
                     "INSERT INTO session_days (session_id, trade_date, last_frame_no, last_frame_recv_ns) "
@@ -575,6 +586,55 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
             conn.rollback()
             raise
     return first_event_no + len(events)
+
+
+def _refresh_order(conn, session_id: str, trade_date: str, oid: int) -> bool:  # noqa: ANN001
+    """Inside the caller's transaction: bring a stored order row's fill totals, reason and activation time in line
+    with the stored fills and events. False if the order has no stored row."""
+    old = conn.execute("SELECT row_json FROM session_orders WHERE session_id = ? AND trade_date = ? AND order_id = ?",
+                       (session_id, trade_date, oid)).fetchone()
+    if old is None:
+        return False
+    row = json.loads(old["row_json"])
+    qty, value = conn.execute(
+        "SELECT SUM(json_extract(row_json, '$.qty')), "
+        "SUM(json_extract(row_json, '$.qty') * json_extract(row_json, '$.price_paise')) FROM session_fills "
+        "WHERE session_id = ? AND trade_date = ? AND json_extract(row_json, '$.order_id') = ?",
+        (session_id, trade_date, oid)).fetchone()
+    if qty:
+        row["filled_qty"] = int(qty)
+        if value is not None:
+            row["avg_price_paise"] = int(value) // int(qty)           # floor_div, orders.hpp avg_price()
+    for event_names, field, pick in ((("ACTIVATE",), "t_activate_ns", "t_ns"),
+                                     (("CANCEL", "REJECT"), "reason", "detail")):
+        newest = conn.execute(
+            f"SELECT json_extract(row_json, '$.{pick}') FROM session_order_events WHERE session_id = ? "
+            f"AND trade_date = ? AND json_extract(row_json, '$.order_id') = ? "
+            f"AND json_extract(row_json, '$.event') IN ({', '.join('?' * len(event_names))}) "
+            "ORDER BY event_no DESC LIMIT 1", (session_id, trade_date, oid, *event_names)).fetchone()
+        if newest is not None and newest[0] is not None:
+            row[field] = newest[0]
+    conn.execute("UPDATE session_orders SET row_json = ? WHERE session_id = ? AND trade_date = ? AND order_id = ?",
+                 (json.dumps(row, sort_keys=True), session_id, trade_date, oid))
+    return True
+
+
+def reset_session_outputs(session_id: str, trade_date: str) -> None:
+    """Remove one day's stored outputs (orders, events, fills, charges) and its frame mark, in one transaction,
+    before the day's journal is replayed into them. The journal is never touched, and neither is another day or
+    session. The frame mark goes too: after an OS crash it may be ahead of what the journal kept."""
+    conn = _connect()
+    with _lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table, _, _ in _SESSION_ROW_TABLES.values():
+                conn.execute(f"DELETE FROM {table} WHERE session_id = ? AND trade_date = ?", (session_id, trade_date))
+            conn.execute("UPDATE session_days SET last_frame_no = NULL, last_frame_recv_ns = NULL "
+                         "WHERE session_id = ? AND trade_date = ?", (session_id, trade_date))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def session_rows(session_id: str, table: str, *, trade_date: str | None = None, offset: int = 0,
