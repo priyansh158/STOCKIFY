@@ -532,6 +532,35 @@ void bind_engine(py::module_& m) {
            "All of it is checked first: a refused load leaves the engine as it was.")
         .def("eod_state", [](const Engine& e) { return e.eod_state(); },
              "The state for the next day's sod_state, as canonical JSON.")
+        .def("margin_now", [](const Engine& e) {
+            // The live margin model's view of the book (MEZ 5.1): the staircase legs the hash covers, the hash, the
+            // staircase's per-underlying rows, and whether a fresh journaled answer prices the book now. Between
+            // pushes only, on the engine thread; RunError under any other margin model.
+            e.ensure_idle("margin_now");
+            const stocksim::MarginNow now = e.margin_now();
+            py::list legs;
+            for (const auto& [iid, units] : now.legs) {
+                legs.append(py::make_tuple(iid, units).cast<py::list>());
+            }
+            py::list rows;
+            for (const stocksim::UnderlyingMargin& b : now.fallback) {
+                py::dict row;
+                row["underlying_id"] = b.underlying;
+                row["step"] = b.step;
+                row["scan"] = b.scan;
+                row["somc"] = b.somc;
+                row["elm"] = b.elm;
+                row["addons"] = b.addons;
+                row["total"] = b.total();
+                rows.append(row);
+            }
+            py::dict out;
+            out["legs"] = legs;
+            out["portfolio_sha256"] = now.portfolio_sha256;
+            out["fallback"] = rows;
+            out["l1"] = now.l1;
+            return out;
+        })
         .def("book", [](const Engine& e) {
             // Open positions as (instrument_id, product, signed units), in the order they were first opened; between
             // pushes only (the M5 daemon keeps them pinned, Task 15).

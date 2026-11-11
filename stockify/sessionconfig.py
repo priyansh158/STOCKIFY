@@ -9,7 +9,8 @@ strategies' param checks are the same, and an unknown key at any level is refuse
 (D-76). What differs from a run is only what a live day needs:
 
 * `fill_model.kind` defaults to `snapshot_quote` (the live feed is quotes);
-* `margin.model` defaults to `staircase` (until Task 20: `live_with_fallback`), and `margin.live_fresh_s` (default 360)
+* `margin.model` defaults to `live_with_fallback` (MEZ 5.1: the staircase, with a fresh journaled Kite answer pricing
+  the book), and `margin.live_fresh_s` (default 360)
   is how old a live margin answer may be before the session falls back;
 * `seed_mode` is `per_day` and `price_basis` is `raw`: both are the only values a live session can have, so any
   other is refused instead of ignored.
@@ -75,7 +76,7 @@ def _validate(raw: dict) -> dict:
     run = {k: copy.deepcopy(v) for k, v in raw.items() if k not in ("universe", "margin")}
     run.update(schema=runconfig.SCHEMA, price_basis="raw", seed_mode="per_day",
                fill_model={"kind": "snapshot_quote", **fill},
-               margin={k: v for k, v in margin.items() if k != "live_fresh_s"})
+               margin={"model": "live_with_fallback", **{k: v for k, v in margin.items() if k != "live_fresh_s"}})
     cfg = runconfig.validate(run, packs_required=False)
     cfg["schema"] = SCHEMA
     cfg["universe"] = copy.deepcopy(universe)

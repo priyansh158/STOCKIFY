@@ -38,6 +38,16 @@
 namespace stocksim {
 
 class Engine;
+class LiveAnswers;             // margin_live.hpp (it needs Context, defined below)
+class LiveWithFallbackMargin;
+
+// What the live margin model sees of the book now (Engine::margin_now, MEZ 5.1).
+struct MarginNow {
+    std::vector<std::pair<InstrumentId, Qty>> legs;  // the staircase legs, sorted: what the hash covers
+    std::string portfolio_sha256;
+    std::vector<UnderlyingMargin> fallback;  // the staircase's per-underlying rows
+    bool l1 = false;                         // a fresh journaled answer prices this book now
+};
 struct SodState;  // sod_state.cpp: the capture / restore helpers, which see the engine's internals
 
 // The day-to-day state (sod_state.hpp, VOL 5.3): written and applied by these, which see the engine's internals.
@@ -298,6 +308,8 @@ class Engine {
     const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
     const std::vector<EquityRow>& equity() const { return equity_; }
     const std::vector<MarginDailyRow>& margin_daily() const { return margin_daily_; }
+    // The live margin model's view of the book now (RunError under any other model). Engine thread, between pushes.
+    MarginNow margin_now() const;
     const std::vector<SettleClose>& settle_closes() const { return settle_closes_; }
     const std::map<std::string, std::int64_t>& rejects() const { return rejects_; }
     Ppm participation_used() const { return participation_used_; }
@@ -415,6 +427,8 @@ class Engine {
     std::string mark_kind_;  // ltp | mid
     TimeNs latency_ns_ = 0;
     Costs costs_;
+    const LiveWithFallbackMargin* live_margin_ = nullptr;  // margin_ when the model is live_with_fallback
+    std::shared_ptr<LiveAnswers> live_answers_;  // journaled Kite margin answers (MEZ 5.1); read by margin_
     std::unique_ptr<MarginModel> margin_;  // flat (T0), spanlite (T1, M4.8), staircase / span_exact (MEZ 4.10)
     std::shared_ptr<Strategy> strategy_;
     Context ctx_;

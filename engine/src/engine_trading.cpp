@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "stocksim/engine.hpp"
+#include "stocksim/margin_live.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/matcher.hpp"
@@ -109,6 +110,20 @@ std::vector<MarginLeg> Engine::fo_book(const Ledger& ledger) const {
     }
     drop_flat_legs(net);
     return net;
+}
+
+MarginNow Engine::margin_now() const {
+    if (live_margin_ == nullptr) {
+        throw RunError("margin_now: the margin model is not live_with_fallback");
+    }
+    const std::vector<MarginLeg> book = fo_book(book_.ledger);
+    MarginNow out;
+    out.legs = live_margin_->live_legs(book, instruments_);
+    out.portfolio_sha256 = live_portfolio_sha256(out.legs);
+    out.l1 = live_margin_->live(book, instruments_) != nullptr;
+    out.fallback = live_margin_->fallback(book, instruments_, [this](InstrumentId i) { return ref_price(i); },
+                                          iso(date_of(now_)));
+    return out;
 }
 
 Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked

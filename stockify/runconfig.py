@@ -26,8 +26,9 @@ SEED_MODES = ("run", "per_day")
 # span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines run them (MEZ 4.9 oracle,
 # MEZ 4.10 engine), so the staircase is the default; goldens stay pinned to flat (golden.build_bundle).
 # <block name="margin-models" same-as="docs/plan/A1_schemas.md:margin-models" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
-MARGIN_MODELS = ("flat", "spanlite", "span_exact", "staircase")
+MARGIN_MODELS = ("flat", "spanlite", "span_exact", "staircase", "live_with_fallback")
 # </block>
+MARGIN_OPTIONAL = ("live_fresh_s",)             # MEZ 5.1: how old a journaled live margin answer may be; not a default
 DEFAULTS = {
     "family_id": None,
     "price_basis": None,
@@ -254,7 +255,7 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     _known(raw, RUN_KEYS if packs_required else tuple(k for k in RUN_KEYS if k != "data"), "run")
     for section in ("costs", "margin", "policies"):
         _need(isinstance(raw.get(section, {}), dict), section, "must be an object")
-        _known(raw.get(section, {}), DEFAULTS[section], section)
+        _known(raw.get(section, {}), (*DEFAULTS[section], *(MARGIN_OPTIONAL if section == "margin" else ())), section)
     cfg = _merge(DEFAULTS, {k: v for k, v in raw.items()})
     cfg["strategy"] = _strategy(raw.get("strategy"))
     if packs_required:
@@ -265,6 +266,8 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     _int(cfg["latency_ms"], "latency_ms", 0)
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
     _choice(cfg["margin"]["model"], MARGIN_MODELS, "margin.model")
+    if "live_fresh_s" in cfg["margin"]:
+        _int(cfg["margin"]["live_fresh_s"], "margin.live_fresh_s", 1)
     pol = cfg["policies"]
     _choice(pol["preopen"], ("queue", "reject"), "policies.preopen")
     _choice(pol["cas"], ("none", "close_price"), "policies.cas")

@@ -1,5 +1,6 @@
 // The engine's event loop and handlers. Each function names the stockify.oracle.runner method it mirrors.
 #include "stocksim/engine.hpp"
+#include "stocksim/margin_live.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -155,6 +156,13 @@ Engine::Engine(Bundle bundle)
         margin_ = std::make_unique<FlatMargin>(bundle_.root);
     } else if (margin_model == "staircase" || margin_model == "span_exact") {  // MEZ 4.10: B1..B5 / B1-B2 only
         margin_ = std::make_unique<StaircaseMargin>(bundle_.root, host(), margin_model, margin_model == "span_exact");
+    } else if (margin_model == "live_with_fallback") {  // MEZ 5.1: the staircase; a fresh journaled answer prices the book
+        const auto fresh = margin_cfg.find("live_fresh_s");
+        const std::int64_t fresh_s = fresh == margin_cfg.end() ? kLiveFreshSeconds : fresh->get<std::int64_t>();
+        live_answers_ = std::make_shared<LiveAnswers>();
+        margin_ = std::make_unique<LiveWithFallbackMargin>(bundle_.root, host(), *live_answers_,
+                                                           checked_mul(fresh_s, 1'000'000'000));
+        live_margin_ = static_cast<const LiveWithFallbackMargin*>(margin_.get());
     } else {  // never a silent fallback to flat (CAM 4.3)
         throw RunError("run.margin: margin model '" + margin_model + "' is not supported yet");
     }
@@ -899,6 +907,13 @@ void Engine::on_refdata(const Event& e) {  // runner._on_refdata
     const RefDataFields r = decode_refdata(e);
     if (refdata_subtype_name(r.subtype) == "strategy_control") {
         on_strategy_control(r.json);
+        return;
+    }
+    if (refdata_subtype_name(r.subtype) == "margin_requirement") {  // MEZ 5.1: checked always, kept by the live model
+        LiveAnswer answer = check_live_payload(r.json);
+        if (live_margin_ != nullptr) {
+            live_answers_->put(std::move(answer), now_);
+        }
         return;
     }
     if (refdata_subtype_name(r.subtype) == "price_band") {

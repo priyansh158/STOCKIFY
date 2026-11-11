@@ -406,11 +406,11 @@ class FinaliseTest(pf.PaperDayTest):
 
     def test_live_and_replayed_finalisation_store_exactly_the_same_rows(self):
         """I1."""
-        live = self.traded_day(sid="live")
-        self.assertEqual(self.fin(sid="live", live=live).status, "finalised")
+        live = self.traded_day(sid="liveday")
+        self.assertEqual(self.fin(sid="liveday", live=live).status, "finalised")
         self.traded_day(sid="replay").close()
         self.assertEqual(self.fin(sid="replay").status, "finalised")
-        a, b = self.tables("live"), self.tables("replay")
+        a, b = self.tables("liveday"), self.tables("replay")
         self.assertTrue(a["orders"] and a["events"] and a["fills"])
         for key in a:
             with self.subTest(table=key):

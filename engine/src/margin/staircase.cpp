@@ -143,10 +143,18 @@ std::map<InstrumentId, StaircaseMargin::Legs> StaircaseMargin::group(const std::
 std::vector<UnderlyingMargin> StaircaseMargin::breakdown(const std::vector<MarginLeg>& legs,
                                                          const InstrumentTable& instruments, const Price& price,
                                                          const std::string& date) const {
+    return priced(legs, instruments, price, date, true);
+}
+
+std::vector<UnderlyingMargin> StaircaseMargin::priced(const std::vector<MarginLeg>& legs,
+                                                      const InstrumentTable& instruments, const Price& price,
+                                                      const std::string& date, bool record) const {
     std::vector<UnderlyingMargin> out;
     for (const auto& [uid, group_legs] : group(legs, instruments)) {
         UnderlyingMargin b = one(uid, group_legs, instruments, price, date);
-        used(b.step, date);
+        if (record) {
+            used(b.step, date);
+        }
         out.push_back(std::move(b));
     }
     return out;

@@ -419,7 +419,7 @@ def _spanlite_calibrations(rows: list[dict], instruments_rows: list[dict], days:
 
 # ── NSE SPAN files and ELM % (CAM 4.3) ──────────────────────────────────────
 
-SPAN_MODELS = ("span_exact", "staircase")     # the margin models that read NSE's SPAN files (spec §5.1)
+SPAN_MODELS = ("span_exact", "staircase", "live_with_fallback")     # the margin models that read NSE's SPAN files (spec §5.1)
 NO_DERIVATIVES_LABEL = "margin_span:no_derivatives"   # a SPAN model on a bundle without dated futures or options
 _DERIVATIVES = ("FUT", "CE", "PE")
 

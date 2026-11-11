@@ -271,6 +271,10 @@ def build_pack(g: dict, folder: Path) -> Path:
             rec = P.enc_refdata(iid, t, "price_band", {"instrument_id": iid, "lower_paise": e["lower"],
                                                        "upper_paise": e["upper"], "source": "golden"})
             rank = 2
+        elif k == "MARGIN_REQUIREMENT":                  # MEZ 5.1: a journaled Kite margin answer (instrument 0)
+            t = ts(e["t"])
+            rec = P.enc_refdata(0, t, "margin_requirement", e["payload"])
+            rank = 2
         elif k == "STRATEGY_CONTROL":                    # D-70: a journaled pause or resume (instrument 0)
             t = ts(e["t"])
             rec = P.enc_refdata(0, t, "strategy_control", {"enabled": e["enabled"], "reasons": e.get("reasons", [])})

@@ -150,6 +150,7 @@ class Engine:
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
         self._check_mis_rows(bundle["broker_policy"].get("mis_margin_pct"))
         model = self.run_cfg["margin"]["model"]
+        self.live_answers = None                      # the journaled margin answers (live_with_fallback only)
         if model == "spanlite":
             from stockify.fno.spanlite import SpanLiteMargin
             self.margin = SpanLiteMargin(bundle, self)
@@ -158,6 +159,10 @@ class Engine:
         elif model == "staircase":                     # MEZ 4.9: B1..B5 per underlying per check, steps recorded
             from stockify.fno.staircase import StaircaseMargin
             self.margin = StaircaseMargin(bundle, self)
+        elif model == "live_with_fallback":            # MEZ 5.1: the staircase, a fresh journaled Kite answer prices the book
+            from stockify.fno import live_margin
+            self.live_answers = live_margin.LiveAnswers()
+            self.margin = live_margin.LiveWithFallbackMargin(bundle, self, self.live_answers)
         elif model == "span_exact":                    # exact SPAN only: raises where it cannot price
             from stockify.fno.staircase import SpanExactMargin
             self.margin = SpanExactMargin(bundle, self)
@@ -1199,6 +1204,15 @@ class Engine:
     def _on_refdata(self, rec: dict) -> None:
         if rec["subtype"] == "strategy_control":
             self._on_strategy_control(rec["payload"])
+            return
+        if rec["subtype"] == "margin_requirement":     # MEZ 5.1: checked under every model, kept by the live one
+            from stockify.fno import live_margin
+            try:
+                live_margin.check_payload(rec["payload"])
+            except live_margin.PayloadError as exc:
+                raise RunError(f"margin_requirement: {exc}") from exc
+            if self.live_answers is not None:
+                self.live_answers.put(rec["payload"], self.now)
             return
         if rec["subtype"] == "price_band":
             pl = rec["payload"]

@@ -32,7 +32,7 @@
 
 namespace stocksim {
 
-class StaircaseMargin final : public MarginModel {
+class StaircaseMargin : public MarginModel {
  public:
     static constexpr const char* kNoSectionLabel = "margin_span:no_section";
 
@@ -57,11 +57,17 @@ class StaircaseMargin final : public MarginModel {
     std::string_view daily_model() const override { return model_; }
     const std::set<std::string>& used_labels() const override;
 
- private:
+ protected:
     using Legs = SpanLiteMargin::Legs;
     using Price = std::function<std::optional<Paise>(InstrumentId)>;
 
+    // The legs the staircase prices, per underlying (NRML FUT/CE/PE with an underlying, units != 0).
     std::map<InstrumentId, Legs> group(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments) const;
+    // breakdown() without (record = false) recording the steps as used.
+    std::vector<UnderlyingMargin> priced(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
+                                         const Price& price, const std::string& date, bool record) const;
+
+ private:
     UnderlyingMargin one(InstrumentId uid, const Legs& legs, const InstrumentTable& instruments, const Price& price,
                          const std::string& date, std::size_t floor = 0) const;
     UnderlyingMargin exact(InstrumentId uid, const Legs& legs, const Price& price, const std::string& date,
