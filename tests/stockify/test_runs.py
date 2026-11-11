@@ -39,6 +39,16 @@ class StoreRunTests(SandboxedDBTest):
         with self.assertRaises(ValueError):
             store.create_run({"run_id": "b", "colour": "red"})
 
+    def test_a_run_is_never_created_after_it_started(self):
+        """REG 5.7: the launcher reads its start time before the row is created; the clock may tick between."""
+        store.create_run({"run_id": "early", "started_ns": 5})
+        row = store.get_run("early")
+        self.assertEqual((row["created_ns"], row["started_ns"]), (5, 5))
+        store.create_run({"run_id": "late", "started_ns": 2 ** 62})        # a start in the future: created is now
+        self.assertLess(store.get_run("late")["created_ns"], 2 ** 62)
+        store.create_run({"run_id": "given", "started_ns": 9, "created_ns": 7})
+        self.assertEqual(store.get_run("given")["created_ns"], 7)
+
     def test_update_only_if_status_never_overwrites_cancelled(self):
         store.create_run({"run_id": "a", "status": "running"})
         self.assertTrue(store.update_run("a", only_if_status="running", started_ns=5))

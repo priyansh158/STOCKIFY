@@ -151,7 +151,9 @@ def create_run(row: dict) -> None:
     unknown = set(row) - set(RUN_FIELDS)
     if unknown:
         raise ValueError(f"not runs columns: {sorted(unknown)}")
-    full = {"status": "queued", "created_ns": timeutil.now_ns(), **row}
+    now, started = timeutil.now_ns(), row.get("started_ns")
+    # A row is never created after it started (the launcher reads its start time first; the clock may tick between).
+    full = {"status": "queued", "created_ns": now if started is None else min(now, started), **row}
     conn = _connect()
     with _lock:
         conn.execute(f"INSERT INTO runs ({', '.join(RUN_FIELDS)}) VALUES ({', '.join('?' * len(RUN_FIELDS))})",
