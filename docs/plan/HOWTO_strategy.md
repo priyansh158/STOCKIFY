@@ -310,7 +310,7 @@ identical
 A C++ strategy can also run with no Python at all, from the run's `bundle.json` (for benchmarks and checks):
 
 ```
-engine\build\win-msvc-release\stocksim_run.exe --bundle %LOCALAPPDATA%\STOCKIFY\kite\lab\runs\orb_reliance_minute_cpp-6133f45a5b44\bundle.json --out C:\temp\orb_cpp
+engine\build\win-msvc-release\stocksim_run.exe --bundle $env:LOCALAPPDATA\STOCKIFY\kite\lab\runs\orb_reliance_minute_cpp-6133f45a5b44\bundle.json --out C:\temp\orb_cpp
 ```
 
 ```
