@@ -41,7 +41,7 @@ Config files hold rates as decimal strings; loaders convert them **exactly** (Py
 | `SETTLE` | publication time of that number (`pricing.json`) |
 | `REFDATA`, `GAP`, `CLOCK` | when the daemon learned it / when the gap started or ended / wall time |
 
-Records appended to a live journal get `t_event = max(intended time, last journal t_event)`, so a journal is always non-decreasing (late data such as evening settlement prices never goes back in time).
+Records appended to a live journal get `t_event = max(intended time, last journal t_event)`, and one nanosecond more than the last when that equals it and the record's rank (§1.3) is below the previous record's (D-68), so a journal's keys `(t_event, rank, seq)` are always non-decreasing and `push()` never refuses a journaled batch (late data such as evening settlement prices never goes back in time). A journal's `t_event` may therefore differ from the recorded receive time by the lateness of the record.
 
 **1.2 Internal events** created by the engine: `PHASE` (session transitions from the bundle), `BAR_BUILT` (bars aggregated from snapshots, §2.2), `MIS_SQOFF` (the cut-off), `TIMER` (strategy timers), `SEG_CLOSE` (a session group's close), `DAY_END` (23:59:59.999999999 IST of each trading day, plus the final close-out of §1.10).
 

@@ -120,5 +120,20 @@ def journals_dir(session_id: str | None = None) -> Path:
     return _dir(base / session_id)
 
 
+def journal_file(session_id: str, day: date) -> Path:
+    """A session's journal for one trading day (DM 5.1): `journals/<sid>/<YYYYMMDD>.evt`."""
+    return journals_dir(session_id) / f"{day:%Y%m%d}.evt"
+
+
+def day_bundle_file(session_id: str, day: date) -> Path:
+    """The bundle that day's engine was started with, beside its journal."""
+    return journals_dir(session_id) / f"{day:%Y%m%d}.bundle.json"
+
+
+def journal_day_dir(session_id: str, day: date) -> Path:
+    """The day's other files (run artifacts of the live engine), `journals/<sid>/<YYYYMMDD>/`."""
+    return _dir(journals_dir(session_id) / f"{day:%Y%m%d}")
+
+
 def logs_dir() -> Path:
     return _dir(stockify_paths.logs_dir())
