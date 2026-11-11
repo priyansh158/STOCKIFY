@@ -31,6 +31,18 @@ def writer(path: Path, **kw) -> journal.JournalWriter:
                                  mono=kw.pop("mono", lambda: next(ticks)), **kw)
 
 
+def recrc(path: Path) -> None:
+    """Rewrite the checksum sidecar to match the journal's bytes (to build a corruption the checksums do not catch)."""
+    import zlib
+    data = path.read_bytes()
+    out, off = b"", 64
+    while off + 4 <= len(data):
+        size = struct.unpack_from("<H", data, off + 2)[0]
+        out += struct.pack("<I", zlib.crc32(data[off:off + size]))
+        off += size
+    Path(str(path) + ".crc").write_bytes(out)
+
+
 class OrderedTTests(unittest.TestCase):
     def test_lower_rank_at_same_t_is_bumped_one_ns(self):
         self.assertEqual(journal.ordered_t(100, 2, 100, 4), 101)
@@ -135,7 +147,7 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(packs.decode(body, 9 * 24)[0]["seq"], 10)
         self.assertEqual(body[:9 * 24], whole[64:-24])                  # the records before the tear are untouched
         # the torn bytes are kept beside the journal: a record of truth is never silently dropped
-        self.assertEqual(Path(str(self.path) + ".torn").read_bytes(), whole[-24:-7])
+        self.assertEqual(journal.torn_entries(self.path), [(64 + 9 * 24, whole[-24:-7])])
 
     def test_every_cut_of_the_last_record_is_a_torn_tail(self):
         w = writer(self.path)
@@ -172,6 +184,7 @@ class WriterTests(unittest.TestCase):
         for name, data in (("kind", bad_kind), ("seq", bad_seq), ("order", bad_t)):
             with self.subTest(name):
                 self.path.write_bytes(bytes(data))
+                recrc(self.path)                                            # only the structure is wrong
                 with self.assertRaises(journal.JournalError):
                     journal.read(self.path)
                 with self.assertRaises(journal.JournalError):
@@ -179,7 +192,7 @@ class WriterTests(unittest.TestCase):
                 self.assertEqual(self.path.read_bytes(), bytes(data))        # and nothing was changed
 
     def test_a_torn_header_or_foreign_file_is_never_overwritten(self):
-        for data in (b"STKEVT01\x01\x00", b"x" * 80):
+        for data in (b"x" * 80, b"x" * 10, bytes(64) + b"\x01"):
             with self.subTest(len=len(data)):
                 self.path.write_bytes(data)
                 with self.assertRaises(journal.JournalError):
@@ -233,21 +246,206 @@ class WriterTests(unittest.TestCase):
             self.assertEqual(fsync.call_count, base)
             now[0] = 100
             w.append(clock_records(1, t0=5_000))
-            self.assertEqual(fsync.call_count, base + 1)
+            self.assertEqual(fsync.call_count, base + 2)
             now[0] = 150
             w.append(clock_records(1, t0=6_000))
-            self.assertEqual(fsync.call_count, base + 1)
+            self.assertEqual(fsync.call_count, base + 2)
             now[0] = 160
             w.fsync()
-            self.assertEqual(fsync.call_count, base + 2)
+            self.assertEqual(fsync.call_count, base + 4)
             now[0] = 259
             w.append(clock_records(1, t0=7_000))
-            self.assertEqual(fsync.call_count, base + 2)         # an explicit fsync restarts the interval
+            self.assertEqual(fsync.call_count, base + 4)         # an explicit fsync restarts the interval
             w.close(finalise=False)
         # the monotonic clock is never written into a record: the file holds only t values we gave
         _, body, _ = journal.read(self.path)
         self.assertEqual([packs.decode(body, o)[0]["t_event"] for o in range(0, len(body), 24)],
                          [1_000, 5_000, 6_000, 7_000])
+
+    # ── DM 5.2 (review of DM 5.1) ────────────────────────────────────────────
+
+    def test_finalise_syncs_the_records_before_the_header_is_written(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        calls = []
+        real = journal.os.fsync
+
+        def failing(fd):
+            real(fd)
+            calls.append(fd)
+            if len(calls) == 1:
+                raise OSError("power cut between the record sync and the header write")
+        with patch.object(journal.os, "fsync", failing):
+            with self.assertRaises(OSError):
+                w.close(finalise=True)
+        self.assertEqual(len(calls), 1)
+        header, body, torn = journal.read(self.path)
+        self.assertEqual((header["count"], len(body), torn), (0, 96, 0))        # unfinalised, every record intact
+        self.assertFalse(journal.is_finalised(self.path))
+        w = writer(self.path)                                                   # and the day can go on
+        self.assertEqual(w.records, 4)
+        w.close(finalise=False)
+
+    def test_is_finalised(self):
+        w = writer(self.path)
+        self.assertFalse(journal.is_finalised(self.path))
+        w.append(clock_records(1))
+        w.close(finalise=False)
+        self.assertFalse(journal.is_finalised(self.path))
+        empty = self.path.with_name("empty.evt")
+        e = writer(empty)
+        e.close(finalise=True)                                                  # a day with no record is still done
+        self.assertTrue(journal.is_finalised(empty))
+        self.assertEqual(journal.read(empty)[1:], (b"", 0))
+        w = writer(self.path)
+        w.close(finalise=True)
+        self.assertTrue(journal.is_finalised(self.path))
+        with self.assertRaises(journal.JournalError):
+            journal.is_finalised(self.path.with_name("missing.evt"))
+
+    def torn_cases(self):
+        """(name, rank, a record, how its last bytes look when the prefix landed but the body did not)."""
+        from tests.stockify.daemon import packets_fixture as pfx
+
+        def zero_tail(n):
+            return lambda b: b[:-n] + bytes(n)
+        quote = packs.enc_tick({"raw": pfx.quote(7, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)}, 7, 1)[1]
+        return [("gap", packs.RANK[packs.GAP_K], packs.enc_gap(3, 5, 0, "disconnect"), zero_tail(8)),
+                ("clock", CLOCK_RANK, packs.enc_clock(0), lambda b: b[:8] + bytes(16)),      # t and seq not landed
+                ("tick", packs.RANK[packs.TICK_QUOTE], quote, lambda b: b[:24] + bytes(len(b) - 24)),
+                ("tick half", packs.RANK[packs.TICK_QUOTE], quote, zero_tail(40))]
+
+    def test_a_prefix_without_its_body_is_a_torn_tail(self):
+        for name, rank, rec, damage in self.torn_cases():
+            with self.subTest(name):
+                for f in self.path.parent.iterdir():
+                    f.unlink()
+                w = writer(self.path)
+                w.append(clock_records(3))
+                w.append([(5_000, rank, rec)])
+                w.close(finalise=False)
+                whole = self.path.read_bytes()
+                size = len(rec)
+                self.path.write_bytes(whole[:-size] + damage(whole[-size:]))
+                header, body, torn = journal.read(self.path)
+                self.assertEqual((len(body), torn), (72, size))
+                w = writer(self.path)
+                self.assertEqual((w.records, w.next_seq, w.torn_bytes), (3, 4, size))
+                w.append(clock_records(1, t0=6_000))
+                w.close(finalise=False)
+                _, body, torn = journal.read(self.path)
+                self.assertEqual((len(body), torn), (96, 0))
+                self.assertEqual([(o, len(b)) for o, b in journal.torn_entries(self.path)], [(64 + 72, size)])
+
+    def test_several_damaged_records_at_the_end_are_one_torn_tail(self):
+        w = writer(self.path)
+        w.append(clock_records(5))
+        w.close(finalise=False)
+        whole = self.path.read_bytes()
+        self.path.write_bytes(whole[:64 + 3 * 24 + 8] + bytes(16) + whole[64 + 4 * 24:64 + 4 * 24 + 8] + bytes(16))
+        _, body, torn = journal.read(self.path)
+        self.assertEqual((len(body), torn), (72, 48))
+
+    def test_a_damaged_record_with_whole_ones_after_it_is_corruption(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        w.close(finalise=False)
+        whole = bytearray(self.path.read_bytes())
+        whole[64 + 24 + 8:64 + 48] = bytes(16)                          # record 2 loses t and seq, 3 and 4 are fine
+        self.path.write_bytes(bytes(whole))
+        with self.assertRaises(journal.JournalError):
+            journal.read(self.path)
+        with self.assertRaises(journal.JournalError):
+            writer(self.path)
+
+    def test_a_bad_record_size_in_the_middle_is_corruption(self):
+        w = writer(self.path)
+        w.append([(1, 1, packs.enc_gap(0, 1, 0, "disconnect")), (2, 5, packs.enc_clock(0)), (3, 5, packs.enc_clock(0))])
+        w.close(finalise=False)
+        whole = bytearray(self.path.read_bytes())
+        struct.pack_into("<H", whole, 64 + 2, 31)                       # the first record claims 31 bytes, GAP is 32
+        self.path.write_bytes(bytes(whole))
+        recrc(self.path)
+        with self.assertRaisesRegex(journal.JournalError, "corrupt record at byte 64"):
+            journal.read(self.path)
+        with self.assertRaises(journal.JournalError):
+            writer(self.path)
+        self.assertEqual(self.path.read_bytes(), bytes(whole))
+
+    def test_without_its_checksum_file_an_open_journal_is_not_trusted(self):
+        w = writer(self.path)
+        w.append(clock_records(2))
+        w.close(finalise=False)
+        Path(str(self.path) + ".crc").unlink()
+        with self.assertRaisesRegex(journal.JournalError, "checksum"):
+            journal.read(self.path)
+        done = self.path.with_name("b.evt")
+        w = writer(done)
+        w.append(clock_records(2))
+        w.close(finalise=True)
+        Path(str(done) + ".crc").unlink()
+        self.assertEqual(len(journal.read(done)[1]), 48)                # finalised: the header's count is the check
+
+    def test_a_cut_short_write_fails_the_writer_until_it_is_reopened(self):
+        w = writer(self.path)
+        w.append(clock_records(2))
+
+        class Cut:
+            def __init__(self, real):
+                self.real = real
+
+            def write(self, data):
+                self.real.write(data[:len(data) // 2])       # part of the batch reaches the file, then the disk is full
+                self.real.flush()
+                raise OSError(28, "No space left on device")
+
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+        w._f = Cut(w._f)
+        with self.assertRaises(journal.JournalError):
+            w.append(clock_records(3, t0=5_000))
+        with self.assertRaisesRegex(journal.JournalError, "failed"):
+            w.append(clock_records(1, t0=6_000))
+        with self.assertRaises(journal.JournalError):
+            w.close(finalise=True)                           # a failed writer never finalises
+        self.assertFalse(journal.is_finalised(self.path))
+        w = writer(self.path)                                # reopening repairs the tail as for a torn record
+        self.assertEqual((w.records, w.torn_bytes), (3, 12))  # 36 bytes: 1 whole record of the batch, then 12 torn
+        w.append(clock_records(1, t0=7_000))
+        w.close(finalise=True)
+        header, recs = packs.read(self.path)
+        self.assertEqual((header["count"], [r["seq"] for r in recs]), (4, [1, 2, 3, 4]))
+
+    def test_a_crash_during_creation_leaves_nothing_worth_keeping(self):
+        header = packs.HEADER.pack(packs.MAGIC, 1, 1, 64, 0, 0, 0, 0)
+        for name, data in (("one byte", b"S"), ("magic only", b"STKEVT01"), ("63 bytes", header[:63]),
+                           ("zero header", bytes(64)), ("zero 17", bytes(17))):
+            with self.subTest(name):
+                for f in self.path.parent.iterdir():
+                    f.unlink()
+                self.path.write_bytes(data)
+                with patch.object(journal, "log") as log:        # the suite disables logging, so look at the call
+                    w = writer(self.path)
+                self.assertEqual(log.warning.call_count, 1)
+                w.append(clock_records(1))
+                w.close(finalise=True)
+                self.assertEqual(len(packs.read(self.path)[1]), 1)
+                self.assertEqual(journal.torn_entries(self.path), [(0, data)])    # the bad bytes are kept
+
+    def test_the_torn_sidecar_has_no_duplicate_after_a_crash_between_copy_and_cut(self):
+        w = writer(self.path)
+        w.append(clock_records(4))
+        w.close(finalise=False)
+        whole = self.path.read_bytes()
+        self.path.write_bytes(whole[:-5])
+        with patch.object(journal.JournalWriter, "_cut", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                writer(self.path)
+        self.assertEqual(len(journal.torn_entries(self.path)), 1)
+        w = writer(self.path)                                           # the next start finds the same 19 bytes
+        w.close(finalise=False)
+        self.assertEqual(journal.torn_entries(self.path), [(64 + 3 * 24, whole[64 + 72:-5])])
+        self.assertTrue(Path(str(self.path) + ".torn").exists())
 
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
@@ -269,18 +467,21 @@ class DayJournalTests(pf.PaperDayTest):
         self.addCleanup(tmp.cleanup)
         self.folder = Path(tmp.name)
 
-    def run_engine(self, name: str, batch: int | None):
+    def make_engine(self, name: str):
         folder = self.folder / name
         folder.mkdir()
-        cfg = self.session_cfg()
-        b = bundle_mod.resolve_session_day("s1", cfg, pf.DAY, None)
+        b = bundle_mod.resolve_session_day("s1", self.session_cfg(), pf.DAY, None)
         bundle_mod.write(b, folder)
         e = engine.load().Engine(str(folder / "bundle.json"))
         placed = [{"on_event": 60, "place": {"instrument": self.ces[4], "side": "BUY", "qty": 65, "product": "NRML",
-                                            "type": "MARKET"}},
+                                             "type": "MARKET"}},
                   {"on_event": 400, "place": {"instrument": self.ces[4], "side": "SELL", "qty": 65, "product": "NRML",
                                               "type": "MARKET"}}]
         e.set_strategy_py(Script(placed))
+        return folder, e
+
+    def run_engine(self, name: str, batch: int | None):
+        folder, e = self.make_engine(name)
         w = journal.JournalWriter(folder / "day.evt", fsync_every_mono_ns=10 ** 9, mono=iter(itertools.count()).__next__)
         records = self.records
         step = batch or len(records)
@@ -291,6 +492,23 @@ class DayJournalTests(pf.PaperDayTest):
         state = e.eod_state()
         w.close(finalise=True)
         return out, state, (folder / "day.evt").read_bytes()
+
+    def test_replaying_the_finalised_journal_gives_the_live_run(self):
+        out, state, data = self.run_engine("live", 5)
+        _, e = self.make_engine("replay")
+        e.push(data[64:])
+        e.finish()
+        self.assertEqual(e.drain_outputs(), out)
+        self.assertEqual(e.eod_state(), state)
+        _, e2 = self.make_engine("replay2")             # and record by record
+        off = 64
+        while off < len(data):
+            size = struct.unpack_from("<H", data, off + 2)[0]
+            e2.push(data[off:off + size])
+            off += size
+        e2.finish()
+        self.assertEqual(e2.drain_outputs(), out)
+        self.assertEqual(e2.eod_state(), state)
 
     def test_appended_bytes_are_accepted_by_the_engine_in_any_batching(self):
         out1, state1, bytes1 = self.run_engine("one", 1)

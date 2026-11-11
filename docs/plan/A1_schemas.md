@@ -242,7 +242,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 |---|---|---|
 | 0 | char[8] | magic `"STKEVT01"` |
 | 8 | u16 | version = 1 |
-| 10 | u16 | flags: bit 0 = journal, bit 1 = contains CLOCK |
+| 10 | u16 | flags: bit 0 = journal, bit 1 = contains CLOCK, bit 2 = journal finalised (DM 5.2; readers of packs ignore it) |
 | 12 | u32 | header size = 64 |
 | 16 | u64 | record count (journals: 0 while open; set on finalise) |
 | 24 | i64 | min `t_event` |
