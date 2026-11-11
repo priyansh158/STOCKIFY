@@ -507,13 +507,17 @@ _SESSION_ROW_TABLES = {  # name -> (SQL table, key column, key field of the engi
 }
 
 
-# The order status each event leaves behind (engine_trading.cpp); SUBMIT, FILL and MODIFY leave it as it was.
-_EVENT_STATUS = {"ACTIVATE": "OPEN", "TRIGGER": "OPEN", "COMPLETE": "COMPLETE", "CANCEL": "CANCELLED",
+# The order status each event leaves behind (engine_trading.cpp); SUBMIT and FILL leave it as it was.
+_EVENT_STATUS = {"MODIFY": "PENDING", "ACTIVATE": "OPEN", "TRIGGER": "OPEN", "COMPLETE": "COMPLETE", "CANCEL": "CANCELLED",
                  "REJECT": "REJECTED", "SLICE": "SLICED"}
 
 
+_MODIFY_FIELDS = {"qty": "qty", "price": "price_paise", "trigger": "trigger_paise", "type": "type"}
+
+
 def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, first_event_no: int,
-                          last_frame: tuple[int, int] | None, carried: list[int] | None = None) -> int:
+                          last_frame: tuple[int, int] | None, carried: list[int] | None = None,
+                          latency_ns: int = 0) -> int:
     """Store what `Engine.drain_outputs()` returned for one batch, in ONE transaction. Orders, fills and charges are
     upserted by their ids and order events are numbered from `first_event_no`, so applying the same outputs again
     changes nothing. The engine drains an order's row once, when it is created; its later changes arrive as events
@@ -524,7 +528,9 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
 
     After the fills are in, each order they or the batch's events touch has `filled_qty`, `avg_price_paise`
     (`floor(SUM(qty * price) / SUM(qty))`, the engine's own formula), `reason` (its newest CANCEL or REJECT event's
-    detail) and `t_activate_ns` (its newest ACTIVATE event's time) recomputed from the stored fills and events: a
+    detail), and what its MODIFY events changed (`qty`, `price_paise`, `trigger_paise`, `type` from the event's
+    `k=v,...` detail, newest last; `t_activate_ns` = max(itself, the event's time + `latency_ns`), as the engine's
+    modify does) recomputed from the stored fills and events: a
     pure function of the tables, so a repeat or a replay gives the same row. An order with no stored row (one
     carried from a prior day, which the engine never drained today) cannot be refreshed; its ids are appended to
     `carried`, when given, and its events and fills are stored regardless."""
@@ -573,7 +579,7 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
                  for c in outputs.get("charges", ())])
             touched = set(newest) | {int(f["order_id"]) for f in outputs.get("fills", ())}
             for oid in sorted(touched):
-                if not _refresh_order(conn, session_id, trade_date, oid) and carried is not None:
+                if not _refresh_order(conn, session_id, trade_date, oid, latency_ns) and carried is not None:
                     carried.append(oid)
             if last_frame is not None:
                 conn.execute(
@@ -588,7 +594,7 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
     return first_event_no + len(events)
 
 
-def _refresh_order(conn, session_id: str, trade_date: str, oid: int) -> bool:  # noqa: ANN001
+def _refresh_order(conn, session_id: str, trade_date: str, oid: int, latency_ns: int) -> bool:  # noqa: ANN001
     """Inside the caller's transaction: bring a stored order row's fill totals, reason and activation time in line
     with the stored fills and events. False if the order has no stored row."""
     old = conn.execute("SELECT row_json FROM session_orders WHERE session_id = ? AND trade_date = ? AND order_id = ?",
@@ -605,15 +611,22 @@ def _refresh_order(conn, session_id: str, trade_date: str, oid: int) -> bool:  #
         row["filled_qty"] = int(qty)
         if value is not None:
             row["avg_price_paise"] = int(value) // int(qty)           # floor_div, orders.hpp avg_price()
-    for event_names, field, pick in ((("ACTIVATE",), "t_activate_ns", "t_ns"),
-                                     (("CANCEL", "REJECT"), "reason", "detail")):
-        newest = conn.execute(
-            f"SELECT json_extract(row_json, '$.{pick}') FROM session_order_events WHERE session_id = ? "
-            f"AND trade_date = ? AND json_extract(row_json, '$.order_id') = ? "
-            f"AND json_extract(row_json, '$.event') IN ({', '.join('?' * len(event_names))}) "
-            "ORDER BY event_no DESC LIMIT 1", (session_id, trade_date, oid, *event_names)).fetchone()
-        if newest is not None and newest[0] is not None:
-            row[field] = newest[0]
+    newest = conn.execute(
+        "SELECT json_extract(row_json, '$.detail') FROM session_order_events WHERE session_id = ? AND trade_date = ? "
+        "AND json_extract(row_json, '$.order_id') = ? AND json_extract(row_json, '$.event') IN ('CANCEL', 'REJECT') "
+        "ORDER BY event_no DESC LIMIT 1", (session_id, trade_date, oid)).fetchone()
+    if newest is not None and newest[0] is not None:
+        row["reason"] = newest[0]
+    modifies = conn.execute(
+        "SELECT json_extract(row_json, '$.t_ns'), json_extract(row_json, '$.detail') FROM session_order_events "
+        "WHERE session_id = ? AND trade_date = ? AND json_extract(row_json, '$.order_id') = ? "
+        "AND json_extract(row_json, '$.event') = 'MODIFY' ORDER BY event_no", (session_id, trade_date, oid)).fetchall()
+    for t_ns, detail in modifies:                                 # `k=v,k=v`, as the engine's modify words it
+        for part in (detail or "").split(","):
+            key, _, value = part.partition("=")
+            if key in _MODIFY_FIELDS:
+                row[_MODIFY_FIELDS[key]] = value if key == "type" else int(value)
+        row["t_activate_ns"] = max(int(row.get("t_activate_ns") or 0), int(t_ns) + int(latency_ns))
     conn.execute("UPDATE session_orders SET row_json = ? WHERE session_id = ? AND trade_date = ? AND order_id = ?",
                  (json.dumps(row, sort_keys=True), session_id, trade_date, oid))
     return True

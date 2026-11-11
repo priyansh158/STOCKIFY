@@ -163,7 +163,8 @@ class SessionDay:
         carried: list[int] = []
         self._next_event_no = store.apply_session_outputs(
             self.session_id, self.trade_date, self.engine.drain_outputs(), first_event_no=self._next_event_no,
-            last_frame=last_frame, carried=carried)
+            last_frame=last_frame, carried=carried,
+            latency_ns=int(self.cfg.get("latency_ms", 0)) * 1_000_000)
         for oid in carried:
             if oid not in self.carried_orders:
                 self.carried_orders = sorted({*self.carried_orders, oid})

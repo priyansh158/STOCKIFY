@@ -291,24 +291,51 @@ class SessionDayTest(pf.PaperDayTest):
                          [("COMPLETE", "195"), ("COMPLETE", "65"), ("CANCELLED", "0")])
         self.assertNotEqual(book[2]["reason"], "")
 
+    def test_a_modified_then_partly_filled_order_equals_the_engines_row(self):
+        """DM 5.6: MODIFY changes qty, price and trigger after the order's row was drained; with a latency, the
+        activation time moves to the modify's time plus the latency."""
+        ce = self.ces[4]
+        act = [{"on_event": 60, "place": {"instrument": ce, "side": "BUY", "qty": 195, "product": "NRML",
+                                          "type": "LIMIT", "price": 1000}},         # rests
+               {"on_event": 90, "modify": {"order_id": 1, "price": 11620, "qty": 650}}]   # now marketable, partly
+        sd = self.day(self.session_cfg(strategy={"kind": "script", "actions": act}, latency_ms=200))
+        sd.open(None, [], self.t("09:14:00"))
+        for i in range(0, len(self.records), 5):
+            sd.feed(self.records[i:i + 5], None)
+        sd.engine.finish()
+        with tempfile.TemporaryDirectory(prefix="session-orders-") as tmp:
+            sd.engine.write_artifacts(tmp)
+            with open(Path(tmp) / "orders.csv", newline="", encoding="utf-8") as f:
+                book = list(csv.DictReader(f))
+        self.assertEqual(len(book), 1)
+        self.assertEqual(book[0]["qty"], "650")                                       # the modify happened
+        self.assertTrue(0 < int(book[0]["filled_qty"]) < 650, book[0])                # and it filled only in part
+        mine = store.session_rows(SID, "orders")[0]
+        for col in ("status", "filled_qty", "avg_price_paise", "reason", "t_activate_ns", "qty", "price_paise",
+                    "trigger_paise", "type"):
+            with self.subTest(col=col):
+                self.assertEqual(str(mine[col]), book[0][col])
+        self.assertGreater(int(book[0]["t_activate_ns"]), int(book[0]["t_submit_ns"]))   # the latency applied
+
     def test_fills_recompute_filled_qty_and_the_floored_average(self):
         order = {"order_id": 1, "status": "OPEN", "qty": 5, "filled_qty": 0, "avg_price_paise": 0,
                  "reason": "", "t_activate_ns": 0}
         first = {"orders": [order], "order_events": [{"t_ns": 4, "order_id": 1, "event": "SUBMIT", "detail": ""}],
                  "fills": [], "charges": [], "log": []}
-        n = store.apply_session_outputs(SID, pf.EXPIRY, first, first_event_no=1, last_frame=None)
+        n = store.apply_session_outputs(SID, pf.EXPIRY, first, first_event_no=1, last_frame=None, latency_ns=100)
         second = {"orders": [],
-                  "order_events": [{"t_ns": 5, "order_id": 1, "event": "ACTIVATE", "detail": "limit 11"},
+                  "order_events": [{"t_ns": 5, "order_id": 1, "event": "MODIFY", "detail": "price=11,qty=3,trigger=9"},
                                    {"t_ns": 6, "order_id": 1, "event": "FILL", "detail": "2@10 x"},
                                    {"t_ns": 7, "order_id": 1, "event": "FILL", "detail": "1@11 x"},
                                    {"t_ns": 8, "order_id": 1, "event": "CANCEL", "detail": "R_TEST"}],
                   "fills": [{"fill_id": 1, "order_id": 1, "t_ns": 6, "qty": 2, "price_paise": 10},
                             {"fill_id": 2, "order_id": 1, "t_ns": 7, "qty": 1, "price_paise": 11}],
                   "charges": [], "log": []}
-        store.apply_session_outputs(SID, pf.EXPIRY, second, first_event_no=n, last_frame=None)
+        store.apply_session_outputs(SID, pf.EXPIRY, second, first_event_no=n, last_frame=None, latency_ns=100)
         row = store.session_rows(SID, "orders")[0]
         self.assertEqual((row["status"], row["filled_qty"], row["avg_price_paise"], row["reason"],
-                          row["t_activate_ns"]), ("CANCELLED", 3, 10, "R_TEST", 5))      # floor(31 / 3)
+                          row["t_activate_ns"]), ("CANCELLED", 3, 10, "R_TEST", 5 + 100))      # floor(31 / 3)
+        self.assertEqual((row["qty"], row["price_paise"], row["trigger_paise"]), (3, 11, 9))
 
     # ── F10: carried-over orders are reported ─────────────────────────────────────────────────────────────────────
 
