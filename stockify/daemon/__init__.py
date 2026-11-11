@@ -189,15 +189,12 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     power = power or Power()
     clock = clock or WallClock()
     stop = stop or threading.Event()
-    record = recorder or (lambda: run_market_day(ticker_spec="live", stop=stop, power=power,
-                                                 session_ids=session_ids, token_fresh=token_fresh))
-    token_fresh = token_fresh or _kite_token_fresh
     state = scheduler.State()
-    from stockify.daemon import reminder
-    reminder_kw = {"send": send_reminder} if send_reminder else {}
-
     tried: dict[tuple[str, date], int] = {}                  # (job, day) -> last attempt, for retry_every_min
-    while not stop.is_set():
+
+    def catch_up() -> None:
+        """The scheduler's missed jobs, each at most once per its retry interval. Also what the wait for a Kite login
+        runs on every poll (LCB 5.2): a missing login never holds up the earlier days' work."""
         now = clock.now_ns()
         for job, d in scheduler.missed_jobs(now, state):
             last = tried.get((job, d))
@@ -205,6 +202,17 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
                 continue
             tried[(job, d)] = now
             _run_job(job, d, state, now)
+
+    record = recorder or (lambda: run_market_day(ticker_spec="live", stop=stop, power=power,
+                                                 session_ids=session_ids, token_fresh=token_fresh,
+                                                 on_idle=catch_up))
+    token_fresh = token_fresh or _kite_token_fresh
+    from stockify.daemon import reminder
+    reminder_kw = {"send": send_reminder} if send_reminder else {}
+
+    while not stop.is_set():
+        now = clock.now_ns()
+        catch_up()
 
         today = timeutil.ns_to_ist(now).date()
         if calendar_is_trading(today) and now >= scheduler.plan(today).unsubscribe_ns:

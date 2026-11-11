@@ -5,7 +5,8 @@
 #   0   clean stop: exit
 #   75  day done: register a one-shot wake task from next_wake.json, hibernate,
 #       restart the daemon after resume
-#   76  Kite token stale or expired: wait for a fresh kite_token.json, restart
+#   76  Kite token expired: restart after $MinDelay. The new process waits for the login itself
+#       (it runs the scheduler's catch-up jobs meanwhile), so the launcher never reads the token store
 #   79  another daemon already holds the lab's lock: exit (never restart into it)
 #   80  the engine thread was stuck at shutdown: restart (the journals resume by replay)
 #   81  the lab's lock file cannot be opened: exit (a restart would fail the same way)
@@ -32,7 +33,6 @@ if (-not $env:LOCALAPPDATA) {
 
 $StateDir = Join-Path $env:LOCALAPPDATA "STOCKIFY\kite"
 $LabDir = Join-Path $StateDir "lab"
-$TokenFile = Join-Path $StateDir "kite_token.json"
 $WakeFile = Join-Path $LabDir "next_wake.json"
 $WakeTaskName = "STOCKIFY Wake"
 $LogDir = Join-Path $env:LOCALAPPDATA "STOCKIFY\logs"
@@ -97,17 +97,6 @@ function Invoke-SleepUntilWake {
     Write-Log "resumed from hibernate"
 }
 
-function Wait-FreshToken([datetime]$Since) {
-    Write-Log "waiting for a fresh Kite login (log in at http://127.0.0.1:3000/portfolio)"
-    while ($true) {
-        if ((Test-Path $TokenFile) -and ((Get-Item $TokenFile).LastWriteTime -gt $Since)) {
-            Write-Log "fresh Kite token found"
-            return
-        }
-        Start-Sleep -Seconds 30
-    }
-}
-
 if ($SleepTest) {
     $wake = [DateTimeOffset]::UtcNow.AddMinutes(5)
     New-Item -ItemType Directory -Path $LabDir -Force | Out-Null
@@ -154,7 +143,8 @@ while ($true) {
         continue
     }
     if ($code -eq $ExitToken) {
-        Wait-FreshToken $started
+        Write-Log "Kite token expired (code 76); restarting in $MinDelay s, the daemon waits for the login"
+        Start-Sleep -Seconds $MinDelay
         $delay = $MinDelay
         continue
     }

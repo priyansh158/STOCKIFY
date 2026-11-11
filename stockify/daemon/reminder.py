@@ -24,14 +24,23 @@ def reminder_times(day: date, cfg: dict) -> list[tuple[str, int]]:
     return sorted((hhmm, timeutil.ist_ns(day, hhmm)) for hhmm in cfg.get("login_reminders_ist", []))
 
 
-def message(day: date, cfg: dict) -> tuple[str, str]:
+def login_window(day: date, cfg: dict) -> tuple[str, str]:
+    """The login window of `day`'s session as the owner's own wall clock shows it (PST or PDT, whichever the owner's
+    zone is on that date: `calendar.owner_tz()`), as `("HH:MM TZ", "HH:MM TZ")`."""
     local = calendar.owner_tz()
-    pre_open = timeutil.ist_ns(day, cfg["kite_login_window_ist"]["until"])
-    deadline = timeutil.ns_to_ist(pre_open).astimezone(local)
+    window = cfg["kite_login_window_ist"]
+    opens, closes = (timeutil.ns_to_ist(timeutil.ist_ns(day, window[k])).astimezone(local) for k in ("from", "until"))
+    return f"{opens:%H:%M %Z}", f"{closes:%H:%M %Z}"
+
+
+def message(day: date, cfg: dict) -> tuple[str, str]:
+    opens, closes = login_window(day, cfg)
+    window = cfg["kite_login_window_ist"]
     subject = f"[STOCKIFY] Kite login needed for the {day:%a %d %b} session"
     body = (f"The STOCKIFY recorder has no fresh Kite login for the NSE session of {day:%A %d %B %Y} (IST).\n\n"
-            f"Log in before {deadline:%H:%M %Z} ({cfg['kite_login_window_ist']['until']} IST): open {LOGIN_URL} "
-            "and click 'Login to Kite'.\n\nWithout a login nothing is recorded today.\n\n— STOCKIFY daemon\n")
+            f"Log in between {opens} and {closes} ({window['from']}-{window['until']} IST): open {LOGIN_URL} "
+            f"and click 'Login to Kite'. Log in before {closes}.\n\nWithout a login nothing is recorded today.\n\n"
+            "— STOCKIFY daemon\n")
     return subject, body
 
 

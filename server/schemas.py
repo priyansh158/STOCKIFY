@@ -56,6 +56,7 @@ class PortfolioSnapshotDTO(BaseModel):
 class KiteStatusResponse(BaseModel):
     configured: bool
     authenticated: bool
+    daemon_waiting_for_login: bool = False
     error: str | None = None
 
 

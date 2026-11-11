@@ -47,6 +47,7 @@ export interface PortfolioSnapshot {
 export interface KiteStatus {
   configured: boolean;
   authenticated: boolean;
+  daemon_waiting_for_login?: boolean;
   error?: string | null;
 }
 

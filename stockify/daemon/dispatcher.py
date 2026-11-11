@@ -116,7 +116,10 @@ class Dispatcher:
         self._extras: dict[str, frozenset[int]] = {}     # open positions the bundle does not carry
         self._unbundled: set[tuple[str, int]] = set()
         self._resume_end: dict[str, str] = {}        # session -> the reason of its open gap, which ends at the next frame
-        self._last_clock = max([sd.last_clock for sd in sessions if sd.resumed] or [0])   # a restart repeats no CLOCK
+        # A restart, live or replay, repeats no CLOCK record: a boundary at or below the journal's last CLOCK is not
+        # written again. CLOCK is a periodic marker, never data, so a live restart that shares the last boundary loses
+        # nothing by this, and the journal's last CLOCK stays the restart's boundary (LCB 5.2, Task 18 review).
+        self._last_clock = max([sd.last_clock for sd in sessions if sd.resumed] or [0])
         self._skip: dict[str, int] = {}              # session -> recv_ns of its last dispatched frame (replay restarts)
         if replay:
             for sd in sessions:
@@ -211,13 +214,19 @@ class Dispatcher:
         """A live restart did not see the frames between the old process's last record and the first new frame. A
         session whose journal ends in a GAP(process_stop) start (a graceful stop inside market hours) only needs its
         end, at the first new frame. One whose journal has no such start (the process died) gets one now, at the
-        journal's last `t`, provided it is inside market hours; the end follows at the first frame either way."""
+        journal's last `t`, provided it is inside market hours; the end follows at the first frame either way. One that
+        ends inside an open token_expired or disconnect gap continues that gap instead (no process_stop inside it)."""
         from stockify.daemon.market_day import inside_market_hours
         for sd in self.sessions:
             sid = sd.session_id
             if not sd.resumed or sid in self.stats.failed:
                 continue
-            if sd.open_process_stop:
+            if sd.open_outage:
+                # The journal ends inside a scope-all token_expired (or disconnect) gap: it already says the frames
+                # are missing, so nothing nests inside it. The gap goes on and ends at the first new frame, as a
+                # replay's does (`_resume_outages`; D-68: only the journal-first records, never a second gap).
+                self._resume_end[sid] = sd.open_outage
+            elif sd.open_process_stop:
                 self._resume_end[sid] = "process_stop"
             elif sd.last_t is not None and inside_market_hours(t):
                 try:
@@ -383,14 +392,65 @@ class Dispatcher:
                         per.setdefault(sd.session_id, []).append((recv_ns, rank, record))
                     elif iid in self._extras.get(sd.session_id, ()):
                         self._note_unbundled(sd, iid, recv_ns)
+        logins: list[str] = []
         for sid, reason in sorted(self._resume_end.items()):    # the first frame since the restart: the open gap is over
-            per.setdefault(sid, []).insert(0, self._gap_record("end", reason, recv_ns, None))
+            end = self._gap_record("end", reason, recv_ns, None)
+            if reason == "token_expired":
+                self._stage(recv_ns, {sid: [end]}, None)        # alone, so the login's control precedes the frame
+                logins.append(sid)
+            else:
+                per.setdefault(sid, []).insert(0, end)
             self.stats.gaps += 1
             self._open_gaps.discard((reason, None))
             self._timeline(sid, "gap", {"cause": f"{reason}_resumed", "phase": "end", "t_ns": recv_ns}, recv_ns)
         self._resume_end.clear()
+        for sid in logins:
+            self._login(self._by_id[sid], recv_ns)
         self.stats.frames += 1
         self._stage(recv_ns, per, (frame_no, recv_ns) if frame_no else None)
+
+    def pause_for_token_expiry(self, t: int) -> list[str]:
+        """Kite rejected the token (LCB 5.2): every session gets the `token_expired` pause reason, journal first
+        (`strategy_control`, D-68), then the store (`lifecycle.pause`, one transaction). On the calling thread, for the
+        shutdown, after the engine thread has stopped and `drain()` has journaled the gap start. Returns the ids of
+        the sessions that now hold the reason; a session whose day failed or that is STOPPED is left alone."""
+        self._stamp = t
+        paused = []
+        for sd in self.sessions:
+            sid = sd.session_id
+            if sid in self.stats.failed:
+                continue
+            try:
+                session = store.get_session(sid)
+                if session is None or session["status"] == "STOPPED":
+                    continue
+                held = set(session["pause_reasons"])
+                if "token_expired" not in held:
+                    self._control(sd, sorted(held | {"token_expired"}), t)
+                    lifecycle.pause(sid, "token_expired", wall_ns=t, engine_ns=t)
+                paused.append(sid)
+            except Exception:  # noqa: BLE001 — one session's trouble never stops the others
+                log.exception("session %s: pausing it for the token expiry failed", sid)
+        self._flush(force_marks=True)
+        return paused
+
+    def _login(self, sd: SessionDay, t: int) -> None:
+        """The first frame after a login: the `token_expired` reason goes, journal first, then the store; the owner's
+        own pause and every other reason stay. The timeline gets a `login` row."""
+        sid = sd.session_id
+        if sid in self.stats.failed:
+            return
+        try:
+            session = store.get_session(sid)
+            held = set(session["pause_reasons"]) if session is not None else set()
+            if "token_expired" not in held or session["status"] == "STOPPED":
+                return
+            reasons = sorted(held - {"token_expired"})
+            self._control(sd, reasons, t)
+            stored = lifecycle.resume(sid, "token_expired", wall_ns=t, engine_ns=t)
+            self._timeline(sid, "login", {"t_ns": t, "reasons": stored}, t)
+        except Exception:  # noqa: BLE001
+            log.exception("session %s: resuming it after the login failed", sid)
 
     def _gap_record(self, phase: str, reason: str, t: int, iid: int | None) -> tuple[int, int, bytes]:
         return t, _GAP_RANK, packs.enc_gap(iid or 0, t, _PHASE[phase], reason)

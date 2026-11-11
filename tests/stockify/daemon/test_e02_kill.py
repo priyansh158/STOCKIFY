@@ -143,7 +143,8 @@ class TokenExpiryDurationTest(pf.PaperDayTest):
         self.assertEqual(market_day.run_market_day(ticker_spec=SPEC, session_ids=["s1"]), exitcodes.OK)
         records = decode("s1")
         gaps = [(r["reason"], r["phase"], r["t_event"]) for r in records if r["kind"] == "GAP"]
-        frames = [r["t_event"] for r in records if r["kind"] not in ("GAP", "CLOCK")]
+        frames = [r["t_event"] for r in records if r["kind"] not in ("GAP", "CLOCK")
+                  and not (r["kind"] == "REFDATA" and r["subtype"] == "strategy_control")]   # LCB 5.2 pause and login
         end = [g for g in gaps if g[0] == "token_expired" and g[1] == 1]
         self.assertEqual(len(end), 1, gaps)
         self.assertEqual([g for g in gaps if g[0] == "process_stop"], [])

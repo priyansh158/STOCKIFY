@@ -625,6 +625,87 @@ class RestartGapTest(RecoveryBase):
         self.frame(disp, self.t("10:00:05"))
         self.assertEqual(self.gaps(), [])
 
+    # ── LCB 5.2 (Task 18 review): a live restart whose journal ends inside an open token_expired gap ────────────
+    def outage(self, reason="token_expired"):
+        return [(r["phase"], r["t_event"]) for r in journal_records(SID) if r["kind"] == "GAP" and r["reason"] == reason]
+
+    def controls(self):
+        return [(r["payload"]["enabled"], r["payload"]["reasons"]) for r in journal_records(SID)
+                if r["kind"] == "REFDATA" and r["subtype"] == "strategy_control"]
+
+    def expired_journal(self):
+        """A live day that ended inside an open scope-all token_expired gap, its session paused for it."""
+        sd = self.live(upto=CHUNK * 2)
+        disp = self.dispatcher(sd)
+        disp.put_gap("start", "token_expired", self.t("09:30:00"), None)
+        disp.drain()
+        disp.pause_for_token_expiry(self.t("09:30:01"))
+        sd.close()
+
+    def test_a_live_restart_inside_an_open_token_expired_gap_nests_no_process_stop(self):
+        self.expired_journal()
+        sd2, _ = self.recover()
+        self.assertEqual(sd2.open_outage, "token_expired")
+        disp = self.dispatcher(sd2)
+        disp.start(self.t("10:00:00"))                               # inside market hours, live
+        self.assertEqual(self.gaps(), [])                            # no process_stop start inside the outage
+        self.frame(disp, self.t("10:00:05"))
+        self.assertEqual(self.gaps(), [])
+        self.assertEqual([p for p, _ in self.outage()], [0, 1])      # the token_expired gap ends at the first frame
+        self.assertEqual([r["detail"]["cause"] for r in store.timeline(SID) if r["kind"] == "gap"][-1:],
+                         ["token_expired_resumed"])
+
+    def test_the_resume_control_lands_before_the_first_frames_own_records(self):
+        self.expired_journal()
+        sd2, _ = self.recover()
+        disp = self.dispatcher(sd2)
+        disp.start(self.t("10:00:00"))
+        n = len(journal_records(SID))
+        self.frame(disp, self.t("10:00:05"))
+        kinds = [(r["kind"], r.get("phase"), r.get("subtype")) for r in journal_records(SID)[n:]]
+        end = kinds.index(("GAP", 1, None))
+        ctl = kinds.index(("REFDATA", None, "strategy_control"))
+        idx = [i for i, k in enumerate(kinds) if k[0] == "INDEX"]
+        self.assertLess(end, ctl)
+        self.assertTrue(idx and ctl < idx[0], kinds)
+        self.assertEqual(self.controls()[-2:], [(False, ["token_expired"]), (True, [])])
+        self.assertEqual(store.get_session(SID)["pause_reasons"], [])
+
+    def test_a_live_restart_after_an_open_disconnect_gap_is_continued_the_same_way(self):
+        sd = self.live(upto=CHUNK * 2)
+        disp = self.dispatcher(sd)
+        disp.put_gap("start", "disconnect", self.t("09:30:00"), None)
+        disp.drain()
+        sd.close()
+        sd2, _ = self.recover()
+        disp2 = self.dispatcher(sd2)
+        disp2.start(self.t("10:00:00"))
+        self.frame(disp2, self.t("10:00:05"))
+        self.assertEqual(self.gaps(), [])
+        self.assertEqual([p for p, _ in self.outage("disconnect")], [0, 1])
+
+    # ── the CLOCK restore (dispatcher `_last_clock`) applies to a live restart too ────────────────────────────
+    def test_a_live_restart_inside_the_same_clock_boundary_repeats_no_clock_record(self):
+        """`Dispatcher._last_clock` is restored from the journal on a live restart as well as a replay's: the CLOCK
+        record of a boundary the journal holds is not written again (it is a periodic marker, never data)."""
+        sd = self.live(upto=CHUNK * 2)
+        first = self.dispatcher(sd)
+        boundary = self.t("09:45:00")
+        every = int(loader.load_json("paper.json")["clock_every_s"]) * SEC
+        self.frame(first, boundary + every // 4)
+        sd.close()
+        clocks = [r["t_event"] for r in journal_records(SID) if r["kind"] == "CLOCK"]
+        self.assertEqual(clocks[-1], boundary)                       # the restart's boundary is the journal's last CLOCK
+        sd2, _ = self.recover()
+        self.assertEqual(sd2.last_clock, boundary)
+        disp = self.dispatcher(sd2)
+        disp.start(boundary + every // 2)
+        self.frame(disp, boundary + every // 2)                      # a frame inside the same boundary
+        self.assertEqual([r["t_event"] for r in journal_records(SID) if r["kind"] == "CLOCK"], clocks)
+        self.frame(disp, boundary + every + every // 4, no=2)        # the next boundary adds exactly one
+        self.assertEqual([r["t_event"] for r in journal_records(SID) if r["kind"] == "CLOCK"],
+                         clocks + [boundary + every])
+
 
 class MarketDayRecoveryTest(pf.PaperDayTest):
     """The same restart through the real daemon code (`replay:<day>:max`)."""

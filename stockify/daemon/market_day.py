@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Callable
 
 from stockify import paths, store, timeutil
-from stockify.daemon import exitcodes, journal, lifecycle
+from stockify.daemon import exitcodes, journal, lifecycle, token_watch
 from stockify.daemon.engine_log import LogPump
 
 log = logging.getLogger("stockify.daemon.market_day")
@@ -133,6 +133,11 @@ def install_signal_handlers(stop: threading.Event) -> Callable[[], None]:
 
 class ReplayRefused(RuntimeError):
     """A replay asked to run paper sessions against the real lab."""
+
+
+class LiveFaultsRefused(ValueError):
+    """`--inject` faults were given with the live ticker: they exist only in the replay ticker, and a fault that is
+    silently ignored would let the owner believe `kill@T` was armed."""
 
 
 # %LOCALAPPDATA% as the process started, before `--replay-sandbox` (or a test) redirects it: a redirected AppData
@@ -346,10 +351,12 @@ def status_resume_at(day: date) -> int | None:
 
 def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: bool, sessions: list,  # noqa: ANN001
                  failed: dict, alarms: list[str], skipped: dict | None = None,
-                 resume_at_ns: int | None = None) -> None:
+                 resume_at_ns: int | None = None, paused: list[str] | None = None) -> None:
     """`daemon_status.json`: what the daemon last knew, for the next start and for the owner. Written whole, then
     renamed into place. `resume_mark` is the process's minimum frame mark over its sessions (a replay restart skips
-    frames at or below it); `resume_at_ns` is a fault duration's `T + N`."""
+    frames at or below it); `resume_at_ns` is a fault duration's `T + N`. A token expiry (exit 76) also says the daemon
+    is waiting for a login (`token_watch`: since when, the sessions it paused, the rejected token file's mtime, never a
+    token); any other exit says it is not. The fields other writers keep in the file are kept."""
     mark = process_mark(sessions)
     last_frame = landing.max_frame_no()
     row = landing.conn.execute("SELECT IFNULL(MAX(recv_ns), 0) FROM packets WHERE frame_no = ?",
@@ -362,18 +369,26 @@ def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: b
               "skipped": {sid: {"reason": "subscription_cap", **detail} for sid, detail in sorted((skipped or {}).items())},
               "sessions": {sd.session_id: {"journal_records": sd.journal_records, "failed": sd.session_id in failed}
                            for sd in sessions}}
-    target = paths.daemon_status_file()
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, target)
+    if exit_code == exitcodes.TOKEN_EXPIRED:
+        status.update(waiting_for_login=True, since_ns=clock.now_ns(), sessions_paused=sorted(paused or []),
+                      rejected_token_mtime_ns=token_watch.token_mtime_ns())
+    else:
+        status.update(waiting_for_login=False, rejected_token_mtime_ns=None, sessions_paused=[])
+    token_watch.write_status(**status)
 
 
 def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None,
                    stop: threading.Event | None = None, power=None,  # noqa: ANN001
                    session_ids: list[str] | None = None,
-                   token_fresh: Callable[[], bool] | None = None) -> int:
+                   token_fresh: Callable[[], bool] | None = None, clock=None,  # noqa: ANN001
+                   on_idle: Callable[[], None] | None = None, login_poll_s: float = token_watch.POLL_S) -> int:
     """Record one IST trading day and run the chosen paper sessions on it (`session_ids`: None = every armed,
-    running or paused session, [] = none, which is the recorder alone). Returns an exit code from `exitcodes`."""
+    running or paused session, [] = none, which is the recorder alone). Returns an exit code from `exitcodes`.
+
+    A live run with no usable Kite login waits in the process (`token_watch.wait_for_login`, polling every
+    `login_poll_s`, running `on_idle` each time) until the unsubscribe time; a login that never comes ends it with
+    TOKEN_EXPIRED. A usable login is a fresh token that is not the file Kite last rejected. `clock` is for a live
+    run's tests. `faults` need the replay ticker: with the live one they are refused (`LiveFaultsRefused`)."""
     from stockify import daemon
     from stockify.config import loader
     from stockify.daemon.clock import WallClock
@@ -388,12 +403,20 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     stop = stop or threading.Event()
     schedule = loader.load_json("schedule.json")
     replay = ticker_spec != "live"
+    if faults and not replay:
+        raise LiveFaultsRefused("--inject needs a replay ticker (--ticker replay:YYYY-MM-DD:...): faults are never "
+                                "injected into the live ticker, so none was armed")
 
     if replay:
         from stockify.daemon.replay_ticker import open_replay, parse_spec
         if session_ids != []:
             check_replay_sandbox()
         day, _ = parse_spec(ticker_spec)
+        if token_fresh is not None and token_watch.read_status().get("waiting_for_login"):
+            if not token_watch.login_ok(token_fresh):
+                log.warning("still waiting for a Kite login newer than the rejected token")
+                return exitcodes.TOKEN_EXPIRED
+            token_watch.login_accepted()
         ticker, clock = open_replay(ticker_spec, faults=faults)
         landing = LandingDB(day, paths.ticks_replay_file(day))
         call = direct_call
@@ -402,14 +425,21 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         manager = SubscriptionManager(day, universe, clock, log_rows=landing.log_subscriptions)
     else:
         import kite_client
-        clock = WallClock()
-        day = timeutil.ist_today()
+        clock = clock or WallClock()
+        day = timeutil.ns_to_ist(clock.now_ns()).date()
         if not calendar.is_trading_day("FO", day):
             log.info("%s is not an NSE trading day; nothing to record", day)
             return exitcodes.OK
-        if not (token_fresh or kite_client.is_authenticated)():
-            log.warning("no fresh Kite login: waiting for one (log in at /portfolio)")
-            return exitcodes.TOKEN_EXPIRED
+        fresh = token_fresh or kite_client.is_authenticated
+        if not token_watch.login_ok(fresh):
+            log.warning("no usable Kite login: waiting for one (log in at /portfolio)")
+            if not token_watch.wait_for_login(clock, stop, poll_s=login_poll_s, token_fresh=fresh,
+                                              on_idle=on_idle or (lambda: None),
+                                              until_ns=timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])):
+                return exitcodes.OK if stop.is_set() else exitcodes.TOKEN_EXPIRED
+            log.info("Kite login accepted")
+        if token_watch.read_status().get("waiting_for_login"):
+            token_watch.login_accepted()
         daemon._ensure_refdata(day)
         payload = kite_client.load_cached_token()
         from stockify.daemon import conn_budget
@@ -460,6 +490,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         ticker.resume_after = process_mark([sd for sd in sessions if sd.resumed]) if sessions and all(
             sd.resumed for sd in sessions) else None
         ticker.resume_not_before_ns = status_resume_at(day)
+        ticker.on_resume_reached = lambda: token_watch.write_status(resume_at_ns=None)    # used: never applied twice
         if ticker.resume_after is not None:
             clock.set(max(clock.now_ns(), ticker.resume_after[1]))
     dispatcher = engine_thread = None
@@ -600,6 +631,7 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
     except Exception:  # noqa: BLE001
         log.exception("the last landing flush failed")
     stuck = False
+    paused: list[str] = []
     if engine_thread is not None:
         engine_stop.set()
         engine_thread.join(ENGINE_JOIN_S)
@@ -615,8 +647,16 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
                 log.exception("draining the dispatcher failed")
         # 3. the journals, synced
         _each(sessions, "sync", lambda sd: sd.fsync())
+        # 4a. Kite rejected the token: the gap start is journaled (the gap tap, drained above); now each session is
+        # paused for it, journal first, then the store (LCB 5.2). No process_stop: the gap already says why.
+        if session.exit_code == exitcodes.TOKEN_EXPIRED and sessions and dispatcher is not None:
+            try:
+                paused = dispatcher.pause_for_token_expiry(clock.now_ns())
+            except Exception:  # noqa: BLE001
+                log.exception("pausing the sessions for the token expiry failed")
+            _each(sessions, "sync", lambda sd: sd.fsync())
         # 4. a stop inside market hours: the journal says it stopped seeing frames (never via the queue)
-        if stop_requested and sessions and dispatcher is not None and inside_market_hours(clock.now_ns()):
+        elif stop_requested and sessions and dispatcher is not None and inside_market_hours(clock.now_ns()):
             try:
                 dispatcher.journal_process_stop(clock.now_ns())
                 dispatcher.drain()
@@ -638,7 +678,8 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
     try:
         write_status(day, code, landing, clock, stop_requested=stop_requested, sessions=[] if stuck else sessions,
                      failed=dict(dispatcher.stats.failed) if dispatcher is not None else {}, alarms=alarms,
-                     skipped=skipped, resume_at_ns=getattr(ticker, "resume_at_ns", None) if replay else None)
+                     skipped=skipped, resume_at_ns=getattr(ticker, "resume_at_ns", None) if replay else None,
+                     paused=paused)
     except Exception:  # noqa: BLE001
         log.exception("could not write %s", paths.daemon_status_file())
     try:

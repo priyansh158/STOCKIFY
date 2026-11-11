@@ -54,6 +54,10 @@ def _redirect_state_for_replay(directory: str) -> str | None:
 def _cmd_daemon(args) -> int:
     from stockify import daemon
     from stockify.daemon import exitcodes, singleton
+    if args.inject and args.ticker == "live":
+        print("--inject needs a replay ticker (--ticker replay:YYYY-MM-DD:<Nx|max>): faults are never injected into "
+              "the live ticker, so none would be armed", file=sys.stderr)
+        return 2
     if args.once and not args.recorder_only:
         daemon.run_forever(once=True)
         return 0

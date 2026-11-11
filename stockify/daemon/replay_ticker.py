@@ -27,6 +27,7 @@ Select it with `--ticker replay:<YYYY-MM-DD>:<1x|10x|max>`.
 from __future__ import annotations
 
 import ctypes
+import logging
 import re
 import threading
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from stockify.daemon import kite_packets as kp
 from stockify.daemon.clock import Clock
 from stockify.daemon.landing import LandingDB
 
+log = logging.getLogger("stockify.daemon.replay_ticker")
 MODE_LTP, MODE_QUOTE, MODE_FULL = "ltp", "quote", "full"
 _CUT = {MODE_LTP: {8: 8, 28: 8, 32: 8, 44: 8, 184: 8},
         MODE_QUOTE: {8: 8, 28: 28, 32: 28, 44: 44, 184: 44},
@@ -148,6 +150,9 @@ class ReplayTicker:
         self.resume_after = resume_after
         self.resume_not_before_ns = resume_not_before_ns
         self.resume_at_ns: int | None = None    # set when a token_expiry with a duration ended this run
+        self.on_resume_reached = None       # () once, when the first event at or after `resume_not_before_ns` arrives
+        self._passed = 0                    # events that were not skipped as already dispatched or lost
+        self._skipped = 0
         self.connected = False
         self.killed = False
         self.finished = threading.Event()
@@ -237,10 +242,16 @@ class ReplayTicker:
         if cb is not None:
             cb(self, *args)
 
+    def _through(self) -> str:
+        t = max([x for x in (self.resume_after[1] if self.resume_after is not None else None,
+                             self.resume_not_before_ns) if x is not None] or [0])
+        return timeutil.ns_to_ist(t).strftime("%H:%M:%S IST")
+
     def run(self) -> None:
         self.connected = True
         self._fire(self.on_connect, {})
         faults = list(self.faults)
+        exhausted = False
         down_until = None
         prev = None
         try:
@@ -249,9 +260,14 @@ class ReplayTicker:
                 if self._stop.is_set():
                     break
                 if mark is not None and t_ns <= mark:
+                    self._skipped += 1
                     continue                              # the old process dispatched it already
                 if self.resume_not_before_ns is not None and t_ns < self.resume_not_before_ns:
+                    self._skipped += 1
                     continue                              # lost in the outage the restart follows
+                if self._passed == 0 and self.resume_not_before_ns is not None and self.on_resume_reached is not None:
+                    self.on_resume_reached()              # the restart has used `T + N`: it is never applied again
+                self._passed += 1
                 while faults and faults[0].at_ns <= t_ns:
                     fault = faults.pop(0)
                     self.clock.set(fault.at_ns)
@@ -292,7 +308,10 @@ class ReplayTicker:
                 self.clock.set(t_ns, mono)
                 self._fire(self.on_message, kp.build_frame(kept), True)
                 self.delivered_frames += 1
+            exhausted = True
         finally:
+            if exhausted and self._skipped and not self._passed and not self._stop.is_set():
+                log.info("replay already complete through %s: nothing to do", self._through())
             if not self.killed:
                 self.connected = False
                 self._fire(self.on_close, 1000, "replay finished")
