@@ -41,10 +41,11 @@ def _redirect_state_for_replay(directory: str) -> str | None:
     from pathlib import Path
     from stockify.daemon import market_day
     target = Path(directory).resolve()
-    real_app = market_day.real_state_dir().parent                  # the real STOCKIFY folder in local app-data
-    real_root = real_app.parent                                      # the real local app-data folder
-    if target == real_root or real_app == target or real_app in target.parents or target in real_app.parents:
-        return f"--replay-sandbox {directory}: that is the real lab's folder; pick an empty directory elsewhere"
+    for real_state in market_day.real_state_dirs():                # every candidate real lab folder
+        real_app = real_state.resolve().parent                       # the real STOCKIFY folder in local app-data
+        real_root = real_app.parent                                  # the real local app-data folder
+        if target == real_root or real_app == target or real_app in target.parents or target in real_app.parents:
+            return f"--replay-sandbox {directory}: that is the real lab's folder; pick an empty directory elsewhere"
     target.mkdir(parents=True, exist_ok=True)
     os.environ["LOCALAPPDATA"] = str(target)
     return None

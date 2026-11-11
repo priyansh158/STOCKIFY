@@ -330,7 +330,7 @@ class MarketDayTest(pf.PaperDayTest):
 
     def test_a_replay_never_runs_sessions_in_the_real_labs_store(self):
         import stockify_paths
-        with mock.patch.object(market_day, "real_state_dir", lambda: stockify_paths.state_dir()):
+        with mock.patch.object(market_day, "real_state_dirs", lambda: [stockify_paths.state_dir()]):
             with self.assertRaisesRegex(market_day.ReplayRefused, "replay-sandbox"):
                 self.run_day()
             self.assertFalse(paths.journal_file("s1", DAY).exists())

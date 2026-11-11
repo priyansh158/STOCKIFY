@@ -126,9 +126,23 @@ class ReplayRefused(RuntimeError):
     """A replay asked to run paper sessions against the real lab."""
 
 
+# %LOCALAPPDATA% as the process started, before `--replay-sandbox` (or a test) redirects it: a redirected AppData
+# folder (folder redirection, roaming profiles) is still the real lab.
+_START_LOCALAPPDATA = os.environ.get("LOCALAPPDATA")
+
+
+def real_state_dirs() -> list[Path]:
+    """Every folder that may be the real lab's state folder: `%LOCALAPPDATA%\STOCKIFY\kite` as the process started,
+    and the same under the user's home, whatever the environment says now."""
+    dirs = [Path.home() / "AppData" / "Local" / "STOCKIFY" / "kite"]
+    if _START_LOCALAPPDATA:
+        dirs.append(Path(_START_LOCALAPPDATA) / "STOCKIFY" / "kite")
+    return dirs
+
+
 def real_state_dir() -> Path:
-    """The real lab's state folder, `%LOCALAPPDATA%\STOCKIFY\kite` under the user's home, whatever the environment says."""
-    return Path.home() / "AppData" / "Local" / "STOCKIFY" / "kite"
+    """The home-based real lab folder (kept for callers); `real_state_dirs` lists every candidate."""
+    return real_state_dirs()[0]
 
 
 def check_replay_sandbox() -> None:
@@ -136,7 +150,8 @@ def check_replay_sandbox() -> None:
     Against the real lab that would put a past day into the owner's real sessions, so it is refused unless the
     state folder is somewhere else (tests, or `--replay-sandbox DIR`)."""
     import stockify_paths
-    if stockify_paths.state_dir().resolve() == real_state_dir().resolve():
+    here = stockify_paths.state_dir().resolve()
+    if any(here == d.resolve() for d in real_state_dirs()):
         raise ReplayRefused("a replay will not run paper sessions in the real lab's store: give --replay-sandbox "
                             "<dir> (an empty directory elsewhere), or run the recorder alone with --sessions none")
 
