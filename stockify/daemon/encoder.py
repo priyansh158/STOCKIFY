@@ -33,11 +33,15 @@ class FrameEncoder:
         self.token_map = dict(token_map)
         self.stats = EncoderStats()
 
-    def encode(self, payload: bytes, recv_ns: int = 0) -> list[tuple[int, bytes]]:
+    def encode(self, payload: bytes, recv_ns: int) -> list[tuple[int, bytes]]:
         """`(instrument_id, record)` for each data packet of a binary frame, in packet order.
 
-        `recv_ns` is the frame's receive time: the record's `t_event`, as in a recorded pack. Heartbeats and
-        frames that do not split give `[]`."""
+        `recv_ns` (required) is the frame's receive time: the record's `t_event`, as in a recorded pack. Heartbeats
+        and frames that do not split give `[]`. A payload that is not bytes (a text frame's `str`) is a caller
+        error: the dispatcher filters on the tap item's `is_binary` first."""
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise TypeError(f"payload must be bytes, got {type(payload).__name__} (filter text frames on is_binary)")
+        payload = bytes(payload)
         try:
             frame = kite_packets.split_frame(payload)
         except kite_packets.PacketError as e:

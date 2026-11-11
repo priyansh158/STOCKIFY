@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -168,14 +169,25 @@ def _check_mis_margin(doc: dict) -> None:
                               '"1" (the full NRML margin) is accepted: intraday F&O leverage is not modelled (D-80)')
 
 
-def _pos_int(value, where: str) -> int:  # noqa: ANN001
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ConfigError(f"{where}: must be a whole number of at least 1, got {value!r}")
+# paper.json whole-number keys and their largest accepted value (RM 5.3): generous, but a typo (an hour as 3600000,
+# a queue of a billion frames) is refused. A bound is a sanity limit, not a market rule.
+PAPER_BOUNDS = {"clock_every_s": 3600, "dispatcher_queue_max": 10_000_000, "token_poll_s": 3600,
+                "commands_every_s": 60, "sod_state_warn_mb": 100_000,
+                "journal.fsync_every_s": 60, "margin_poll.debounce_s": 60, "margin_poll.every_s": 86_400,
+                "margin_poll.max_rps": 100}
+_PLAIN_DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
+
+
+def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
+    top = PAPER_BOUNDS[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
+        raise ConfigError(f"{where}: must be a whole number from 1 to {top}, got {value!r}")
     return value
 
 
 def _check_paper(doc: dict) -> None:
-    """paper.json (stockify.paper/1): every key present, whole positive numbers, a fraction in (0, 1]."""
+    """paper.json (stockify.paper/1): every key present, whole numbers within PAPER_BOUNDS, and
+    `coverage_threshold` a plain decimal string (digits and one optional dot: no sign, spaces or exponent) in (0, 1]."""
     shape = {"clock_every_s": None, "journal": ("fsync_every_s",), "dispatcher_queue_max": None,
              "margin_poll": ("debounce_s", "every_s", "max_rps"), "token_poll_s": None,
              "coverage_threshold": "fraction", "commands_every_s": None, "sod_state_warn_mb": None}
@@ -187,20 +199,21 @@ def _check_paper(doc: dict) -> None:
             raise ConfigError(f"paper.json: {key} is missing")
         where = f"paper.json: {key}"
         if kind is None:
-            _pos_int(doc[key], where)
+            _bounded_int(doc[key], where, key)
         elif kind == "fraction":
+            text = doc[key]
             try:
-                frac = numerics.to_ppb(doc[key])
+                frac = numerics.to_ppb(text) if isinstance(text, str) and _PLAIN_DECIMAL.fullmatch(text) else None
             except (numerics.NumericError, OverflowError):
                 frac = None
             if frac is None or not 0 < frac <= numerics.PPB:
-                raise ConfigError(f"{where}: must be a decimal string in (0, 1], got {doc[key]!r}")
+                raise ConfigError(f"{where}: must be a plain decimal string in (0, 1], got {text!r}")
         else:
             sub = doc[key]
             if not isinstance(sub, dict) or set(sub) != set(kind):
                 raise ConfigError(f"{where}: must be an object with exactly {list(kind)}")
             for k in kind:
-                _pos_int(sub[k], f"{where}.{k}")
+                _bounded_int(sub[k], f"{where}.{k}", f"{key}.{k}")
 
 
 def load_json(name: str, config_dir: Path | None = None) -> dict:

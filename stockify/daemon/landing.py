@@ -93,6 +93,16 @@ class LandingDB:
                                     (start_ns, end_ns, reason, scope))
             return int(cur.lastrowid)
 
+    def add_dropped_frames(self, runs: list[tuple[int, int, int, int]]) -> None:
+        """Durable record of frames the writer queue refused (RM 5.3): one `queue_full` gap per run of consecutive
+        frame numbers, `(first_frame_no, last_frame_no, first_recv_ns, last_recv_ns)` each. The gap spans the receive
+        times of the first and last dropped frame, and names the frames so a parity report knows what is missing."""
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO gaps (start_ns, end_ns, reason, scope, first_frame_no, last_frame_no, frames) "
+                "VALUES (?, ?, 'queue_full', 'all', ?, ?, ?)",
+                [(t0, t1, a, b, b - a + 1) for a, b, t0, t1 in runs])
+
     def log_subscriptions(self, rows: list[tuple]) -> None:
         """rows: (recv_ns, action, instrument_id, instrument_token, mode, reason)."""
         with self.lock:

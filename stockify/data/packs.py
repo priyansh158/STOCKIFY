@@ -81,6 +81,9 @@ SIZE = {TICK_QUOTE: 104, TICK_FULL: 384, INDEX_K: 80, BAR_K: 88, CLOCK: 24, GAP_
 # <block name="gap-reasons" same-as="docs/plan/A1_schemas.md:gap-reasons" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
 GAP_REASONS = {"disconnect": 1, "process_stop": 2, "token_expired": 3, "stall": 4, "not_subscribed": 5}
 # </block>
+# Landing gap reasons that only say which frames the recording lacks (RM 5.3); `include_gaps` leaves them out
+# because the .evt format has no GAP code for them (adding one is a format change). The parity report reads them.
+RECORDER_ONLY_GAP_REASONS = frozenset({"queue_full"})
 # <block name="refdata-subtypes" same-as="docs/plan/A1_schemas.md:refdata-subtypes" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
 REFDATA_SUBTYPES = {"instrument_add": 1, "price_band": 2, "margin_requirement": 3, "spec_change": 4,
                     "strategy_control": 5}
@@ -435,6 +438,8 @@ def _tier_ids(subs: list[dict], tier: str, t: int) -> set[int]:
 def _gap_events(b: _Build, tick_day, ids: set[int]) -> None:  # noqa: ANN001
     subs = tick_day.subscriptions()
     for g in sorted(tick_day.gaps(), key=lambda g: (g["start_ns"] or 0, g["end_ns"] or 0, g["reason"])):
+        if g["reason"] in RECORDER_ONLY_GAP_REASONS:
+            continue                       # names frames the landing lacks; the pack format has no code for it
         scope = g.get("scope") or "all"
         if scope == "all":
             targets = [0]

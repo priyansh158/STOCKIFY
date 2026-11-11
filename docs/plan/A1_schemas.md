@@ -156,6 +156,10 @@ CREATE TABLE packets (
 CREATE INDEX ix_packets_instr ON packets(instrument_id, seq);
 CREATE TABLE gaps (gap_id INTEGER PRIMARY KEY, start_ns INTEGER, end_ns INTEGER, reason TEXT,
   scope TEXT);                                   -- all | tier:<name> | instrument:<id>
+-- migration 0002 (RM 5.3) adds gaps.first_frame_no, last_frame_no, frames: set only for reason `queue_full`, a run of
+-- consecutive frame_nos the writer queue refused (the paper tap still received them); start_ns/end_ns are the receive
+-- times of its first and last frame. NULL on other gaps, and absent from a read-only file older than 0002.
+-- `include_gaps` leaves `queue_full` out of packs (no GAP code); the parity report reads the rows from the landing.
 CREATE TABLE subscription_log (recv_ns INTEGER, action TEXT, instrument_id INTEGER,
   instrument_token INTEGER, mode TEXT, reason TEXT);
 CREATE TABLE heartbeats (minute_ns INTEGER PRIMARY KEY, count INTEGER);   -- 1-byte heartbeats per minute (liveness)
@@ -724,5 +728,5 @@ one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches
 - `kite_limits.json`: `historical_rps` 3, `quote_rps` 1, `quote_max_instruments` 500, `ws_max_instruments` 3000, `ws_max_connections` 3, `historical_max_days` per interval (⚠ defaults), `learned` (written by M1.4).
 - `calendar/nse_holidays.csv`: `date,segments,description,source`. `calendar/special_sessions.csv`: `date,group,phase,start,end,name,source`. Holiday rows from 2024 come from NSE's holiday-master API (but 2024-11-01, a Muhurat-only day its CM and FO lists leave out: D-75); the 2009–2023 rows are the weekdays with no NSE data in the lab, named from NSE's own lists (D-75, X-14). A day with only a Muhurat session is a holiday, its description ending `(Muhurat session only)`. `python -m stockify calendar audit --from D --to D` compares the list with the lab's data.
 - `freeze_limits.json`: index quantity-freeze limits from NSE circulars, dated per `underlying` (`{underlying, effective_from, freeze_qty, source, verified}`, X-5). They decide for the underlyings they list; the refdata `freeze_limits` table (`qtyfreeze.csv` snapshots, S-6) covers the rest and cross-checks them (D-54).
-- `paper.json` (VOL 5.2): `sod_state_warn_mb` (64), the start-of-day state size past which the daemon warns (§6.4).
+- `paper.json` (VOL 5.2, RM 5.3): every key is required, whole numbers are 1 to the bound in `loader.PAPER_BOUNDS`. `clock_every_s` (1, max 3600), `journal.fsync_every_s` (5, max 60), `dispatcher_queue_max` (200000, max 10000000), `margin_poll` `{debounce_s 2 (max 60), every_s 300 (max 86400), max_rps 10 (max 100)}`, `token_poll_s` (15, max 3600), `coverage_threshold` ("0.98": a plain decimal string, digits and one dot, in (0, 1]), `commands_every_s` (1, max 60), `sod_state_warn_mb` (64, max 100000): the start-of-day state size past which the daemon warns (§6.4).
 - `notify.json`: channel type and per-event switches (secrets elsewhere). `research.json`: `holdout_from`, default walk-forward settings.

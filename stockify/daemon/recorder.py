@@ -17,6 +17,7 @@ is never filled in (I-7).
 """
 from __future__ import annotations
 
+import collections
 import itertools
 import logging
 import queue
@@ -71,9 +72,28 @@ class Recorder:
         self._started_meta = dict(meta or {})
         # Optional writer-thread hook: on_packet(instrument_id, token, ltp, recv_ns). Must be cheap.
         self.on_packet: Callable[[int | None, int, int, int], None] | None = None
-        # Frame taps (M5.1 fan-out): each gets the same stamped item the writer queue gets, heartbeats and text
-        # frames included. A tap must be a `put_nowait` onto its own queue: it runs on the KiteTicker thread.
-        self.taps: list[Callable[[tuple], None]] = []
+        # Frames the queue refused: (frame_no, recv_ns), appended by the ticker thread (deque appends are atomic),
+        # drained and written as `queue_full` gap rows by the writer at each flush (RM 5.3).
+        self._dropped: collections.deque = collections.deque()
+        self._taps: list[Callable[[tuple], None]] = []
+        self._tap_failures: list[int] = []
+
+    # ── frame taps (M5.1 fan-out) ────────────────────────────────────────────
+    @property
+    def taps(self) -> tuple:
+        """The registered taps, read-only. Register with `add_tap`."""
+        return tuple(self._taps)
+
+    def add_tap(self, q) -> None:  # noqa: ANN001
+        """Register a consumer queue. Every stamped item (frames, heartbeats, text frames) is offered to its
+        `put_nowait` on the KiteTicker thread, right after the landing queue, so a tap must be a bounded queue the
+        consumer owns: nothing that blocks, locks, does I/O or works per frame. Only an object with `put_nowait`
+        is accepted; a full queue raises `queue.Full`, which is counted and never reaches the recorder's frames."""
+        put = getattr(q, "put_nowait", None)
+        if not callable(put):
+            raise TypeError(f"a frame tap must be a queue with put_nowait, got {type(q).__name__}")
+        self._taps.append(put)
+        self._tap_failures.append(0)
 
     # ── start / stop ─────────────────────────────────────────────────────────
     def begin(self) -> None:
@@ -121,15 +141,17 @@ class Recorder:
             self.stats.dropped_frames += 1
             if self.stats.dropped_frames == 1:
                 self.stats.alarms.append("queue_full")
+            self._dropped.append((item[0], item[1]))
             log.error("recorder queue full: frame dropped (%d so far)", self.stats.dropped_frames)
         # After the landing queue, so a tap can never cost the recorder a frame; a failing tap is counted, not raised.
-        for tap in self.taps:
+        for i, tap in enumerate(self._taps):
             try:
                 tap(item)
             except Exception:  # noqa: BLE001
                 self.stats.tap_errors += 1
-                if self.stats.tap_errors == 1:
-                    log.exception("frame tap failed (counted in tap_errors; further failures are not logged)")
+                self._tap_failures[i] += 1
+                if self._tap_failures[i] == 1:
+                    log.exception("frame tap %d failed (counted in tap_errors; its further failures are not logged)", i)
 
     # ── writer side ──────────────────────────────────────────────────────────
     def _run(self) -> None:
@@ -191,12 +213,31 @@ class Recorder:
         if len(self._rows) >= self.batch_rows:
             self.flush()
 
+    def _write_dropped(self) -> None:
+        """Turn the frames the queue refused into `queue_full` gap rows, one per run of consecutive frame_nos.
+        Heartbeats and text frames carry no frame_no (0) and are only counted in `stats.dropped_frames`."""
+        runs: list[list[int]] = []
+        while True:
+            try:
+                frame_no, recv_ns = self._dropped.popleft()
+            except IndexError:
+                break
+            if not frame_no:
+                continue
+            if runs and frame_no == runs[-1][1] + 1:
+                runs[-1][1], runs[-1][3] = frame_no, recv_ns
+            else:
+                runs.append([frame_no, frame_no, recv_ns, recv_ns])
+        if runs:
+            self.landing.add_dropped_frames([tuple(r) for r in runs])
+
     def maybe_flush(self) -> None:
         if self.clock.mono_ns() - self._last_flush_mono >= self.batch_ns:
             self.flush()
 
     def flush(self) -> None:
         self._last_flush_mono = self.clock.mono_ns()
+        self._write_dropped()
         if not self._rows and not self._heartbeats:
             return
         rows, beats = self._rows, self._heartbeats
