@@ -1,6 +1,7 @@
 """The STOCKIFY market daemon (M1.5 recorder; M5 adds paper sessions).
 
-`run_recorder()` records one IST trading day:
+`run_market_day()` (market_day.py) records one IST trading day and runs the paper sessions on it; `run_recorder()` is
+the same with no sessions. Recording:
 
 1. make sure today's instruments are synced (live; needs a fresh Kite login),
 2. open the day's landing file and the subscription manager,
@@ -166,7 +167,8 @@ def _kite_token_fresh() -> bool:
 
 
 def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  # noqa: ANN001
-               recorder=None, token_fresh=None, send_reminder=None) -> int:  # noqa: ANN001
+               recorder=None, token_fresh=None, send_reminder=None,  # noqa: ANN001
+               session_ids: list[str] | None = None) -> int:
     """The live daemon: wait for the session, record it, then hibernate (D-32).
 
     Each pass handles one of three situations:
@@ -187,7 +189,8 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     power = power or Power()
     clock = clock or WallClock()
     stop = stop or threading.Event()
-    record = recorder or (lambda: run_recorder(ticker_spec="live", stop=stop, power=power))
+    record = recorder or (lambda: run_market_day(ticker_spec="live", stop=stop, power=power,
+                                                 session_ids=session_ids, token_fresh=token_fresh))
     token_fresh = token_fresh or _kite_token_fresh
     state = scheduler.State()
     from stockify.daemon import reminder
@@ -270,126 +273,15 @@ def calendar_is_trading(day: date) -> bool:
 
 def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
                  stop: threading.Event | None = None, power=None) -> int:  # noqa: ANN001
-    from stockify.config import loader
-    from stockify.daemon.clock import WallClock
-    from stockify.daemon.landing import LandingDB
-    from stockify.daemon.recorder import Recorder
-    from stockify.daemon.subscriptions import SubscriptionManager
-    from stockify.daemon.ticker import RecorderSession, direct_call, live_call_in_ticker, make_live_ticker
-    from stockify.data import calendar
+    """The recorder alone: `run_market_day` with no paper sessions (GK 5.1)."""
+    from stockify.daemon import market_day
+    return market_day.run_market_day(ticker_spec=ticker_spec, faults=faults, stop=stop, power=power, session_ids=[])
 
-    stop = stop or threading.Event()
-    schedule = loader.load_json("schedule.json")
-    replay = ticker_spec != "live"
 
-    if replay:
-        from stockify.daemon.replay_ticker import open_replay, parse_spec
-        day, _ = parse_spec(ticker_spec)
-        ticker, clock = open_replay(ticker_spec, faults=faults)
-        landing = LandingDB(day, paths.ticks_replay_file(day))
-        call = direct_call
-        tokens = _token_map(day)
-        universe = loader.load_json("universe.json")
-        manager = SubscriptionManager(day, universe, clock, log_rows=landing.log_subscriptions)
-    else:
-        import kite_client
-        clock = WallClock()
-        day = timeutil.ist_today()
-        if not calendar.is_trading_day("FO", day):
-            log.info("%s is not an NSE trading day; nothing to record", day)
-            return exitcodes.OK
-        if not kite_client.is_authenticated():
-            log.warning("no fresh Kite login: waiting for one (log in at /portfolio)")
-            return exitcodes.TOKEN_EXPIRED
-        _ensure_refdata(day)
-        payload = kite_client.load_cached_token()
-        from stockify.daemon import conn_budget
-        try:
-            ticker = make_live_ticker(kite_client._api_key(), payload["access_token"], role="daemon")
-        except conn_budget.BudgetExceeded as e:
-            log.error("no live ticker: %s", e)
-            return exitcodes.RECONNECT_EXHAUSTED
-        # Start-up checks stay fail-fast: the token map and the universe are loaded, and the subscription
-        # plan built, before the wait for the subscribe time, so a bad one stops the run now (M3).
-        try:
-            tokens = _token_map(day)
-            universe = loader.load_json("universe.json")
-            manager = SubscriptionManager(day, universe, clock)
-        except BaseException:
-            _release_ticket(ticker)
-            raise
-        # The day's landing file is created only once this run is going to record (I-13): a run that
-        # ends here, stopped while waiting or started after the unsubscribe time, leaves nothing on disk.
-        start_ns = timeutil.ist_ns(day, schedule["jobs"]["subscribe"])
-        if clock.now_ns() < start_ns:
-            log.info("waiting for the subscribe time %s IST", schedule["jobs"]["subscribe"])
-            if not clock.sleep_until(start_ns, stop):
-                _release_ticket(ticker)
-                return exitcodes.OK
-        if clock.now_ns() >= timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"]):
-            log.info("the session is over for %s", day)
-            _release_ticket(ticker)
-            return exitcodes.OK
-        landing = LandingDB(day)
-        manager.log_rows = landing.log_subscriptions
-        call = live_call_in_ticker
-
-    for warning in manager.warnings:
-        log.warning("subscriptions: %s", warning)
-    recorder = Recorder(landing, tokens.get, clock)
-    session = RecorderSession(ticker, recorder, manager, clock, call_in_ticker=call)
-    end_ns = timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])
-
-    recorder.start()
-    session.start()
-    ticker.connect(threaded=True)
-    log.info("recording %s: %d instruments, landing %s", day, len(manager.current), landing.path)
-    est = estimate_bytes_per_day(day, manager)
-    log.info("expected landing size today: about %.0f MB (assumes about %d chain strikes once "
-             "centred and one packet per instrument per second)", est["bytes"] / 1e6, est["chain_instruments"])
-    last_power_check = 0
-    bands = None
-    if not replay:
-        from stockify.data import limits
-        from stockify import kite_readonly
-        bands = limits.Snapshotter(day, manager, client=kite_readonly.client(), clock=clock)
-    try:
-        while not stop.is_set() and not session.stopped.is_set():
-            session.tick()
-            if bands is not None:
-                bands.tick()                    # price bands into daily_limits (M1.5)
-            if power is not None and clock.now_ns() - last_power_check >= 60 * 1_000_000_000:
-                last_power_check = clock.now_ns()
-                if power.on_ac_power() is False:
-                    if "on_battery" not in recorder.stats.alarms:
-                        recorder.stats.alarms.append("on_battery")
-                    log.warning("running on battery during the session: recording continues until the battery "
-                                "runs out (Windows then hibernates; the stop is recorded as a gap)")
-            if replay and ticker.finished.is_set():
-                break
-            if clock.now_ns() >= end_ns:
-                log.info("unsubscribe time reached")
-                break
-            stop.wait(0.05 if replay else 1.0)
-    except KeyboardInterrupt:
-        log.info("interrupted")
-    finally:
-        if not session.stopped.is_set():
-            session.end_session()
-        try:
-            ticker.close()
-            if replay:
-                ticker.stop()
-        except Exception as e:                  # the reactor may already be gone
-            log.debug("ticker close: %s", e)
-        _release_ticket(ticker)
-        recorder.stop()
-        session.tick()
-        landing.close()
-        stats = recorder.stats
-        log.info("recorded %d packets in %d frames; %d heartbeats; dropped %d; exit %d",
-                 stats.packets, stats.frames, stats.heartbeats, stats.dropped_frames, session.exit_code)
-    return session.exit_code
+def run_market_day(**kwargs) -> int:
+    """Record the day and run the paper sessions on it; see `stockify.daemon.market_day`."""
+    from stockify.daemon import market_day
+    return market_day.run_market_day(**kwargs)
 
 
 def _release_ticket(ticker) -> None:  # noqa: ANN001

@@ -23,17 +23,34 @@ _STUBS = {
 }
 
 
+def _parse_sessions(text: str) -> list[str] | None:
+    """`--sessions`: `all` (every armed, running or paused session) is None, `none` is [], else the ids."""
+    text = text.strip()
+    if text == "all":
+        return None
+    if text == "none":
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
 def _cmd_daemon(args) -> int:
     from stockify import daemon
-    if args.recorder_only:
-        if args.ticker == "live":
-            _load_env()
-        return daemon.run_recorder(ticker_spec=args.ticker, faults=args.inject)
-    if args.once:
+    from stockify.daemon import exitcodes, singleton
+    if args.once and not args.recorder_only:
         daemon.run_forever(once=True)
         return 0
+    try:
+        lock = singleton.acquire()               # held until the process ends; the OS drops it however it ends
+    except singleton.AlreadyRunning as e:
+        print(e, file=sys.stderr)
+        return exitcodes.ALREADY_RUNNING
+    sessions = [] if args.recorder_only else _parse_sessions(args.sessions)
+    if args.recorder_only or args.ticker != "live":
+        if args.ticker == "live":
+            _load_env()
+        return daemon.run_market_day(ticker_spec=args.ticker, faults=args.inject, session_ids=sessions)
     _load_env()
-    return daemon.run_daemon()
+    return daemon.run_daemon(session_ids=sessions)
 
 
 def _cmd_config(args) -> int:
@@ -641,6 +658,9 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("daemon", help="market daemon: record each session, then hibernate (D-32)")
     d.add_argument("--once", action="store_true", help="log one idle cycle and exit")
     d.add_argument("--recorder-only", action="store_true", help="record today's ticks (M1.5)")
+    d.add_argument("--sessions", default="all",
+                   help="paper sessions to run: all (every armed, running or paused one), none, or ids separated "
+                        "by commas")
     d.add_argument("--ticker", default="live",
                    help="live, or replay:YYYY-MM-DD:<Nx|max> to replay a recorded day")
     d.add_argument("--inject", action="append", default=[],

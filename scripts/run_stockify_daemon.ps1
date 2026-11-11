@@ -6,6 +6,7 @@
 #   75  day done: register a one-shot wake task from next_wake.json, hibernate,
 #       restart the daemon after resume
 #   76  Kite token stale or expired: wait for a fresh kite_token.json, restart
+#   79  another daemon already holds the lab's lock: exit (never restart into it)
 #   other: crash or gave up reconnecting: restart with backoff
 #          (5 s doubling to 5 min; reset after 10 min of uptime)
 [CmdletBinding()]
@@ -46,6 +47,7 @@ if ($Once) { $DaemonArgs += "--once" }
 
 $ExitSleep = 75
 $ExitToken = 76
+$ExitAlreadyRunning = 79
 
 function Write-Log([string]$Message) {
     "[$(Get-Date -Format o)] $Message" | Tee-Object -FilePath $LogFile -Append
@@ -128,6 +130,10 @@ while ($true) {
     $code = $LASTEXITCODE
     if ($code -eq 0 -or $Once) {
         Write-Log "STOCKIFY daemon exited with code $code"
+        exit $code
+    }
+    if ($code -eq $ExitAlreadyRunning) {
+        Write-Log "another STOCKIFY daemon is already running on this lab (code 79); not restarting"
         exit $code
     }
     if ($code -eq $ExitSleep) {

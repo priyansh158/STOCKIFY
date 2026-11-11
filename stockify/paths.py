@@ -23,6 +23,16 @@ def lab_dir() -> Path:
     return _dir(stockify_paths.state_dir() / "lab")
 
 
+def daemon_lock_file() -> Path:
+    """The lock one daemon holds for its whole life (GK 5.1): a second daemon on this lab is refused."""
+    return lab_dir() / "daemon.lock"
+
+
+def daemon_status_file() -> Path:
+    """What the daemon last knew when it stopped (GK 5.1): the last frame it recorded, and why it stopped."""
+    return lab_dir() / "daemon_status.json"
+
+
 def refdata_db() -> Path:
     return lab_dir() / "refdata.sqlite"
 

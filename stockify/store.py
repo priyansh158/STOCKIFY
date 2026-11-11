@@ -60,17 +60,29 @@ def init_db() -> None:
     _connect()
 
 
+def _all(sql: str, args=()) -> list:
+    """Every row of a read. The connection is shared by every thread and SQLite shows a connection its own
+    uncommitted writes, so a read waits for the lock that a writer holds from BEGIN to COMMIT: it sees committed
+    state only (GK 5.1, carried from the dispatcher review)."""
+    conn = _connect()
+    with _lock:
+        return conn.execute(sql, args).fetchall()
+
+
+def _one(sql: str, args=()):  # noqa: ANN202
+    """The first row of a read, or None; see `_all`."""
+    conn = _connect()
+    with _lock:
+        return conn.execute(sql, args).fetchone()
+
+
 def schema_version() -> int:
-    row = _connect().execute(
-        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-    ).fetchone()
+    row = _one("SELECT value FROM schema_meta WHERE key = 'schema_version'")
     return int(row["value"]) if row else 0
 
 
 def table_names() -> list[str]:
-    rows = _connect().execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
-    ).fetchall()
+    rows = _all("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
     return [r["name"] for r in rows]
 
 
@@ -102,7 +114,7 @@ def margin_calibrations(underlying: str | None = None) -> list[dict]:
     sql, args = "SELECT * FROM margin_calibration", ()
     if underlying is not None:
         sql, args = sql + " WHERE underlying = ?", (underlying,)
-    return [dict(r) for r in _connect().execute(sql + " ORDER BY sample_id", args).fetchall()]
+    return [dict(r) for r in _all(sql + " ORDER BY sample_id", args)]
 
 
 def write_recorder_status(row: dict) -> None:
@@ -116,8 +128,7 @@ def write_recorder_status(row: dict) -> None:
 
 
 def latest_recorder_status() -> dict | None:
-    row = _connect().execute(
-        "SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1").fetchone()
+    row = _one("SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1")
     return dict(row) if row else None
 
 
@@ -183,7 +194,7 @@ def update_run(run_id: str, *, only_if_status: str | tuple[str, ...] | None = No
 
 
 def get_run(run_id: str) -> dict | None:
-    row = _connect().execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    row = _one("SELECT * FROM runs WHERE run_id = ?", (run_id,))
     return dict(row) if row else None
 
 
@@ -199,7 +210,7 @@ def list_runs(*, status: str | None = None, family_id: str | None = None, offset
         args.append(family_id)
     sql = "SELECT * FROM runs" + (f" WHERE {' AND '.join(where)}" if where else "")
     sql += " ORDER BY created_ns DESC, run_id LIMIT ? OFFSET ?"
-    return [dict(r) for r in _connect().execute(sql, (*args, int(limit), int(offset))).fetchall()]
+    return [dict(r) for r in _all(sql, (*args, int(limit), int(offset)))]
 
 
 def replace_run_rows(run_id: str, *, orders: list[dict], fills: list[dict], equity: list[dict],
@@ -262,8 +273,8 @@ def run_rows(run_id: str, table: str, *, offset: int = 0, limit: int = 500) -> l
     if table not in _RUN_TABLES:
         raise ValueError(f"unknown run table {table!r}")
     sql_table, key, cols = _RUN_TABLES[table]
-    rows = _connect().execute(f"SELECT {', '.join(cols)} FROM {sql_table} WHERE run_id = ? ORDER BY {key} "
-                              f"LIMIT ? OFFSET ?", (run_id, int(limit), int(offset))).fetchall()
+    rows = _all(f"SELECT {', '.join(cols)} FROM {sql_table} WHERE run_id = ? ORDER BY {key} "
+                f"LIMIT ? OFFSET ?", (run_id, int(limit), int(offset)))
     if table == "orders":
         return [json.loads(r["row_json"]) for r in rows]
     return [dict(r) for r in rows]
@@ -322,7 +333,7 @@ def create_session(session_id: str, name: str, cfg: dict, created_ns: int) -> No
 
 def get_session(session_id: str) -> dict | None:
     """The session row; `pause_reasons` is a sorted list and `config` the parsed session config."""
-    row = _connect().execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    row = _one("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
     return _session_row(row) if row else None
 
 
@@ -331,8 +342,7 @@ def list_sessions(*, status: str | None = None) -> list[dict]:
     sql, args = "SELECT * FROM sessions", ()
     if status is not None:
         sql, args = sql + " WHERE status = ?", (status,)
-    return [_session_row(r) for r in
-            _connect().execute(sql + " ORDER BY created_ns, session_id", args).fetchall()]
+    return [_session_row(r) for r in _all(sql + " ORDER BY created_ns, session_id", args)]
 
 
 def _write_state(conn: sqlite3.Connection, session_id: str, status: str, reasons: list[str],
@@ -425,9 +435,9 @@ def add_timeline(session_id: str, kind: str, detail: dict, *, wall_ns: int, engi
 
 def timeline(session_id: str, *, offset: int = 0, limit: int = 200) -> list[dict]:
     """Rows in the order they were written, each with `detail` parsed."""
-    rows = _connect().execute(
+    rows = _all(
         "SELECT session_id, engine_ns, wall_ns, kind, detail_json FROM session_timeline WHERE session_id = ? "
-        "ORDER BY rowid LIMIT ? OFFSET ?", (session_id, int(limit), int(offset))).fetchall()
+        "ORDER BY rowid LIMIT ? OFFSET ?", (session_id, int(limit), int(offset)))
     out = []
     for r in rows:
         d = dict(r)
@@ -454,8 +464,7 @@ def upsert_session_day(session_id: str, trade_date: str, **fields) -> None:
 
 
 def get_session_day(session_id: str, trade_date: str) -> dict | None:
-    row = _connect().execute("SELECT * FROM session_days WHERE session_id = ? AND trade_date = ?",
-                             (session_id, trade_date)).fetchone()
+    row = _one("SELECT * FROM session_days WHERE session_id = ? AND trade_date = ?", (session_id, trade_date))
     return dict(row) if row else None
 
 
@@ -478,8 +487,7 @@ def add_command(session_id: str | None, command: str, args: dict | None, created
 def pending_commands() -> list[dict]:
     """Commands not yet marked, first in first out: by cmd_id (insertion order), never by the caller's
     created_ns, which a skewed clock could reorder. `args` parsed."""
-    rows = _connect().execute("SELECT * FROM session_commands WHERE applied_ns IS NULL "
-                              "ORDER BY cmd_id").fetchall()
+    rows = _all("SELECT * FROM session_commands WHERE applied_ns IS NULL ORDER BY cmd_id")
     out = []
     for r in rows:
         d = dict(r)
@@ -660,8 +668,7 @@ def session_rows(session_id: str, table: str, *, trade_date: str | None = None, 
     sql, args = f"SELECT trade_date, {key}, row_json FROM {sql_table} WHERE session_id = ?", [session_id]
     if trade_date is not None:
         sql, args = sql + " AND trade_date = ?", [*args, trade_date]
-    rows = _connect().execute(sql + f" ORDER BY trade_date, {key} LIMIT ? OFFSET ?",
-                              (*args, int(limit), int(offset))).fetchall()
+    rows = _all(sql + f" ORDER BY trade_date, {key} LIMIT ? OFFSET ?", (*args, int(limit), int(offset)))
     out = []
     for r in rows:
         d = json.loads(r["row_json"])

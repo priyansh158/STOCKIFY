@@ -28,6 +28,7 @@ from typing import Callable
 from stockify import bundle as bundle_mod, engine, paths, store
 from stockify.config import loader
 from stockify.daemon import journal
+from stockify.daemon.engine_log import EngineLog
 from stockify.data import packs
 
 log = logging.getLogger("stockify.daemon.session_day")
@@ -70,6 +71,7 @@ class SessionDay:
         self._next_event_no = 1
         self._failed: BaseException | None = None
         self._replay_only = False
+        self._elog = EngineLog(session_id)       # the engine's log lines, with a pause's skips throttled
 
     @property
     def trade_date(self) -> str:
@@ -161,8 +163,10 @@ class SessionDay:
         if batch:
             self.engine.push(batch)
         carried: list[int] = []
+        outputs = self.engine.drain_outputs()
+        self._elog.feed(outputs.get("log") or [])
         self._next_event_no = store.apply_session_outputs(
-            self.session_id, self.trade_date, self.engine.drain_outputs(), first_event_no=self._next_event_no,
+            self.session_id, self.trade_date, outputs, first_event_no=self._next_event_no,
             last_frame=last_frame, carried=carried,
             latency_ns=int(self.cfg.get("latency_ms", 0)) * 1_000_000)
         for oid in carried:
@@ -209,6 +213,7 @@ class SessionDay:
 
     def close(self, *, finalise: bool = False) -> None:
         """Close the journal (finalising it only when asked) and drop the engine, which holds the packs mapped."""
+        self._elog.flush()
         if self._journal is not None:
             try:
                 self._journal.close(finalise=finalise)
