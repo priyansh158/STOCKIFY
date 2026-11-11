@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import struct
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -71,6 +72,8 @@ class SessionDay:
         self._next_event_no = 1
         self._failed: BaseException | None = None
         self._replay_only = False
+        self.resumed = False                    # True once the day was rebuilt from its journal (`replay`)
+        self.open_process_stop = False          # the journal ends inside a GAP(process_stop) that never got its end
         caps = loader.load_json("paper.json")["engine_log"]        # the engine's log lines, throttled and capped
         self._elog = EngineLog(session_id, max_lines_per_min=caps["max_lines_per_min"],
                                max_line_chars=caps["max_line_chars"], sink=log_sink)
@@ -82,6 +85,16 @@ class SessionDay:
     @property
     def journal_records(self) -> int:
         return self._journal.records if self._journal is not None else 0
+
+    @property
+    def last_t(self) -> int | None:
+        """The `t` of the journal's last record (None before the first)."""
+        return self._journal.last_t if self._journal is not None else None
+
+    @property
+    def torn_bytes(self) -> int:
+        """Bytes a reopened journal cut from its torn tail (set aside in `<journal>.torn`)."""
+        return self._journal.torn_bytes if self._journal is not None else 0
 
     def open(self, sod_state: dict | None, reasons: list[str], t0: int) -> None:
         """Write the day's bundle, build the engine, open the journal. If the state's `strategy_enabled` /
@@ -120,12 +133,16 @@ class SessionDay:
     def _writer(self, jpath: Path) -> journal.JournalWriter:
         return journal.JournalWriter(jpath, fsync_every_mono_ns=self._fsync_ns, mono=self._mono)
 
-    def replay(self) -> dict:
+    def replay(self, reconcile: Callable[[dict], list[int]] | None = None) -> dict:
         """Rebuild the day from what is on disk after a restart (or to audit it): the day's bundle and journal are
-        read, its stored outputs are reset (so nothing stored from beyond the journal survives), a fresh engine is
-        fed the journal's records, and the engine's outputs are stored. An open journal is reopened (a torn tail is
-        repaired by the writer) and the day goes on taking input; a finalised one makes a replay-only day. The
-        journal is never written. Returns {"records", "next_event_no", "carried_orders"}."""
+        read and a fresh engine is fed the journal's records. An open journal is reopened (a torn tail is repaired by
+        the writer) and the day goes on taking input; a finalised one makes a replay-only day. The journal is never
+        written. Returns {"records", "next_event_no", "carried_orders"}.
+
+        Without `reconcile`, the day's stored outputs are reset first (so nothing stored from beyond the journal
+        survives) and the engine's outputs are stored. With it (crash recovery, GK 5.4), nothing is reset: the
+        engine's drained outputs for the whole journal are handed to `reconcile(outputs)`, which compares them with
+        the store, repairs what it may and returns the carried order ids; the event numbers go on from the outputs."""
         if self._journal is not None or self.engine is not None:
             raise SessionDayError("the day is already open")
         jpath = paths.journal_file(self.session_id, self.day)
@@ -141,25 +158,41 @@ class SessionDay:
             else:
                 self._journal = self._writer(jpath)
             _, body, _ = journal.read(jpath)
-            records = len(body) and self._count(body)
-            store.reset_session_outputs(self.session_id, self.trade_date)
+            records, self.open_process_stop = self._survey(body)
             self._next_event_no = 1
             self.carried_orders = []
-            self.engine = session_engine(bpath, self.cfg)
-            if body:
-                self._push_and_store(body, None)
+            if reconcile is None:
+                store.reset_session_outputs(self.session_id, self.trade_date)
+                self.engine = session_engine(bpath, self.cfg)
+                if body:
+                    self._push_and_store(body, None)
+            else:
+                self.engine = session_engine(bpath, self.cfg)
+                if body:
+                    self.engine.push(body)
+                outputs = self.engine.drain_outputs()
+                self._elog.feed(outputs.get("log") or [])
+                self._note_carried(reconcile(outputs))
+                self._next_event_no = len(outputs.get("order_events") or ()) + 1
+            self.resumed = True
         except BaseException:
             self.close()
             raise
         return {"records": records, "next_event_no": self._next_event_no, "carried_orders": list(self.carried_orders)}
 
     @staticmethod
-    def _count(body: bytes) -> int:
-        n, off = 0, 0
+    def _survey(body: bytes) -> tuple[int, bool]:
+        """(how many records, whether the last GAP(process_stop) is a start with no end after it)."""
+        n, off, open_stop = 0, 0, False
         while off < len(body):
-            off += int.from_bytes(body[off + 2:off + 4], "little")
+            kind, size = struct.unpack_from("<HH", body, off)
+            if kind == packs.GAP_K:
+                rec, _ = packs.decode(body, off)
+                if rec["reason"] == "process_stop":
+                    open_stop = rec["phase"] == 0
+            off += size
             n += 1
-        return n
+        return n, open_stop
 
     def _push_and_store(self, batch: bytes, last_frame: tuple[int, int] | None) -> None:
         if batch:
@@ -171,6 +204,9 @@ class SessionDay:
             self.session_id, self.trade_date, outputs, first_event_no=self._next_event_no,
             last_frame=last_frame, carried=carried,
             latency_ns=int(self.cfg.get("latency_ms", 0)) * 1_000_000)
+        self._note_carried(carried)
+
+    def _note_carried(self, carried: list[int]) -> None:
         for oid in carried:
             if oid not in self.carried_orders:
                 self.carried_orders = sorted({*self.carried_orders, oid})

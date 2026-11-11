@@ -549,63 +549,71 @@ def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, fi
     pure function of the tables, so a repeat or a replay gives the same row. An order with no stored row (one
     carried from a prior day, which the engine never drained today) cannot be refreshed; its ids are appended to
     `carried`, when given, and its events and fills are stored regardless."""
-    events = list(outputs.get("order_events", ()))
     conn = _connect()
     with _lock:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_order_events (session_id, trade_date, event_no, row_json) "
-                "VALUES (?, ?, ?, ?)",
-                [(session_id, trade_date, first_event_no + i, json.dumps(e, sort_keys=True))
-                 for i, e in enumerate(events)])
-            rows = {int(o["order_id"]): o for o in outputs.get("orders", ())}
-            changes: dict[int, list[str]] = {}          # order id -> its events in this batch, oldest first
-            newest: dict[int, int] = {}
-            for i, e in enumerate(events):
-                oid = int(e["order_id"])
-                changes.setdefault(oid, []).append(e["event"])
-                newest[oid] = first_event_no + i
-            for oid in sorted(set(rows) | set(changes)):
-                if oid in newest:
-                    stored = conn.execute(
-                        "SELECT MAX(event_no) FROM session_order_events WHERE session_id = ? AND trade_date = ? "
-                        "AND json_extract(row_json, '$.order_id') = ?", (session_id, trade_date, oid)).fetchone()[0]
-                    if stored is not None and stored > newest[oid]:
-                        continue                                    # a later event is stored: this batch is stale
-                row = rows.get(oid)         # the engine drains an order's row when it is created, so it is as of then
-                if row is None:             # later changes arrive as events alone: the newest one sets the status
-                    old = conn.execute("SELECT row_json FROM session_orders WHERE session_id = ? AND trade_date = ? "
-                                       "AND order_id = ?", (session_id, trade_date, oid)).fetchone()
-                    status = next((_EVENT_STATUS[ev] for ev in reversed(changes[oid]) if ev in _EVENT_STATUS), None)
-                    if old is None or status is None:
-                        continue                                    # (an order carried from a prior day: reported below)
-                    row = {**json.loads(old["row_json"]), "status": status}
-                conn.execute("INSERT OR REPLACE INTO session_orders (session_id, trade_date, order_id, row_json) "
-                             "VALUES (?, ?, ?, ?)", (session_id, trade_date, oid, json.dumps(row, sort_keys=True)))
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_fills (session_id, trade_date, fill_id, row_json) VALUES (?, ?, ?, ?)",
-                [(session_id, trade_date, int(f["fill_id"]), json.dumps(f, sort_keys=True))
-                 for f in outputs.get("fills", ())])
-            conn.executemany(
-                "INSERT OR REPLACE INTO session_charges (session_id, trade_date, row_no, row_json) "
-                "VALUES (?, ?, ?, ?)",
-                [(session_id, trade_date, int(c["row_no"]), json.dumps(c, sort_keys=True))
-                 for c in outputs.get("charges", ())])
-            touched = set(newest) | {int(f["order_id"]) for f in outputs.get("fills", ())}
-            for oid in sorted(touched):
-                if not _refresh_order(conn, session_id, trade_date, oid, latency_ns) and carried is not None:
-                    carried.append(oid)
-            if last_frame is not None:
-                conn.execute(
-                    "INSERT INTO session_days (session_id, trade_date, last_frame_no, last_frame_recv_ns) "
-                    "VALUES (?, ?, ?, ?) ON CONFLICT (session_id, trade_date) DO UPDATE SET "
-                    "last_frame_no = excluded.last_frame_no, last_frame_recv_ns = excluded.last_frame_recv_ns",
-                    (session_id, trade_date, int(last_frame[0]), int(last_frame[1])))
+            n = _apply_outputs(conn, session_id, trade_date, outputs, first_event_no=first_event_no,
+                               last_frame=last_frame, carried=carried, latency_ns=latency_ns)
             conn.commit()
         except BaseException:
             conn.rollback()
             raise
+    return n
+
+
+def _apply_outputs(conn, session_id: str, trade_date: str, outputs: dict, *, first_event_no: int,  # noqa: ANN001
+                   last_frame: tuple[int, int] | None, carried: list[int] | None, latency_ns: int) -> int:
+    """`apply_session_outputs` inside the caller's transaction."""
+    events = list(outputs.get("order_events", ()))
+    conn.executemany(
+        "INSERT OR REPLACE INTO session_order_events (session_id, trade_date, event_no, row_json) "
+        "VALUES (?, ?, ?, ?)",
+        [(session_id, trade_date, first_event_no + i, json.dumps(e, sort_keys=True))
+         for i, e in enumerate(events)])
+    rows = {int(o["order_id"]): o for o in outputs.get("orders", ())}
+    changes: dict[int, list[str]] = {}          # order id -> its events in this batch, oldest first
+    newest: dict[int, int] = {}
+    for i, e in enumerate(events):
+        oid = int(e["order_id"])
+        changes.setdefault(oid, []).append(e["event"])
+        newest[oid] = first_event_no + i
+    for oid in sorted(set(rows) | set(changes)):
+        if oid in newest:
+            stored = conn.execute(
+                "SELECT MAX(event_no) FROM session_order_events WHERE session_id = ? AND trade_date = ? "
+                "AND json_extract(row_json, '$.order_id') = ?", (session_id, trade_date, oid)).fetchone()[0]
+            if stored is not None and stored > newest[oid]:
+                continue                                    # a later event is stored: this batch is stale
+        row = rows.get(oid)         # the engine drains an order's row when it is created, so it is as of then
+        if row is None:             # later changes arrive as events alone: the newest one sets the status
+            old = conn.execute("SELECT row_json FROM session_orders WHERE session_id = ? AND trade_date = ? "
+                               "AND order_id = ?", (session_id, trade_date, oid)).fetchone()
+            status = next((_EVENT_STATUS[ev] for ev in reversed(changes[oid]) if ev in _EVENT_STATUS), None)
+            if old is None or status is None:
+                continue                                    # (an order carried from a prior day: reported below)
+            row = {**json.loads(old["row_json"]), "status": status}
+        conn.execute("INSERT OR REPLACE INTO session_orders (session_id, trade_date, order_id, row_json) "
+                     "VALUES (?, ?, ?, ?)", (session_id, trade_date, oid, json.dumps(row, sort_keys=True)))
+    conn.executemany(
+        "INSERT OR REPLACE INTO session_fills (session_id, trade_date, fill_id, row_json) VALUES (?, ?, ?, ?)",
+        [(session_id, trade_date, int(f["fill_id"]), json.dumps(f, sort_keys=True))
+         for f in outputs.get("fills", ())])
+    conn.executemany(
+        "INSERT OR REPLACE INTO session_charges (session_id, trade_date, row_no, row_json) "
+        "VALUES (?, ?, ?, ?)",
+        [(session_id, trade_date, int(c["row_no"]), json.dumps(c, sort_keys=True))
+         for c in outputs.get("charges", ())])
+    touched = set(newest) | {int(f["order_id"]) for f in outputs.get("fills", ())}
+    for oid in sorted(touched):
+        if not _refresh_order(conn, session_id, trade_date, oid, latency_ns) and carried is not None:
+            carried.append(oid)
+    if last_frame is not None:
+        conn.execute(
+            "INSERT INTO session_days (session_id, trade_date, last_frame_no, last_frame_recv_ns) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT (session_id, trade_date) DO UPDATE SET "
+            "last_frame_no = excluded.last_frame_no, last_frame_recv_ns = excluded.last_frame_recv_ns",
+            (session_id, trade_date, int(last_frame[0]), int(last_frame[1])))
     return first_event_no + len(events)
 
 
@@ -663,6 +671,63 @@ def reset_session_outputs(session_id: str, trade_date: str) -> None:
         except BaseException:
             conn.rollback()
             raise
+
+
+def _delete_day_outputs(conn, session_id: str, trade_date: str) -> None:  # noqa: ANN001
+    for table, _, _ in _SESSION_ROW_TABLES.values():
+        conn.execute(f"DELETE FROM {table} WHERE session_id = ? AND trade_date = ?", (session_id, trade_date))
+    conn.execute("UPDATE session_days SET last_frame_no = NULL, last_frame_recv_ns = NULL "
+                 "WHERE session_id = ? AND trade_date = ?", (session_id, trade_date))
+
+
+def _day_rows(conn, session_id: str, trade_date: str) -> dict[str, dict[int, dict]]:  # noqa: ANN001
+    out: dict[str, dict[int, dict]] = {}
+    for name, (table, key, _) in _SESSION_ROW_TABLES.items():
+        out[name] = {int(r[0]): json.loads(r[1]) for r in conn.execute(
+            f"SELECT {key}, row_json FROM {table} WHERE session_id = ? AND trade_date = ? ORDER BY {key}",
+            (session_id, trade_date))}
+    return out
+
+
+def preview_session_outputs(session_id: str, trade_date: str, outputs: dict, *,
+                            latency_ns: int = 0) -> tuple[dict, dict, list[int]]:
+    """(stored rows, regenerated rows, carried order ids) of one day, nothing changed: the day's stored rows are
+    read, then `outputs` (everything a fresh engine drained for the day's journal, event numbers from 1) are applied
+    exactly as `apply_session_outputs` would, to the rows a day with none would have, and read back; the
+    transaction is then rolled back. Each side is {table name: {key: row}} (the keys: order_id, event_no, fill_id,
+    row_no). Used to compare a replayed day with what the store holds before anything is repaired."""
+    conn = _connect()
+    carried: list[int] = []
+    with _lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            stored = _day_rows(conn, session_id, trade_date)
+            _delete_day_outputs(conn, session_id, trade_date)
+            _apply_outputs(conn, session_id, trade_date, outputs, first_event_no=1, last_frame=None,
+                           carried=carried, latency_ns=latency_ns)
+            twin = _day_rows(conn, session_id, trade_date)
+        finally:
+            conn.rollback()
+    return stored, twin, sorted(set(carried))
+
+
+def replace_session_outputs(session_id: str, trade_date: str, outputs: dict, *, latency_ns: int = 0) -> list[int]:
+    """Make a day's stored rows exactly what `outputs` (a fresh engine's drain of the day's whole journal) gives:
+    the day's rows and frame mark are removed and the outputs applied, in ONE transaction, so a crash leaves the old
+    rows or the new ones, never a mixture. Returns the carried order ids (see `apply_session_outputs`)."""
+    conn = _connect()
+    carried: list[int] = []
+    with _lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _delete_day_outputs(conn, session_id, trade_date)
+            _apply_outputs(conn, session_id, trade_date, outputs, first_event_no=1, last_frame=None,
+                           carried=carried, latency_ns=latency_ns)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    return sorted(set(carried))
 
 
 def session_last_frame(session_id: str, trade_date: str) -> tuple[int, int] | None:

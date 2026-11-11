@@ -37,6 +37,10 @@ After each feed, when `on_book` is set, the engine's open positions are read (th
 A tick for a position's instrument that the session's bundle lacks is not journaled: it writes the timeline row
 `unbundled_instrument` once per instrument and day, and labels the day `unbundled_instrument`.
 
+A live restart (`start`) first journals the gaps the restart itself made: the end of a GAP(process_stop) at the first
+new frame, and, for a process that died inside market hours, its start at the journal's last record; then it applies
+the pending commands before anything live is pushed (GK 5.4).
+
 A session whose day fails (`SessionDayError` after a push or store error, or any error from its feed) is dropped
 from dispatch and listed in `stats.failed`; the others go on. Replay it to recover.
 """
@@ -112,6 +116,7 @@ class Dispatcher:
         self._book: dict[str, frozenset[int]] = {}
         self._extras: dict[str, frozenset[int]] = {}     # open positions the bundle does not carry
         self._unbundled: set[tuple[str, int]] = set()
+        self._resume_end: set[str] = set()           # sessions whose open GAP(process_stop) ends at the next frame
 
     # ── producers (any thread): cheap, never block ───────────────────────────
     def put_frame(self, item: tuple) -> None:
@@ -176,6 +181,44 @@ class Dispatcher:
         self._flush(force_marks=True)
         if not self.queue.empty():
             self.drain()
+
+    def start(self, t: int) -> None:
+        """Before the first live item, on the calling thread, with the engine thread not yet started (GK 5.4): a live
+        restart's gaps are journaled (see `_resume_gaps`), then every pending owner command is applied, its
+        `strategy_control` journaled first, so nothing live reaches an engine that an owner's stop has not reached."""
+        self._stamp = t
+        if not self.replay:
+            self._resume_gaps(t)
+        self.apply_pending(t)
+
+    def apply_pending(self, t: int) -> None:
+        """Apply the store's pending commands now, in order, as if they had been polled at stamp `t`."""
+        self._stamp = t
+        for row in store.pending_commands():
+            if row["cmd_id"] not in self._queued_cmds:
+                self._command(t, row)
+        self._flush(force_marks=True)
+
+    def _resume_gaps(self, t: int) -> None:
+        """A live restart did not see the frames between the old process's last record and the first new frame. A
+        session whose journal ends in a GAP(process_stop) start (a graceful stop inside market hours) only needs its
+        end, at the first new frame. One whose journal has no such start (the process died) gets one now, at the
+        journal's last `t`, provided it is inside market hours; the end follows at the first frame either way."""
+        from stockify.daemon.market_day import inside_market_hours
+        for sd in self.sessions:
+            sid = sd.session_id
+            if not sd.resumed or sid in self.stats.failed:
+                continue
+            if sd.open_process_stop:
+                self._resume_end.add(sid)
+            elif sd.last_t is not None and inside_market_hours(t):
+                try:
+                    sd.feed([self._gap_record("start", "process_stop", sd.last_t, None)], None)
+                except Exception as e:  # noqa: BLE001
+                    self._fail(sid, e, t)
+                    continue
+                self._timeline(sid, "gap", {"cause": "process_crash", "phase": "start", "t_ns": sd.last_t}, t)
+                self._resume_end.add(sid)
 
     def journal_process_stop(self, t: int) -> None:
         """Journal a scope-all `GAP(process_stop)` start at `t` for every session, on the calling thread, never
@@ -320,6 +363,11 @@ class Dispatcher:
                         per.setdefault(sd.session_id, []).append((recv_ns, rank, record))
                     elif iid in self._extras.get(sd.session_id, ()):
                         self._note_unbundled(sd, iid, recv_ns)
+        for sid in sorted(self._resume_end):         # the first frame since the restart: the process-stop gap is over
+            per.setdefault(sid, []).insert(0, self._gap_record("end", "process_stop", recv_ns, None))
+            self.stats.gaps += 1
+            self._timeline(sid, "gap", {"cause": "process_stop_resumed", "phase": "end", "t_ns": recv_ns}, recv_ns)
+        self._resume_end.clear()
         self.stats.frames += 1
         self._stage(recv_ns, per, (frame_no, recv_ns) if frame_no else None)
 

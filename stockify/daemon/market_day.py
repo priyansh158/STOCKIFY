@@ -42,7 +42,8 @@ journals as `price_band` REFDATA through the dispatcher's queue; a replay uses n
 
 A session's start-of-day state is the previous day's `eod_state_json` (`finalise.next_sod_state`; None for a first
 day). A previous day that is not finalised is a failed open for that session (`session_failed`), never a start from
-nothing. A journal that already holds records is replayed to resume it (Task 17 adds the check against the stored rows).
+nothing. A journal that already holds records is recovered (`recovery.recover`: replayed, then checked against the stored rows);
+before the first live push the dispatcher journals a restart's gaps and applies the owner's pending commands (GK 5.4).
 """
 from __future__ import annotations
 
@@ -289,8 +290,10 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                 if journal.is_finalised(jpath):
                     log.info("session %s: %s is finalised; nothing to run today", sid, day)
                     continue
-                result = sd.replay()                  # a restart: rebuild the engine and the store from the journal
-                log.info("session %s: resumed %s from its journal (%d records)", sid, day, result["records"])
+                from stockify.daemon.recovery import recover
+                # a restart: rebuild the engine from the journal and check it against the store (GK 5.4)
+                sd, result = recover(sid, day, clock=clock, log_sink=log_sink)
+                log.info("session %s: resumed %s from its journal (%d records)", sid, day, result.records)
                 over_cap = pins is not None and not pins.admit(sd)
             else:
                 sd.open(next_sod_state(sid, day), row["pause_reasons"], now)
@@ -437,6 +440,10 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         session.gap_taps.append(dispatcher.put_gap)
         dispatcher.on_book = pins.book_changed
         dispatcher.on_failed = pins.release
+        try:                                    # a restart's gaps and the owner's pending commands, before any push
+            dispatcher.start(clock.now_ns())
+        except Exception:  # noqa: BLE001 — the recording goes on; the commands stay pending in the store
+            log.exception("applying a restart's gaps and pending commands failed")
         pins.live = True                        # from here the ticker thread owns every pin change
 
         def engine_main() -> None:
