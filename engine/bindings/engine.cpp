@@ -48,9 +48,9 @@ py::object to_python(const stocksim::Json& j, const OracleTypes& t) { return t.j
 // bool, a str or a Decimal is refused, never rounded (py::int_(1.5) used to place 1). The rule and the words are
 // the oracle's (stockify/oracle/context.py, `_whole`).
 template <typename T>
-T whole(const char* name, const py::object& v) {
+T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
     if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
-        throw py::type_error(std::string("ctx.place: ") + name + " must be an int, not " +
+        throw py::type_error(std::string(fn) + ": " + name + " must be an int, not " +
                              std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
                              std::string(py::repr(v)) +
                              "): money is whole paise and quantity is whole units");
@@ -351,7 +351,19 @@ void bind_engine(py::module_& m) {
              py::arg("tag") = "")
         .def("modify",
              [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
+                 // B2B 5.4: the oracle's Context.modify. qty, price and trigger are whole ints, checked in that order,
+                 // and a quantity of 0 or less is refused: an order of no units cannot be saved at the day's end.
                  stocksim::ModifyRequest m;
+                 for (const char* name : {"qty", "price", "trigger"}) {
+                     if (!changes.contains(name)) {
+                         continue;
+                     }
+                     const py::object v = changes[name];
+                     const auto n = whole<std::int64_t>(name, v, "ctx.modify");
+                     if (std::string_view(name) == "qty" && n <= 0) {
+                         throw py::value_error("ctx.modify: qty must be positive, not " + std::to_string(n));
+                     }
+                 }
                  std::vector<std::pair<std::string, std::string>> parts;
                  for (const auto& [k, h] : changes) {
                      const py::object v = py::reinterpret_borrow<py::object>(h);

@@ -433,7 +433,7 @@ class RandomTrader(Strategy):
             oid = self._pick(r, self.placed + [max(self.placed) + 5])
             changes = {}
             if r.below(2):
-                changes["qty"] = 1 + r.below(399)   # never 0: a live order of no units cannot be saved (A1 §6.4), see ST 5.8
+                changes["qty"] = r.below(400)
             if r.below(2):
                 o = ctx.order(oid)
                 changes["price"] = (o.price if o else 100_000) + 5 * (r.below(9) - 4)
@@ -441,7 +441,11 @@ class RandomTrader(Strategy):
                 changes["trigger"] = 5 * r.below(60_000)
             if r.below(4) == 0:
                 changes["type"] = self._pick(r, ["MARKET", "LIMIT", "SL", "SL-M", "WHAT"])
-            ctx.log("info", f"modify {oid} {sorted(changes.items())} -> {ctx.modify(oid, **changes)}")
+            try:
+                done = ctx.modify(oid, **changes)
+            except ValueError as e:     # B2B 5.4: a quantity of 0 is refused; the words are logged, so both runners must agree
+                done = f"refused: {e}"
+            ctx.log("info", f"modify {oid} {sorted(changes.items())} -> {done}")
         elif k < 74 and self.placed:
             oid = self._pick(r, self.placed + [0, max(self.placed) + 3])
             ctx.log("info", f"cancel {oid} -> {ctx.cancel(oid)}")

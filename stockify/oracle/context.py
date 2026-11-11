@@ -18,12 +18,12 @@ class _Rng:
         return self._g.below(n)
 
 
-def _whole(name: str, v) -> int:  # noqa: ANN001
-    """B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place are an int and nothing else. A float, a bool,
-    a str or a Decimal is refused, never rounded: `int(1.5)` used to place 1. The engine's binding
-    (engine/bindings/engine.cpp, `whole`) has the same rule and the same words."""
+def _whole(name: str, v, fn: str = "ctx.place") -> int:  # noqa: ANN001
+    """B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place (and, B2B 5.4, of ctx.modify) are an int and
+    nothing else. A float, a bool, a str or a Decimal is refused, never rounded: `int(1.5)` used to place 1. The
+    engine's binding (engine/bindings/engine.cpp, `whole`) has the same rule and the same words."""
     if not isinstance(v, int) or isinstance(v, bool):
-        raise TypeError(f"ctx.place: {name} must be an int, not {type(v).__name__} ({v!r}): "
+        raise TypeError(f"{fn}: {name} must be an int, not {type(v).__name__} ({v!r}): "
                         "money is whole paise and quantity is whole units")
     return v
 
@@ -132,6 +132,13 @@ class Context:
         return o.order_id
 
     def modify(self, order_id: int, **changes) -> bool:  # noqa: ANN003
+        # B2B 5.4: qty, price and trigger are whole ints, checked in that order; a quantity of 0 or less is refused
+        # (an order of no units cannot be saved at the day's end). The engine's binding has the same rule and words.
+        for name in ("qty", "price", "trigger"):
+            if name in changes:
+                v = _whole(name, changes[name], "ctx.modify")
+                if name == "qty" and v <= 0:
+                    raise ValueError(f"ctx.modify: qty must be positive, not {v}")
         return self._e.modify(order_id, changes)
 
     def cancel(self, order_id: int) -> bool:
