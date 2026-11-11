@@ -98,6 +98,34 @@ class StrategyTests(unittest.TestCase):
                          ("SL-M", "9950", "CANCELLED"))
         self.assertEqual(orders["orb_exit"]["status"], "COMPLETE")
 
+    def _orb_world(self, breakout_volume: int = 10_000, **run):
+        d = "2026-03-02"
+        evs = [minute(d, "09:15", 10000, 10050, 9950, 10000), minute(d, "09:16", 10000, 10060, 9980, 10040),
+               minute(d, "09:17", 10040, 10120, 10040, 10100, v=breakout_volume),
+               minute(d, "09:18", 10100, 10150, 10090, 10140, v=breakout_volume), minute(d, "15:10", 10200, 10210, 10190, 10200),
+               minute(d, "15:11", 10200, 10210, 10190, 10200)]
+        return world(evs, mis_cutoff={"CM": "15:20"}, run=run)
+
+    def test_orb_rejected_entry_leaves_no_stop_and_no_position(self):
+        from stockify.strategies.opening_range_breakout import OpeningRangeBreakout
+        g = self._orb_world(capital_paise=1_000)
+        execute(g, OpeningRangeBreakout(), {"symbol": "NSE:TEST", "range_minutes": 2, "qty": 10}, self.tmp)
+        orders = rows(self.tmp / "run" / "orders.csv")
+        self.assertEqual([(o["tag"], o["status"], o["reason"]) for o in orders], [("orb_long", "REJECTED", "R_MARGIN")])
+        self.assertEqual(rows(self.tmp / "run" / "fills.csv"), [])
+
+    def test_orb_partial_fill_gets_a_stop_of_exactly_the_filled_quantity(self):
+        from stockify.strategies.opening_range_breakout import OpeningRangeBreakout
+        g = self._orb_world(breakout_volume=40)
+        execute(g, OpeningRangeBreakout(), {"symbol": "NSE:TEST", "range_minutes": 2, "qty": 10}, self.tmp)
+        orders = rows(self.tmp / "run" / "orders.csv")
+        fills = rows(self.tmp / "run" / "fills.csv")
+        entry_fills = [f for f in fills if f["order_id"] == next(o["order_id"] for o in orders if o["tag"] == "orb_long")]
+        self.assertEqual([f["qty"] for f in entry_fills], ["4", "6"], "the entry must fill in two parts")
+        stops = [o for o in orders if o["tag"] == "orb_stop"]
+        self.assertEqual(sum(int(o["qty"]) for o in stops), sum(int(f["qty"]) for f in entry_fills))
+        self.assertEqual([o["qty"] for o in stops], [f["qty"] for f in entry_fills])
+
     def test_eod_short_straddle_sells_and_settles(self):
         from stockify.strategies.eod_short_straddle import EodShortStraddle
         days = ["2026-03-02", "2026-03-03", "2026-03-04"]

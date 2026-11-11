@@ -221,6 +221,14 @@ class ReferenceStrategyTests(unittest.TestCase):
                 fills += self._same(REFS["orb"], g, params, cpp="orb_cpp")
         self.assertGreater(fills, 40)
 
+    def test_orb_partial_and_rejected_entries_agree_on_all_three_implementations(self):
+        from tests.stockify.test_strategies import StrategyTests
+        helper = StrategyTests("test_sources_pass_the_load_check")
+        params = {"symbol": "NSE:TEST", "range_minutes": 2, "qty": 10}
+        for label, kw in (("partial", {"breakout_volume": 40}), ("rejected", {"capital_paise": 1_000})):
+            with self.subTest(case=label):
+                self._same(REFS["orb"], helper._orb_world(**kw), params, cpp="orb_cpp")
+
     def test_eod_short_straddle(self):
         fills = 0
         for seed in range(5400, 5425):

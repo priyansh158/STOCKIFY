@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
@@ -51,19 +52,28 @@ class OrbCpp final : public Strategy {
         }
         const Paise tick = spec->tick;
         if (bar.close > *hi_) {
-            place(ctx, "BUY", "MARKET", 0, "orb_long");
-            stop_id_ = place(ctx, "SELL", "SL-M", checked_mul(floor_div(*lo_, tick), tick), "orb_stop");
+            entry_id_ = place(ctx, "BUY", "MARKET", 0, "orb_long");
+            stop_side_ = "SELL";
+            stop_trigger_ = checked_mul(floor_div(*lo_, tick), tick);
             traded_ = true;
         } else if (short_ && bar.close < *lo_) {
-            place(ctx, "SELL", "MARKET", 0, "orb_short");
-            stop_id_ = place(ctx, "BUY", "SL-M", checked_mul(ceil_div(*hi_, tick), tick), "orb_stop");
+            entry_id_ = place(ctx, "SELL", "MARKET", 0, "orb_short");
+            stop_side_ = "BUY";
+            stop_trigger_ = checked_mul(ceil_div(*hi_, tick), tick);
             traded_ = true;
         }
     }
 
+    // The stop exists only for what the entry has filled: one SL-M of exactly each fill's quantity.
+    void on_fill(Context& ctx, const FillView& fill) override {
+        if (entry_id_ && fill.order_id == *entry_id_) {
+            stop_ids_.push_back(place(ctx, stop_side_, "SL-M", stop_trigger_, "orb_stop", fill.qty));
+        }
+    }
+
     void on_timer(Context& ctx, std::uint64_t /*timer_id*/) override {
-        if (stop_id_) {
-            ctx.cancel(*stop_id_);
+        for (const OrderId id : stop_ids_) {
+            ctx.cancel(id);
         }
         const std::optional<PositionView> pos = ctx.position(iid_, "MIS");
         if (pos && pos->qty != 0) {
@@ -79,7 +89,10 @@ class OrbCpp final : public Strategy {
         hi_.reset();
         lo_.reset();
         traded_ = false;
-        stop_id_.reset();
+        entry_id_.reset();
+        stop_side_ = "SELL";
+        stop_trigger_ = 0;
+        stop_ids_.clear();
         const TimeNs exit_ns = ist_ns(*day_, exit_hhmm_);
         if (exit_ns > ctx.now()) {
             ctx.schedule_at(exit_ns);
@@ -108,7 +121,10 @@ class OrbCpp final : public Strategy {
     TimeNs open_ns_ = 0;
     std::optional<Paise> hi_, lo_;
     bool traded_ = false;
-    std::optional<OrderId> stop_id_;
+    std::optional<OrderId> entry_id_;
+    const char* stop_side_ = "SELL";
+    Paise stop_trigger_ = 0;
+    std::vector<OrderId> stop_ids_;
 };
 
 STOCKSIM_STRATEGY(OrbCpp, "orb_cpp")
