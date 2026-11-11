@@ -154,7 +154,8 @@ def recover(session_id: str, day: date, *, clock: Clock | None = None, log_sink=
         diff = compare(stored, twin)
         found["diff"] = diff
         if diff.mismatch is None and (diff.written or diff.tail_lost):
-            return store.replace_session_outputs(session_id, d, outputs, latency_ns=latency_ns)
+            mark = _repaired_mark(day, store.session_last_frame(session_id, d), sd.last_t) if diff.tail_lost else None
+            return store.replace_session_outputs(session_id, d, outputs, latency_ns=latency_ns, last_frame=mark)
         return carried
 
     info = sd.replay(reconcile)
@@ -169,35 +170,84 @@ def recover(session_id: str, day: date, *, clock: Clock | None = None, log_sink=
     return sd, result
 
 
+def _landing_frame(day: date, t_ns: int) -> tuple[int, int] | None:
+    """The newest landed frame (frame_no, recv_ns) received at or before `t_ns`, from the day's landing file."""
+    from stockify.daemon.landing import LandingDB
+    for path in (paths.ticks_landing_file(day), paths.ticks_replay_file(day)):
+        if not path.exists():
+            continue
+        db = LandingDB(day, path, readonly=True)
+        try:
+            row = db.conn.execute("SELECT frame_no, recv_ns FROM packets WHERE recv_ns <= ? AND frame_no > 0 "
+                                  "ORDER BY recv_ns DESC, frame_no DESC LIMIT 1", (int(t_ns),)).fetchone()
+        finally:
+            db.close()
+        if row is not None:
+            return int(row[0]), int(row[1])
+    return None
+
+
+def _repaired_mark(day: date, stored: tuple[int, int] | None, last_t: int | None) -> tuple[int, int] | None:
+    """The frame mark a repair that deleted rows beyond the journal leaves: the stored one if it is not past the
+    journal's last record, else the last landed frame at or before that record (the journal does not carry frame
+    numbers; the landing file does). Without a landing file the mark's time is clamped to the journal's last `t`.
+    Never None unless the day had no mark."""
+    if stored is None or last_t is None or stored[1] <= last_t:
+        return stored
+    return _landing_frame(day, last_t) or (stored[0], int(last_t))
+
+
 def _timeline(session_id: str, kind: str, detail: dict, now: int) -> None:
     store.add_timeline(session_id, kind, detail, wall_ns=now, engine_ns=now)
 
 
+REPAIR = ("stop the daemon, rebuild the day's rows from the journal with SessionDay.replay() (the journal is the "
+          "truth: it resets the stored rows and writes the journal's), then resume the session's `determinism` pause")
+
+
+def _digest(mismatch: dict) -> str:
+    return hashlib.sha256(json.dumps(mismatch, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _record(sd: SessionDay, result: RecoveryResult, diff: _Diff, now: int) -> None:
     sid, d = result.session_id, result.day.isoformat()
-    if diff.tail_lost:
-        log.warning("recovered %s: %d stored rows are beyond the journal (power loss?) and were deleted", sid,
-                    diff.tail_lost)
-        _timeline(sid, "journal_tail_lost", {"day": d, "rows": diff.tail_lost, "by_table": diff.tail_by_table}, now)
-    summary = {"day": d, "records": result.records, "written": result.written,
-               "tail_lost_rows": result.tail_lost_rows, "mismatch": result.mismatch}
-    if sd.torn_bytes:
-        summary["torn_bytes"] = sd.torn_bytes
-    _timeline(sid, "recovered", summary, now)
     if diff.mismatch is None:
+        if diff.tail_lost:
+            log.warning("recovered %s: %d stored rows are beyond the journal (power loss?) and were deleted", sid,
+                        diff.tail_lost)
+            _timeline(sid, "journal_tail_lost", {"day": d, "rows": diff.tail_lost, "by_table": diff.tail_by_table},
+                      now)
+        summary = {"day": d, "records": result.records, "written": result.written,
+                   "tail_lost_rows": result.tail_lost_rows, "mismatch": None}
+        if sd.torn_bytes:
+            summary["torn_bytes"] = sd.torn_bytes
+        _timeline(sid, "recovered", summary, now)
         log.info("recovered %s: %d records, 0 mismatches (%d rows written, %d beyond the journal deleted)", sid,
                  result.records, result.written, result.tail_lost_rows)
         return
-    log.error("recovered %s: %d records, 1 mismatch: the stored rows disagree with the journal's (determinism): %s",
-              sid, result.records, result.mismatch)
-    _timeline(sid, "determinism_mismatch", {"day": d, **diff.mismatch}, now)
-    held = store.get_session(sid)["pause_reasons"]
-    if store.get_session(sid)["status"] == "STOPPED":
+    digest = _digest(diff.mismatch)
+    log.error("recovered %s: %d records, 1 mismatch on %s: the stored rows disagree with the journal's (determinism): "
+              "%s. To repair: %s", sid, result.records, d, result.mismatch, REPAIR)
+    known = any(r["kind"] == "determinism_mismatch" and (r["detail"] or {}).get("digest") == digest
+                and (r["detail"] or {}).get("day") == d for r in store.timeline(sid, limit=1_000_000))
+    if known:                                      # the same disagreement as an earlier restart: one row, no new news
+        _timeline(sid, "determinism_still_open", {"session_id": sid, "day": d, "digest": digest, "repair": REPAIR},
+                  now)
+    else:
+        summary = {"day": d, "records": result.records, "written": result.written,
+                   "tail_lost_rows": result.tail_lost_rows, "mismatch": result.mismatch}
+        if sd.torn_bytes:
+            summary["torn_bytes"] = sd.torn_bytes
+        _timeline(sid, "recovered", summary, now)
+        _timeline(sid, "determinism_mismatch", {"session_id": sid, "day": d, "digest": digest, "repair": REPAIR,
+                                                **diff.mismatch}, now)
+    session = store.get_session(sid)
+    if session["status"] == "STOPPED":
         return                                       # a stopped session cannot be paused; the timeline has it
-    reasons = sorted({*held, "determinism"})
+    held = session["pause_reasons"]
     if "determinism" not in held:
         try:
-            sd.control(False, reasons, now)          # the journal first: the engine must stop trading on it
+            sd.control(False, sorted({*held, "determinism"}), now)     # the journal first: the engine must stop
         except SessionDayError:                      # a finalised day takes no input; the store still says paused
             log.warning("session %s: the day's journal is finalised, so the determinism pause is not journaled", sid)
         lifecycle.pause(sid, "determinism", wall_ns=now, engine_ns=now)
@@ -388,6 +438,7 @@ def _preserve(path: Path, want_sha: str | None, *, crc: bool = False) -> None:
     `.damaged[N].crc`); one already there from an earlier attempt is not duplicated."""
     if want_sha is None:
         return
+    src = journal._crc_path(path) if crc else path
     n = 1
     while True:
         target = _damaged(path, n)
@@ -397,8 +448,10 @@ def _preserve(path: Path, want_sha: str | None, *, crc: bool = False) -> None:
         if _sha256(target) == want_sha:
             return
         n += 1
+    if not src.exists() or _sha256(src) != want_sha:
+        raise SalvageError(f"{src.name} is not the file that was salvaged (its checksum differs): nothing was kept "
+                           "or replaced")
     tmp = target.with_name(target.name + ".tmp")
-    src = journal._crc_path(path) if crc else path
     shutil.copyfile(src, tmp)
     with open(tmp, "rb+") as f:
         os.fsync(f.fileno())
@@ -423,6 +476,9 @@ def adopt_salvage(path: Path) -> None:
             raise SalvageError(f"{path.name} is being finalised: try again when that is over")
         try:
             live = _sha256(path)
+            if crc.exists() and _sha256(crc) not in (rep["original_crc_sha256"], rep["salvaged_crc_sha256"]):
+                raise SalvageError(f"{crc.name} is neither the checksum file that was salvaged nor its salvaged copy: "
+                                   "it changed since; salvage again")
             if live == rep["original_sha256"]:
                 if not copy.exists() or _sha256(copy) != rep["salvaged_sha256"]:
                     raise SalvageError(f"{copy.name} is missing or is not the copy that was reported: salvage again")

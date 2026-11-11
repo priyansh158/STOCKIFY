@@ -94,9 +94,11 @@ class FlakyFile:
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class RecoveryBase(pf.PaperDayTest):
+    FUT_FULL = False                       # the future has a book to trade against (a carried position needs one)
+
     def setUp(self):
         super().setUp()
-        self.record(seconds=120)
+        self.record(seconds=120, fut_full=self.FUT_FULL)
         sha = packs.build({"dataset": "ticks", "from": pf.EXPIRY, "to": pf.EXPIRY, "clock_cadence_ms": 5000})
         self.records = [r for r in pack_records(sha) if r[1] != packs.RANK[packs.SETTLE_K]]
         self.ticks = itertools.count(0, 10)
@@ -118,15 +120,28 @@ class RecoveryBase(pf.PaperDayTest):
         self.addCleanup(sd.close)
         return sd
 
-    def live(self, sid=SID, records=None, upto=None):
-        """A session fed (in chunks) and left unfinalised and open."""
+    def live(self, sid=SID, records=None, upto=None, marks=False):
+        """A session fed (in chunks) and left unfinalised and open. With `marks`, each chunk stores the frame mark
+        (chunk number, t of its last record)."""
         self.make_session(sid)
         sd = self.day(sid)
         sd.open(None, [], self.t("09:14:00"))
         recs = self.records if records is None else records
         for i in range(0, len(recs) if upto is None else upto, CHUNK):
-            sd.feed(recs[i:min(i + CHUNK, upto or len(recs))], None)
+            chunk = recs[i:min(i + CHUNK, upto or len(recs))]
+            sd.feed(chunk, (i // CHUNK + 1, chunk[-1][0]) if marks else None)
         return sd
+
+    def landing_mark(self, t_ns: int):
+        """The landed frame (frame_no, recv_ns) the journal's last record at `t_ns` belongs to, read from the day's
+        landing file directly."""
+        import sqlite3
+        conn = sqlite3.connect(str(paths.ticks_landing_file(pf.DAY)))
+        try:
+            return conn.execute("SELECT frame_no, MAX(recv_ns) FROM packets WHERE recv_ns <= ? AND frame_no > 0",
+                                (t_ns,)).fetchone()
+        finally:
+            conn.close()
 
     def rows(self, sid=SID, day=pf.EXPIRY) -> dict:
         return {t: store.session_rows(sid, t, trade_date=day) for t in TABLES}
@@ -241,43 +256,6 @@ class RecoveryTest(RecoveryBase):
         self.assertEqual(store.pending_commands(), [])
         s = store.get_session(SID)
         self.assertEqual((s["status"], s["pause_reasons"]), ("PAUSED", ["stop_all"]))
-
-    def test_day2_recovery_uses_day1_state(self):
-        clock = packs.RANK[packs.CLOCK]
-        day1 = [r for r in self.records
-                if packs.decode(r[2], 0)[0]["instrument_id"] in (self.idx, self.fut) or r[1] == clock]
-        act = [{"on_event": 60, "place": {"instrument": self.fut, "side": "BUY", "qty": 65, "product": "NRML",
-                                          "type": "MARKET"}},
-               {"on_event": len(day1) + 60, "place": {"instrument": self.fut, "side": "SELL", "qty": 65,
-                                                       "product": "NRML", "type": "MARKET"}}]
-        cfg = self.session_cfg(strategy={"kind": "script", "actions": act},
-                               universe=["NSE:NIFTY 50", "NFO:NIFTY26NOVFUT"])
-        self.make_session(cfg=cfg)
-        day2 = [(t + SHIFT, rank, _shift(rec, SHIFT)) for t, rank, rec in day1]
-        with refdata.transaction() as conn:
-            conn.execute("INSERT INTO fo_eod (trade_date, instrument_id, settle_paise) VALUES (?, ?, 2411000)",
-                         (DAY2.isoformat(), self.fut))
-        one = self.day(cfg=cfg)
-        one.open(None, [], self.t("09:14:00"))
-        one.feed(day1, None)
-        one.close()
-        self.assertEqual(finalise.finalise_day(SID, pf.DAY, files_complete=True, cutoff_passed=False).status,
-                         "finalised")
-        lifecycle.start_continuous(SID, wall_ns=9, engine_ns=9)
-        two = self.day(day=DAY2, cfg=cfg)
-        two.open(finalise.next_sod_state(SID, DAY2), [], self.t("09:14:00") + SHIFT)
-        for i in range(0, len(day2), CHUNK):
-            two.feed(day2[i:i + CHUNK], None)
-        live_rows, live_book = self.rows(day=DAY2.isoformat()), two.engine.book()
-        self.assertEqual([o["order_id"] for o in live_rows["orders"]], [2], "day one's order counter carried over")
-        self.assertTrue(live_rows["order_events"])
-        two.close()
-        bundle = json.loads(paths.day_bundle_file(SID, DAY2).read_text(encoding="utf-8"))
-        self.assertTrue(bundle["sod_state"]["ledger"], "day one's position is in day two's bundle")
-        sd, res = self.recover(day=DAY2, at="09:40:00")
-        self.assertEqual((res.records, res.mismatch, res.written, res.tail_lost_rows), (len(day2), None, 0, 0))
-        self.assertEqual(self.rows(day=DAY2.isoformat()), live_rows)
-        self.assertEqual(sd.engine.book(), live_book)               # the carried position is in the replayed engine
 
     # ── crashes at every step ────────────────────────────────────────────────────────────────────────────────────
     def crash(self, sid: str, how: str) -> None:
@@ -423,6 +401,143 @@ class RecoveryTest(RecoveryBase):
         self.assertEqual(len(self.timeline(SID, "determinism_mismatch")), 1)
 
 
+    # ── the frame mark (GK 5.5) ──────────────────────────────────────────────────────────────────────────────────
+    def test_a_repair_keeps_the_frame_mark_when_the_store_was_behind_and_finalise_reads_it(self):
+        sd = self.live(upto=CHUNK * 5, marks=True)
+        n = sd.journal_records
+        mark = store.session_last_frame(SID, pf.EXPIRY)
+        self.assertEqual(mark[0], 5)
+        with mock.patch.object(store, "apply_session_outputs", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                sd.feed(self.records[n:n + CHUNK], (6, self.records[n + CHUNK - 1][0]))
+        sd.close()
+        sd2, res = self.recover()
+        self.assertGreater(res.written, 0)
+        self.assertEqual(store.session_last_frame(SID, pf.EXPIRY), mark)        # never NULL after a repair
+        sd2.feed(self.records[n + CHUNK:], None)
+        sd2.close()
+        self.assertEqual(finalise.finalise_day(SID, pf.DAY, files_complete=True, cutoff_passed=False).status,
+                         "finalised")
+        self.assertEqual(store.session_last_frame(SID, pf.EXPIRY), mark)        # finalise carried it over its replay
+
+    def test_a_repair_sets_the_frame_mark_to_the_journals_last_frame_when_the_store_was_ahead(self):
+        self.live(marks=True)
+        stale = store.session_last_frame(SID, pf.EXPIRY)
+        keep = 75
+        with open(paths.journal_file(SID, pf.DAY), "r+b") as f:
+            f.truncate(record_ends(SID)[keep - 1] + 7)
+        sd, res = self.recover()
+        self.assertGreater(res.tail_lost_rows, 0)
+        mark = store.session_last_frame(SID, pf.EXPIRY)
+        self.assertIsNotNone(mark)
+        last_t = journal_records(SID)[-1]["t_event"]
+        self.assertLessEqual(mark[1], last_t)
+        self.assertLess(mark[1], stale[1])
+        self.assertEqual(mark, tuple(self.landing_mark(last_t)))
+
+    # ── a determinism pause that stays open (GK 5.5) ─────────────────────────────────────────────────────────────
+    def tamper(self, field="price_paise"):
+        conn = store._connect()
+        row = self.rows()["fills"][0]
+        conn.execute("UPDATE session_fills SET row_json = ? WHERE session_id = ? AND fill_id = ?",
+                     (json.dumps({**row, field: row[field] + 1}, sort_keys=True), SID, row["fill_id"]))
+        conn.commit()
+
+    def test_the_mismatch_names_the_repair_path_the_session_and_the_day(self):
+        self.live()
+        self.tamper()
+        enable_logging(self)
+        with self.assertLogs("stockify.daemon.recovery", "ERROR") as cm:
+            sd, res = self.recover()
+        text = "\n".join(cm.output)
+        for word in ("SessionDay.replay()", SID, pf.EXPIRY, "journal is the truth"):
+            self.assertIn(word, text)
+        detail = self.timeline(SID, "determinism_mismatch")[0]
+        self.assertIn("SessionDay.replay()", detail["repair"])
+        self.assertEqual((detail["session_id"], detail["day"]), (SID, pf.EXPIRY))
+        self.assertRegex(detail["digest"], "^[0-9a-f]{64}$")
+
+    def test_an_identical_mismatch_on_a_later_restart_writes_one_still_open_row_and_nothing_else(self):
+        self.live()
+        self.tamper()
+        sd, res = self.recover()
+        sd.close()
+        digest = self.timeline(SID, "determinism_mismatch")[0]["digest"]
+        for restart in (1, 2):
+            sd, res2 = self.recover()
+            sd.close()
+            self.assertEqual(res2.mismatch, res.mismatch)
+            self.assertEqual(len(self.timeline(SID, "determinism_mismatch")), 1)
+            self.assertEqual(len(self.timeline(SID, "recovered")), 1)
+            still = self.timeline(SID, "determinism_still_open")
+            self.assertEqual(len(still), restart)
+            self.assertEqual(still[-1]["digest"], digest)
+        pauses = [r for r in journal_records(SID) if r["kind"] == "REFDATA" and r["subtype"] == "strategy_control"]
+        self.assertEqual(len(pauses), 1)                            # the pause is journaled once
+        self.tamper("qty")                                          # a different disagreement is new news
+        sd, res3 = self.recover()
+        self.assertEqual(len(self.timeline(SID, "determinism_mismatch")), 2)
+        self.assertNotEqual(self.timeline(SID, "determinism_mismatch")[1]["digest"], digest)
+
+
+class CarriedPositionTest(RecoveryBase):
+    FUT_FULL = True
+
+    def two_days(self, sid):
+        """Day one: a BUY of the future, finalised. Day two: a SELL of the same 65, which closes the carried position
+        with real fills. Returns (cfg, day2 records); day two is not yet fed."""
+        clock = packs.RANK[packs.CLOCK]
+        day1 = [r for r in self.records
+                if packs.decode(r[2], 0)[0]["instrument_id"] in (self.idx, self.fut) or r[1] == clock]
+        act = [{"on_event": 60, "place": {"instrument": self.fut, "side": "BUY", "qty": 65, "product": "NRML",
+                                          "type": "MARKET"}},
+               {"on_event": len(day1) + 60, "place": {"instrument": self.fut, "side": "SELL", "qty": 65,
+                                                       "product": "NRML", "type": "MARKET"}}]
+        cfg = self.session_cfg(strategy={"kind": "script", "actions": act}, capital_paise=100_000_000,
+                               universe=["NSE:NIFTY 50", "NFO:NIFTY26NOVFUT"])
+        self.make_session(sid, cfg)
+        one = self.day(sid, cfg=cfg)
+        one.open(None, [], self.t("09:14:00"))
+        one.feed(day1, None)
+        one.close()
+        self.assertEqual(finalise.finalise_day(sid, pf.DAY, files_complete=True, cutoff_passed=False).status,
+                         "finalised")
+        lifecycle.start_continuous(sid, wall_ns=9, engine_ns=9)
+        return cfg, [(t + SHIFT, rank, _shift(rec, SHIFT)) for t, rank, rec in day1]
+
+    def test_day2_recovery_uses_day1_state(self):
+        with refdata.transaction() as conn:
+            conn.execute("INSERT INTO fo_eod (trade_date, instrument_id, settle_paise) VALUES (?, ?, 2411000)",
+                         (DAY2.isoformat(), self.fut))
+        cfg, day2 = self.two_days(SID)
+        ref_cfg, _ = self.two_days("clean")
+        d2 = DAY2.isoformat()
+        for sid, c in ((SID, cfg), ("clean", ref_cfg)):             # the same day two, once uninterrupted, once crashed
+            two = self.day(sid, day=DAY2, cfg=c)
+            two.open(finalise.next_sod_state(sid, DAY2), [], self.t("09:14:00") + SHIFT)
+            for i in range(0, len(day2), CHUNK):
+                two.feed(day2[i:i + CHUNK], None)
+            if sid == SID:
+                live_rows, live_book = self.rows(sid, d2), two.engine.book()
+            two.close()
+        self.assertEqual([o["order_id"] for o in live_rows["orders"]], [2], "day one's order counter carried over")
+        self.assertEqual([f["side"] for f in live_rows["fills"]], ["SELL"], "a real fill")
+        self.assertEqual(live_book, [], "the carried 65 is closed")
+        bundle = json.loads(paths.day_bundle_file(SID, DAY2).read_text(encoding="utf-8"))
+        self.assertTrue(bundle["sod_state"]["ledger"], "day one's position is in day two's bundle")
+        sd, res = self.recover(day=DAY2, at="09:40:00")
+        self.assertEqual((res.records, res.mismatch, res.written, res.tail_lost_rows), (len(day2), None, 0, 0))
+        self.assertEqual(self.rows(SID, d2), live_rows)
+        self.assertEqual(sd.engine.book(), live_book)
+        for sid, day_ in ((SID, sd), ("clean", None)):             # end the day on each: the same rows and state
+            self.assertEqual(finalise.finalise_day(sid, DAY2, files_complete=True, cutoff_passed=False,
+                                                   live=day_).status, "finalised")
+        self.assertEqual(self.rows(SID, d2), self.rows("clean", d2))
+        self.assertEqual(store.session_day_end(SID, d2), store.session_day_end("clean", d2))
+        self.assertEqual(store.get_session_day(SID, d2)["eod_state_json"],
+                         store.get_session_day("clean", d2)["eod_state_json"])
+
+
 def _shift(rec: bytes, shift: int) -> bytes:
     t = struct.unpack_from("<q", rec, 8)[0]
     return rec[:8] + struct.pack("<q", t + shift) + rec[16:]
@@ -477,8 +592,12 @@ class RestartGapTest(RecoveryBase):
         starts = [t for t, p in self.gaps() if p == 0]
         self.assertEqual(len(starts), 1)
         self.assertIn(starts[0] - last, (0, 1))                     # at the last record's t (+1 ns when its rank sorts lower)
+        row = [r["detail"] for r in store.timeline(SID) if r["kind"] == "gap"][-1]
+        self.assertEqual(row["t_ns"], starts[0])                    # the timeline names the t that was journaled
+        self.assertEqual(disp.stats.gaps, 1)
         self.frame(disp, self.t("10:00:05"))
         self.assertEqual([p for _, p in self.gaps()], [0, 1])
+        self.assertEqual(disp.stats.gaps, 2)
 
     def test_a_restart_outside_market_hours_journals_no_gap_start(self):
         sd = self.live(upto=CHUNK * 2)
@@ -688,10 +807,28 @@ class SalvageTest(RecoveryBase):
 
     def test_nothing_in_the_daemon_calls_the_salvage_tool(self):
         import inspect
-        for mod in (market_day, finalise, session_day, journal):
-            self.assertNotIn("salvage", inspect.getsource(mod))
+        import pkgutil
+        import stockify.daemon
+        from stockify import __main__ as cli
+        mods = [__import__(f"stockify.daemon.{m.name}", fromlist=["x"])
+                for m in pkgutil.iter_modules(stockify.daemon.__path__) if m.name != "recovery"]
+        for mod in (stockify.daemon, cli, *mods):
+            self.assertNotIn("salvage", inspect.getsource(mod), mod.__name__)
         self.assertNotIn("salvage(", inspect.getsource(recovery.recover))
         self.assertNotIn("adopt_salvage(", inspect.getsource(recovery.recover))
+
+    def test_adopt_refuses_a_changed_checksum_file_before_it_changes_anything(self):
+        jp = self.damaged()
+        recovery.salvage(jp)
+        crc = journal._crc_path(jp)
+        crc.write_bytes(crc.read_bytes() + b"\x00\x00\x00\x00")
+        before = jp.read_bytes()
+        with self.assertRaises(recovery.SalvageError):
+            recovery.adopt_salvage(jp)
+        self.assertEqual(jp.read_bytes(), before)
+        self.assertFalse(list(jp.parent.glob(jp.name + ".damaged*")))
+        with self.assertRaises(recovery.SalvageError):             # and _preserve itself checks what it copies
+            recovery._preserve(jp, "0" * 64, crc=True)
 
 
 if __name__ == "__main__":

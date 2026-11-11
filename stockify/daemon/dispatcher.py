@@ -217,6 +217,8 @@ class Dispatcher:
                 except Exception as e:  # noqa: BLE001
                     self._fail(sid, e, t)
                     continue
+                self.stats.gaps += 1
+                self._open_gaps.add(("process_stop", None))
                 self._timeline(sid, "gap", {"cause": "process_crash", "phase": "start", "t_ns": sd.last_t}, t)
                 self._resume_end.add(sid)
 
@@ -366,6 +368,7 @@ class Dispatcher:
         for sid in sorted(self._resume_end):         # the first frame since the restart: the process-stop gap is over
             per.setdefault(sid, []).insert(0, self._gap_record("end", "process_stop", recv_ns, None))
             self.stats.gaps += 1
+            self._open_gaps.discard(("process_stop", None))
             self._timeline(sid, "gap", {"cause": "process_stop_resumed", "phase": "end", "t_ns": recv_ns}, recv_ns)
         self._resume_end.clear()
         self.stats.frames += 1

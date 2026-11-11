@@ -711,17 +711,25 @@ def preview_session_outputs(session_id: str, trade_date: str, outputs: dict, *,
     return stored, twin, sorted(set(carried))
 
 
-def replace_session_outputs(session_id: str, trade_date: str, outputs: dict, *, latency_ns: int = 0) -> list[int]:
+def replace_session_outputs(session_id: str, trade_date: str, outputs: dict, *, latency_ns: int = 0,
+                            last_frame: tuple[int, int] | None = None) -> list[int]:
     """Make a day's stored rows exactly what `outputs` (a fresh engine's drain of the day's whole journal) gives:
-    the day's rows and frame mark are removed and the outputs applied, in ONE transaction, so a crash leaves the old
-    rows or the new ones, never a mixture. Returns the carried order ids (see `apply_session_outputs`)."""
+    the day's rows are removed and the outputs applied, in ONE transaction, so a crash leaves the old rows or the
+    new, never a mixture. The day's frame mark is never lost: it is `last_frame` when given, else the mark the day
+    row holds (read inside the same transaction), and stays NULL only if it was. Returns the carried order ids (see
+    `apply_session_outputs`)."""
     conn = _connect()
     carried: list[int] = []
     with _lock:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            if last_frame is None:
+                row = conn.execute("SELECT last_frame_no, last_frame_recv_ns FROM session_days "
+                                   "WHERE session_id = ? AND trade_date = ?", (session_id, trade_date)).fetchone()
+                if row is not None and row[0] is not None:
+                    last_frame = (int(row[0]), int(row[1]))
             _delete_day_outputs(conn, session_id, trade_date)
-            _apply_outputs(conn, session_id, trade_date, outputs, first_event_no=1, last_frame=None,
+            _apply_outputs(conn, session_id, trade_date, outputs, first_event_no=1, last_frame=last_frame,
                            carried=carried, latency_ns=latency_ns)
             conn.commit()
         except BaseException:

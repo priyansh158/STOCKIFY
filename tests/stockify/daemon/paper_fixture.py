@@ -68,9 +68,10 @@ class PaperDayTest(SandboxedDBTest):
     def t(self, hhmmss: str) -> int:
         return t(hhmmss)
 
-    def record(self, seconds: int = 1200) -> None:
+    def record(self, seconds: int = 1200, fut_full: bool = False) -> None:
         """Land DAY from 09:15:00: every second a frame with the index (FULL), the near future (QUOTE) and the
-        twelve calls (FULL), and a heartbeat between frames. Then the day's end-of-day rows: `fo_eod` settle
+        twelve calls (FULL), and a heartbeat between frames. With `fut_full` the future is FULL too (it has a book to
+        trade against). Then the day's end-of-day rows: `fo_eod` settle
         prices for the future and a call, and the index's final settlement price."""
         landing = LandingDB(DAY)
         clock = ManualClock(t("09:14:59"))
@@ -80,7 +81,7 @@ class PaperDayTest(SandboxedDBTest):
         rec.begin()
         landing.log_subscriptions(
             [(t("09:15:00"), "subscribe", self.idx, pf.NIFTY_INDEX, "full", "start"),
-             (t("09:15:00"), "subscribe", self.fut, FUT_TOKEN, "quote", "start"),
+             (t("09:15:00"), "subscribe", self.fut, FUT_TOKEN, "full" if fut_full else "quote", "start"),
              *[(t("09:15:00"), "subscribe", iid, CE_TOKEN + i, "full", "start") for i, iid in enumerate(self.ces)]])
         base = t("09:15:00")
         for s in range(seconds):
@@ -88,6 +89,7 @@ class PaperDayTest(SandboxedDBTest):
             exch = base // SEC + s
             frame = [pf.index_full(pf.NIFTY_INDEX, 2_400_000 + s, 2_401_000, 2_399_000, 2_400_000, 2_390_000,
                                    1000 + s, exch),
+                     pf.full(FUT_TOKEN, 2_410_000 + s, vol=100 + s, exch_ts=exch) if fut_full else
                      pf.quote(FUT_TOKEN, 2_410_000 + s, 65, 2_409_000, 100 + s, 10, 20, 1, 2, 3, 4)]
             for i in range(len(STRIKES)):
                 frame.append(pf.full(CE_TOKEN + i, 12_000 - 100 * i + s, vol=1_000 + s, exch_ts=exch))
