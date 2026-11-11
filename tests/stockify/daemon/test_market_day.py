@@ -95,6 +95,21 @@ class MarketDayTest(pf.PaperDayTest):
         self.addCleanup(patcher.stop)
         return patcher
 
+    def test_a_session_skipped_for_the_cap_is_in_the_status_with_its_reason(self):
+        real = loader.load_json
+        patcher = mock.patch.object(
+            loader, "load_json",
+            lambda name, *a, **kw: {**real(name, *a, **kw), "ws_max_instruments": 3} if name == "kite_limits.json"
+            else real(name, *a, **kw))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertEqual(self.run_day(), exitcodes.OK)
+        status = self.status()
+        self.assertEqual(status["skipped"]["s1"]["reason"], "subscription_cap")
+        self.assertEqual(status["skipped"]["s1"]["cap"], 3)
+        self.assertEqual(status["sessions"], {})
+        self.assertEqual(store.get_session("s1")["status"], "ARMED")
+
     # ── E-01 part 1 ──────────────────────────────────────────────────────────
     def test_replay_day_with_one_session_end_to_end(self):
         self.assertEqual(self.run_day(), exitcodes.OK)

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import itertools
 import json
+import threading
 import unittest
+from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.stockify.daemon import packets_fixture as pkt, paper_fixture as pf, test_subscriptions as ts
@@ -17,9 +19,11 @@ from stockify.daemon.clock import ManualClock
 from stockify.daemon.dispatcher import Dispatcher
 from stockify.daemon.encoder import FrameEncoder
 from stockify.daemon.landing import LandingDB
+from stockify.daemon.recorder import Recorder
 from stockify.daemon.replay_ticker import MODE_FULL, ReplayClock, ReplayTicker
 from stockify.daemon.subscriptions import SubscriptionManager
-from stockify.data import instruments, limits, packs
+from stockify.daemon.ticker import RecorderSession
+from stockify.data import instruments, limits, packs, refdata
 
 DAY = pf.DAY
 
@@ -46,7 +50,8 @@ class PinTests(ts.SubscriptionTest):
         m.update_prices({self.index: 2_600_000})               # far away: the 24,800 call would be dropped
         self.assertIn(iid, m.current)
         self.assertEqual(m.current[iid].mode, "full")
-        self.assertEqual(m.current[iid].reason, "pin:session:s1")
+        self.assertEqual(m.current[iid].reason, "pin:session:s1")          # no reason of its own left: the pin's
+        self.assertEqual(m.current[iid].pinned_by, ("session:s1",))
         other = self.manager()
         other.build({self.index: 2_501_000})
         other.update_prices({self.index: 2_600_000})
@@ -88,6 +93,111 @@ class PinTests(ts.SubscriptionTest):
         pins.book_changed(sd, frozenset({far}))
         self.assertEqual(len(calls), 1)                         # through call_in_ticker, once
         self.assertEqual([s.instrument_id for d in applied for s in d.subscribe], [far])
+
+
+class FakeTicker:
+    """What Kite holds: subscribe and unsubscribe, nothing else."""
+
+    def __init__(self) -> None:
+        self.subscribed: set[int] = set()
+
+    def subscribe(self, tokens):  # noqa: ANN001
+        self.subscribed |= set(tokens)
+
+    def unsubscribe(self, tokens):  # noqa: ANN001
+        self.subscribed -= set(tokens)
+
+    def set_mode(self, mode, tokens):  # noqa: ANN001
+        pass
+
+
+class RecorderSessionTests(ts.SubscriptionTest):
+    """The pin and the recorder's own session, on one fake ticker."""
+
+    db_modules = (refdata, store)
+
+    def setUp(self):
+        super().setUp()
+        self.landing = LandingDB(ts.DAY)
+        self.addCleanup(self.landing.close)
+        self.recorder = Recorder(self.landing, {}.get, self.clock)
+        self.ticker = FakeTicker()
+
+    def edge_call(self, strike: int, kind: str = "CE") -> int:
+        return next(r["instrument_id"] for r in instruments.option_chain("NIFTY", ts.WEEKLY, ts.DAY)
+                    if r["strike_paise"] == strike * 100 and r["kind"] == kind)
+
+    def test_pinning_the_index_keeps_its_stall_detection(self):
+        m = self.manager()
+        m.build({self.index: 2_501_000})
+        session = RecorderSession(self.ticker, self.recorder, m, self.clock, health_every_s=1e9)
+        pins = market_day.SessionPins(m, cap=3000)
+        self.assertTrue(pins.admit(FakeSession("s1", {self.index})))
+        sub = m.current[self.index]
+        self.assertTrue(sub.reason.startswith("index:"), sub.reason)          # still the index's own reason
+        self.assertEqual((sub.mode, sub.pinned_by), ("full", ("session:s1",)))
+        taps = []
+        session.gap_taps.append(lambda *a: taps.append(a))
+        session.connected = True
+        now = 10_000 * 1_000_000_000
+        self.clock.set(now)
+        session._last_packet[self.index] = now - 60 * 1_000_000_000
+        with mock.patch("stockify.daemon.ticker.calendar.phase_at", return_value="CONTINUOUS"):
+            session._check_stalls(now)
+        self.assertEqual(taps, [("start", "stall", now - 60 * 1_000_000_000, self.index)])
+
+    def test_a_recentre_and_a_pin_interleave_in_one_order(self):
+        m = self.manager()
+        session = RecorderSession(self.ticker, self.recorder, m, self.clock, health_every_s=1e9)
+        session.connected = True
+        session._prices[self.index] = 2_501_000
+        session._apply(m.build(dict(session._prices)))               # 24,800 .. 25,200 on the ticker
+        edge = self.edge_call(24_800)
+        self.assertIn(edge, m.current)
+        queue = []
+
+        def call(fn, *args):                                         # the reactor: runs what was queued, in order
+            queue.append((fn, args))
+
+        session.call_in_ticker = call
+        pins = market_day.SessionPins(m, cap=3000, call_in_ticker=call, apply=session._apply, lock=session.sub_lock)
+        pins.live = True
+        pins.book_changed(FakeSession("s1", {self.index}), frozenset({edge}))     # queued first
+        session._prices[self.index] = 2_600_000                                    # then the window moves away
+        with mock.patch("stockify.daemon.ticker.calendar.phase_at", return_value="LUNCH"):    # no stall check here
+            session.tick()
+        for fn, args in queue:
+            fn(*args)
+        self.assertIn(edge, m.current)                               # pinned, so it stays
+        self.assertEqual(self.ticker.subscribed, {s.token for s in m.current.values()})   # Kite agrees with the manager
+
+    def test_subscription_log_rows_go_through_the_writer_not_the_ticker_thread(self):
+        m = self.manager()
+        m.log_rows = self.recorder.log_subscriptions
+        with self.landing.lock:                                      # the writer is busy committing
+            worker = threading.Thread(target=m.build, args=({self.index: 2_501_000},))
+            worker.start()
+            worker.join(5)
+            self.assertFalse(worker.is_alive())                      # the ticker thread did not wait for it
+        self.assertEqual(self.landing.conn.execute("SELECT COUNT(*) FROM subscription_log").fetchone()[0], 0)
+        self.recorder.flush()
+        rows = self.landing.conn.execute("SELECT COUNT(*) FROM subscription_log").fetchone()[0]
+        self.assertEqual(rows, len(m.current))
+
+    def test_a_failed_sessions_pins_are_released_in_one_diff(self):
+        m = self.manager()
+        m.build({self.index: 2_501_000})
+        far = self.edge_call(24_000)
+        applied = []
+        pins = market_day.SessionPins(m, cap=3000, apply=applied.append)
+        sd = FakeSession("s1", {self.index, far})
+        self.assertTrue(pins.admit(sd))
+        pins.live = True
+        pins.release("s1")
+        self.assertEqual(len(applied), 1)
+        self.assertEqual([s.instrument_id for s in applied[0].unsubscribe], [far])
+        self.assertNotIn("session:s1", m.pins)
+        self.assertIn(self.index, m.current)                         # the recorder's own instruments stay
 
 
 class BookEngine:
@@ -240,6 +350,25 @@ class SessionDataTest(pf.PaperDayTest):
         disp.put_frame((0, self.t("09:30:00"), 1, b"\x00", True))
         disp.drain()
         self.assertEqual(calls, [frozenset({extra}), frozenset()])
+
+    def test_a_failed_session_releases_its_pins_and_says_so(self):
+        sd = self.make_day("s1", self.narrow_cfg)
+        other = self.make_day("s2", self.narrow_cfg)
+
+        class Failing(BookEngine):
+            def push(self, batch):
+                raise RuntimeError("engine down")
+
+        sd.engine = Failing(sd.engine, [])
+        disp = self.dispatcher([sd, other])
+        released = []
+        disp.on_failed = released.append
+        self.play(disp)
+        disp.drain()
+        self.assertEqual(released, ["s1"])                           # once, for the failed one only
+        (row,) = self.kinds("s1", "pins_released")
+        self.assertEqual(row["detail"]["reason"], "session_failed")
+        self.assertEqual(self.kinds("s2", "pins_released"), [])
 
     def test_universe_over_cap_does_not_arm(self):
         store.create_session("s1", "s1", self.cfg, 1)

@@ -108,6 +108,7 @@ class Dispatcher:
         self._queued_cmds: set[int] = set()
         self._by_id = {s.session_id: s for s in self.sessions}
         self.on_book = None                         # (SessionDay, frozenset[int]) on the engine thread, when a book changes
+        self.on_failed = None                       # (session_id) once, when a session's day fails
         self._book: dict[str, frozenset[int]] = {}
         self._extras: dict[str, frozenset[int]] = {}     # open positions the bundle does not carry
         self._unbundled: set[tuple[str, int]] = set()
@@ -301,6 +302,12 @@ class Dispatcher:
             self.stats.alarms.append(alarm)
         if first:
             self._timeline(sid, "session_failed", {"error": repr(e)}, t)
+            if self.on_failed is not None:
+                try:
+                    self.on_failed(sid)                # its pins are released: a failed day needs no market data
+                    self._timeline(sid, "pins_released", {"reason": "session_failed"}, t)
+                except Exception:  # noqa: BLE001
+                    log.warning("session %s: releasing its pins failed", sid, exc_info=True)
 
     def _frame(self, item: tuple) -> None:
         frame_no, recv_ns, _mono, payload, is_binary = item

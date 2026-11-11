@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from typing import Callable
@@ -42,7 +42,8 @@ class Sub:
     instrument_id: int
     token: int
     mode: str              # full | quote
-    reason: str            # e.g. index, future:near, chain:NIFTY:weekly:0, equity, pin:<owner>
+    reason: str            # e.g. index, future:near, chain:NIFTY:weekly:0, equity, pin:<owner>; a pin never replaces it
+    pinned_by: tuple[str, ...] = ()     # the pin owners that also hold it (sorted)
 
 
 @dataclass
@@ -206,11 +207,19 @@ class SubscriptionManager:
                         out[iid] = Sub(iid, token, mode, f"chain:{c.key}")
                     if mode == QUOTE:
                         quote_rank.append((distance, iid))
+        owners: dict[int, list[str]] = {}
         for owner, ids in sorted(self.pins.items()):
             for iid in sorted(ids):
-                token = self._token(iid)
-                if token is not None:
-                    out[iid] = Sub(iid, token, FULL, f"pin:{owner}")
+                owners.setdefault(iid, []).append(owner)
+        for iid, who in owners.items():
+            token = self._token(iid)
+            if token is None:
+                continue
+            old = out.get(iid)
+            if old is None:
+                out[iid] = Sub(iid, token, FULL, f"pin:{who[0]}", tuple(who))
+            else:                                       # keep its own reason (index stall checks read it); only raise the mode
+                out[iid] = replace(old, mode=FULL, pinned_by=tuple(who))
         if len(out) > self.cap:
             pinned = {i for ids in self.pins.values() for i in ids}
             for _, iid in sorted(quote_rank, reverse=True):
@@ -264,12 +273,14 @@ class SubscriptionManager:
             return self._apply("recenter") if changed else Diff()
 
     def pin(self, ids, owner: str) -> Diff:
+        """ADD `ids` to what `owner` pins (what it pinned before stays). See `set_pin` for the exact form."""
         with self._lock:
             self.pins.setdefault(owner, set()).update(int(i) for i in ids)
             return self._apply("pin")
 
     def set_pin(self, ids, owner: str) -> Diff:
-        """Make `ids` exactly what `owner` pins (none: the owner is dropped), in one diff."""
+        """Make `ids` EXACTLY what `owner` pins: ids it pinned before and are not in `ids` are released, none at all
+        drops the owner. One diff, however much changed. See `pin` for the additive form."""
         with self._lock:
             wanted = {int(i) for i in ids}
             if wanted:
@@ -279,6 +290,7 @@ class SubscriptionManager:
             return self._apply("pin")
 
     def unpin(self, owner: str) -> Diff:
+        """Drop everything `owner` pins (the same as `set_pin([], owner)`)."""
         with self._lock:
             self.pins.pop(owner, None)
             return self._apply("unpin")

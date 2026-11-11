@@ -46,6 +46,7 @@ until then a day opens with `sod_state = None`. A journal that already holds rec
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -198,8 +199,10 @@ class SessionPins:
     for the first connect subscribes everything the manager holds. `apply(diff)` gives a diff to the ticker."""
 
     def __init__(self, manager, *, cap: int, call_in_ticker: Callable = _direct,  # noqa: ANN001
-                 apply: Callable | None = None, notify: Callable[[str, dict], None] | None = None) -> None:
+                 apply: Callable | None = None, notify: Callable[[str, dict], None] | None = None,
+                 lock=None) -> None:  # noqa: ANN001
         self.manager = manager
+        self.lock = lock if lock is not None else contextlib.nullcontext()   # the recorder session's `sub_lock`
         self.cap = int(cap)
         self.call_in_ticker = call_in_ticker
         self.apply = apply
@@ -232,6 +235,13 @@ class SessionPins:
         self._base.setdefault(sd.session_id, frozenset(sd.ids))
         self._pin(sd.session_id)
 
+    def release(self, sid: str) -> None:
+        """The session's day failed: it needs no market data any more. Everything it pinned is released in one diff
+        (`set_pin(owner, [])`); what the recorder subscribes for itself stays."""
+        self._base.pop(sid, None)
+        self._book.pop(sid, None)
+        self._pin(sid)
+
     def _pin(self, sid: str) -> None:
         ids = self._base.get(sid, frozenset()) | self._book.get(sid, frozenset())
         if self.live:
@@ -240,9 +250,10 @@ class SessionPins:
             self._set(sid, ids, False)
 
     def _set(self, sid: str, ids: frozenset[int], apply: bool) -> None:
-        diff = self.manager.set_pin(ids, self.owner(sid))
-        if apply and self.apply is not None and not diff.empty():
-            self.apply(diff)
+        with self.lock:                                 # computed and applied together, in the ticker's one order
+            diff = self.manager.set_pin(ids, self.owner(sid))
+            if apply and self.apply is not None and not diff.empty():
+                self.apply(diff)
 
 
 def band_sink(dispatcher, sessions: list):  # noqa: ANN001
@@ -309,7 +320,7 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
 
 
 def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: bool, sessions: list,  # noqa: ANN001
-                 failed: dict, alarms: list[str]) -> None:
+                 failed: dict, alarms: list[str], skipped: dict | None = None) -> None:
     """`daemon_status.json`: what the daemon last knew, for the next start and for the owner. Written whole, then
     renamed into place."""
     last_frame = landing.max_frame_no()
@@ -318,6 +329,7 @@ def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: b
     status = {"schema": "stockify.daemon_status/1", "day": day.isoformat(), "exit_code": exit_code,
               "last_frame_no": last_frame, "last_frame_recv_ns": int(row[0]), "stopped_ns": clock.now_ns(),
               "stop_requested": stop_requested, "alarms": sorted(alarms),
+              "skipped": {sid: {"reason": "subscription_cap", **detail} for sid, detail in sorted((skipped or {}).items())},
               "sessions": {sd.session_id: {"journal_records": sd.journal_records, "failed": sd.session_id in failed}
                            for sd in sessions}}
     target = paths.daemon_status_file()
@@ -404,13 +416,15 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     for warning in manager.warnings:
         log.warning("subscriptions: %s", warning)
     recorder = Recorder(landing, tokens.get, clock)
+    manager.log_rows = recorder.log_subscriptions       # the writer thread stores them, never the ticker's (RM 5.5)
     session = RecorderSession(ticker, recorder, manager, clock, call_in_ticker=call)
     end_ns = timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])
 
     # The paper sessions: opened before the first frame, fed through the recorder's tap and the ticker's gap taps.
     pump = LogPump() if session_ids != [] else None       # the engines' log lines, off the engine thread
     pins = SessionPins(manager, cap=int(loader.load_json("kite_limits.json")["ws_max_instruments"]),
-                       call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None)
+                       call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None,
+                       lock=session.sub_lock)
     sessions = open_sessions(choose_sessions(session_ids), day, clock, pump, pins) if pump is not None else []
     dispatcher = engine_thread = None
     engine_stop = threading.Event()
@@ -421,6 +435,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         recorder.add_tap(dispatcher)
         session.gap_taps.append(dispatcher.put_gap)
         dispatcher.on_book = pins.book_changed
+        dispatcher.on_failed = pins.release
         pins.live = True                        # from here the ticker thread owns every pin change
 
         def engine_main() -> None:
@@ -481,7 +496,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
             stuck = _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing,
                               clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,
                               engine_thread=engine_thread, engine_stop=engine_stop, engine_failed=engine_failed,
-                              stop_requested=stop_requested, signals=signals, pump=pump)
+                              stop_requested=stop_requested, signals=signals, pump=pump, skipped=pins.refused)
         finally:
             restore_signals()
     return exitcodes.ENGINE_STUCK if stuck else session.exit_code
@@ -489,7 +504,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
 
 def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: date, sessions: list,  # noqa: ANN001
               dispatcher, engine_thread, engine_stop: threading.Event, engine_failed: list[str],
-              stop_requested: bool, signals: StopSignals, pump: LogPump | None) -> bool:
+              stop_requested: bool, signals: StopSignals, pump: LogPump | None, skipped: dict | None = None) -> bool:
     """The shutdown steps in the module doc. Returns True when the engine thread would not stop: then the main
     thread touches neither the dispatcher nor the journals nor the store (it would race the live thread, or hang
     on whatever the thread is stuck in), leaves the journals unfinalised for the next start to resume by replay,
@@ -518,6 +533,10 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
         session.tick()
     except Exception:  # noqa: BLE001
         log.exception("the last health tick failed")
+    try:
+        recorder.flush()                        # subscription rows logged since the writer stopped
+    except Exception:  # noqa: BLE001
+        log.exception("the last landing flush failed")
     stuck = False
     if engine_thread is not None:
         engine_stop.set()
@@ -556,7 +575,8 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
     code = exitcodes.ENGINE_STUCK if stuck else session.exit_code
     try:
         write_status(day, code, landing, clock, stop_requested=stop_requested, sessions=[] if stuck else sessions,
-                     failed=dict(dispatcher.stats.failed) if dispatcher is not None else {}, alarms=alarms)
+                     failed=dict(dispatcher.stats.failed) if dispatcher is not None else {}, alarms=alarms,
+                     skipped=skipped)
     except Exception:  # noqa: BLE001
         log.exception("could not write %s", paths.daemon_status_file())
     try:

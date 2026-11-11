@@ -86,6 +86,10 @@ class RecorderSession:
         self.connected = False
         self.stopped = threading.Event()
         self._lock = threading.Lock()
+        # Every subscription diff (re-centre, first build, pin) is computed and applied under this lock, on the ticker
+        # thread: one order, so `manager.current` is always what Kite holds (RM 5.5).
+        self.sub_lock = threading.RLock()
+        self._sent_prices: dict[int, int] = {}
         self._disconnect_gap: int | None = None
         self._stall_gaps: dict[int, int] = {}
         self._token_iid: dict[int, int] = {}
@@ -122,6 +126,18 @@ class RecorderSession:
         gone = [s.token for s in diff.unsubscribe]
         if gone:
             ws.unsubscribe(gone)
+
+    def _reconcile(self, prices: dict[int, int]) -> None:
+        """Re-centre the chains on `prices` and subscribe what changed. Runs on the ticker thread, in the same order
+        as every pin change, so a diff is never applied after a later one."""
+        with self.sub_lock:
+            diff = self.manager.update_prices(prices)
+            if not diff.empty():
+                self._apply(diff)
+            if any(c.center is None for c in self.manager.chains):
+                first = self.manager.build(prices)          # chains still waiting for a price
+                if not first.empty():
+                    self._apply(first)
 
     def _apply_all(self, ws) -> None:  # noqa: ANN001
         """After a (re)connect: subscribe everything currently wanted."""
@@ -195,13 +211,9 @@ class RecorderSession:
     def tick(self) -> None:
         """Re-centre chains, detect stalls and write health; call about once a second."""
         now = self.clock.now_ns()
-        diff = self.manager.update_prices(dict(self._prices)) if self._prices else Diff()
-        if not diff.empty():
-            self.call_in_ticker(self._apply, diff)
-        if any(c.center is None for c in self.manager.chains) and self._prices:
-            first = self.manager.build(dict(self._prices))      # chains still waiting for a price
-            if not first.empty():
-                self.call_in_ticker(self._apply, first)
+        if self._prices and self._prices != self._sent_prices:
+            self._sent_prices = dict(self._prices)
+            self.call_in_ticker(self._reconcile, dict(self._prices))
         self._check_stalls(now)
         if now - self._last_health_ns >= self.health_every_ns:
             self._write_health(now)

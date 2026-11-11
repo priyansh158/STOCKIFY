@@ -75,8 +75,25 @@ class Recorder:
         # Frames the queue refused: (frame_no, recv_ns), appended by the ticker thread (deque appends are atomic),
         # drained and written as `queue_full` gap rows by the writer at each flush (RM 5.3).
         self._dropped: collections.deque = collections.deque()
+        # Subscription log rows from the ticker thread (re-centres, pins): appended here (atomic), written by the writer
+        # at each flush, so the reactor thread never waits for the landing file (RM 5.5).
+        self._sub_rows: collections.deque = collections.deque()
         self._taps: list[Callable[[tuple], None]] = []
         self._tap_failures: list[int] = []
+
+    def log_subscriptions(self, rows: list[tuple]) -> None:
+        """`SubscriptionManager.log_rows`: any thread, never blocks; the writer stores them at its next flush."""
+        self._sub_rows.extend(rows)
+
+    def _write_subscriptions(self) -> None:
+        rows = []
+        while True:
+            try:
+                rows.append(self._sub_rows.popleft())
+            except IndexError:
+                break
+        if rows:
+            self.landing.log_subscriptions(rows)
 
     # ── frame taps (M5.1 fan-out) ────────────────────────────────────────────
     @property
@@ -238,6 +255,7 @@ class Recorder:
     def flush(self) -> None:
         self._last_flush_mono = self.clock.mono_ns()
         self._write_dropped()
+        self._write_subscriptions()
         if not self._rows and not self._heartbeats:
             return
         rows, beats = self._rows, self._heartbeats
