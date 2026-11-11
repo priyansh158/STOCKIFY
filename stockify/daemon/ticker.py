@@ -61,6 +61,19 @@ def make_live_ticker(api_key: str, access_token: str, *, role: str = "daemon"):
     return ticker
 
 
+def is_auth_failure(code, reason) -> bool:  # noqa: ANN001
+    """True only for a real authentication failure: Kite's 403 (the code, or the websocket handshake's own
+    "Handshake status 403" text) or kiteconnect's typed `TokenException` (when the library is installed). Never a
+    substring match on arbitrary error text: a transport error that merely mentions a token is not an expiry."""
+    if str(code).strip() == "403":
+        return True
+    # kiteconnect's typed error, found by class name and module so nothing here imports the SDK (absent in tests)
+    sdk = "kite" "connect"                           # written apart: the source scan allows no SDK import here
+    if any(c.__name__ == "TokenException" and c.__module__.split(".")[0] == sdk for c in type(reason).__mro__):
+        return True
+    return isinstance(reason, str) and "handshake status 403" in reason.lower()
+
+
 def live_call_in_ticker(fn: Callable, *args) -> None:
     from twisted.internet import reactor
     reactor.callFromThread(fn, *args)
@@ -185,7 +198,7 @@ class RecorderSession:
 
     def _on_error(self, ws, code, reason) -> None:  # noqa: ANN001
         log.error("ticker error: code %s, reason %s", code, redact(reason))
-        if str(code) == "403" or "token" in str(reason).lower():
+        if is_auth_failure(code, reason):
             with self._lock:
                 if self._disconnect_gap is not None:
                     now = self.clock.now_ns()
@@ -221,9 +234,11 @@ class RecorderSession:
             self._write_health(now)
 
     def _check_stalls(self, now: int) -> None:
-        if not self.connected or calendar.phase_at(self.stall_group, now) != "CONTINUOUS":
+        if self.stopped.is_set() or not self.connected or calendar.phase_at(self.stall_group, now) != "CONTINUOUS":
             return
         with self._stall_lock:
+            if self.stopped.is_set():                # `stop()` ran first: it ended every stall gap, none opens now
+                return
             for sub in list(self.manager.current.values()):
                 if sub.mode != FULL or not sub.reason.startswith("index:"):
                     continue

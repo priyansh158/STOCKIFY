@@ -1,8 +1,9 @@
 """Waiting for the daily Kite login (LCB 5.2; M5.7; E-03; D-65).
 
-The Kite token dies at 06:00 IST, or earlier when Kite rejects it mid-day. The daemon never holds a token value here:
-it looks only at the token file's modification time (`token_mtime_ns` stats the file and never opens it), and keeps its
-own state in `daemon_status.json` beside the fields `market_day.write_status` writes:
+The Kite token dies at 06:00 IST, or earlier when Kite rejects it mid-day. This module never holds a token value:
+it looks only at the token file's modification time (`token_mtime_ns` stats the file and never opens it). The 06:00
+rule itself is `kite_client.is_authenticated`, which does read and parse the file in memory on every poll (every 30 s);
+the value is never logged, written or returned. The watcher keeps its own state in `daemon_status.json` beside the fields `market_day.write_status` writes:
 
     waiting_for_login          True from the expiry (or from a start with no usable token) until a login is accepted
     since_ns                   when the wait began
@@ -18,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from typing import Callable
 
@@ -26,8 +28,22 @@ from stockify import paths
 
 log = logging.getLogger("stockify.daemon.token_watch")
 POLL_S = 30.0
-_FORBIDDEN = ("token", "secret")            # a status field may carry the mtime of the token, never a token or secret
-_ALLOWED = ("rejected_token_mtime_ns",)
+_FORBIDDEN = ("token", "secret", "key", "password", "bearer", "auth", "credential")
+_ALLOWED = ("rejected_token_mtime_ns",)     # the mtime of the rejected token file: an int or None, checked below
+_OPAQUE = re.compile(r"^[A-Za-z0-9_\-.=+/]{32,}$")     # one long run with no spaces: what a token or a secret looks like
+
+
+def _check_value(name: str, value) -> None:  # noqa: ANN001
+    if isinstance(value, str):
+        if _OPAQUE.match(value):
+            raise ValueError(f"status field {name!r} holds a long opaque string; the status file never holds a secret")
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _check_value(f"{name}.{k}", v)
+            _check_value(f"{name}.{k}", k)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _check_value(name, v)
 
 
 def read_status() -> dict:
@@ -41,10 +57,15 @@ def read_status() -> dict:
 
 def write_status(**fields) -> dict:
     """Merge `fields` into `daemon_status.json` (written whole, then renamed into place) and return the result.
-    A field whose name could hold a token or a secret is refused."""
-    for name in fields:
+    A field whose name could hold a token or a secret is refused, and so is any value (at any depth) that is one
+    long opaque run of characters; `rejected_token_mtime_ns` must be an int or None."""
+    for name, value in fields.items():
         if name not in _ALLOWED and any(word in name.lower() for word in _FORBIDDEN):
             raise ValueError(f"status field {name!r} could hold a secret; the status file never does")
+        if name == "rejected_token_mtime_ns":
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                raise ValueError("rejected_token_mtime_ns must be an int (a file time) or None")
+        _check_value(name, value)
     status = read_status()
     status.update(fields)
     target = paths.daemon_status_file()

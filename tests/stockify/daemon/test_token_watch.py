@@ -73,6 +73,36 @@ class StatusFileTest(unittest.TestCase):
             self.assertEqual(token_watch.token_mtime_ns(), 1_700_000_000 * SEC)
 
 
+class StatusValueTest(unittest.TestCase):
+    """LCB 5.24 (M-1): the status file checks values as well as names."""
+
+    def setUp(self):
+        support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
+
+    def test_a_long_opaque_string_is_refused_in_any_field(self):
+        opaque = "A1b2C3d4" * 6
+        for value in (opaque, [opaque], {"x": {"y": opaque}}):
+            with self.subTest(value=str(value)[:12]), self.assertRaises(ValueError):
+                token_watch.write_status(note=value)
+
+    def test_ordinary_text_and_numbers_pass(self):
+        token_watch.write_status(day="2026-11-17", alarms=["on_battery"], note="a sentence with spaces, long enough to "
+                                 "pass the opaque rule because it is plainly prose and not one run")
+        self.assertEqual(token_watch.read_status()["day"], "2026-11-17")
+
+    def test_the_rejected_mtime_must_be_an_int_or_none(self):
+        for bad in ("12345", 1.5, True, "x" * 60):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                token_watch.write_status(rejected_token_mtime_ns=bad)
+        token_watch.write_status(rejected_token_mtime_ns=None)
+        token_watch.write_status(rejected_token_mtime_ns=7)
+
+    def test_more_secret_shaped_names_are_refused(self):
+        for name in ("api_key", "password", "bearer", "authorization"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                token_watch.write_status(**{name: "x"})
+
+
 class WaitForLoginTest(unittest.TestCase):
     def setUp(self):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
@@ -223,6 +253,57 @@ class ExpiryTest(pf.PaperDayTest):
         touch_token(501 * SEC)
         self.assertEqual(self.run_day(token_fresh=lambda: True), exitcodes.OK)
         self.assertEqual(store.get_session("s1")["pause_reasons"], [])
+
+    def test_a_login_that_triggers_the_403_counts_as_fresh(self):                          # LCB 5.24, I-2
+        """The rejected token is the one the ticker was built with, read when it was loaded: a re-login that
+        invalidated it (a newer file) is a good login, whatever the file's mtime is at shutdown."""
+        touch_token(500 * SEC)
+        relogged = []
+        real_put = Dispatcher.put_frame
+
+        def spy(disp, item):
+            if not relogged:
+                relogged.append(1)
+                touch_token(600 * SEC)                       # the owner logs in again: this is what 403s the old token
+            return real_put(disp, item)
+
+        with mock.patch.object(Dispatcher, "put_frame", spy), mock.patch.object(Dispatcher, "put_nowait", spy):
+            self.assertEqual(self.run_day(faults=self.fault), exitcodes.TOKEN_EXPIRED)
+        self.assertEqual(token_watch.read_status()["rejected_token_mtime_ns"], 500 * SEC)
+        self.assertEqual(self.run_day(token_fresh=lambda: True), exitcodes.OK)               # 600 > 500: a login
+
+    def test_a_token_expired_reason_does_not_outlive_the_day(self):                         # LCB 5.24, I-1
+        """A 403 at 11:00, no login before the close, a login that night: the next day opens RUNNING (the owner's
+        own pause stays), journal first, then the store, with a `login` row."""
+        lifecycle.pause("s1", "token_expired", wall_ns=3)                  # what the expiry left behind (ARMED: stays so)
+        self.assertEqual(store.get_session("s1")["status"], "ARMED")
+        rows = market_day.choose_sessions(["s1"])
+        clock = ManualClock(pf.t("09:14:00"))
+        opened = market_day.open_sessions(rows, DAY, clock, clear_token_expired=True)
+        self.addCleanup(lambda: [sd.close() for sd in opened])
+        got = store.get_session("s1")
+        self.assertEqual((got["status"], got["pause_reasons"]), ("RUNNING", []))
+        login = [r for r in store.timeline("s1") if r["kind"] == "login"]
+        self.assertEqual(len(login), 1)
+
+    def test_the_owners_pause_survives_the_day_change_and_is_journaled(self):
+        lifecycle.pause("s1", "owner", wall_ns=3)
+        lifecycle.pause("s1", "token_expired", wall_ns=4)
+        opened = market_day.open_sessions(market_day.choose_sessions(["s1"]), DAY, ManualClock(pf.t("09:14:00")),
+                                          clear_token_expired=True)
+        self.addCleanup(lambda: [sd.close() for sd in opened])
+        got = store.get_session("s1")
+        self.assertEqual(got["pause_reasons"], ["owner"])
+        self.assertNotEqual(got["status"], "RUNNING")
+        for sd in opened:
+            sd.fsync()
+        self.assertEqual(controls(decode("s1")), [(False, ["owner"])])      # the journal never held token_expired
+
+    def test_without_a_login_the_reason_stays(self):
+        lifecycle.pause("s1", "token_expired", wall_ns=3)
+        opened = market_day.open_sessions(market_day.choose_sessions(["s1"]), DAY, ManualClock(pf.t("09:14:00")))
+        self.addCleanup(lambda: [sd.close() for sd in opened])
+        self.assertEqual(store.get_session("s1")["pause_reasons"], ["token_expired"])
 
     def test_resume_at_is_cleared_once_the_restart_has_used_it(self):                    # Task 18 review, minor 4
         self.assertEqual(self.run_day(faults=self.fault), exitcodes.TOKEN_EXPIRED)

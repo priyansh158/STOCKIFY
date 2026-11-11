@@ -19,6 +19,7 @@ async function loadData(): Promise<{ status: KiteStatus; snap: PortfolioSnapshot
   const status = await api<KiteStatus>("/api/kite/status").catch(() => ({
     configured: false,
     authenticated: false,
+    daemon_waiting_for_login: false,
     error: "unreachable",
   }));
   let snap: PortfolioSnapshot | null = null;

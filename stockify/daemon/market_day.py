@@ -278,10 +278,15 @@ def band_sink(dispatcher, sessions: list):  # noqa: ANN001
 
 
 def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: ANN001
-                  pins: SessionPins | None = None) -> list:
+                  pins: SessionPins | None = None, *, clear_token_expired: bool = False) -> list:
     """Open each chosen session's day. One that cannot open is timelined and left out; the others go on. With `pins`,
     a session whose instruments would take the subscriptions past the cap does not run: an ARMED one stays ARMED,
-    with the timeline row `subscription_cap`."""
+    with the timeline row `subscription_cap`.
+
+    With `clear_token_expired` (the run has a usable Kite login) a day that opens afresh drops the `token_expired`
+    reason an earlier day's expiry left behind, however late the login came: the new journal opens without it
+    (journal first), then the store (`lifecycle.resume`), keeping every other reason, with a `login` timeline row
+    (LCB 5.24)."""
     from stockify.daemon.finalise import next_sod_state
     from stockify.daemon.session_day import SessionDay
     opened = []
@@ -301,7 +306,15 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                 log.info("session %s: resumed %s from its journal (%d records)", sid, day, result.records)
                 over_cap = pins is not None and not pins.admit(sd)
             else:
-                sd.open(next_sod_state(sid, day), row["pause_reasons"], now)
+                reasons = list(row["pause_reasons"])
+                stale = clear_token_expired and "token_expired" in reasons
+                if stale:
+                    reasons.remove("token_expired")
+                sd.open(next_sod_state(sid, day), reasons, now)
+                if stale:
+                    lifecycle.resume(sid, "token_expired", wall_ns=now, engine_ns=now)
+                    store.add_timeline(sid, "login", {"t_ns": now, "reasons": reasons, "cause": "new_day"},
+                                       wall_ns=now, engine_ns=now)
                 over_cap = pins is not None and not pins.admit(sd)
                 if row["status"] == "ARMED" and not over_cap:
                     lifecycle.start_continuous(sid, wall_ns=now, engine_ns=now)
@@ -351,7 +364,8 @@ def status_resume_at(day: date) -> int | None:
 
 def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: bool, sessions: list,  # noqa: ANN001
                  failed: dict, alarms: list[str], skipped: dict | None = None,
-                 resume_at_ns: int | None = None, paused: list[str] | None = None) -> None:
+                 resume_at_ns: int | None = None, paused: list[str] | None = None,
+                 rejected_token_mtime_ns: int | None = None) -> None:
     """`daemon_status.json`: what the daemon last knew, for the next start and for the owner. Written whole, then
     renamed into place. `resume_mark` is the process's minimum frame mark over its sessions (a replay restart skips
     frames at or below it); `resume_at_ns` is a fault duration's `T + N`. A token expiry (exit 76) also says the daemon
@@ -371,7 +385,7 @@ def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: b
                            for sd in sessions}}
     if exit_code == exitcodes.TOKEN_EXPIRED:
         status.update(waiting_for_login=True, since_ns=clock.now_ns(), sessions_paused=sorted(paused or []),
-                      rejected_token_mtime_ns=token_watch.token_mtime_ns())
+                      rejected_token_mtime_ns=rejected_token_mtime_ns)
     else:
         status.update(waiting_for_login=False, rejected_token_mtime_ns=None, sessions_paused=[])
     token_watch.write_status(**status)
@@ -417,6 +431,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                 log.warning("still waiting for a Kite login newer than the rejected token")
                 return exitcodes.TOKEN_EXPIRED
             token_watch.login_accepted()
+        used_token_mtime = token_watch.token_mtime_ns()       # the token this run starts with
         ticker, clock = open_replay(ticker_spec, faults=faults)
         landing = LandingDB(day, paths.ticks_replay_file(day))
         call = direct_call
@@ -441,6 +456,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         if token_watch.read_status().get("waiting_for_login"):
             token_watch.login_accepted()
         daemon._ensure_refdata(day)
+        used_token_mtime = token_watch.token_mtime_ns()       # the file the ticker is built with (stat, before the read)
         payload = kite_client.load_cached_token()
         from stockify.daemon import conn_budget
         try:
@@ -485,7 +501,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     pins = SessionPins(manager, cap=int(loader.load_json("kite_limits.json")["ws_max_instruments"]),
                        call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None,
                        lock=session.sub_lock)
-    sessions = open_sessions(choose_sessions(session_ids), day, clock, pump, pins) if pump is not None else []
+    sessions = (open_sessions(choose_sessions(session_ids), day, clock, pump, pins, clear_token_expired=True)
+                if pump is not None else [])
     if replay:                                  # a restarted replay goes on after what the old process dispatched
         ticker.resume_after = process_mark([sd for sd in sessions if sd.resumed]) if sessions and all(
             sd.resumed for sd in sessions) else None
@@ -589,7 +606,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
             stuck = _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing,
                               clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,
                               engine_thread=engine_thread, engine_stop=engine_stop, engine_failed=engine_failed,
-                              stop_requested=stop_requested, signals=signals, pump=pump, skipped=pins.refused)
+                              stop_requested=stop_requested, signals=signals, pump=pump, skipped=pins.refused,
+                              used_token_mtime=used_token_mtime)
         finally:
             restore_signals()
     return exitcodes.ENGINE_STUCK if stuck else session.exit_code
@@ -597,7 +615,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
 
 def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: date, sessions: list,  # noqa: ANN001
               dispatcher, engine_thread, engine_stop: threading.Event, engine_failed: list[str],
-              stop_requested: bool, signals: StopSignals, pump: LogPump | None, skipped: dict | None = None) -> bool:
+              stop_requested: bool, signals: StopSignals, pump: LogPump | None, skipped: dict | None = None,
+              used_token_mtime: int | None = None) -> bool:
     """The shutdown steps in the module doc. Returns True when the engine thread would not stop: then the main
     thread touches neither the dispatcher nor the journals nor the store (it would race the live thread, or hang
     on whatever the thread is stuck in), leaves the journals unfinalised for the next start to resume by replay,
@@ -679,7 +698,7 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
         write_status(day, code, landing, clock, stop_requested=stop_requested, sessions=[] if stuck else sessions,
                      failed=dict(dispatcher.stats.failed) if dispatcher is not None else {}, alarms=alarms,
                      skipped=skipped, resume_at_ns=getattr(ticker, "resume_at_ns", None) if replay else None,
-                     paused=paused)
+                     paused=paused, rejected_token_mtime_ns=used_token_mtime)
     except Exception:  # noqa: BLE001
         log.exception("could not write %s", paths.daemon_status_file())
     try:

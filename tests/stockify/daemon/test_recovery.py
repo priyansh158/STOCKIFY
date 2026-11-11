@@ -480,6 +480,41 @@ class RecoveryTest(RecoveryBase):
         self.assertNotEqual(self.timeline(SID, "determinism_mismatch")[1]["digest"], digest)
 
 
+class PauseReconcileTest(RecoveryBase):
+    """LCB 5.24 (M-3): the journal is the truth for the pause reasons too (D-68: journal first, then store)."""
+
+    def reasons_journaled(self):
+        return [r["payload"]["reasons"] for r in journal_records(SID)
+                if r["kind"] == "REFDATA" and r["subtype"] == "strategy_control"]
+
+    def test_journal_paused_store_running_is_repaired_to_paused(self):
+        sd = self.live(upto=CHUNK * 2)
+        sd.control(False, ["owner", "token_expired"], self.t("09:30:00"))     # journaled; the store write never happened
+        sd.close()
+        self.assertEqual(store.get_session(SID)["pause_reasons"], [])
+        sd2, _ = self.recover()
+        got = store.get_session(SID)
+        self.assertEqual((got["status"], got["pause_reasons"]), ("PAUSED", ["owner", "token_expired"]))
+        self.assertTrue([r for r in store.timeline(SID) if r["kind"] == "pause_reconciled"])
+
+    def test_journal_resumed_store_paused_is_repaired_to_running(self):
+        sd = self.live(upto=CHUNK * 2)
+        sd.control(False, ["token_expired"], self.t("09:30:00"))
+        lifecycle.pause(SID, "token_expired", wall_ns=5)
+        sd.control(True, [], self.t("09:31:00"))                               # journaled; the store write never happened
+        sd.close()
+        sd2, _ = self.recover()
+        got = store.get_session(SID)
+        self.assertEqual((got["status"], got["pause_reasons"]), ("RUNNING", []))
+
+    def test_a_journal_with_no_control_leaves_the_store_alone(self):
+        sd = self.live(upto=CHUNK * 2)
+        lifecycle.pause(SID, "owner", wall_ns=5)
+        sd.close()
+        self.recover()
+        self.assertEqual(store.get_session(SID)["pause_reasons"], ["owner"])
+
+
 class CarriedPositionTest(RecoveryBase):
     FUT_FULL = True
 

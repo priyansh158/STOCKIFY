@@ -140,7 +140,66 @@ class StallRaceTests(SessionTest):
         self.assertEqual(taps, [])                          # the stop already ended it: no second end
 
 
-class GapTests(SessionTest):
+class AuthFailureTests(SessionTest):
+    """LCB 5.24 (I-3): only a real authentication failure is a token expiry (exit 76, sessions paused)."""
+
+    def fake_session(self):
+        from unittest import mock
+        clock = mock.Mock()
+        clock.now_ns.return_value = 1_000
+        manager = mock.MagicMock()
+        manager.reference_ids.return_value = set()
+        return RecorderSession(mock.MagicMock(), mock.MagicMock(), manager, clock)
+
+    def test_a_transport_error_that_mentions_a_token_does_not_exit_76(self):
+        for code, reason in ((1006, "connection lost to wss://example.invalid/?access_token=dummy"),
+                             (0, "token bucket exhausted"), (1011, "Invalid token length in frame")):
+            with self.subTest(reason=reason):
+                session = self.fake_session()
+                session._on_error(None, code, reason)
+                self.assertEqual(session.exit_code, exitcodes.OK)
+                self.assertFalse(session.stopped.is_set())
+
+    def test_kites_403_and_handshake_rejection_exit_76(self):
+        for code, reason in ((403, "anything"), ("403", "x"), (0, "Handshake status 403 Forbidden")):
+            with self.subTest(code=code, reason=reason):
+                session = self.fake_session()
+                session._on_error(None, code, reason)
+                self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
+
+    def test_the_same_with_a_typed_exception_when_kiteconnect_is_present(self):
+        class TokenException(Exception):
+            pass
+
+        TokenException.__module__ = "kiteconnect.exceptions"             # the SDK itself is absent in tests
+        session = self.fake_session()
+        session._on_error(None, 0, TokenException("Incorrect `api_key` or `access_token`."))
+        self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
+
+    def test_a_lookalike_exception_from_elsewhere_is_not_an_expiry(self):
+        class TokenException(Exception):
+            pass
+
+        session = self.fake_session()
+        session._on_error(None, 0, TokenException("token"))
+        self.assertEqual(session.exit_code, exitcodes.OK)
+
+
+class StoppedStallTests(SessionTest):
+    def test_no_stall_gap_is_opened_after_the_session_stopped(self):
+        import types
+        session, target, _ = self.run_session()
+        session.clock = ManualClock(t("09:20:00"))
+        session.connected = True
+        session.manager = types.SimpleNamespace(
+            current={1: types.SimpleNamespace(mode="full", reason="index:NIFTY", instrument_id=7)})
+        session._last_packet = {7: t("09:10:00")}
+        session.stopped.set()
+        before = len(target.gaps())
+        session._check_stalls(t("09:20:00"))
+        self.assertEqual(len(target.gaps()), before)
+
+
     def test_clean_day_has_no_gaps(self):
         session, target, _ = self.run_session()
         self.assertEqual(self.gaps(target), [])

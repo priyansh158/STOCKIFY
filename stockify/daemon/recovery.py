@@ -164,10 +164,36 @@ def recover(session_id: str, day: date, *, clock: Clock | None = None, log_sink=
     now = clock.now_ns()
     try:
         _record(sd, result, diff, now)
+        _reconcile_pauses(sd, now)
     except BaseException:
         sd.close()
         raise
     return sd, result
+
+
+def _reconcile_pauses(sd: SessionDay, now: int) -> None:
+    """The journal is the truth for the pause reasons too (D-68: a change is journaled first, then stored). A crash
+    between the two leaves the store behind: reasons the journal's last `strategy_control` holds are added, reasons it
+    no longer holds are removed. A journal with no such record, and a STOPPED session, are left as found."""
+    sid = sd.session_id
+    wanted = sd.last_control
+    session = store.get_session(sid)
+    if wanted is None or session is None or session["status"] == "STOPPED":
+        return
+    held = set(session["pause_reasons"])
+    add, drop = sorted(set(wanted) - held), sorted(held - set(wanted))
+    if not add and not drop:
+        return
+    for reason in add:
+        if reason == "stopped":
+            lifecycle.stop(sid, wall_ns=now)
+        else:
+            lifecycle.pause(sid, reason, wall_ns=now, engine_ns=now)
+    for reason in drop:
+        lifecycle.resume(sid, reason, wall_ns=now, engine_ns=now)
+    _timeline(sid, "pause_reconciled", {"day": sd.trade_date, "journal": wanted, "store_was": sorted(held)}, now)
+    log.warning("session %s: the journal says paused for %s, the store said %s; the journal wins", sid, wanted,
+                sorted(held))
 
 
 def _landing_frame(day: date, t_ns: int) -> tuple[int, int] | None:
