@@ -112,6 +112,7 @@ class SessionConfigTests(unittest.TestCase):
 
 class SessionBundleTests(unittest.TestCase):
     setUp = PackTest.setUp          # the NIFTY chain and future of the pack tests, DAY 2026-11-17
+    record = PackTest.record
 
     def test_day_bundle_holds_every_strike_of_the_selected_expiry(self):
         b = bundle.resolve_session_day("s1", cfg(universe=CHAIN), DAY, None)
@@ -235,13 +236,186 @@ class SessionBundleTests(unittest.TestCase):
                 bundle.write(b, Path(d))
                 engine.load().Engine(str(Path(d) / "bundle.json"))
 
+    # The content hashes (sha256 of bundle.json as `bundle.write` writes it) of a run bundle over the pack tests' tick
+    # pack, resolved before and after REG 5.1 / 5.2: measured on 69c320d (before the session code) and on this code.
+    PINNED_RUN_BUNDLE = {"flat": "de43313c91ec3a4f2b41278184192bd378455f1889c411e344a77c44c634d2ab",
+                         "staircase": "62f700a5e00bd4068146df1279eabf99e396c65071b78f12bfb788588444fd66"}
+
     def test_existing_run_bundles_unchanged(self):
-        import inspect
-        sig = inspect.signature(bundle.resolve_bundle)
-        self.assertEqual(list(sig.parameters), ["cfg"])
-        self.assertEqual(list(inspect.signature(bundle.span_section).parameters)[:3],
-                         ["instruments_rows", "days", "skipped"])
-        self.assertIsNone(inspect.signature(bundle.span_section).parameters["until_ns"].default)
+        self.record()
+        for model, pinned in self.PINNED_RUN_BUNDLE.items():
+            with self.subTest(model=model):
+                run_cfg = runconfig.load({
+                    "schema": "stockify.run/1", "name": "pin",
+                    "strategy": {"kind": "python", "ref": "stockify.strategy:Strategy", "params": {}},
+                    "data": {"packs": [{"spec": {"dataset": "ticks", "from": DAY.isoformat(), "to": DAY.isoformat(),
+                                                 "instruments": [{"ids": [self.ce, self.idx, self.fut]}]}}]},
+                    "price_basis": "raw", "capital_paise": 10_000_000, "fill_model": {"kind": "snapshot_quote"},
+                    "costs": {"allow_unverified": True}, "margin": {"model": model}})
+                b = bundle.resolve_bundle(run_cfg)
+                self.assertNotIn("prev_days", b)
+                self.assertNotIn("next_days", b)
+                self.assertEqual(hashlib.sha256((bundle.dumps(b) + chr(10)).encode()).hexdigest(), pinned)
+
+
+
+
+# -- Fix round 1 (REG 5.2): a day's bundle loads the day before's state, whatever the state references -----------
+
+DAY2 = date(2026, 11, 18)
+EXPIRED_EXPIRY = "2026-11-17"          # the fixture's weekly calls expire on DAY; the next weekly is 24 November
+NEXT_EXPIRY = "2026-11-24"
+
+
+class AcrossExpiryTests(unittest.TestCase):
+    def setUp(self):
+        PackTest.setUp(self)
+        import tempfile
+        from pathlib import Path
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        self.add_next_expiry()
+
+    def add_next_expiry(self):
+        from stockify.data import instruments
+        from tests.stockify.data.test_packs import HEADER
+        from tests.stockify.daemon import packets_fixture as pf
+        rows = "".join(f"{95000 + i},{50 + i},NIFTY26N24{s}CE,NIFTY,0,{NEXT_EXPIRY},{s},0.05,65,CE,NFO-OPT,NFO\n"
+                       for i, s in enumerate(range(23500, 24600, 100)))
+        instruments.sync(date(2026, 11, 17), {
+            "NSE": f"{HEADER}\n{pf.NIFTY_INDEX},1,NIFTY 50,NIFTY 50,0,,0,0,0,EQ,INDICES,NSE\n",
+            "NFO": (f"{HEADER}\n{pf.NIFTY_CE},2,NIFTY26N1724000CE,NIFTY,0,{EXPIRED_EXPIRY},24000,0.05,65,CE,NFO-OPT,NFO\n"
+                    f"9001,3,NIFTY26NOVFUT,NIFTY,0,2026-11-24,0,0.1,65,FUT,NFO-FUT,NFO\n" + rows),
+        }, underlyings={"NIFTY": "NSE:NIFTY 50"})
+
+    def session_cfg(self, actions=(), **kw):
+        return cfg(strategy={"kind": "script", "actions": list(actions)}, margin={"model": "flat"},
+                   fill_model={"kind": "snapshot_ltp"}, **kw)
+
+    def day_one_state(self, *, buy_and_sell: bool = True) -> str:
+        """Day 1 (the day the weekly calls expire) run on the oracle: a call bought and sold again (a flat position
+        with market data and bars), the future and the index quoted. Returns day 1's eod_state()."""
+        from stockify import golden, timeutil
+        from stockify.oracle import runner
+        from stockify.strategies._script import Script
+        ce = self.ce
+
+        def at(hhmm):
+            return timeutil.ist_ns(DAY, hhmm)
+        acts = []
+        if buy_and_sell:
+            acts = [{"at_ns": at("09:16:30"), "place": {"instrument": ce, "side": "BUY", "qty": 65, "product": "NRML",
+                                                        "type": "LIMIT", "price": 13_000}},
+                    {"at_ns": at("09:20:30"), "place": {"instrument": ce, "side": "SELL", "qty": 65, "product": "NRML",
+                                                        "type": "LIMIT", "price": 11_000}}]
+        events = []
+        for n in range(30):
+            hhmm = f"09:{15 + n:02d}"
+            events.append({"kind": "TICK_QUOTE", "instrument": ce, "t": f"2026-11-17T{hhmm}:10+05:30",
+                           "ltp": 12_000 + n, "volume": 1000 * (n + 1)})
+            events.append({"kind": "BAR", "instrument": self.fut, "interval_s": 60, "start": f"2026-11-17T{hhmm}:00+05:30",
+                           "o": 12_000, "h": 12_050, "l": 11_950, "c": 12_000 + n, "v": 100})
+            events.append({"kind": "INDEX", "instrument": self.idx, "t": f"2026-11-17T{hhmm}:30+05:30",
+                           "value": 2_400_000 + n})
+        pack = golden.build_pack({"id": "day1", "events": events}, self.folder)
+        c = self.session_cfg(acts)
+        b = json.loads(bundle.dumps(bundle.resolve_session_day("s1", c, DAY, None)))
+        e = runner.Engine(b, runner.load_records([pack]), Script(b["strategy"]["actions"]))
+        e.run()
+        return e.eod_state()
+
+    def day_two_bundle(self, state: str, *, universe=None) -> dict:
+        c = self.session_cfg(universe=universe or CHAIN)
+        return json.loads(bundle.dumps(bundle.resolve_session_day("s1", c, DAY2, json.loads(state))))
+
+    def load_on_both(self, b: dict):
+        """The day's bundle, state inside: the oracle's constructor applies it, and so does the C++ engine's."""
+        from stockify import engine
+        from stockify.oracle import runner
+        from stockify.strategy import Strategy
+        runner.Engine(copy.deepcopy(b), [], Strategy())
+        if engine.available():
+            bundle.write(copy.deepcopy(b), self.folder)
+            engine.load().Engine(str(self.folder / "bundle.json"))
+
+    def test_the_state_after_a_flat_expired_call_loads_the_next_day(self):
+        state = self.day_one_state()
+        refs = json.loads(state)
+        self.assertEqual([p["q"] for p in refs["ledger"]["positions"]], [0])          # flat, not open
+        self.assertIn(str(self.ce), refs["market"])
+        self.assertTrue(any(k.startswith(f"{self.fut}:") for k in refs["bar_history"]))
+        b2 = self.day_two_bundle(state)
+        ids = {i["id"] for i in b2["instruments"]}
+        self.assertIn(self.ce, ids)                                                  # expired on day 1, still listed
+        self.assertEqual(sum(1 for i in b2["instruments"] if i["kind"] == "CE" and i["expiry"] == NEXT_EXPIRY), 11)
+        self.assertLessEqual(bundle._sod_instruments(refs), ids)                     # all that the state names
+        self.load_on_both(b2)
+
+    def test_the_expired_call_keeps_its_dated_row(self):
+        b2 = self.day_two_bundle(self.day_one_state())
+        row = next(i for i in b2["instruments"] if i["id"] == self.ce)
+        self.assertEqual((row["kind"], row["expiry"]), ("CE", EXPIRED_EXPIRY))
+        self.assertTrue(row["specs"] and row["last_trading_ns"])
+
+    def test_every_instrument_a_state_names_is_in_the_bundle(self):
+        """Each field the loader checks, one at a time: its instrument (expired on day 1) must come along."""
+        base = json.loads(self.day_one_state())
+        ce = self.ce
+        puts = {
+            "ledger position": lambda s: s["ledger"]["positions"].append(
+                {**base["ledger"]["positions"][0], "instrument_id": ce}),
+            "market": lambda s: s["market"].setdefault(str(ce), next(iter(base["market"].values()))),
+            "bar_history": lambda s: s["bar_history"].setdefault(f"{ce}:60", [[1, 1, 1, 1, 1, 1, 0]]),
+            "dp_done": lambda s: s["dp_done"].append([ce, "2026-11-17"]),
+            "built_bars": lambda s: s["built_bars"].append([ce, 60, 1, 1, 1, 1, 1, 1, 0]),
+            "subscriptions.ticks": lambda s: s["subscriptions"]["ticks"].append(ce),
+            "subscriptions.bars": lambda s: s["subscriptions"]["bars"].setdefault(str(ce), [60]),
+            "fsp_seen": lambda s: s["fsp_seen"].append([ce, "2026-11-17", 100]),
+        }
+        for name, put in puts.items():
+            s = copy.deepcopy(base)
+            s["ledger"]["positions"] = []
+            s["market"], s["bar_history"] = {}, {}
+            s["dp_done"], s["built_bars"], s["fsp_seen"] = [], [], []
+            s["subscriptions"] = {"ticks": [], "bars": {}}
+            put(s)
+            with self.subTest(field=name):
+                b2 = bundle.resolve_session_day("s1", self.session_cfg(universe=["NSE:NIFTY 50"]), DAY2, s)
+                self.assertIn(ce, {i["id"] for i in b2["instruments"]})
+
+    def test_an_instrument_with_no_row_fails_the_build_naming_it(self):
+        s = json.loads(self.day_one_state())
+        s["subscriptions"]["ticks"].append(987654)
+        with self.assertRaisesRegex(bundle.BundleError, r"987654.*2026-11-18|2026-11-18.*987654"):
+            bundle.resolve_session_day("s1", self.session_cfg(), DAY2, s)
+
+
+class ReplayEqualsLiveTests(unittest.TestCase):
+    """REG 5.2 (review minor 2): what a day's bundle holds is what was archived at the refdata job's time, so a
+    resolve at 08:30 and a replay of the same day months later give the same bundle."""
+
+    setUp = PackTest.setUp
+
+    ELM = "OPTIDX,NIFTY,17-NOV-2026,24000,CE,0,2\nFUTIDX,NIFTY,24-NOV-2026,-1,XX,0,3\n"
+
+    def test_a_live_resolve_and_a_later_replay_give_the_same_bundle(self):
+        from tests.stockify.test_bundle_span import archive_elm
+        archive_span(date(2026, 11, 16), "s", "202611162000")
+        archive_span(DAY, "i1", "202611170800")
+        live = bundle.dumps(bundle.resolve_session_day("s1", cfg(), DAY, None))
+        archive_elm(DAY, self.ELM)                       # published for the day later: not there at 08:30
+        archive_span(DAY, "i2", "202611171100")
+        replay = bundle.dumps(bundle.resolve_session_day("s1", cfg(), DAY, None))
+        self.assertEqual(live, replay)
+        self.assertEqual(json.loads(live)["elm"], {})
+
+    def test_the_label_says_which_files_were_left_out(self):
+        b = bundle.resolve_session_day("s1", cfg(), DAY, None)
+        self.assertIn("margin_span:sod_files_only", b["labels"])
+        self.assertIn("margin_elm:sod_files_only", b["labels"])
+        flat = bundle.resolve_session_day("s1", cfg(margin={"model": "flat"}), DAY, None)
+        self.assertNotIn("margin_elm:sod_files_only", flat["labels"])
 
 
 if __name__ == "__main__":

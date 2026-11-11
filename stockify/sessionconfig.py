@@ -1,4 +1,4 @@
-"""`session.json`: a paper session's configuration (REG 5.1, M5.2, D-67, A1 §6.4a).
+"""`session.json`: a paper session's configuration (REG 5.1, M5.2, D-67, A1 §6.5).
 
     cfg = sessionconfig.load("examples/sessions/orb_nifty.json")   # or a dict
 

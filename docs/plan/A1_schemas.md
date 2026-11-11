@@ -540,7 +540,7 @@ A run config (§6.1) without `data`, plus `universe`; `stockify.sessionconfig.lo
 | `seed_mode` | `per_day` (the only value; written out in the normalised form) |
 | `price_basis` | `raw` (the only value) |
 
-`data` is refused. The normalised form is the run config's normalised form with `schema`, `universe` and `margin.live_fresh_s`; it is validated again to itself. `bundle.resolve_session_day(session_id, cfg, day, sod_state, refdata_stale=False)` makes one day's bundle (§6.2) from it: `packs: []`, `days` `[day]` with its seed, `sod_state` as given, `prev_days` / `next_days`, labels as a run's plus `session:<session_id>` (and `refdata_stale`); SPAN files only those archived by the refdata job's time, the later intraday files being left out and labelled `margin_span:sod_files_only`.
+`data` is refused. The normalised form is the run config's normalised form with `schema`, `universe` and `margin.live_fresh_s`; it is validated again to itself. `bundle.resolve_session_day(session_id, cfg, day, sod_state, refdata_stale=False)` makes one day's bundle (§6.2) from it: `packs: []`, `days` `[day]` with its seed, `sod_state` as given, `prev_days` / `next_days`, labels as a run's plus `session:<session_id>` (and `refdata_stale`); SPAN files only those archived by the refdata job's time, the later intraday files being left out and labelled `margin_span:sod_files_only`, and the day's ELM file left out (`margin_elm:sod_files_only`, the day's margin steps from B1 to B2). Instruments the previous `sod_state` names stay in the bundle (a build with an unknown one fails).
 
 ## §7 Config files (`stockify/config/`)
 

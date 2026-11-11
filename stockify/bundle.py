@@ -658,7 +658,7 @@ def resolve_bundle(cfg: dict) -> dict:
 
 
 def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[int, str], start: date, end: date,
-                  *, span_until_ns: int | None = None) -> dict:
+                  *, span_until_ns: int | None = None, elm_known: bool = True) -> dict:
     """Everything a bundle holds, for the instruments `ids` over [start, end]: shared by a run (`resolve_bundle`,
     from its packs) and a paper session's day (`resolve_session_day`, no packs)."""
     from stockify.config import loader
@@ -706,7 +706,7 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
         elm_skipped: dict[str, list[dict]] = {}
         out["span"] = span_section(instruments_rows, days, skipped, span_until_ns)
         out["span_skipped"] = skipped
-        out["elm"] = elm_section(instruments_rows, days, elm_skipped)
+        out["elm"] = elm_section(instruments_rows, days, elm_skipped) if elm_known else {}
         out["elm_skipped"] = elm_skipped
         extra = set()
         if not _contract_keys(instruments_rows):   # I-1: nothing for SPAN to price, so no file was parsed
@@ -776,12 +776,45 @@ def _calendar_days(day: date, horizon: int) -> tuple[list[dict], list[dict]]:
 
 
 def _sod_instruments(sod_state: dict | None) -> set[int]:
-    """Instruments the previous day left open positions or live orders in: they stay in the bundle whatever the
-    universe selects today (a rolled 'nearest' expiry must not strand a position)."""
-    if not sod_state:
+    """Every instrument id the previous day's state names, in every field the state loader checks against the
+    bundle (ledger positions, flat ones too; pending orders; DP charges; built bars; subscriptions; final settlement
+    prices; the market; the bar history). They stay in the bundle whatever today's universe selects, expired or rolled
+    off included, so the loader's checks stay as strict as they are (a state is never trimmed to fit). A field of the
+    wrong shape names nothing here: the loader refuses it, with its own words."""
+    if not isinstance(sod_state, dict):
         return set()
-    ids = {p["instrument_id"] for p in sod_state.get("ledger", {}).get("positions", []) if p.get("q")}
-    ids |= {o["instrument_id"] for o in sod_state.get("pending_orders", [])}
+    ids: set[int] = set()
+
+    def add(value) -> None:  # noqa: ANN001
+        if isinstance(value, int) and not isinstance(value, bool):
+            ids.add(value)
+        elif isinstance(value, str) and value.isascii() and value.isdecimal():
+            ids.add(int(value))
+
+    def rows(field) -> list:  # noqa: ANN001
+        return field if isinstance(field, list) else []
+
+    def keys(field) -> list:  # noqa: ANN001
+        return list(field) if isinstance(field, dict) else []
+
+    ledger = sod_state.get("ledger")
+    for p in rows(ledger.get("positions") if isinstance(ledger, dict) else None):
+        add(p.get("instrument_id") if isinstance(p, dict) else None)
+    for o in rows(sod_state.get("pending_orders")):
+        add(o.get("instrument_id") if isinstance(o, dict) else None)
+    for field in ("dp_done", "built_bars", "fsp_seen"):          # [[instrument or underlying id, ...], ...]
+        for r in rows(sod_state.get(field)):
+            add(r[0] if isinstance(r, list) and r else None)
+    subs = sod_state.get("subscriptions")
+    if isinstance(subs, dict):
+        for iid in rows(subs.get("ticks")):
+            add(iid)
+        for key in keys(subs.get("bars")):
+            add(key)
+    for key in keys(sod_state.get("market")):
+        add(key)
+    for key in keys(sod_state.get("bar_history")):                # "<instrument_id>:<interval_s>"
+        add(key.partition(":")[0] if isinstance(key, str) else None)
     return ids
 
 
@@ -793,28 +826,36 @@ def resolve_session_day(session_id: str, cfg: dict, day: date, sod_state: dict |
     and `prev_days` / `next_days` (A1 §6.2). Labels are `resolve_bundle`'s, plus `session:<session_id>` and, when
     the refdata refresh failed, `refdata_stale`. Only what is known at resolve time goes in: SPAN files archived by
     the refdata job's time (the previous end-of-day file and `i1`); the intraday `i2`..`i4` come later and are
-    labelled `margin_span:sod_files_only`. Raises `BundleError` on a non-trading day or an unsafe `session_id`."""
+    labelled `margin_span:sod_files_only`; the day's ELM file is left out too (`margin_elm:sod_files_only`: the day
+    steps from B1 to B2). Raises `BundleError` on a non-trading day or an unsafe `session_id`."""
     from stockify.config import loader
     from stockify.data import instruments
     if not paths.safe_segment(session_id, 64):
         raise BundleError(f"session_id {session_id!r} must be 1-64 letters, digits, '.', '_' or '-'")
     if not _is_trading_day(day):
         raise BundleError(f"{day} is not an NSE trading day")
-    ids = session_universe(cfg["universe"], day) | _sod_instruments(sod_state)
+    held = _sod_instruments(sod_state)
+    for iid in sorted(held):                     # expired or rolled off, a row is still in refdata: or the state is unusable
+        if instruments.get(iid) is None:
+            raise BundleError(f"sod_state names instrument {iid}, which is not in refdata: the bundle for {day} "
+                              "cannot hold it, so the state cannot be loaded")
+    ids = session_universe(cfg["universe"], day) | held
     for iid in sorted(ids):                      # the underlyings of the derivatives, as a pack's refdata would
         info = instruments.get(iid)
         if info is not None and info["underlying_id"]:
             ids.add(info["underlying_id"])
     traded = {iid: day.isoformat() for iid in ids}
     cutoff = timeutil.ist_ns(day, loader.load_json("schedule.json")["jobs"]["refdata"])
-    out = _resolve_core(cfg, [], ids, traded, day, day, span_until_ns=cutoff)
+    # D's contract-wise ELM file is not archived by then either (D-64 d: its publish time is unverified), so a day
+    # bundle never holds it and the day's margin steps from B1 to B2: a live resolve and a replay agree.
+    out = _resolve_core(cfg, [], ids, traded, day, day, span_until_ns=cutoff, elm_known=False)
     out["prev_days"], out["next_days"] = _calendar_days(day, _schedule_horizon(out["broker_policy"]))
     out["sod_state"] = sod_state
     labels = set(out["labels"]) | {f"session:{session_id}"}
     if refdata_stale:
         labels.add("refdata_stale")
     if cfg["margin"]["model"] in SPAN_MODELS and NO_DERIVATIVES_LABEL not in labels:
-        labels.add("margin_span:sod_files_only")
+        labels |= {"margin_span:sod_files_only", "margin_elm:sod_files_only"}
     out["labels"] = sorted(labels)
     return out
 
