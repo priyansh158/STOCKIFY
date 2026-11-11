@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import unittest
+from unittest import mock
 from datetime import date
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
-from stockify import bundle, paths, runconfig, timeutil
+from stockify import bundle, paths, runconfig, strategy, timeutil
 from stockify.data import history, instruments, packs, refdata
 
 HEADER = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,"
@@ -162,10 +164,34 @@ class BundleTests(BundleTest):
             with self.subTest(bad=bad), self.assertRaisesRegex(packs.PackError, "64 lower-case hex digits"):
                 bundle.resolve_packs({"data": {"packs": [{"sha256": bad}]}})
 
+    def test_editing_a_helper_module_changes_the_strategy_hash(self):
+        real = bundle._file_sha
+
+        def edited(path):  # as if _option_legs.py had been changed on disk
+            return "edited" if path.name == "_option_legs.py" else real(path)
+
+        for ref in ("short_straddle_stop:ShortStraddleStop", "iron_fly:IronFly"):
+            cfg = {"strategy": {"kind": "python", "ref": f"stockify.strategies.{ref}", "params": {}}}
+            with self.subTest(ref=ref):
+                before = bundle.strategy_ref(cfg)["source_sha256"]
+                with mock.patch.object(bundle, "_file_sha", edited):
+                    after = bundle.strategy_ref(cfg)["source_sha256"]
+                self.assertNotEqual(before, after)
+        # A strategy that imports no helper is not affected by that helper's file.
+        cfg = {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold", "params": {}}}
+        with mock.patch.object(bundle, "_file_sha", edited):
+            self.assertEqual(bundle.strategy_ref(cfg)["source_sha256"], bundle.strategy_ref(cfg)["source_sha256"])
+            self.assertNotIn("stockify.strategies._option_legs", strategy.module_closure("stockify.strategies.buy_and_hold"))
+
     def test_strategy_source_hash(self):
         b = self.resolve()
         import stockify.runconfig as rc
-        self.assertEqual(b["strategy"]["source_sha256"], hashlib.sha256(open(rc.__file__, "rb").read()).hexdigest())
+        # The hash covers the strategy file and every own-package helper it imports, by module name, in sorted order.
+        files = [(name, importlib.util.find_spec(name).origin) for name in strategy.module_closure("stockify.runconfig")]
+        h = hashlib.sha256()
+        for name, origin in sorted(files):
+            h.update(name.encode() + b":" + hashlib.sha256(open(origin, "rb").read()).hexdigest().encode() + b";")
+        self.assertEqual(b["strategy"]["source_sha256"], h.hexdigest())
         with self.assertRaisesRegex(bundle.BundleError, "strategy"):
             self.resolve(strategy={"kind": "python", "ref": "no.such.module:X"})
 

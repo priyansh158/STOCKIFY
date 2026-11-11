@@ -660,23 +660,41 @@ def _find_spec(name: str):  # noqa: ANN202
         return None
 
 
-def check_module(module_name: str) -> str:
-    """Check a strategy module's source, and the modules it imports from its own package, before any import.
-
-    Returns the module's own source text: the very text that was checked (read once)."""
-    pending, seen, own = [module_name], set(), ""
+def _check_walk(module_name: str, strict: bool = True) -> tuple[str, list[str]]:
+    """Check a strategy module and the modules it imports from its own package; (its own source, every module seen)."""
+    pending, seen, own = [module_name], [], ""
     while pending:
         name = pending.pop()
         if name in seen:
             continue
-        seen.add(name)
+        seen.append(name)
         source, package = _module_source(name)
         if name == module_name:
             own = source
-        for m in check_source(source, name, package):
+        try:
+            found = check_source(source, name, package)
+        except StrategyCodeError:
+            if strict:
+                raise
+            found = []          # a module that fails the check never runs (load refuses it); hashing needs no more
+        for m in found:
             if m not in seen and _find_spec(m) is not None:
                 pending.append(m)
-    return own
+    return own, seen
+
+
+def check_module(module_name: str) -> str:
+    """Check a strategy module's source, and the modules it imports from its own package, before any import.
+
+    Returns the module's own source text: the very text that was checked (read once)."""
+    return _check_walk(module_name)[0]
+
+
+def module_closure(module_name: str) -> list[str]:
+    """The strategy module and every own-package helper module it imports (the walk `check_module` does), sorted.
+    It reads, it does not enforce: a module that breaks the source check contributes no further imports, and
+    `load` refuses it before it can run."""
+    return sorted(_check_walk(module_name, strict=False)[1])
 
 
 def checked_source(module_name: str) -> str:

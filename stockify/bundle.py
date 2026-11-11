@@ -323,6 +323,23 @@ def resolve_packs(cfg: dict) -> list[dict]:
     return out
 
 
+def _python_source_sha(module: str) -> str:
+    """One hash for a Python strategy: its file and every own-package helper it imports (REG 5.6, sharp-edges M-8),
+    each as its dotted module name and the file's own hash, in sorted order. Editing a helper changes the hash."""
+    from stockify import strategy as strategy_mod
+    try:
+        names = strategy_mod.module_closure(module)
+    except strategy_mod.StrategyCodeError as e:
+        raise BundleError(f"strategy {module}: {e}") from e
+    h = hashlib.sha256()
+    for name in names:
+        spec = importlib.util.find_spec(name)
+        if spec is None or not spec.origin or not Path(spec.origin).is_file():
+            raise BundleError(f"strategy {module}: source of {name} cannot be found to hash")
+        h.update(name.encode("utf-8") + b":" + _file_sha(Path(spec.origin)).encode("ascii") + b";")
+    return h.hexdigest()
+
+
 def strategy_ref(cfg: dict) -> dict:
     s = cfg["strategy"]
     if s["kind"] == "python":
@@ -333,7 +350,7 @@ def strategy_ref(cfg: dict) -> dict:
             raise BundleError(f"strategy {s['ref']}: {e}") from e
         if spec is None or not spec.origin or not Path(spec.origin).is_file():
             raise BundleError(f"strategy {s['ref']}: source cannot be found to hash")
-        source = _file_sha(Path(spec.origin))
+        source = _python_source_sha(module)
     elif s["kind"] == "script":
         source = hashlib.sha256(numerics.dumps_canonical(s["actions"]).encode()).hexdigest()
     else:
