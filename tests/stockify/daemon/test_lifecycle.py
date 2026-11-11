@@ -1,12 +1,14 @@
 """stockify.daemon.lifecycle and the session tables of stockify.store (M5.2; D-70 stacked pause reasons)."""
 from __future__ import annotations
 
+import sqlite3
+import threading
 import unittest
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
-from stockify import store
+from stockify import paths, store
 from stockify.daemon import lifecycle
 
 
@@ -25,7 +27,7 @@ class LifecycleTest(SandboxedDBTest):
 
     def states(self, sid="s1"):
         return [(r["detail"]["from"], r["detail"]["to"], r["detail"]["reasons"])
-                for r in store.timeline(sid) if r["kind"] == "state"]
+                for r in store.timeline(sid, limit=100_000) if r["kind"] == "state"]
 
 
 class StoreSessionTests(LifecycleTest):
@@ -39,17 +41,57 @@ class StoreSessionTests(LifecycleTest):
         for bad in ("", "..", "a/b", "a\\b", "C:x", "x" * 129, "CON", "a."):
             with self.assertRaises(ValueError, msg=bad):
                 store.create_session(bad, "n", {}, 1)
-        with self.assertRaises(Exception):
+        with self.assertRaises(sqlite3.IntegrityError):
             store.create_session("s1", "again", {}, 1)
 
-    def test_reasons_are_stored_sorted_unique(self):
-        store.set_session_state("s1", "PAUSED", ["owner", "error", "owner"])
+    def test_ids_are_unique_regardless_of_case(self):
+        with self.assertRaises(sqlite3.IntegrityError):
+            store.create_session("S1", "shouts", {}, 1)
+
+    def test_journals_dir_refuses_unsafe_session_ids(self):
+        for bad in ("..", "a/b", "a\\b", "CON", "x" * 129):
+            with self.assertRaises(ValueError, msg=bad):
+                paths.journals_dir(bad)
+        self.assertEqual(paths.journals_dir("s1").name, "s1")
+        self.assertEqual(paths.journals_dir().name, "journals")
+
+    def test_set_session_state_stores_a_valid_state(self):
+        store.set_session_state("s1", "PAUSED", ["error", "owner"])
         s = store.get_session("s1")
-        self.assertEqual(s["pause_reasons"], ["error", "owner"])
-        self.assertEqual(s["pause_reason"], "error")
+        self.assertEqual((s["pause_reasons"], s["pause_reason"]), (["error", "owner"], "error"))
         store.set_session_state("s1", "RUNNING", [])
         s = store.get_session("s1")
         self.assertEqual((s["pause_reasons"], s["pause_reason"]), ([], None))
+
+    def test_set_session_state_refuses_what_the_engine_could_not_carry(self):
+        bad = [("LIMBO", []), ("PAUSED", []), ("RUNNING", ["owner"]),            # disabled iff reasons
+               ("PAUSED", ["owner", "error"]), ("PAUSED", ["owner", "owner"]),   # sorted and unique
+               ("PAUSED", ["because"]), ("PAUSED", [""]),
+               ("PAUSED", ["stopped"]), ("ARMED", ["stopped"]),                  # only STOPPED carries it
+               ("STOPPED", ["owner"]), ("STOPPED", [])]
+        for status, reasons in bad:
+            with self.assertRaises(ValueError, msg=(status, reasons)):
+                store.set_session_state("s1", status, reasons)
+        self.assertEqual(store.get_session("s1")["status"], "CREATED")
+        store.set_session_state("s1", "ARMED", ["owner"])                        # waiting sessions may carry reasons
+        store.set_session_state("s1", "STOPPED", ["owner", "stopped"])
+
+    def test_set_session_state_on_an_unknown_session_is_a_key_error(self):
+        with self.assertRaises(KeyError):
+            store.set_session_state("ghost", "ARMED", [])
+
+    def test_timeline_and_commands_refuse_an_unknown_session(self):
+        with self.assertRaises(KeyError):
+            store.add_timeline("ghost", "note", {}, wall_ns=1, engine_ns=None)
+        with self.assertRaises(KeyError):
+            store.add_command("ghost", "pause", None, 1)
+        self.assertEqual(store.pending_commands(), [])
+        self.assertEqual(store.timeline("ghost"), [])
+        store.add_command(None, "stop_all", None, 1)                             # every session: allowed
+
+    def test_session_day_fields_are_the_tables_columns(self):
+        cols = {r["name"] for r in store._connect().execute("PRAGMA table_info(session_days)")}
+        self.assertEqual(set(store.SESSION_DAY_FIELDS), cols - {"session_id", "trade_date"})
 
     def test_list_sessions_filters_by_status(self):
         store.create_session("s2", "second", {}, 20)
@@ -75,15 +117,15 @@ class StoreSessionTests(LifecycleTest):
         with self.assertRaises(ValueError):
             store.upsert_session_day("s1", "2026-11-09", bogus=1)
 
-    def test_commands_come_back_oldest_first_until_marked(self):
+    def test_commands_come_back_in_insertion_order_until_marked(self):
         a = store.add_command("s1", "pause", {"reason": "owner"}, 5)
-        b = store.add_command(None, "stop_all", None, 3)
+        b = store.add_command(None, "stop_all", None, 3)       # an earlier stamp does not jump the queue
         c = store.add_command("s1", "resume", None, 9)
-        self.assertEqual([x["cmd_id"] for x in store.pending_commands()], [b, a, c])   # by created_ns
-        self.assertEqual(store.pending_commands()[1]["args"], {"reason": "owner"})
-        self.assertIsNone(store.pending_commands()[0]["session_id"])
-        store.mark_command(b, 50, "ok")
-        self.assertEqual([x["cmd_id"] for x in store.pending_commands()], [a, c])
+        self.assertEqual([x["cmd_id"] for x in store.pending_commands()], [a, b, c])
+        self.assertEqual(store.pending_commands()[0]["args"], {"reason": "owner"})
+        self.assertIsNone(store.pending_commands()[1]["session_id"])
+        store.mark_command(a, 50, "ok")
+        self.assertEqual([x["cmd_id"] for x in store.pending_commands()], [b, c])
 
 
 class TransitionTests(LifecycleTest):
@@ -158,23 +200,111 @@ class TransitionTests(LifecycleTest):
         lifecycle.arm("s1", wall_ns=1)
         lifecycle.stop("s1", wall_ns=9)
         s = store.get_session("s1")
-        self.assertEqual((s["status"], s["stopped_ns"]), ("STOPPED", 9))
-        self.assertTrue(s["pause_reasons"])                  # a stopped session is disabled in the engine's terms
+        self.assertEqual((s["status"], s["stopped_ns"], s["pause_reasons"]), ("STOPPED", 9, ["stopped"]))
+        self.assertEqual(self.states()[-1], ("ARMED", "STOPPED", ["stopped"]))
         for call in (lambda: lifecycle.arm("s1", wall_ns=10),
                      lambda: lifecycle.pause("s1", "owner", wall_ns=10),
                      lambda: lifecycle.resume("s1", "owner", wall_ns=10),
                      lambda: lifecycle.start_continuous("s1", wall_ns=10, engine_ns=10)):
             with self.assertRaises(lifecycle.LifecycleError):
                 call()
-        lifecycle.stop("s1", wall_ns=11)                     # idempotent
-        self.assertEqual(store.get_session("s1")["stopped_ns"], 9)
-        self.assertEqual(store.get_session("s1")["status"], "STOPPED")
+        n = len(store.timeline("s1"))
+        lifecycle.stop("s1", wall_ns=11)                     # a retried stop changes nothing
+        s = store.get_session("s1")
+        self.assertEqual((s["status"], s["stopped_ns"], s["pause_reasons"]), ("STOPPED", 9, ["stopped"]))
+        self.assertEqual(len(store.timeline("s1")), n)
+
+    def test_stop_from_paused_keeps_the_earlier_reasons(self):
+        lifecycle.arm("s1", wall_ns=1)
+        lifecycle.start_continuous("s1", wall_ns=2, engine_ns=2)
+        lifecycle.pause("s1", "owner", wall_ns=3)
+        lifecycle.stop("s1", wall_ns=4)
+        s = store.get_session("s1")
+        self.assertEqual((s["status"], s["pause_reasons"], s["stopped_ns"]), ("STOPPED", ["owner", "stopped"], 4))
+        self.assertEqual(self.states()[-1], ("PAUSED", "STOPPED", ["owner", "stopped"]))
+
+    def test_stopped_reason_belongs_to_stop_alone(self):
+        for call in (lifecycle.pause, lifecycle.resume):
+            with self.assertRaises(lifecycle.LifecycleError):
+                call("s1", "stopped", wall_ns=1)
+
+    def test_stop_of_an_unknown_session_raises(self):
+        with self.assertRaises(lifecycle.LifecycleError):
+            lifecycle.stop("ghost", wall_ns=1)
+
+    def test_resume_on_a_running_session_changes_nothing(self):
+        lifecycle.arm("s1", wall_ns=1)
+        lifecycle.start_continuous("s1", wall_ns=2, engine_ns=2)
+        n = len(store.timeline("s1"))
+        self.assertEqual(lifecycle.resume("s1", "owner", wall_ns=3), [])
+        self.assertEqual((self.status(), len(store.timeline("s1"))), ("RUNNING", n))
 
     def test_constants(self):
         self.assertEqual(lifecycle.STATES, ("CREATED", "ARMED", "RUNNING", "PAUSED", "STOPPED"))
         self.assertEqual(lifecycle.PAUSE_REASONS, ("owner", "stop_all", "token_expired", "parity_failure",
                                                    "determinism", "error", "stopped"))
         self.assertTrue(issubclass(lifecycle.LifecycleError, ValueError))
+
+
+class AtomicityTests(LifecycleTest):
+    def other_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(store._db_path()), timeout=30.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        return conn
+
+    def crash_on_timeline_write(self):
+        real = store._write_timeline
+
+        def boom(*a, **k):
+            raise RuntimeError("crash between the two writes")
+
+        store._write_timeline = boom
+        self.addCleanup(setattr, store, "_write_timeline", real)
+
+    def test_a_failure_inside_a_transition_leaves_neither_state_nor_row(self):
+        lifecycle.arm("s1", wall_ns=1)
+        n = len(store.timeline("s1"))
+        self.crash_on_timeline_write()
+        with self.assertRaises(RuntimeError):
+            lifecycle.pause("s1", "owner", wall_ns=2)
+        self.assertEqual((self.status(), self.reasons(), len(store.timeline("s1"))), ("ARMED", [], n))
+
+    def test_a_failed_stop_leaves_stopped_ns_unset(self):
+        self.crash_on_timeline_write()
+        with self.assertRaises(RuntimeError):
+            lifecycle.stop("s1", wall_ns=5)
+        s = store.get_session("s1")
+        self.assertEqual((s["status"], s["stopped_ns"], s["pause_reasons"]), ("CREATED", None, []))
+
+    def test_two_connections_racing_never_lose_a_reason(self):
+        lifecycle.pause("s1", "owner", wall_ns=1)
+        errors: list[BaseException] = []
+        start = threading.Barrier(2)
+
+        def worker(reason: str) -> None:
+            try:
+                conn = self.other_connection()
+                start.wait()
+                for i in range(60):
+                    lifecycle.pause("s1", reason, wall_ns=10 + i, conn=conn)
+                    lifecycle.resume("s1", reason, wall_ns=10 + i, conn=conn)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(r,)) for r in ("error", "token_expired")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(self.reasons(), ["owner"])
+        rows = self.states()
+        self.assertEqual(len(rows), 1 + 4 * 60)               # the owner pause, then every change, none merged
+        for (_, _, reasons) in rows:
+            self.assertIn("owner", reasons)
+        for (prev, nxt) in zip(rows, rows[1:]):               # each row differs from the last by exactly one reason
+            self.assertEqual(len(set(prev[2]) ^ set(nxt[2])), 1)
 
 
 if __name__ == "__main__":

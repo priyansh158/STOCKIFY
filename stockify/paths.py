@@ -113,7 +113,11 @@ def run_dir(run_id: str) -> Path:
 
 def journals_dir(session_id: str | None = None) -> Path:
     base = lab_dir() / "journals"
-    return _dir(base / session_id if session_id else base)
+    if session_id is None:
+        return _dir(base)
+    if not safe_segment(session_id, 128):
+        raise ValueError(f"not a valid session id: {session_id!r}")
+    return _dir(base / session_id)
 
 
 def logs_dir() -> Path:

@@ -4,100 +4,96 @@ States: CREATED -> ARMED -> RUNNING <-> PAUSED, ARMED again after each day, STOP
 reasons, not a flag: the owner's pause survives a token expiry and the next login, which removes only its own
 reason. The set is what the engine sees as the journaled `strategy_control` record (enabled = empty set), so a
 session in any state with a non-empty set is disabled. Every change writes a `state` timeline row
-{from, to, reasons}. A transition is a read-modify-write under one process-wide lock; the daemon is the only
-writer of session state (the API queues commands in `session_commands`).
+{from, to, reasons}.
+
+Each transition is one SQLite transaction (store.transition: BEGIN IMMEDIATE, read, decide, write state and
+row, commit), so a crash leaves neither half and two connections can never overwrite each other's reason.
+`conn` on each function is another connection to the lab file (tests, other processes); default is the
+process's own. The `stopped` reason is stop()'s alone.
 """
 from __future__ import annotations
 
-import threading
+import sqlite3
 
 from stockify import store
 
-STATES = ("CREATED", "ARMED", "RUNNING", "PAUSED", "STOPPED")
-PAUSE_REASONS = ("owner", "stop_all", "token_expired", "parity_failure", "determinism", "error", "stopped")
-
-_lock = threading.RLock()
+STATES = store.SESSION_STATES
+PAUSE_REASONS = store.SESSION_PAUSE_REASONS
 
 
 class LifecycleError(ValueError):
     pass
 
 
-def _load(session_id: str) -> dict:
-    s = store.get_session(session_id)
-    if s is None:
-        raise LifecycleError(f"no such session: {session_id!r}")
-    if s["status"] == "STOPPED":
-        raise LifecycleError(f"session {session_id!r} is STOPPED")
-    return s
+def _run(session_id: str, decide, *, wall_ns: int, engine_ns: int | None, conn) -> dict:
+    def guarded(s: dict):
+        if s["status"] == "STOPPED" and not getattr(decide, "allow_stopped", False):
+            raise LifecycleError(f"session {session_id!r} is STOPPED")
+        return decide(s)
+
+    try:
+        after, _ = store.transition(session_id, guarded, wall_ns=wall_ns, engine_ns=engine_ns, conn=conn)
+    except KeyError:
+        raise LifecycleError(f"no such session: {session_id!r}") from None
+    return after
 
 
 def _check_reason(reason: str) -> None:
     if reason not in PAUSE_REASONS:
         raise LifecycleError(f"unknown pause reason {reason!r}; one of {', '.join(PAUSE_REASONS)}")
+    if reason == "stopped":
+        raise LifecycleError("the `stopped` reason is set by stop() alone")
 
 
-def _move(session_id: str, old: str, new: str, old_reasons: list[str], reasons: list[str], *,
-          wall_ns: int, engine_ns: int | None) -> None:
-    reasons = sorted(set(reasons))
-    if (old, old_reasons) == (new, reasons):
-        return
-    store.set_session_state(session_id, new, reasons)
-    store.add_timeline(session_id, "state", {"from": old, "to": new, "reasons": reasons},
-                       wall_ns=wall_ns, engine_ns=engine_ns)
-
-
-def pause(session_id: str, reason: str, *, wall_ns: int, engine_ns: int | None = None) -> list[str]:
+def pause(session_id: str, reason: str, *, wall_ns: int, engine_ns: int | None = None,
+          conn: sqlite3.Connection | None = None) -> list[str]:
     """Add a reason and return the set. RUNNING -> PAUSED; CREATED, ARMED and PAUSED keep their state."""
     _check_reason(reason)
-    with _lock:
-        s = _load(session_id)
-        reasons = sorted(set(s["pause_reasons"]) | {reason})
-        new = "PAUSED" if s["status"] == "RUNNING" else s["status"]
-        _move(session_id, s["status"], new, s["pause_reasons"], reasons, wall_ns=wall_ns, engine_ns=engine_ns)
-        return reasons
+
+    def decide(s: dict):
+        return ("PAUSED" if s["status"] == "RUNNING" else s["status"],
+                sorted(set(s["pause_reasons"]) | {reason}))
+
+    return _run(session_id, decide, wall_ns=wall_ns, engine_ns=engine_ns, conn=conn)["pause_reasons"]
 
 
-def resume(session_id: str, reason: str, *, wall_ns: int, engine_ns: int | None = None) -> list[str]:
+def resume(session_id: str, reason: str, *, wall_ns: int, engine_ns: int | None = None,
+           conn: sqlite3.Connection | None = None) -> list[str]:
     """Remove only that reason (`owner` also clears `stop_all`). PAUSED -> RUNNING only when the set is empty."""
     _check_reason(reason)
-    with _lock:
-        s = _load(session_id)
+
+    def decide(s: dict):
         drop = {reason, "stop_all"} if reason == "owner" else {reason}
-        reasons = sorted(set(s["pause_reasons"]) - drop)
-        new = "RUNNING" if s["status"] == "PAUSED" and not reasons else s["status"]
-        _move(session_id, s["status"], new, s["pause_reasons"], reasons, wall_ns=wall_ns, engine_ns=engine_ns)
-        return reasons
+        rest = sorted(set(s["pause_reasons"]) - drop)
+        return ("RUNNING" if s["status"] == "PAUSED" and not rest else s["status"], rest)
+
+    return _run(session_id, decide, wall_ns=wall_ns, engine_ns=engine_ns, conn=conn)["pause_reasons"]
 
 
-def arm(session_id: str, *, wall_ns: int) -> None:
+def arm(session_id: str, *, wall_ns: int, conn: sqlite3.Connection | None = None) -> None:
     """CREATED, RUNNING or PAUSED -> ARMED (waiting for the next day), reasons kept."""
-    with _lock:
-        s = _load(session_id)
-        _move(session_id, s["status"], "ARMED", s["pause_reasons"], s["pause_reasons"],
-              wall_ns=wall_ns, engine_ns=None)
+    _run(session_id, lambda s: ("ARMED", s["pause_reasons"]), wall_ns=wall_ns, engine_ns=None, conn=conn)
 
 
-def start_continuous(session_id: str, *, wall_ns: int, engine_ns: int) -> str:
+def start_continuous(session_id: str, *, wall_ns: int, engine_ns: int,
+                     conn: sqlite3.Connection | None = None) -> str:
     """ARMED -> RUNNING when the reason set is empty, else PAUSED. Returns the new state."""
-    with _lock:
-        s = _load(session_id)
+    def decide(s: dict):
         if s["status"] != "ARMED":
             raise LifecycleError(f"cannot start from {s['status']}; arm first")
-        new = "PAUSED" if s["pause_reasons"] else "RUNNING"
-        _move(session_id, "ARMED", new, s["pause_reasons"], s["pause_reasons"], wall_ns=wall_ns, engine_ns=engine_ns)
-        return new
+        return ("PAUSED" if s["pause_reasons"] else "RUNNING", s["pause_reasons"])
+
+    return _run(session_id, decide, wall_ns=wall_ns, engine_ns=engine_ns, conn=conn)["status"]
 
 
-def stop(session_id: str, *, wall_ns: int) -> None:
-    """Final. Called at finalisation of the day after a `stop` command; the `stopped` reason keeps the engine
-    disabled. Stopping a stopped session does nothing."""
-    with _lock:
-        s = store.get_session(session_id)
-        if s is None:
-            raise LifecycleError(f"no such session: {session_id!r}")
+def stop(session_id: str, *, wall_ns: int, conn: sqlite3.Connection | None = None) -> None:
+    """Final. Called at finalisation of the day after a `stop` command. The state, the `stopped` reason (earlier
+    reasons are kept) and stopped_ns are written in one transaction; a retried stop changes nothing and keeps
+    the first stopped_ns."""
+    def decide(s: dict):
         if s["status"] == "STOPPED":
-            return
-        reasons = sorted(set(s["pause_reasons"]) | {"stopped"})
-        store.set_session_stopped_ns(session_id, wall_ns)
-        _move(session_id, s["status"], "STOPPED", s["pause_reasons"], reasons, wall_ns=wall_ns, engine_ns=None)
+            return None
+        return ("STOPPED", sorted(set(s["pause_reasons"]) | {"stopped"}))
+
+    decide.allow_stopped = True
+    _run(session_id, decide, wall_ns=wall_ns, engine_ns=None, conn=conn)

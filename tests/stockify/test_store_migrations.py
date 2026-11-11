@@ -168,7 +168,7 @@ class LabMigrationTests(SandboxedDBTest):
         conn.close()
         self.assertEqual(store.schema_version(), store.SCHEMA_VERSION)
         rows = store._connect().execute("SELECT version FROM schema_version ORDER BY version").fetchall()
-        self.assertEqual([r[0] for r in rows], [1, 2])
+        self.assertEqual([r[0] for r in rows], list(range(1, store.SCHEMA_VERSION + 1)))
 
     def test_schema_version_history_with_a_wrong_checksum_is_refused(self):
         path = self._make_v1_lab()
@@ -198,13 +198,13 @@ class MigrationFileTests(unittest.TestCase):
     def test_failed_migration_leaves_nothing_half_applied(self):
         conn = sqlite3.connect(":memory:", isolation_level=None)
         migrate.apply(conn, "lab", self.tmp)
-        (self.tmp / "lab" / "0003_bad.sql").write_text(
+        (self.tmp / "lab" / "0004_bad.sql").write_text(
             "ALTER TABLE sessions ADD COLUMN extra_one TEXT;\n"
             "ALTER TABLE sessions ADD COLUMN strategy_label TEXT;\n", encoding="utf-8")  # duplicate column
         with self.assertRaises(sqlite3.OperationalError):
             migrate.apply(conn, "lab", self.tmp)
         self.assertNotIn("extra_one", _columns(conn, "sessions"))
-        self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 2)
+        self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 3)
 
 
 if __name__ == "__main__":

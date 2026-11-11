@@ -18,7 +18,7 @@ from typing import Optional
 from stockify import paths
 from stockify.data import migrate
 
-SCHEMA_VERSION = 2   # = the number of files in stockify/data/migrations/lab
+SCHEMA_VERSION = 3   # = the number of files in stockify/data/migrations/lab
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -269,6 +269,9 @@ def run_rows(run_id: str, table: str, *, offset: int = 0, limit: int = 500) -> l
 
 # ── sessions (M5.2; A1 §4 sessions, session_days, session_timeline, session_commands) ──
 
+SESSION_STATES = ("CREATED", "ARMED", "RUNNING", "PAUSED", "STOPPED")
+SESSION_PAUSE_REASONS = ("owner", "stop_all", "token_expired", "parity_failure", "determinism", "error", "stopped")
+
 SESSION_DAY_FIELDS = ("bundle_sha256", "journal_path", "sod_state_json", "eod_state_json", "coverage", "parity",
                       "status", "finalised_ns", "coverage_json", "labels_json", "last_frame_no",
                       "last_frame_recv_ns")
@@ -281,9 +284,30 @@ def _session_row(row) -> dict:
     return d
 
 
+def check_session_state(status: str, reasons: list[str]) -> list[str]:
+    """Return `reasons` as a list if (status, reasons) is a state the engine can carry, else raise ValueError
+    (D-70, A4 3.11): reasons are known, non-empty, strictly ascending; RUNNING (enabled) has none; PAUSED and
+    STOPPED (disabled) have some; only STOPPED carries `stopped`, and it always does."""
+    if status not in SESSION_STATES:
+        raise ValueError(f"not a session state: {status!r}")
+    rs = list(reasons)
+    for r in rs:
+        if r not in SESSION_PAUSE_REASONS:
+            raise ValueError(f"not a pause reason: {r!r}")
+    if rs != sorted(set(rs)):
+        raise ValueError(f"pause reasons must be sorted and unique: {rs!r}")
+    if status == "RUNNING" and rs:
+        raise ValueError("a RUNNING session has no pause reasons")
+    if status == "PAUSED" and not rs:
+        raise ValueError("a PAUSED session needs a pause reason")
+    if (status == "STOPPED") != ("stopped" in rs):
+        raise ValueError("`stopped` is a reason of STOPPED sessions only, and every STOPPED session has it")
+    return rs
+
+
 def create_session(session_id: str, name: str, cfg: dict, created_ns: int) -> None:
     """Insert a CREATED session. The id becomes a folder name (journals), so it must be one safe path segment
-    (else ValueError); a duplicate id raises sqlite3.IntegrityError."""
+    (else ValueError); a duplicate id, ignoring case, raises sqlite3.IntegrityError."""
     if not paths.safe_segment(session_id, 128):
         raise ValueError(f"not a valid session id: {session_id!r}")
     conn = _connect()
@@ -309,34 +333,92 @@ def list_sessions(*, status: str | None = None) -> list[dict]:
             _connect().execute(sql + " ORDER BY created_ns, session_id", args).fetchall()]
 
 
+def _write_state(conn: sqlite3.Connection, session_id: str, status: str, reasons: list[str],
+                 stopped_ns: int | None = None) -> None:
+    rs = check_session_state(status, reasons)
+    cur = conn.execute("UPDATE sessions SET status = ?, pause_reason = ?, pause_reasons_json = ?, "
+                       "stopped_ns = COALESCE(stopped_ns, ?) WHERE session_id = ?",
+                       (status, rs[0] if rs else None, json.dumps(rs), stopped_ns, session_id))
+    if cur.rowcount == 0:
+        raise KeyError(session_id)
+
+
 def set_session_state(session_id: str, status: str, reasons: list[str]) -> None:
-    """Write status and the pause-reason set (stored sorted and unique; `pause_reason` keeps the first for
-    display). The state machine itself lives in stockify.daemon.lifecycle."""
-    rs = sorted(set(reasons))
+    """Write status and the pause-reason set, refusing a combination the engine could not carry
+    (check_session_state: ValueError) and an unknown session (KeyError). The state machine, with its timeline
+    rows, lives in stockify.daemon.lifecycle, which goes through `transition`."""
     conn = _connect()
     with _lock:
-        cur = conn.execute("UPDATE sessions SET status = ?, pause_reason = ?, pause_reasons_json = ? "
-                           "WHERE session_id = ?",
-                           (status, rs[0] if rs else None, json.dumps(rs), session_id))
-        conn.commit()
-        if cur.rowcount == 0:
-            raise KeyError(session_id)
+        try:
+            _write_state(conn, session_id, status, reasons)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
-def set_session_stopped_ns(session_id: str, stopped_ns: int) -> None:
-    conn = _connect()
-    with _lock:
-        conn.execute("UPDATE sessions SET stopped_ns = ? WHERE session_id = ?", (int(stopped_ns), session_id))
-        conn.commit()
+def _write_timeline(conn: sqlite3.Connection, session_id: str, kind: str, detail: dict, wall_ns: int,
+                    engine_ns: int | None) -> None:
+    cur = conn.execute(
+        "INSERT INTO session_timeline (session_id, engine_ns, wall_ns, kind, detail_json) "
+        "SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM sessions WHERE session_id = ?)",
+        (session_id, engine_ns, int(wall_ns), kind, json.dumps(detail, sort_keys=True), session_id))
+    if cur.rowcount == 0:
+        raise KeyError(session_id)
+
+
+def transition(session_id: str, decide, *, wall_ns: int, engine_ns: int | None = None,
+               conn: sqlite3.Connection | None = None) -> tuple[dict, bool]:
+    """One atomic session state change: BEGIN IMMEDIATE, read the session, `decide(session)` returns the new
+    (status, reasons) or None for no change (it may raise to refuse), write the state and its `state` timeline
+    row {from, to, reasons}, commit. A crash or an exception leaves neither; two connections (processes) can
+    never overwrite each other's change, because the read happens under the write lock. A move into STOPPED
+    stamps stopped_ns = wall_ns, once. `conn` is another connection to the lab file (tests, other processes);
+    default is this process's. Returns (the session after, whether anything changed); an unknown session is a
+    KeyError."""
+    own = conn is None
+    conn = _connect() if own else conn
+    if own:
+        _lock.acquire()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            before = _session_row(row)
+            new = decide(before)
+            if new is None or (new[0], sorted(new[1])) == (before["status"], before["pause_reasons"]):
+                conn.rollback()
+                return before, False
+            status, reasons = new[0], list(new[1])
+            _write_state(conn, session_id, status, reasons, wall_ns if status == "STOPPED" else None)
+            _write_timeline(conn, session_id, "state",
+                            {"from": before["status"], "to": status, "reasons": reasons}, wall_ns, engine_ns)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        after = dict(before)
+        after.update(status=status, pause_reasons=reasons, pause_reason=reasons[0] if reasons else None)
+        if status == "STOPPED" and after.get("stopped_ns") is None:
+            after["stopped_ns"] = int(wall_ns)
+        return after, True
+    finally:
+        if own:
+            _lock.release()
 
 
 def add_timeline(session_id: str, kind: str, detail: dict, *, wall_ns: int, engine_ns: int | None) -> None:
+    """Append a timeline row; an unknown session is a KeyError."""
     conn = _connect()
     with _lock:
-        conn.execute("INSERT INTO session_timeline (session_id, engine_ns, wall_ns, kind, detail_json) "
-                     "VALUES (?, ?, ?, ?, ?)",
-                     (session_id, engine_ns, int(wall_ns), kind, json.dumps(detail, sort_keys=True)))
-        conn.commit()
+        try:
+            _write_timeline(conn, session_id, kind, detail, wall_ns, engine_ns)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def timeline(session_id: str, *, offset: int = 0, limit: int = 200) -> list[dict]:
@@ -376,21 +458,26 @@ def get_session_day(session_id: str, trade_date: str) -> dict | None:
 
 
 def add_command(session_id: str | None, command: str, args: dict | None, created_ns: int) -> int:
-    """Queue an owner command for the daemon (session_id None = every session). Returns its cmd_id."""
+    """Queue an owner command for the daemon (session_id None = every session; a named session must exist, else
+    KeyError). Returns its cmd_id."""
     conn = _connect()
     with _lock:
-        cur = conn.execute("INSERT INTO session_commands (session_id, command, args_json, created_ns) "
-                           "VALUES (?, ?, ?, ?)",
-                           (session_id, command, None if args is None else json.dumps(args, sort_keys=True),
-                            int(created_ns)))
+        cur = conn.execute(
+            "INSERT INTO session_commands (session_id, command, args_json, created_ns) "
+            "SELECT ?, ?, ?, ? WHERE ? IS NULL OR EXISTS (SELECT 1 FROM sessions WHERE session_id = ?)",
+            (session_id, command, None if args is None else json.dumps(args, sort_keys=True), int(created_ns),
+             session_id, session_id))
         conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(session_id)
         return int(cur.lastrowid)
 
 
 def pending_commands() -> list[dict]:
-    """Commands not yet marked, oldest first (created_ns, then cmd_id); `args` parsed."""
+    """Commands not yet marked, first in first out: by cmd_id (insertion order), never by the caller's
+    created_ns, which a skewed clock could reorder. `args` parsed."""
     rows = _connect().execute("SELECT * FROM session_commands WHERE applied_ns IS NULL "
-                              "ORDER BY created_ns, cmd_id").fetchall()
+                              "ORDER BY cmd_id").fetchall()
     out = []
     for r in rows:
         d = dict(r)
