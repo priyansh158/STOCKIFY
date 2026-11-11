@@ -738,7 +738,7 @@ def build(spec: dict) -> str:
     counts = dict(sorted(b.counts.items()))
     manifest = {"sha256": digest, "format": "evt/1", "spec": spec, "price_basis": basis, "records": count,
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
-                "gaps": b.gaps_manifest(),
+                "gaps": b.gaps_manifest(), "volume_unit": "units",
                 "bytes": _refused_retry(lambda p: p.stat().st_size, target)}
     _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest

@@ -314,6 +314,10 @@ def resolve_packs(cfg: dict) -> list[dict]:
         if actual != sha:
             raise BundleError(f"data.packs[{i}]: pack hash mismatch: file {path.name} hashes to {actual}")
         m = packs.manifest(sha)
+        if m["spec"].get("dataset") == "bhav_eod" and "volume_unit" not in m:
+            # D-79: an end-of-day pack built before the contracts-to-units fix may carry contract counts as volume.
+            raise BundleError(f"data.packs[{i}]: pack {sha} was built before volume became units (D-79): "
+                              "rebuild the pack")
         row = {"sha256": sha, "path": f"packs/{sha}.evt", "price_basis": m["price_basis"], "spec": m["spec"]}
         if m.get("gaps", {}).get("count"):          # only a pack with gaps says so: other bundles stay as they were
             row["gaps"] = m["gaps"]

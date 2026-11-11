@@ -161,6 +161,7 @@ class BundleTests(BundleTest):
         self._drop_future_bars()
         m = packs.manifest(packs.build(self._gap_spec()))
         self.assertEqual(m["gaps"], {"count": 2, "days": {"2025-12-24": [self.fut], "2025-12-29": [self.fut]}})
+        self.assertEqual(m["volume_unit"], "units")
         # Nothing is filled in (I-7): the records are the rows there are.
         self.assertEqual(m["counts_by_kind"]["BAR"], 12)
 
@@ -188,6 +189,24 @@ class BundleTests(BundleTest):
         clean = self.resolve()
         self.assertFalse([x for x in clean["labels"] if x.startswith("data:gaps")])
         self.assertNotIn("gaps", clean["packs"][0])
+
+    def _stale_manifest(self, dataset: str) -> str:
+        sha = packs.build(run()["data"]["packs"][0]["spec"])
+        path = packs.manifest_path(sha)
+        m = json.loads(path.read_text(encoding="utf-8"))
+        del m["volume_unit"]
+        m["spec"] = {**m["spec"], "dataset": dataset}
+        path.write_text(json.dumps(m), encoding="utf-8")
+        return sha
+
+    def test_a_bhav_eod_pack_without_volume_unit_must_be_rebuilt(self):
+        sha = self._stale_manifest("bhav_eod")
+        with self.assertRaisesRegex(bundle.BundleError, r"D-79.*rebuild the pack"):
+            self.resolve(data={"packs": [{"sha256": sha}]})
+
+    def test_other_pack_kinds_without_volume_unit_still_load(self):
+        sha = self._stale_manifest("bars")
+        self.assertEqual(self.resolve(data={"packs": [{"sha256": sha}]})["packs"][0]["sha256"], sha)
 
     def test_pack_problems(self):
         sha = packs.build(run()["data"]["packs"][0]["spec"])
