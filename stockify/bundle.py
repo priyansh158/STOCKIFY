@@ -571,14 +571,17 @@ def _span_entry(path: str, root: Path, keys: dict[str, set[tuple]]) -> dict:
 
 
 def span_section(instruments_rows: list[dict], days: list[dict],
-                 skipped: dict[str, list[dict]] | None = None) -> dict[str, list[dict]]:
+                 skipped: dict[str, list[dict]] | None = None,
+                 until_ns: int | None = None) -> dict[str, list[dict]]:
     """bundle["span"]: per run day, every NSE SPAN file usable that day in created order, without lookahead
     (`nse_margin_files.usable_files`: the previous NSE session's `.s`, then D's `i1`..`i4`, never D's `.s`; each
     applies from its own created_ns). Each keeps the bundle's underlyings only, with the contracts the bundle trades
     and all their parameter blocks. A day with no usable file has an empty list (the margin model steps down).
     A file that cannot be read, whose business date is not its name's, or whose created time is not plausible
     (L-4), is left out; with `skipped`, it is recorded there as {day: [{"file", "reason"}]}. A bundle without dated
-    futures or options parses nothing: {} (resolve_bundle labels it `margin_span:no_derivatives`)."""
+    futures or options parses nothing: {} (resolve_bundle labels it `margin_span:no_derivatives`). With `until_ns`
+    (a paper session's day bundle, D-67) only files created at or before it are kept: what was archived when the bundle
+    was resolved."""
     from stockify.data import nse_margin_files as mf
     keys = _contract_keys(instruments_rows)
     if not keys:
@@ -595,6 +598,8 @@ def span_section(instruments_rows: list[dict], days: list[dict],
                 skipped.setdefault(d["date"], []).append(
                     {"file": Path(path).relative_to(root).as_posix(), "reason": reason})
         for path, created_ns in usable:
+            if until_ns is not None and created_ns > until_ns:
+                continue
             if path not in parsed:
                 try:
                     parsed[path] = _span_entry(path, root, keys)
@@ -647,9 +652,16 @@ def elm_section(instruments_rows: list[dict], days: list[dict],
 
 def resolve_bundle(cfg: dict) -> dict:
     """The bundle for a validated run config (`runconfig.load`)."""
-    from stockify.config import loader
     pack_rows = resolve_packs(cfg)
     ids, traded, start, end = _scan_packs(pack_rows)
+    return _resolve_core(cfg, pack_rows, ids, traded, start, end)
+
+
+def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[int, str], start: date, end: date,
+                  *, span_until_ns: int | None = None) -> dict:
+    """Everything a bundle holds, for the instruments `ids` over [start, end]: shared by a run (`resolve_bundle`,
+    from its packs) and a paper session's day (`resolve_session_day`, no packs)."""
+    from stockify.config import loader
     policy = _dated_section(loader.load_json("broker_policy.json"), start, end)
     _ppb_fields(policy, ("pct", "fraction"))
     days = resolve_days(start, end, policy)
@@ -692,7 +704,7 @@ def resolve_bundle(cfg: dict) -> dict:
     if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
         skipped: dict[str, list[dict]] = {}
         elm_skipped: dict[str, list[dict]] = {}
-        out["span"] = span_section(instruments_rows, days, skipped)
+        out["span"] = span_section(instruments_rows, days, skipped, span_until_ns)
         out["span_skipped"] = skipped
         out["elm"] = elm_section(instruments_rows, days, elm_skipped)
         out["elm_skipped"] = elm_skipped
@@ -704,6 +716,106 @@ def resolve_bundle(cfg: dict) -> dict:
         if elm_skipped:
             extra.add("margin_elm:skipped_files")
         out["labels"] = sorted(set(out["labels"]) | extra)
+    return out
+
+
+# -- A paper session's day (REG 5.1, M5.3, D-67) ------------------------------
+
+def session_universe(selectors: list[dict], day: date) -> set[int]:
+    """The instrument ids a session's universe names on `day`: `packs.resolve`'s, with each `chain` selector widened
+    to every strike of its expiry (a `strikes` window is dropped) and every listed future of its underlying (D-67).
+    A live day cannot know where the underlying will trade, so a window centred on yesterday's close would leave the
+    strategy without the strikes it needs after a gap."""
+    from stockify.data import instruments, packs
+    ids: set[int] = set()
+    plain = []
+    for sel in selectors:
+        chain = sel.get("chain") if isinstance(sel, dict) else None
+        if not isinstance(chain, dict):
+            plain.append(sel)
+            continue
+        wide = {k: v for k, v in chain.items() if k not in ("strikes", "futures")}
+        ids |= packs.resolve([{"chain": wide}], day)
+        und = chain["underlying"].upper()
+        for expiry in instruments.expiries(und, "FUT", day):
+            fut = instruments.derivative(und, "FUT", expiry)
+            if fut:
+                ids.add(fut)
+    return ids | packs.resolve(plain, day)
+
+
+def _is_trading_day(d: date) -> bool:
+    from stockify.data import calendar
+    return calendar.is_trading_day("CM", d) or calendar.is_trading_day("FO", d)
+
+
+def _schedule_horizon(policy: dict) -> int:
+    """How many trading days before a contract's expiry the dated delivery-margin schedule reaches (Z-4, D-60)."""
+    return max((-int(r["day_offset"]) for rows in policy.get("delivery_margin_schedule", []) for r in rows["rows"]),
+               default=0)
+
+
+def _calendar_days(day: date, horizon: int) -> tuple[list[dict], list[dict]]:
+    """(prev_days, next_days) of a day bundle (A1 §6.2): the trading day before `day`, and the next
+    `max(1, horizon)` trading days. One is what an order queued after the session and a midnight daily bar need
+    (A4 §3.10); `horizon` is the dated delivery-margin schedule's reach, so a stock-future's expiry that is within it
+    is a day of the bundle and D-60's trading-day count comes out as in a whole run (a holiday in expiry week
+    included). An expiry further off is outside the schedule today, as the count would say."""
+    from stockify.config import loader
+    before = day - timedelta(days=1)
+    while not _is_trading_day(before):
+        before -= timedelta(days=1)
+    after: list[date] = []
+    d = day
+    while len(after) < max(1, horizon):
+        d += timedelta(days=1)
+        if _is_trading_day(d):
+            after.append(d)
+    wide = _dated_section(loader.load_json("broker_policy.json"), before, after[-1])
+    return resolve_days(before, before, wide), [x for a in after for x in resolve_days(a, a, wide)]
+
+
+def _sod_instruments(sod_state: dict | None) -> set[int]:
+    """Instruments the previous day left open positions or live orders in: they stay in the bundle whatever the
+    universe selects today (a rolled 'nearest' expiry must not strand a position)."""
+    if not sod_state:
+        return set()
+    ids = {p["instrument_id"] for p in sod_state.get("ledger", {}).get("positions", []) if p.get("q")}
+    ids |= {o["instrument_id"] for o in sod_state.get("pending_orders", [])}
+    return ids
+
+
+def resolve_session_day(session_id: str, cfg: dict, day: date, sod_state: dict | None, *,
+                        refdata_stale: bool = False) -> dict:
+    """The bundle for one trading day of a paper session (`sessionconfig.load`'s `cfg`), resolved before the open.
+
+    One day, `packs: []`, the day's seed (`seed_mode: per_day`), the previous day's `sod_state` embedded as given,
+    and `prev_days` / `next_days` (A1 §6.2). Labels are `resolve_bundle`'s, plus `session:<session_id>` and, when
+    the refdata refresh failed, `refdata_stale`. Only what is known at resolve time goes in: SPAN files archived by
+    the refdata job's time (the previous end-of-day file and `i1`); the intraday `i2`..`i4` come later and are
+    labelled `margin_span:sod_files_only`. Raises `BundleError` on a non-trading day or an unsafe `session_id`."""
+    from stockify.config import loader
+    from stockify.data import instruments
+    if not paths.safe_segment(session_id, 64):
+        raise BundleError(f"session_id {session_id!r} must be 1-64 letters, digits, '.', '_' or '-'")
+    if not _is_trading_day(day):
+        raise BundleError(f"{day} is not an NSE trading day")
+    ids = session_universe(cfg["universe"], day) | _sod_instruments(sod_state)
+    for iid in sorted(ids):                      # the underlyings of the derivatives, as a pack's refdata would
+        info = instruments.get(iid)
+        if info is not None and info["underlying_id"]:
+            ids.add(info["underlying_id"])
+    traded = {iid: day.isoformat() for iid in ids}
+    cutoff = timeutil.ist_ns(day, loader.load_json("schedule.json")["jobs"]["refdata"])
+    out = _resolve_core(cfg, [], ids, traded, day, day, span_until_ns=cutoff)
+    out["prev_days"], out["next_days"] = _calendar_days(day, _schedule_horizon(out["broker_policy"]))
+    out["sod_state"] = sod_state
+    labels = set(out["labels"]) | {f"session:{session_id}"}
+    if refdata_stale:
+        labels.add("refdata_stale")
+    if cfg["margin"]["model"] in SPAN_MODELS and NO_DERIVATIVES_LABEL not in labels:
+        labels.add("margin_span:sod_files_only")
+    out["labels"] = sorted(labels)
     return out
 
 

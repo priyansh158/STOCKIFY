@@ -165,11 +165,17 @@ def _spec(spec: dict, where: str) -> None:
     from stockify.data import packs
     _need(isinstance(spec, dict), where, "must be an object")
     _known(spec, packs.SPEC_KEYS, where)
-    selectors = spec.get("instruments")
+    selectors_known(spec.get("instruments"), where + ".instruments")
+
+
+def selectors_known(selectors, where: str) -> None:  # noqa: ANN001
+    """The keys of an instrument selector list (a pack spec's `instruments`, a session's `universe`), down to a
+    chain's own keys. A string (the "NSE:RELIANCE" shorthand) has none. The values are `packs.resolve`'s to check."""
+    from stockify.data import packs
     for n, sel in enumerate(selectors if isinstance(selectors, list) else []):
         if not isinstance(sel, dict):
             continue
-        at = f"{where}.instruments[{n}]"
+        at = f"{where}[{n}]"
         _known(sel, packs.SELECTOR_KEYS, at)
         # The builder reads the first form it finds, so a second one would be dropped without a word.
         _need(len(sel) == 1, at, f"needs exactly one of {', '.join(packs.SELECTOR_KEYS)}")
@@ -231,7 +237,9 @@ def _fill(f: dict) -> dict:
     return f
 
 
-def validate(raw: dict) -> dict:
+def validate(raw: dict, *, packs_required: bool = True) -> dict:
+    """The normalised run config. `packs_required=False` is for a paper session's config (stockify.sessionconfig):
+    it has no `data` (the key is refused like any other unknown one) and its days come from a universe."""
     _need(isinstance(raw, dict), "run", "must be a JSON object")
     _need(raw.get("schema") == SCHEMA, "schema", f"must be {SCHEMA!r}")
     _need(isinstance(raw.get("name"), str) and raw["name"], "name", "required")
@@ -243,13 +251,14 @@ def validate(raw: dict) -> dict:
     _need(fam is None or (isinstance(fam, str) and len(fam) <= 128
                           and all(paths.safe_segment(part, 64) for part in fam.split("/"))), "family_id",
           "must be up to 128 characters: segments like a name, separated by '/'")
-    _known(raw, RUN_KEYS, "run")
+    _known(raw, RUN_KEYS if packs_required else tuple(k for k in RUN_KEYS if k != "data"), "run")
     for section in ("costs", "margin", "policies"):
         _need(isinstance(raw.get(section, {}), dict), section, "must be an object")
         _known(raw.get(section, {}), DEFAULTS[section], section)
     cfg = _merge(DEFAULTS, {k: v for k, v in raw.items()})
     cfg["strategy"] = _strategy(raw.get("strategy"))
-    cfg["data"] = {"packs": _packs(raw.get("data"))}
+    if packs_required:
+        cfg["data"] = {"packs": _packs(raw.get("data"))}
     _choice(cfg["price_basis"], ("raw", "adjusted"), "price_basis")
     _int(cfg.get("capital_paise"), "capital_paise", 1)
     cfg["fill_model"] = _fill(raw.get("fill_model"))
