@@ -94,6 +94,11 @@ class RecorderSession:
         self._last_health_ns = 0
         self._last_packets = 0
         self._ref_ids = manager.reference_ids()
+        # Gap taps (M5.1 fan-out): called as (phase "start"|"end", reason, t_ns, instrument_id | None) beside every
+        # landing open_gap/close_gap, with the same time, on the thread that saw the event. They must be cheap
+        # (the dispatcher's `put_gap` is a put_nowait); a failing tap is counted and logged once, never raised.
+        self.gap_taps: list[Callable[[str, str, int, int | None], None]] = []
+        self.gap_tap_errors = 0
         recorder.on_packet = self._on_packet           # writer-thread hook (cheap)
         ticker.on_connect = self._on_connect
         ticker.on_message = recorder.on_message
@@ -127,6 +132,15 @@ class RecorderSession:
         """Choose the first set (chains wait for their reference price)."""
         self.manager.build(self._prices)
 
+    def _gap(self, phase: str, reason: str, t_ns: int, iid: int | None = None) -> None:
+        for tap in self.gap_taps:
+            try:
+                tap(phase, reason, t_ns, iid)
+            except Exception:  # noqa: BLE001
+                self.gap_tap_errors += 1
+                if self.gap_tap_errors == 1:
+                    log.exception("gap tap failed (counted in gap_tap_errors; its further failures are not logged)")
+
     # ── ticker callbacks (ticker thread) ─────────────────────────────────────
     def _on_connect(self, ws, response) -> None:  # noqa: ANN001
         now = self.clock.now_ns()
@@ -135,6 +149,7 @@ class RecorderSession:
             if self._disconnect_gap is not None:
                 self.recorder.landing.close_gap(self._disconnect_gap, now)
                 self._disconnect_gap = None
+                self._gap("end", "disconnect", now)
         self._apply_all(ws)
         log.info("ticker connected; %d subscriptions", len(self.manager.current))
 
@@ -146,16 +161,22 @@ class RecorderSession:
             if self.stopped.is_set() or code == 1000:
                 return
             if self._disconnect_gap is None:
-                self._disconnect_gap = self.recorder.landing.open_gap(self.clock.now_ns(), "disconnect")
+                now = self.clock.now_ns()
+                self._disconnect_gap = self.recorder.landing.open_gap(now, "disconnect")
+                self._gap("start", "disconnect", now)
 
     def _on_error(self, ws, code, reason) -> None:  # noqa: ANN001
         log.error("ticker error: code %s, reason %s", code, redact(reason))
         if str(code) == "403" or "token" in str(reason).lower():
             with self._lock:
                 if self._disconnect_gap is not None:
-                    self.recorder.landing.close_gap(self._disconnect_gap, self.clock.now_ns())
+                    now = self.clock.now_ns()
+                    self.recorder.landing.close_gap(self._disconnect_gap, now)
                     self._disconnect_gap = None
-                self.recorder.landing.open_gap(self.clock.now_ns(), "token_expired")
+                    self._gap("end", "disconnect", now)
+                now = self.clock.now_ns()
+                self.recorder.landing.open_gap(now, "token_expired")
+                self._gap("start", "token_expired", now)
             self.stop(exitcodes.TOKEN_EXPIRED)
 
     def _on_noreconnect(self, ws) -> None:  # noqa: ANN001
@@ -197,9 +218,11 @@ class RecorderSession:
             if silent and gap is None and last is not None:
                 self._stall_gaps[sub.instrument_id] = self.recorder.landing.open_gap(
                     last, "stall", f"instrument:{sub.instrument_id}")
+                self._gap("start", "stall", last, sub.instrument_id)
             elif not silent and gap is not None:
                 self.recorder.landing.close_gap(gap, last)
                 del self._stall_gaps[sub.instrument_id]
+                self._gap("end", "stall", last, sub.instrument_id)
 
     def _write_health(self, now: int) -> None:
         stats = self.recorder.stats
@@ -234,6 +257,8 @@ class RecorderSession:
             return
         self.exit_code = code
         self.stopped.set()
-        for gap in list(self._stall_gaps.values()):
-            self.recorder.landing.close_gap(gap, self.clock.now_ns())
+        now = self.clock.now_ns()
+        for iid, gap in list(self._stall_gaps.items()):
+            self.recorder.landing.close_gap(gap, now)
+            self._gap("end", "stall", now, iid)
         self._stall_gaps.clear()
