@@ -416,6 +416,15 @@ def _settle_events(b: _Build, ids: set[int], day: date) -> None:
             b.add(t_fsp, 3, uid, enc_settle(uid, t_fsp, 0, d, row[0]))
 
 
+def settle_records(ids: set[int], day: date) -> list[tuple[int, int, bytes]]:
+    """The `SETTLE` records a paper session's day needs after NSE's evening files (DM 5.5): the daily settlement
+    prices of `ids` and, on an expiry day, the final settlement price of their underlyings, as (publication t, rank,
+    record) in the order a pack would hold them. Empty when none of the files has arrived."""
+    b = _Build({}, "raw")
+    _settle_events(b, set(ids), day)
+    return [(key[0], key[1], rec) for key, rec in sorted(b.events, key=lambda e: e[0])]
+
+
 def _clock_events(b: _Build, t_lo: int, t_hi: int) -> list:
     cad = int(b.spec.get("clock_cadence_ms", 0)) * 1_000_000
     if cad <= 0 or t_lo is None:

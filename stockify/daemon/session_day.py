@@ -209,6 +209,18 @@ class SessionDay:
         payload = {"enabled": enabled, "reasons": reasons}
         self.feed([(t, CONTROL_RANK, packs.enc_refdata(0, t, "strategy_control", payload))], None)
 
+    def finish(self) -> None:
+        """End the day in the engine (`DAY_END`: settlement, end-of-day positions, the NAV row) and store what that
+        produced. The journal is not written; the engine's day is over, so the day takes no more input. Whoever ends
+        the day calls this, then reads `engine.eod_state()` and `write_artifacts` before `close`."""
+        self._guard()
+        try:
+            self.engine.finish()
+            self._push_and_store(b"", None)
+        except BaseException as e:
+            self._failed = e
+            raise
+
     def fsync(self) -> None:
         if self._journal is not None:
             self._journal.fsync()

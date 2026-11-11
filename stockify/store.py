@@ -446,6 +446,13 @@ def timeline(session_id: str, *, offset: int = 0, limit: int = 200) -> list[dict
     return out
 
 
+def previous_session_day(session_id: str, trade_date: str) -> dict | None:
+    """The session's newest (session, day) row before `trade_date`, or None."""
+    row = _one("SELECT * FROM session_days WHERE session_id = ? AND trade_date < ? ORDER BY trade_date DESC LIMIT 1",
+               (session_id, trade_date))
+    return dict(row) if row else None
+
+
 def upsert_session_day(session_id: str, trade_date: str, **fields) -> None:
     """Create or update one (session, day) row, touching only the given columns; an unknown column is a
     ValueError."""
@@ -656,6 +663,58 @@ def reset_session_outputs(session_id: str, trade_date: str) -> None:
         except BaseException:
             conn.rollback()
             raise
+
+
+def session_last_frame(session_id: str, trade_date: str) -> tuple[int, int] | None:
+    """The (frame_no, recv_ns) mark stored with a day's outputs, or None."""
+    row = get_session_day(session_id, trade_date)
+    if row is None or row["last_frame_no"] is None:
+        return None
+    return int(row["last_frame_no"]), int(row["last_frame_recv_ns"])
+
+
+def save_session_day_end(session_id: str, trade_date: str, *, orders: list[dict], positions: list[dict],
+                         equity: dict, eod_state_json: str, labels: list[str]) -> None:
+    """A finished day's rows, in ONE transaction (DM 5.5): the day's orders are replaced by the engine's own book
+    (`orders.csv` rows), its end-of-day positions and its equity row are replaced, and its `eod_state_json` and
+    labels are stored. Writing the same day again leaves the same rows. The day's `status` is not touched: it
+    becomes `finalised` only when everything else about the day is done."""
+    conn = _connect()
+    with _lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for table in ("session_orders", "session_positions_eod", "session_equity"):
+                conn.execute(f"DELETE FROM {table} WHERE session_id = ? AND trade_date = ?", (session_id, trade_date))
+            conn.executemany(
+                "INSERT INTO session_orders (session_id, trade_date, order_id, row_json) VALUES (?, ?, ?, ?)",
+                [(session_id, trade_date, int(o["order_id"]), json.dumps(o, sort_keys=True)) for o in orders])
+            conn.executemany(
+                "INSERT INTO session_positions_eod (session_id, trade_date, row_no, row_json) VALUES (?, ?, ?, ?)",
+                [(session_id, trade_date, n, json.dumps(p, sort_keys=True)) for n, p in enumerate(positions, 1)])
+            conn.execute(
+                "INSERT INTO session_equity (session_id, trade_date, nav_paise, cash_paise, margin_paise) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, trade_date, int(equity["nav_paise"]), int(equity["cash_paise"]),
+                 int(equity["margin_paise"])))
+            conn.execute(
+                "INSERT INTO session_days (session_id, trade_date, eod_state_json, labels_json) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (session_id, trade_date) DO UPDATE SET eod_state_json = excluded.eod_state_json, "
+                "labels_json = excluded.labels_json",
+                (session_id, trade_date, eod_state_json, json.dumps(sorted(set(labels)))))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def session_day_end(session_id: str, trade_date: str) -> dict:
+    """{"positions": [rows as the engine wrote them], "equity": {nav_paise, cash_paise, margin_paise} | None}."""
+    positions = [json.loads(r["row_json"]) for r in _all(
+        "SELECT row_json FROM session_positions_eod WHERE session_id = ? AND trade_date = ? ORDER BY row_no",
+        (session_id, trade_date))]
+    row = _one("SELECT nav_paise, cash_paise, margin_paise FROM session_equity WHERE session_id = ? AND trade_date = ?",
+               (session_id, trade_date))
+    return {"positions": positions, "equity": dict(row) if row else None}
 
 
 def session_rows(session_id: str, table: str, *, trade_date: str | None = None, offset: int = 0,

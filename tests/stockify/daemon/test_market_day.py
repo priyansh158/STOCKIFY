@@ -250,6 +250,25 @@ class MarketDayTest(pf.PaperDayTest):
         self.assertIn("session_failed", [r["kind"] for r in store.timeline("s1")])
         self.assertEqual(store.get_session("s1")["status"], "ARMED")                    # not started, not stopped
 
+    def test_a_day_opens_with_the_previous_days_state(self):
+        store.upsert_session_day("s1", "2026-11-16", status="finalised", eod_state_json='{"trade_date": "2026-11-16"}')
+        seen = []
+
+        def open_(sd, state, *a, **kw):
+            seen.append(state)
+            raise session_day.SessionDayError("stop here")
+
+        with mock.patch.object(session_day.SessionDay, "open", open_):
+            self.run_day()
+        self.assertEqual(seen, [{"trade_date": "2026-11-16"}])
+
+    def test_a_day_after_an_unfinalised_day_does_not_open(self):
+        store.upsert_session_day("s1", "2026-11-16", status="open")
+        self.assertEqual(self.run_day(), exitcodes.OK)
+        self.assertFalse(paths.journal_file("s1", DAY).exists())
+        self.assertIn("session_failed", [r["kind"] for r in store.timeline("s1")])
+        self.assertEqual(store.get_session("s1")["status"], "ARMED")
+
     def test_a_restart_resumes_the_journal_and_a_finalised_day_is_left_alone(self):
         stop = threading.Event()
         patcher = self.stop_after(40, stop)

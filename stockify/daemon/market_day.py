@@ -40,9 +40,9 @@ session's open positions after every feed and they stay pinned until flat. Pin c
 (`call_in_ticker`); the recorder's own subscriptions are never touched. Price bands snapshotted live reach the
 journals as `price_band` REFDATA through the dispatcher's queue; a replay uses none.
 
-Not here yet: a session's start-of-day state comes from the previous day's finalisation (Task 16's `next_sod_state`);
-until then a day opens with `sod_state = None`. A journal that already holds records is replayed to resume it
-(Task 17 adds the check against the stored rows).
+A session's start-of-day state is the previous day's `eod_state_json` (`finalise.next_sod_state`; None for a first
+day). A previous day that is not finalised is a failed open for that session (`session_failed`), never a start from
+nothing. A journal that already holds records is replayed to resume it (Task 17 adds the check against the stored rows).
 """
 from __future__ import annotations
 
@@ -276,6 +276,7 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
     """Open each chosen session's day. One that cannot open is timelined and left out; the others go on. With `pins`,
     a session whose instruments would take the subscriptions past the cap does not run: an ARMED one stays ARMED,
     with the timeline row `subscription_cap`."""
+    from stockify.daemon.finalise import next_sod_state
     from stockify.daemon.session_day import SessionDay
     opened = []
     for row in rows:
@@ -292,7 +293,7 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                 log.info("session %s: resumed %s from its journal (%d records)", sid, day, result["records"])
                 over_cap = pins is not None and not pins.admit(sd)
             else:
-                sd.open(None, row["pause_reasons"], now)
+                sd.open(next_sod_state(sid, day), row["pause_reasons"], now)
                 over_cap = pins is not None and not pins.admit(sd)
                 if row["status"] == "ARMED" and not over_cap:
                     lifecycle.start_continuous(sid, wall_ns=now, engine_ns=now)
