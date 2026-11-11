@@ -92,6 +92,8 @@ class RecorderSession:
         self._sent_prices: dict[int, int] = {}
         self._disconnect_gap: int | None = None
         self._stall_gaps: dict[int, int] = {}
+        # `_check_stalls` (main thread) and `stop()` (the ticker thread, on a 403) both work on `_stall_gaps`.
+        self._stall_lock = threading.Lock()
         self._token_iid: dict[int, int] = {}
         self._prices: dict[int, int] = {}
         self._last_packet: dict[int, int] = {}
@@ -221,20 +223,22 @@ class RecorderSession:
     def _check_stalls(self, now: int) -> None:
         if not self.connected or calendar.phase_at(self.stall_group, now) != "CONTINUOUS":
             return
-        for sub in self.manager.current.values():
-            if sub.mode != FULL or not sub.reason.startswith("index:"):
-                continue
-            last = self._last_packet.get(sub.instrument_id)
-            silent = last is None or now - last > self.stall_ns
-            gap = self._stall_gaps.get(sub.instrument_id)
-            if silent and gap is None and last is not None:
-                self._stall_gaps[sub.instrument_id] = self.recorder.landing.open_gap(
-                    last, "stall", f"instrument:{sub.instrument_id}")
-                self._gap("start", "stall", last, sub.instrument_id)
-            elif not silent and gap is not None:
-                self.recorder.landing.close_gap(gap, last)
-                del self._stall_gaps[sub.instrument_id]
-                self._gap("end", "stall", last, sub.instrument_id)
+        with self._stall_lock:
+            for sub in list(self.manager.current.values()):
+                if sub.mode != FULL or not sub.reason.startswith("index:"):
+                    continue
+                last = self._last_packet.get(sub.instrument_id)
+                silent = last is None or now - last > self.stall_ns
+                gap = self._stall_gaps.get(sub.instrument_id)
+                if silent and gap is None and last is not None:
+                    self._stall_gaps[sub.instrument_id] = self.recorder.landing.open_gap(
+                        last, "stall", f"instrument:{sub.instrument_id}")
+                    self._gap("start", "stall", last, sub.instrument_id)
+                elif not silent and gap is not None:
+                    # `pop`, not `del`: a stop that ended this gap first leaves nothing to end twice
+                    if self._stall_gaps.pop(sub.instrument_id, None) is not None:
+                        self.recorder.landing.close_gap(gap, last)
+                        self._gap("end", "stall", last, sub.instrument_id)
 
     def _write_health(self, now: int) -> None:
         stats = self.recorder.stats
@@ -270,7 +274,8 @@ class RecorderSession:
         self.exit_code = code
         self.stopped.set()
         now = self.clock.now_ns()
-        for iid, gap in list(self._stall_gaps.items()):
-            self.recorder.landing.close_gap(gap, now)
-            self._gap("end", "stall", now, iid)
-        self._stall_gaps.clear()
+        with self._stall_lock:
+            for iid, gap in list(self._stall_gaps.items()):
+                self.recorder.landing.close_gap(gap, now)
+                self._gap("end", "stall", now, iid)
+            self._stall_gaps.clear()

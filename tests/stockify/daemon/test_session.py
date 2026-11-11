@@ -114,6 +114,32 @@ class SessionTest(unittest.TestCase):
                       if instruments.get(s.instrument_id)["kind"] == "CE")
 
 
+class StallRaceTests(SessionTest):
+    def test_a_stop_from_the_ticker_thread_during_the_stall_check_is_harmless(self):
+        """LCB 5.2: a 403 stops the session on the ticker thread (`stop()` clears the stall gaps) while the main
+        thread's health tick is between reading a stall gap and closing it; that used to raise KeyError from `tick()`
+        and take the daemon down before its shutdown ran."""
+        import types
+        session, target, _ = self.run_session()
+
+        class Racy(dict):
+            def get(self, key, default=None):
+                value = super().get(key, default)
+                self.clear()                                # what `stop()` does on the other thread
+                return value
+
+        session.clock = ManualClock(t("09:20:00"))
+        session.connected = True
+        session.manager = types.SimpleNamespace(
+            current={1: types.SimpleNamespace(mode="full", reason="index:NIFTY", instrument_id=7)})
+        session._last_packet = {7: t("09:19:59")}
+        session._stall_gaps = Racy({7: 1})
+        taps = []
+        session.gap_taps.append(lambda *a: taps.append(a))
+        session._check_stalls(t("09:20:00"))                # must not raise
+        self.assertEqual(taps, [])                          # the stop already ended it: no second end
+
+
 class GapTests(SessionTest):
     def test_clean_day_has_no_gaps(self):
         session, target, _ = self.run_session()
