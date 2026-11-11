@@ -30,8 +30,10 @@ def _key(info: dict) -> str | None:
     return f"{info['exchange']}:{info['tradingsymbol']}"
 
 
-def snapshot(day: date, instrument_ids: list[int], *, client, clock, bucket=None) -> int:  # noqa: ANN001
-    """Fetch and store one snapshot for the instruments; returns rows written."""
+def snapshot(day: date, instrument_ids: list[int], *, client, clock, bucket=None,  # noqa: ANN001
+             on_band=None) -> int:
+    """Fetch and store one snapshot for the instruments; returns rows written. `on_band(instrument_id, lower_paise,
+    upper_paise, t_ns)` is called for each stored band once the rows are written (live paper sessions journal them)."""
     cfg = history.limits()
     bucket = bucket or history.TokenBucket(cfg["quote_rps"], clock)
     keys: dict[str, int] = {}
@@ -41,7 +43,7 @@ def snapshot(day: date, instrument_ids: list[int], *, client, clock, bucket=None
             keys[k] = iid
     names = sorted(keys)
     per_call = int(cfg["quote_max_instruments"])
-    rows = []
+    rows, heard = [], []
     for i in range(0, len(names), per_call):
         batch = names[i:i + per_call]
         bucket.acquire()
@@ -55,9 +57,16 @@ def snapshot(day: date, instrument_ids: list[int], *, client, clock, bucket=None
             if upper <= 0 and lower <= 0:
                 continue                                    # no band published
             rows.append((day.isoformat(), keys[name], now, upper, lower, "kite_quote"))
+            heard.append((keys[name], lower, upper, now))
     with refdata.transaction() as conn:
         conn.executemany("INSERT OR REPLACE INTO daily_limits (trade_date, instrument_id, snapshot_ns, "
                          "upper_paise, lower_paise, source) VALUES (?, ?, ?, ?, ?, ?)", rows)
+    if on_band is not None:
+        for iid, lower, upper, t in heard:
+            try:
+                on_band(iid, lower, upper, t)
+            except Exception:  # noqa: BLE001 — a sink's trouble never costs the stored snapshot
+                log.warning("band sink failed for instrument %d", iid, exc_info=True)
     return len(rows)
 
 
@@ -66,11 +75,12 @@ class Snapshotter:
 
     RETRY_NS = 5 * 60 * SEC
 
-    def __init__(self, day: date, manager, *, client=None, clock):  # noqa: ANN001
+    def __init__(self, day: date, manager, *, client=None, clock, on_band=None):  # noqa: ANN001
         if client is None:                      # Kite's read-only view: quotes only, no order route (LCB 5.1)
             from stockify import kite_readonly
             client = kite_readonly.client()
         self.day, self.manager, self.client, self.clock = day, manager, client, clock
+        self.on_band = on_band                  # (instrument_id, lower_paise, upper_paise, t_ns): live paper sessions
         self.bucket = history.TokenBucket(history.limits()["quote_rps"], clock)
         self.done: dict[int, int] = {}        # instrument_id -> last snapshot ns
         self.next_try_ns = 0
@@ -97,7 +107,8 @@ class Snapshotter:
         if not ids:
             return 0
         try:
-            n = snapshot(self.day, ids, client=self.client, clock=self.clock, bucket=self.bucket)
+            n = snapshot(self.day, ids, client=self.client, clock=self.clock, bucket=self.bucket,
+                          on_band=self.on_band)
         except Exception as e:                    # token trouble, network: try again in 5 minutes
             log.warning("price-band snapshot failed (%s); retrying in 5 min", e)
             self.next_try_ns = now + self.RETRY_NS

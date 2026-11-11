@@ -24,6 +24,7 @@ options.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -85,6 +86,7 @@ class SubscriptionManager:
         self.pins: dict[str, set[int]] = {}
         self.current: dict[int, Sub] = {}
         self.warnings: list[str] = []
+        self._lock = threading.RLock()      # main thread re-centres, the ticker thread pins (RM 5.4)
         self._build_static()
         self._build_chains()
 
@@ -245,36 +247,60 @@ class SubscriptionManager:
     # ── public operations ────────────────────────────────────────────────────
     def build(self, prices: dict[int, int]) -> Diff:
         """First subscription set of the day. `prices`: instrument_id -> paise."""
-        for c in self.chains:
-            if c.ref_id in prices:
-                self._recentre(c, prices[c.ref_id])
-            else:
-                self.warnings.append(f"chain {c.key}: no reference price yet")
-        return self._apply("start")
+        with self._lock:
+            for c in self.chains:
+                if c.ref_id in prices:
+                    self._recentre(c, prices[c.ref_id])
+                else:
+                    self.warnings.append(f"chain {c.key}: no reference price yet")
+            return self._apply("start")
 
     def update_prices(self, prices: dict[int, int]) -> Diff:
-        changed = False
-        for c in self.chains:
-            if c.ref_id in prices:
-                changed |= self._recentre(c, prices[c.ref_id])
-        return self._apply("recenter") if changed else Diff()
+        with self._lock:
+            changed = False
+            for c in self.chains:
+                if c.ref_id in prices:
+                    changed |= self._recentre(c, prices[c.ref_id])
+            return self._apply("recenter") if changed else Diff()
 
     def pin(self, ids, owner: str) -> Diff:
-        self.pins.setdefault(owner, set()).update(int(i) for i in ids)
-        return self._apply("pin")
+        with self._lock:
+            self.pins.setdefault(owner, set()).update(int(i) for i in ids)
+            return self._apply("pin")
+
+    def set_pin(self, ids, owner: str) -> Diff:
+        """Make `ids` exactly what `owner` pins (none: the owner is dropped), in one diff."""
+        with self._lock:
+            wanted = {int(i) for i in ids}
+            if wanted:
+                self.pins[owner] = wanted
+            else:
+                self.pins.pop(owner, None)
+            return self._apply("pin")
 
     def unpin(self, owner: str) -> Diff:
-        self.pins.pop(owner, None)
-        return self._apply("unpin")
+        with self._lock:
+            self.pins.pop(owner, None)
+            return self._apply("unpin")
+
+    def count_with(self, ids) -> int:  # noqa: ANN001
+        """How many instruments would be subscribed with `ids` added: what is subscribed or pinned now, the static
+        tier, and, for a chain that has not been centred yet, the widest window it can take (an upper bound)."""
+        with self._lock:
+            held = set(self.current) | set(self.static) | {int(i) for i in ids}
+            held |= {i for pinned in self.pins.values() for i in pinned}
+            waiting = sum(2 * (2 * c.n_quote + 1) for c in self.chains if c.center is None)
+            return len(held) + waiting
 
     def unsubscribe_all(self) -> Diff:
-        diff = Diff(unsubscribe=list(self.current.values()))
-        now = self.clock.now_ns()
-        if diff.unsubscribe:
-            self.log_rows([(now, "unsubscribe", s.instrument_id, s.token, s.mode, "session_end")
-                           for s in diff.unsubscribe])
-        self.current = {}
-        return diff
+        with self._lock:
+            diff = Diff(unsubscribe=list(self.current.values()))
+            now = self.clock.now_ns()
+            if diff.unsubscribe:
+                self.log_rows([(now, "unsubscribe", s.instrument_id, s.token, s.mode, "session_end")
+                               for s in diff.unsubscribe])
+            self.current = {}
+            return diff
 
     def counts(self) -> dict[str, int]:
         return {FULL: sum(1 for s in self.current.values() if s.mode == FULL),

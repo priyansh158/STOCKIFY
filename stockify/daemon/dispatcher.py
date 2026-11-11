@@ -32,11 +32,17 @@ and stop write the journal record first and the store second (D-68 outranks the 
 between the two leaves the command unmarked, and reapplying it after the restart repeats the record and finishes
 the store write. `stop` ends with `lifecycle.stop`: the store says STOPPED from the command on.
 
+After each feed, when `on_book` is set, the engine's open positions are read (the engine thread is idle then) and
+`on_book(session_day, instrument_ids)` is called when they changed: the daemon keeps them pinned until flat (RM 5.4).
+A tick for a position's instrument that the session's bundle lacks is not journaled: it writes the timeline row
+`unbundled_instrument` once per instrument and day, and labels the day `unbundled_instrument`.
+
 A session whose day fails (`SessionDayError` after a push or store error, or any error from its feed) is dropped
 from dispatch and listed in `stats.failed`; the others go on. Replay it to recover.
 """
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -101,6 +107,10 @@ class Dispatcher:
         self._next_poll = 0
         self._queued_cmds: set[int] = set()
         self._by_id = {s.session_id: s for s in self.sessions}
+        self.on_book = None                         # (SessionDay, frozenset[int]) on the engine thread, when a book changes
+        self._book: dict[str, frozenset[int]] = {}
+        self._extras: dict[str, frozenset[int]] = {}     # open positions the bundle does not carry
+        self._unbundled: set[tuple[str, int]] = set()
 
     # ── producers (any thread): cheap, never block ───────────────────────────
     def put_frame(self, item: tuple) -> None:
@@ -250,6 +260,37 @@ class Dispatcher:
                 sd.feed(recs, mark)
             except Exception as e:  # noqa: BLE001
                 self._fail(sid, e, self._stamp)
+                continue
+            if self.on_book is not None and recs:
+                self._watch_book(sd)
+
+    def _watch_book(self, sd: SessionDay) -> None:
+        """Read the book between pushes (engine thread); report it when it changed. Never fails the day."""
+        sid = sd.session_id
+        try:
+            positions = frozenset(int(p[0]) for p in sd.engine.book())
+            if positions == self._book.get(sid, frozenset()):
+                return
+            self._book[sid] = positions
+            self._extras[sid] = positions - sd.ids
+            self.on_book(sd, positions)
+        except Exception:  # noqa: BLE001 — pins are a courtesy to the recording; the feed already succeeded
+            log.warning("session %s: reading or pinning its book failed", sid, exc_info=True)
+
+    def _note_unbundled(self, sd: SessionDay, iid: int, t: int) -> None:
+        key = (sd.session_id, iid)
+        if key in self._unbundled:
+            return
+        self._unbundled.add(key)
+        log.warning("session %s: a tick for instrument %d, which its bundle does not carry; not journaled",
+                    sd.session_id, iid)
+        self._timeline(sd.session_id, "unbundled_instrument", {"instrument_id": iid, "day": sd.trade_date}, t)
+        try:
+            row = store.get_session_day(sd.session_id, sd.trade_date) or {}
+            labels = sorted(set(json.loads(row.get("labels_json") or "[]")) | {"unbundled_instrument"})
+            store.upsert_session_day(sd.session_id, sd.trade_date, labels_json=json.dumps(labels))
+        except Exception:  # noqa: BLE001
+            log.warning("no label for session %s", sd.session_id, exc_info=True)
 
     def _fail(self, sid: str, e: BaseException, t: int) -> None:
         first = sid not in self.stats.failed
@@ -270,6 +311,8 @@ class Dispatcher:
                 for sd in self.sessions:
                     if iid in sd.ids:
                         per.setdefault(sd.session_id, []).append((recv_ns, rank, record))
+                    elif iid in self._extras.get(sd.session_id, ()):
+                        self._note_unbundled(sd, iid, recv_ns)
         self.stats.frames += 1
         self._stage(recv_ns, per, (frame_no, recv_ns) if frame_no else None)
 

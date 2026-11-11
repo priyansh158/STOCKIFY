@@ -33,6 +33,13 @@ resumes them by replay.
 
 The end of the day (the unsubscribe time, or a replay running out) is not a stop request and journals no gap.
 
+Market data for the sessions (RM 5.4): at ARM each session's instruments are pinned FULL under `session:<id>` (a
+re-centre never drops them) after a check that the total stays within `kite_limits.json` `ws_max_instruments`; a
+universe over it leaves the session ARMED with the timeline row `subscription_cap`. The dispatcher reports each
+session's open positions after every feed and they stay pinned until flat. Pin changes run in the ticker's thread
+(`call_in_ticker`); the recorder's own subscriptions are never touched. Price bands snapshotted live reach the
+journals as `price_band` REFDATA through the dispatcher's queue; a replay uses none.
+
 Not here yet: a session's start-of-day state comes from the previous day's finalisation (Task 16's `next_sod_state`);
 until then a day opens with `sod_state = None`. A journal that already holds records is replayed to resume it
 (Task 17 adds the check against the stored rows).
@@ -175,13 +182,95 @@ def choose_sessions(session_ids: list[str] | None) -> list[dict]:
     return chosen
 
 
-def open_sessions(rows: list[dict], day: date, clock, log_sink=None) -> list:  # noqa: ANN001
-    """Open each chosen session's day. One that cannot open is timelined and left out; the others go on."""
+def _direct(fn: Callable, *args) -> None:
+    fn(*args)
+
+
+def _log_notify(event: str, detail: dict) -> None:
+    """Stands in for the owner's notification (Task 25 replaces it): the log is the only channel until then."""
+    log.error("NOTIFY %s: %s", event, detail)
+
+
+class SessionPins:
+    """Keeps each session's instruments subscribed (RM 5.4). Owner `session:<id>` pins the bundle's instruments from
+    ARM and, while a position is open, its instrument as well (dropped again when flat). Changes to the manager run
+    through `call_in_ticker` once `live` (the ticker thread owns the subscriptions); before that nothing is applied,
+    for the first connect subscribes everything the manager holds. `apply(diff)` gives a diff to the ticker."""
+
+    def __init__(self, manager, *, cap: int, call_in_ticker: Callable = _direct,  # noqa: ANN001
+                 apply: Callable | None = None, notify: Callable[[str, dict], None] | None = None) -> None:
+        self.manager = manager
+        self.cap = int(cap)
+        self.call_in_ticker = call_in_ticker
+        self.apply = apply
+        self.notify = notify or _log_notify
+        self.live = False
+        self.refused: dict[str, dict] = {}
+        self._base: dict[str, frozenset[int]] = {}
+        self._book: dict[str, frozenset[int]] = {}
+
+    @staticmethod
+    def owner(session_id: str) -> str:
+        return f"session:{session_id}"
+
+    def admit(self, sd) -> bool:  # noqa: ANN001
+        """Pin the session's instruments, unless the day's subscriptions would then pass the cap: then nothing is
+        pinned, `refused[session_id]` says why, and the owner is told."""
+        total = self.manager.count_with(sd.ids)
+        if total > self.cap:
+            detail = {"total": total, "cap": self.cap, "session_instruments": len(sd.ids)}
+            self.refused[sd.session_id] = detail
+            self.notify("subscription_cap", {"session_id": sd.session_id, **detail})
+            return False
+        self._base[sd.session_id] = frozenset(sd.ids)
+        self._pin(sd.session_id)
+        return True
+
+    def book_changed(self, sd, positions: frozenset[int]) -> None:  # noqa: ANN001
+        """The session's open positions (instrument ids): pinned until flat."""
+        self._book[sd.session_id] = frozenset(positions)
+        self._base.setdefault(sd.session_id, frozenset(sd.ids))
+        self._pin(sd.session_id)
+
+    def _pin(self, sid: str) -> None:
+        ids = self._base.get(sid, frozenset()) | self._book.get(sid, frozenset())
+        if self.live:
+            self.call_in_ticker(self._set, sid, ids, True)
+        else:
+            self._set(sid, ids, False)
+
+    def _set(self, sid: str, ids: frozenset[int], apply: bool) -> None:
+        diff = self.manager.set_pin(ids, self.owner(sid))
+        if apply and self.apply is not None and not diff.empty():
+            self.apply(diff)
+
+
+def band_sink(dispatcher, sessions: list):  # noqa: ANN001
+    """`Snapshotter(on_band=...)`: a band snapshotted live becomes a `price_band` REFDATA record, queued (stamped `t`,
+    first in first out with every frame) for each session whose bundle carries the instrument."""
+    from stockify.data import packs
+
+    def on_band(iid: int, lower: int, upper: int, t: int) -> None:
+        for sd in sessions:
+            if iid in sd.ids:
+                dispatcher.put_inject(t, sd.session_id, packs.RANK[packs.REFDATA_K],
+                                      packs.enc_refdata(iid, t, "price_band", {
+                                          "instrument_id": iid, "upper_paise": upper, "lower_paise": lower,
+                                          "source": "kite_quote"}))
+    return on_band
+
+
+def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: ANN001
+                  pins: SessionPins | None = None) -> list:
+    """Open each chosen session's day. One that cannot open is timelined and left out; the others go on. With `pins`,
+    a session whose instruments would take the subscriptions past the cap does not run: an ARMED one stays ARMED,
+    with the timeline row `subscription_cap`."""
     from stockify.daemon.session_day import SessionDay
     opened = []
     for row in rows:
         sid, now = row["session_id"], clock.now_ns()
         sd = SessionDay(sid, day, row["config"], mono=clock.mono_ns, log_sink=log_sink)
+        over_cap = False
         try:
             jpath = paths.journal_file(sid, day)
             if jpath.exists() and jpath.stat().st_size > journal.HEADER_SIZE:
@@ -190,9 +279,11 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None) -> list:  #
                     continue
                 result = sd.replay()                  # a restart: rebuild the engine and the store from the journal
                 log.info("session %s: resumed %s from its journal (%d records)", sid, day, result["records"])
+                over_cap = pins is not None and not pins.admit(sd)
             else:
                 sd.open(None, row["pause_reasons"], now)
-                if row["status"] == "ARMED":
+                over_cap = pins is not None and not pins.admit(sd)
+                if row["status"] == "ARMED" and not over_cap:
                     lifecycle.start_continuous(sid, wall_ns=now, engine_ns=now)
         except Exception as e:  # noqa: BLE001 — never cost the recording
             log.exception("session %s cannot run %s: %r", sid, day, e)
@@ -201,6 +292,16 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None) -> list:  #
                                    wall_ns=now, engine_ns=now)
             except Exception:  # noqa: BLE001
                 log.warning("no timeline row for the failed session %s", sid, exc_info=True)
+            sd.close()
+            continue
+        if over_cap:
+            detail = {**pins.refused[sid], "day": day.isoformat()}
+            log.error("session %s: %d subscriptions would pass the cap of %d; it does not run %s", sid,
+                      detail["total"], detail["cap"], day)
+            try:
+                store.add_timeline(sid, "subscription_cap", detail, wall_ns=now, engine_ns=now)
+            except Exception:  # noqa: BLE001
+                log.warning("no timeline row for session %s", sid, exc_info=True)
             sd.close()
             continue
         opened.append(sd)
@@ -308,7 +409,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
 
     # The paper sessions: opened before the first frame, fed through the recorder's tap and the ticker's gap taps.
     pump = LogPump() if session_ids != [] else None       # the engines' log lines, off the engine thread
-    sessions = open_sessions(choose_sessions(session_ids), day, clock, pump) if pump is not None else []
+    pins = SessionPins(manager, cap=int(loader.load_json("kite_limits.json")["ws_max_instruments"]),
+                       call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None)
+    sessions = open_sessions(choose_sessions(session_ids), day, clock, pump, pins) if pump is not None else []
     dispatcher = engine_thread = None
     engine_stop = threading.Event()
     engine_failed: list[str] = []
@@ -317,6 +420,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                                 replay=replay)
         recorder.add_tap(dispatcher)
         session.gap_taps.append(dispatcher.put_gap)
+        dispatcher.on_book = pins.book_changed
+        pins.live = True                        # from here the ticker thread owns every pin change
 
         def engine_main() -> None:
             try:
@@ -343,7 +448,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     if not replay:
         from stockify import kite_readonly
         from stockify.data import limits
-        bands = limits.Snapshotter(day, manager, client=kite_readonly.client(), clock=clock)
+        bands = limits.Snapshotter(day, manager, client=kite_readonly.client(), clock=clock,
+                                   on_band=band_sink(dispatcher, sessions) if dispatcher is not None else None)
     stop_requested = False
     signals = StopSignals(stop)
     restore_signals = signals.install()
