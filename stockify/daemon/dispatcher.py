@@ -166,6 +166,14 @@ class Dispatcher:
         if not self.queue.empty():
             self.drain()
 
+    def journal_process_stop(self, t: int) -> None:
+        """Journal a scope-all `GAP(process_stop)` start at `t` for every session, on the calling thread, never
+        through the queue (GK 5.2): a full queue would drop it into a `stall` overflow gap, and a process stop must
+        stay a process stop. Only for the shutdown, after the engine thread has stopped; call `drain()` first."""
+        self._stamp = t
+        self._gap("start", "process_stop", t, None)
+        self._flush(force_marks=True)
+
     def _process(self, item: tuple) -> None:
         self.stats.items += 1
         kind = item[0]

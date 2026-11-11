@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 import kite_client  # noqa: F401  — first: patches the Kite SDK's client class to paper only (LCB 5.7)
@@ -33,22 +34,51 @@ def _parse_sessions(text: str) -> list[str] | None:
     return [part.strip() for part in text.split(",") if part.strip()]
 
 
+def _redirect_state_for_replay(directory: str) -> str | None:
+    """`--replay-sandbox DIR`: run with DIR as the local app-data folder, so a replay's sessions, journals and store
+    live there and never in the real lab. Refused when DIR is (or lies inside) the real one. Returns a message on
+    refusal."""
+    from pathlib import Path
+    from stockify.daemon import market_day
+    target = Path(directory).resolve()
+    real_app = market_day.real_state_dir().parent                  # the real STOCKIFY folder in local app-data
+    real_root = real_app.parent                                      # the real local app-data folder
+    if target == real_root or real_app == target or real_app in target.parents or target in real_app.parents:
+        return f"--replay-sandbox {directory}: that is the real lab's folder; pick an empty directory elsewhere"
+    target.mkdir(parents=True, exist_ok=True)
+    os.environ["LOCALAPPDATA"] = str(target)
+    return None
+
+
 def _cmd_daemon(args) -> int:
     from stockify import daemon
     from stockify.daemon import exitcodes, singleton
     if args.once and not args.recorder_only:
         daemon.run_forever(once=True)
         return 0
+    if args.replay_sandbox is not None:
+        problem = _redirect_state_for_replay(args.replay_sandbox)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 2
     try:
         lock = singleton.acquire()               # held until the process ends; the OS drops it however it ends
     except singleton.AlreadyRunning as e:
         print(e, file=sys.stderr)
         return exitcodes.ALREADY_RUNNING
+    except singleton.LockUnavailable as e:
+        print(e, file=sys.stderr)
+        return exitcodes.LOCK_FAILED
     sessions = [] if args.recorder_only else _parse_sessions(args.sessions)
     if args.recorder_only or args.ticker != "live":
         if args.ticker == "live":
             _load_env()
-        return daemon.run_market_day(ticker_spec=args.ticker, faults=args.inject, session_ids=sessions)
+        from stockify.daemon import market_day
+        try:
+            return daemon.run_market_day(ticker_spec=args.ticker, faults=args.inject, session_ids=sessions)
+        except market_day.ReplayRefused as e:
+            print(e, file=sys.stderr)
+            return 2
     _load_env()
     return daemon.run_daemon(session_ids=sessions)
 
@@ -661,6 +691,9 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--sessions", default="all",
                    help="paper sessions to run: all (every armed, running or paused one), none, or ids separated "
                         "by commas")
+    d.add_argument("--replay-sandbox", default=None, metavar="DIR",
+                   help="run a replay's paper sessions with DIR as the lab's home: a replay never writes sessions "
+                        "into the real lab")
     d.add_argument("--ticker", default="live",
                    help="live, or replay:YYYY-MM-DD:<Nx|max> to replay a recorded day")
     d.add_argument("--inject", action="append", default=[],

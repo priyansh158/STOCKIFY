@@ -23,6 +23,7 @@ from stockify.daemon.dispatcher import Dispatcher
 from stockify.daemon.landing import LandingDB
 from stockify.daemon.recorder import Recorder
 from stockify.daemon.replay_ticker import ReplayTicker
+from stockify.daemon.ticker import RecorderSession
 from stockify.data import packs
 
 DAY = pf.DAY
@@ -249,6 +250,112 @@ class MarketDayTest(pf.PaperDayTest):
         paths.ticks_replay_file(DAY).unlink()
         self.assertEqual(self.run_day(), exitcodes.OK)
         self.assertEqual(jp.stat().st_size, size)                                       # a finalised day takes no input
+
+
+    # ── GK 5.2 ───────────────────────────────────────────────────────────────
+    def spy(self, owner, name, tag, order, *, before=None):
+        real = getattr(owner, name)
+
+        def wrapped(*a, **kw):
+            order.append(tag)
+            if before is not None:
+                before()
+            return real(*a, **kw)
+
+        patcher = mock.patch.object(owner, name, wrapped)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_stuck_engine_thread_is_never_drained_beside(self):
+        stop, release, order = threading.Event(), threading.Event(), []
+        self.stop_after(40, stop)
+
+        def stuck(disp, engine_stop):
+            release.wait(30)                                   # stands in for a store or disk call that never returns
+
+        self.addCleanup(release.set)
+        for owner, name, tag in ((Dispatcher, "drain", "drain"), (Dispatcher, "journal_process_stop", "gap"),
+                                 (session_day.SessionDay, "fsync", "fsync"), (session_day.SessionDay, "close", "close"),
+                                 (session_day.SessionDay, "feed", "feed")):
+            self.spy(owner, name, tag, order)
+        with mock.patch.object(Dispatcher, "run", stuck), mock.patch.object(market_day, "ENGINE_JOIN_S", 0.3):
+            code = self.run_day(stop=stop)
+        release.set()
+        self.assertEqual(code, exitcodes.ENGINE_STUCK)
+        self.assertEqual(order, [], "the main thread must not touch the dispatcher or the journals beside a live engine thread")
+        status = self.status()
+        self.assertEqual(status["exit_code"], exitcodes.ENGINE_STUCK)
+        self.assertIn("shutdown_engine_timeout", status["alarms"])
+        landing = self.replay_landing()                          # the recorder drained and the landing file closed
+        self.assertGreater(landing.max_frame_no(), 0)
+        self.assertEqual(status["last_frame_no"], landing.max_frame_no())
+        self.assertFalse(journal.is_finalised(paths.journal_file("s1", DAY)))
+
+    def test_a_second_ctrl_c_during_shutdown_is_ignored_and_a_third_waits_for_the_recorder(self):
+        stop, order = threading.Event(), []
+        self.stop_after(40, stop)
+
+        def three_ctrl_c():
+            for _ in range(3):
+                signal.raise_signal(signal.SIGINT)
+
+        self.spy(Recorder, "stop", "recorder_stop_begins", order, before=three_ctrl_c)
+        forced = []
+        with mock.patch.object(market_day.StopSignals, "force_exit", lambda self_: forced.append(list(order))):
+            self.assertEqual(self.run_day(stop=stop), exitcodes.OK)       # no KeyboardInterrupt escaped
+        self.assertEqual(len(forced), 1, "the third Ctrl-C forces the exit once")
+        self.assertEqual(forced[0], ["recorder_stop_begins"])             # ... and only after the recorder was asked to stop
+        self.assertTrue(paths.daemon_status_file().exists())             # shutdown ran to its end
+        self.assertGreater(self.replay_landing().max_frame_no(), 0)
+
+    def test_the_handlers_stay_until_shutdown_is_over(self):
+        stop, seen = threading.Event(), []
+        self.stop_after(40, stop)
+        before = signal.getsignal(signal.SIGINT)
+        self.spy(Recorder, "stop", "x", [], before=lambda: seen.append(signal.getsignal(signal.SIGINT)))
+        self.assertEqual(self.run_day(stop=stop), exitcodes.OK)
+        self.assertNotEqual(seen[0], before)                              # ours, while the recorder is stopping
+        self.assertEqual(signal.getsignal(signal.SIGINT), before)         # restored afterwards
+
+    def test_end_session_failing_still_stops_the_recorder_and_flushes_the_landing(self):
+        stop, order = threading.Event(), []
+        self.stop_after(40, stop)
+        self.spy(Recorder, "stop", "recorder_stop", order)
+        with mock.patch.object(RecorderSession, "end_session", side_effect=RuntimeError("the reactor is gone")):
+            self.assertEqual(self.run_day(stop=stop), exitcodes.OK)
+        self.assertEqual(order, ["recorder_stop"])
+        landing = self.replay_landing()
+        self.assertGreater(landing.max_frame_no(), 0)
+        self.assertEqual(self.status()["last_frame_no"], landing.max_frame_no())
+
+    def test_a_replay_never_runs_sessions_in_the_real_labs_store(self):
+        import stockify_paths
+        with mock.patch.object(market_day, "real_state_dir", lambda: stockify_paths.state_dir()):
+            with self.assertRaisesRegex(market_day.ReplayRefused, "replay-sandbox"):
+                self.run_day()
+            self.assertFalse(paths.journal_file("s1", DAY).exists())
+            self.assertFalse(paths.ticks_replay_file(DAY).exists())       # refused before anything was written
+            self.assertEqual(self.run_day(session_ids=[]), exitcodes.OK)  # the recorder alone is still allowed
+        paths.ticks_replay_file(DAY).unlink()
+        self.assertEqual(self.run_day(), exitcodes.OK)                    # a sandboxed state dir may run sessions
+
+    def test_replay_sandbox_flag_redirects_the_state_dir_and_refuses_the_real_one(self):
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        calls = []
+        sandbox = tempfile.mkdtemp(prefix="stockify-replay-")
+        self.addCleanup(shutil.rmtree, sandbox, True)
+        base = ["daemon", "--ticker", SPEC, "--sessions", "s1"]
+        with mock.patch.object(market_day, "run_market_day", lambda **kw: calls.append(kw) or 0),                 mock.patch.dict(os.environ, {}):
+            self.assertEqual(cli.main([*base, "--replay-sandbox", sandbox]), 0)
+            self.assertEqual(os.environ["LOCALAPPDATA"], str(Path(sandbox).resolve()))
+        self.assertEqual(len(calls), 1)
+        real = market_day.real_state_dir().parent.parent                 # %LOCALAPPDATA%
+        with mock.patch.object(market_day, "run_market_day", lambda **kw: calls.append(kw) or 0):
+            self.assertEqual(cli.main([*base, "--replay-sandbox", str(real)]), 2)
+        self.assertEqual(len(calls), 1)                                   # the real one never reached the daemon
 
 
 if __name__ == "__main__":

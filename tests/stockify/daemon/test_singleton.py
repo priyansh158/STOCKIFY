@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr
 from pathlib import Path
 
@@ -72,6 +73,24 @@ class SingletonTest(unittest.TestCase):
                 with redirect_stderr(err):
                     self.assertEqual(cli.main(argv), exitcodes.ALREADY_RUNNING, argv)
                 self.assertIn("another STOCKIFY daemon", err.getvalue())
+
+    def test_an_os_error_is_a_clear_message_and_its_own_exit_code(self):
+        self.assertNotIn(exitcodes.LOCK_FAILED, (exitcodes.ALREADY_RUNNING, exitcodes.ENGINE_STUCK))
+        with mock.patch.object(os, "open", side_effect=PermissionError(13, "Access is denied")):
+            with self.assertRaises(singleton.LockUnavailable) as ctx:
+                singleton.acquire()
+            err = io.StringIO()
+            with redirect_stderr(err):
+                self.assertEqual(cli.main(["daemon", "--recorder-only"]), exitcodes.LOCK_FAILED)
+        self.assertIn("cannot take the daemon lock", str(ctx.exception))
+        self.assertIn("Access is denied", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_the_launcher_knows_every_daemon_code(self):
+        text = (ROOT / "scripts" / "run_stockify_daemon.ps1").read_text(encoding="utf-8")
+        self.assertIn(f"$ExitEngineStuck = {exitcodes.ENGINE_STUCK}", text)
+        self.assertIn(f"$ExitLockFailed = {exitcodes.LOCK_FAILED}", text)
+        self.assertIn("-eq $ExitLockFailed", text)                  # a lock that cannot be taken is not fixed by a restart
 
     def test_the_launcher_stops_on_that_code_instead_of_restarting(self):
         text = (ROOT / "scripts" / "run_stockify_daemon.ps1").read_text(encoding="utf-8")

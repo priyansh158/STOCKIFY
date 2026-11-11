@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import itertools
 import logging
+import threading
+import time
 import unittest
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -12,7 +14,8 @@ from tests.stockify.daemon import paper_fixture as pf
 
 from stockify import engine, store
 from stockify.daemon import session_day
-from stockify.daemon.engine_log import EngineLog
+from stockify.config import loader
+from stockify.daemon.engine_log import EngineLog, LogPump
 
 SEC = 1_000_000_000
 
@@ -100,6 +103,79 @@ class EngineLogTest(unittest.TestCase):
             self.log.feed([f"{SEC} INFO order 3 rejected MARGIN", f"{SEC} WARN day volume decreased; treated as 0"])
         self.assertEqual([r.levelno for r in ctx.records], [logging.INFO, logging.WARNING])
         self.assertIn("order 3 rejected MARGIN", self.lines(ctx)[0])
+
+
+class EngineLogCapTest(unittest.TestCase):
+    """GK 5.2 (I2): an unattended day cannot flood the log, however chatty a strategy is."""
+
+    def setUp(self):
+        enable_logging(self)
+
+    def test_the_caps_are_bounded_paper_json_keys(self):
+        doc = loader.load_json("paper.json")
+        self.assertEqual(doc["engine_log"], {"max_lines_per_min": 120, "max_line_chars": 500})
+        for key, bad in (("max_lines_per_min", 0), ("max_lines_per_min", 10001), ("max_line_chars", 0),
+                         ("max_line_chars", 10001), ("max_line_chars", "5")):
+            with self.subTest(key=key, bad=bad):
+                broken = {**doc, "engine_log": {**doc["engine_log"], key: bad}}
+                with self.assertRaises(loader.ConfigError):
+                    loader._check_paper(broken)
+        loader._check_paper({**doc, "engine_log": {"max_lines_per_min": 10000, "max_line_chars": 10000}})
+        with self.assertRaises(loader.ConfigError):
+            loader._check_paper({k: v for k, v in doc.items() if k != "engine_log"})
+
+    def test_a_flood_of_lines_is_capped_per_minute_with_one_summary(self):
+        log = EngineLog("s1", max_lines_per_min=120, max_line_chars=500)
+        with self.assertLogs("stockify.daemon.engine_log", "INFO") as ctx:
+            log.feed([f"{SEC + i} INFO strategy says {i}" for i in range(5000)])          # all inside one minute
+            self.assertEqual(len(ctx.records), 120)
+            log.feed([f"{61 * SEC} INFO next minute"])                                    # the window rolls
+        messages = [r.getMessage() for r in ctx.records]
+        self.assertEqual(len(messages), 120 + 1 + 1)
+        self.assertIn("4880 engine log lines suppressed", messages[120])
+        self.assertIn("next minute", messages[121])
+
+    def test_flush_reports_what_was_suppressed(self):
+        log = EngineLog("s1", max_lines_per_min=2, max_line_chars=500)
+        with self.assertLogs("stockify.daemon.engine_log", "INFO") as ctx:
+            log.feed([f"{SEC} INFO a", f"{SEC} INFO b", f"{SEC} INFO c", f"{SEC} INFO d"])
+            log.flush()
+        self.assertEqual(len(ctx.records), 3)
+        self.assertIn("2 engine log lines suppressed", ctx.records[2].getMessage())
+
+    def test_lines_are_truncated_and_newlines_escaped(self):
+        log = EngineLog("s1", max_lines_per_min=120, max_line_chars=50)
+        forged = f"{SEC} INFO forged" + chr(10) + "9 INFO fake"
+        raw = "no timestamp" + chr(13) + chr(10) + "second line"
+        with self.assertLogs("stockify.daemon.engine_log", "INFO") as ctx:
+            log.feed([f"{SEC} INFO " + "x" * 5000, forged, raw])
+        for record in ctx.records:
+            text = record.getMessage()
+            self.assertNotIn(chr(10), text)
+            self.assertNotIn(chr(13), text)
+            self.assertLessEqual(len(text), len("session s1: ") + 50 + 40)
+        self.assertIn("truncated", ctx.records[0].getMessage())
+        self.assertIn("forged" + chr(92) + "n9 INFO fake", ctx.records[1].getMessage())
+        self.assertIn("no timestamp" + chr(92) + "r" + chr(92) + "nsecond line", ctx.records[2].getMessage())
+
+    def test_a_slow_sink_never_blocks_the_engine_thread(self):
+        release = threading.Event()
+        got = []
+
+        def slow(level, text):
+            release.wait(10)
+            got.append(text)
+
+        pump = LogPump(slow, maxsize=100)
+        log = EngineLog("s1", max_lines_per_min=10_000, max_line_chars=100, sink=pump)
+        started = time.monotonic()
+        log.feed([f"{SEC + i} INFO line {i}" for i in range(5000)])
+        self.assertLess(time.monotonic() - started, 2.0)                        # it did not wait for the sink
+        self.assertGreater(pump.dropped, 4000)                                   # the queue was bounded: drops counted
+        release.set()
+        pump.close()
+        self.assertGreaterEqual(len(got), 100)
+        self.assertTrue(any("dropped" in line for line in got), got[-3:])        # and said so once
 
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")

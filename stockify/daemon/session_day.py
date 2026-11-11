@@ -55,7 +55,7 @@ def session_engine(bundle_path: Path, cfg: dict):  # noqa: ANN201
 
 class SessionDay:
     def __init__(self, session_id: str, day: date, cfg: dict, *, mono: Callable[[], int],
-                 fsync_every_s: int | None = None) -> None:
+                 fsync_every_s: int | None = None, log_sink: Callable[[int, str], None] | None = None) -> None:
         self.session_id = session_id
         self.day = day
         self.cfg = cfg
@@ -71,7 +71,9 @@ class SessionDay:
         self._next_event_no = 1
         self._failed: BaseException | None = None
         self._replay_only = False
-        self._elog = EngineLog(session_id)       # the engine's log lines, with a pause's skips throttled
+        caps = loader.load_json("paper.json")["engine_log"]        # the engine's log lines, throttled and capped
+        self._elog = EngineLog(session_id, max_lines_per_min=caps["max_lines_per_min"],
+                               max_line_chars=caps["max_line_chars"], sink=log_sink)
 
     @property
     def trade_date(self) -> str:

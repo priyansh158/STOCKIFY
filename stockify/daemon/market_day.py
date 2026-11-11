@@ -24,6 +24,13 @@ Shutdown (a stop request: Ctrl+C or Ctrl+Break, or the end of the day), in this 
     6. write `daemon_status.json` (the last frame's number and receive time, the exit code);
     7. return the exit code.
 
+A step that fails is logged and the rest still run, in particular `recorder.stop()` and the landing flush. The stop
+handlers stay installed until all of this is over: a second Ctrl+C is ignored, a third forces the exit once the
+recorder has stopped. If the engine thread will not stop within `ENGINE_JOIN_S`, steps 3 to 5 are skipped (the main
+thread must not touch the dispatcher, journals or store beside a live engine thread), the status carries the alarm
+`shutdown_engine_timeout` and the exit code is `ENGINE_STUCK`; the journals stay unfinalised and the next start
+resumes them by replay.
+
 The end of the day (the unsubscribe time, or a replay running out) is not a stop request and journals no gap.
 
 Not here yet: a session's start-of-day state comes from the previous day's finalisation (Task 16's `next_sod_state`);
@@ -38,10 +45,12 @@ import os
 import signal
 import threading
 from datetime import date
+from pathlib import Path
 from typing import Callable
 
 from stockify import paths, store, timeutil
 from stockify.daemon import exitcodes, journal, lifecycle
+from stockify.daemon.engine_log import LogPump
 
 log = logging.getLogger("stockify.daemon.market_day")
 
@@ -58,22 +67,78 @@ def inside_market_hours(now_ns: int) -> bool:
     return any(calendar.phase_at(group, now_ns) in MARKET_PHASES for group in MARKET_GROUPS)
 
 
-def install_signal_handlers(stop: threading.Event) -> Callable[[], None]:
-    """Ctrl+C (SIGINT) and Ctrl+Break (SIGBREAK) set `stop`, so the main loop shuts down in order. Returns the
-    function that puts the old handlers back. Off the main thread nothing can be installed, and nothing is."""
-    def handler(signum, frame) -> None:  # noqa: ANN001
-        stop.set()
+class StopSignals:
+    """Ctrl+C (SIGINT) and Ctrl+Break (SIGBREAK) ask for a stop, and keep being handled until shutdown is over (GK 5.2).
 
-    try:
-        previous = {sig: signal.signal(sig, handler) for sig in (signal.SIGINT, signal.SIGBREAK)}
-    except ValueError:
-        return lambda: None
+    The first sets `stop`. The second, while the daemon is shutting down, is logged and ignored. The third forces the
+    exit, but only once the recorder has stopped (`recorder_stopped()`): the recorder's queue holds frames that exist
+    nowhere else. Off the main thread nothing can be installed, and nothing is."""
 
-    def restore() -> None:
-        for sig, old in previous.items():
+    def __init__(self, stop: threading.Event) -> None:
+        self.stop = stop
+        self.count = 0
+        self.force_requested = False
+        self._recorder_stopped = False
+        self._previous: dict = {}
+
+    def install(self) -> Callable[[], None]:
+        try:
+            self._previous = {sig: signal.signal(sig, self._handle) for sig in (signal.SIGINT, signal.SIGBREAK)}
+        except ValueError:
+            return lambda: None
+        return self.restore
+
+    def restore(self) -> None:
+        for sig, old in self._previous.items():
             signal.signal(sig, old)
+        self._previous = {}
 
-    return restore
+    def _handle(self, signum, frame) -> None:  # noqa: ANN001
+        self.count += 1
+        if self.count == 1:
+            self.stop.set()
+        elif self.count == 2:
+            log.warning("already shutting down; the second interrupt is ignored (a third forces the exit once the "
+                        "recorder has stopped)")
+        else:
+            self.force_requested = True
+            if self._recorder_stopped:
+                self.force_exit()
+            else:
+                log.warning("forced exit requested; it happens as soon as the recorder has stopped")
+
+    def recorder_stopped(self) -> None:
+        self._recorder_stopped = True
+        if self.force_requested:
+            self.force_exit()
+
+    def force_exit(self) -> None:
+        log.error("forced exit")
+        os._exit(1)
+
+
+def install_signal_handlers(stop: threading.Event) -> Callable[[], None]:
+    """`StopSignals(stop).install()`: returns the function that puts the old handlers back."""
+    return StopSignals(stop).install()
+
+
+class ReplayRefused(RuntimeError):
+    """A replay asked to run paper sessions against the real lab."""
+
+
+def real_state_dir() -> Path:
+    """The real lab's state folder, `%LOCALAPPDATA%\STOCKIFY\kite` under the user's home, whatever the environment says."""
+    return Path.home() / "AppData" / "Local" / "STOCKIFY" / "kite"
+
+
+def check_replay_sandbox() -> None:
+    """A replay of a recorded day writes paper sessions (journals, store rows, timelines) as if the day were today.
+    Against the real lab that would put a past day into the owner's real sessions, so it is refused unless the
+    state folder is somewhere else (tests, or `--replay-sandbox DIR`)."""
+    import stockify_paths
+    if stockify_paths.state_dir().resolve() == real_state_dir().resolve():
+        raise ReplayRefused("a replay will not run paper sessions in the real lab's store: give --replay-sandbox "
+                            "<dir> (an empty directory elsewhere), or run the recorder alone with --sessions none")
 
 
 def choose_sessions(session_ids: list[str] | None) -> list[dict]:
@@ -95,13 +160,13 @@ def choose_sessions(session_ids: list[str] | None) -> list[dict]:
     return chosen
 
 
-def open_sessions(rows: list[dict], day: date, clock) -> list:  # noqa: ANN001
+def open_sessions(rows: list[dict], day: date, clock, log_sink=None) -> list:  # noqa: ANN001
     """Open each chosen session's day. One that cannot open is timelined and left out; the others go on."""
     from stockify.daemon.session_day import SessionDay
     opened = []
     for row in rows:
         sid, now = row["session_id"], clock.now_ns()
-        sd = SessionDay(sid, day, row["config"], mono=clock.mono_ns)
+        sd = SessionDay(sid, day, row["config"], mono=clock.mono_ns, log_sink=log_sink)
         try:
             jpath = paths.journal_file(sid, day)
             if jpath.exists() and jpath.stat().st_size > journal.HEADER_SIZE:
@@ -168,6 +233,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
 
     if replay:
         from stockify.daemon.replay_ticker import open_replay, parse_spec
+        if session_ids != []:
+            check_replay_sandbox()
         day, _ = parse_spec(ticker_spec)
         ticker, clock = open_replay(ticker_spec, faults=faults)
         landing = LandingDB(day, paths.ticks_replay_file(day))
@@ -225,7 +292,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     end_ns = timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])
 
     # The paper sessions: opened before the first frame, fed through the recorder's tap and the ticker's gap taps.
-    sessions = open_sessions(choose_sessions(session_ids), day, clock) if session_ids != [] else []
+    pump = LogPump() if session_ids != [] else None       # the engines' log lines, off the engine thread
+    sessions = open_sessions(choose_sessions(session_ids), day, clock, pump) if pump is not None else []
     dispatcher = engine_thread = None
     engine_stop = threading.Event()
     engine_failed: list[str] = []
@@ -262,7 +330,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         from stockify.data import limits
         bands = limits.Snapshotter(day, manager, client=kite_readonly.client(), clock=clock)
     stop_requested = False
-    restore_signals = install_signal_handlers(stop)
+    signals = StopSignals(stop)
+    restore_signals = signals.install()
     try:
         while not stop.is_set() and not session.stopped.is_set():
             session.tick()
@@ -287,20 +356,30 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         stop_requested = True
         stop.set()
     finally:
-        restore_signals()
-        _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing, clock=clock,
-                  day=day, sessions=sessions, dispatcher=dispatcher, engine_thread=engine_thread,
-                  engine_stop=engine_stop, engine_failed=engine_failed, stop_requested=stop_requested)
-    return session.exit_code
+        try:                                    # the handlers stay until shutdown is over: a second Ctrl+C is ignored
+            stuck = _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing,
+                              clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,
+                              engine_thread=engine_thread, engine_stop=engine_stop, engine_failed=engine_failed,
+                              stop_requested=stop_requested, signals=signals, pump=pump)
+        finally:
+            restore_signals()
+    return exitcodes.ENGINE_STUCK if stuck else session.exit_code
 
 
 def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: date, sessions: list,  # noqa: ANN001
               dispatcher, engine_thread, engine_stop: threading.Event, engine_failed: list[str],
-              stop_requested: bool) -> None:
+              stop_requested: bool, signals: StopSignals, pump: LogPump | None) -> bool:
+    """The shutdown steps in the module doc. Returns True when the engine thread would not stop: then the main
+    thread touches neither the dispatcher nor the journals nor the store (it would race the live thread, or hang
+    on whatever the thread is stuck in), leaves the journals unfinalised for the next start to resume by replay,
+    and still closes the landing file and writes the status file."""
     from stockify import daemon
-    if not session.stopped.is_set():
-        session.end_session()
-    # 1. the ticker
+    # 1. the ticker: whatever goes wrong here, the recorder below still stops and flushes
+    try:
+        if not session.stopped.is_set():
+            session.end_session()
+    except Exception:  # noqa: BLE001
+        log.exception("ending the recorder session failed; stopping the recorder anyway")
     try:
         ticker.close()
         if replay:
@@ -309,42 +388,61 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
         log.debug("ticker close: %s", e)
     daemon._release_ticket(ticker)
     # 2. both queues: the recorder's into the landing file, then the dispatcher's into the journals
-    recorder.stop()
-    session.tick()
+    try:
+        recorder.stop()
+    except Exception:  # noqa: BLE001
+        log.exception("stopping the recorder failed")
+    signals.recorder_stopped()                  # only now may a third Ctrl+C force the exit
+    try:
+        session.tick()
+    except Exception:  # noqa: BLE001
+        log.exception("the last health tick failed")
+    stuck = False
     if engine_thread is not None:
         engine_stop.set()
         engine_thread.join(ENGINE_JOIN_S)
-        if engine_thread.is_alive():
-            log.error("the engine thread did not stop within %.0f s; draining beside it", ENGINE_JOIN_S)
-    if dispatcher is not None:
-        try:
-            dispatcher.drain()
-        except Exception:  # noqa: BLE001 — the journals are closed and synced below regardless
-            log.exception("draining the dispatcher failed")
-    # 3. the journals, synced
-    _each(sessions, "sync", lambda sd: sd.fsync())
-    # 4. a stop inside market hours: the journal says it stopped seeing frames
-    if stop_requested and sessions and dispatcher is not None and inside_market_hours(clock.now_ns()):
-        dispatcher.put_gap("start", "process_stop", clock.now_ns(), None)
-        try:
-            dispatcher.drain()
-        except Exception:  # noqa: BLE001
-            log.exception("journaling the process stop failed")
+        stuck = engine_thread.is_alive()
+        if stuck:
+            log.error("the engine thread did not stop within %.0f s: not draining beside it, journals left "
+                      "unfinalised (the next start resumes them by replay)", ENGINE_JOIN_S)
+    if not stuck:
+        if dispatcher is not None:
+            try:
+                dispatcher.drain()
+            except Exception:  # noqa: BLE001 — the journals are closed and synced below regardless
+                log.exception("draining the dispatcher failed")
+        # 3. the journals, synced
         _each(sessions, "sync", lambda sd: sd.fsync())
-    # 5. closed, never finalised: that waits for NSE's settlement prices
-    _each(sessions, "close", lambda sd: sd.close(finalise=False))
+        # 4. a stop inside market hours: the journal says it stopped seeing frames (never via the queue)
+        if stop_requested and sessions and dispatcher is not None and inside_market_hours(clock.now_ns()):
+            try:
+                dispatcher.journal_process_stop(clock.now_ns())
+                dispatcher.drain()
+            except Exception:  # noqa: BLE001
+                log.exception("journaling the process stop failed")
+            _each(sessions, "sync", lambda sd: sd.fsync())
+        # 5. closed, never finalised: that waits for NSE's settlement prices
+        _each(sessions, "close", lambda sd: sd.close(finalise=False))
+    if pump is not None:
+        pump.close()
     stats = recorder.stats
     log.info("recorded %d packets in %d frames; %d heartbeats; dropped %d; exit %d",
              stats.packets, stats.frames, stats.heartbeats, stats.dropped_frames, session.exit_code)
     # 6. the status file
     alarms = list(stats.alarms) + (list(dispatcher.stats.alarms) if dispatcher is not None else [])
     alarms += ["engine_thread_died"] if engine_failed else []
+    alarms += ["shutdown_engine_timeout"] if stuck else []
+    code = exitcodes.ENGINE_STUCK if stuck else session.exit_code
     try:
-        write_status(day, session.exit_code, landing, clock, stop_requested=stop_requested, sessions=sessions,
-                     failed=dispatcher.stats.failed if dispatcher is not None else {}, alarms=alarms)
+        write_status(day, code, landing, clock, stop_requested=stop_requested, sessions=[] if stuck else sessions,
+                     failed=dict(dispatcher.stats.failed) if dispatcher is not None else {}, alarms=alarms)
     except Exception:  # noqa: BLE001
         log.exception("could not write %s", paths.daemon_status_file())
-    landing.close()
+    try:
+        landing.close()
+    except Exception:  # noqa: BLE001
+        log.exception("closing the landing file failed")
+    return stuck
 
 
 def _each(sessions: list, what: str, action: Callable) -> None:

@@ -8,5 +8,6 @@
   "token_poll_s": 15,
   "coverage_threshold": "0.98",
   "commands_every_s": 1,
-  "sod_state_warn_mb": 64
+  "sod_state_warn_mb": 64,
+  "engine_log": {"max_lines_per_min": 120, "max_line_chars": 500}
 }

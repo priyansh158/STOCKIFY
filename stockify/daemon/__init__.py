@@ -233,7 +233,6 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
                     power.release()
                 if code != exitcodes.OK:
                     return code
-                state.mark("session", day)
                 continue                                          # now situation 1
 
         result = _sleep_or_wait(clock, power, state, obligations, stop)

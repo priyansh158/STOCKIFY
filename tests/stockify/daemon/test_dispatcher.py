@@ -336,6 +336,25 @@ class DispatcherTest(pf.PaperDayTest):
         self.assertTrue(rows and all(r["detail"]["cause"] == "dispatcher_overflow" for r in rows))
         self.assertEqual(disp.stats.alarms, ["dispatcher_queue_full"])       # raised once
 
+    def test_a_process_stop_is_journaled_as_one_even_with_the_queue_full(self):
+        """GK 5.2 (M6): the shutdown's process_stop never goes through the queue, so it can never be dropped and
+        reported as a `stall`."""
+        sd = self.make_day("s1")
+        disp = self.dispatcher([sd], dispatcher_queue_max=2)
+        for i in range(2):
+            disp.put_frame((0, self.t("09:16:00") + i * SEC, 1, b"\x00", True))
+        self.assertTrue(disp.queue.full())
+        disp.drain()                                  # the engine thread is done; the queue is then emptied ...
+        for i in range(2):
+            disp.put_frame((0, self.t("09:16:10") + i * SEC, 1, b"\x00", True))
+        self.assertTrue(disp.queue.full())             # ... and a late producer fills it again
+        disp.journal_process_stop(self.t("09:16:30"))
+        disp.drain()
+        gaps = [(r["phase"], r["reason"], r["instrument_id"]) for r in decode("s1") if r["kind"] == "GAP"]
+        self.assertEqual(gaps, [(0, "process_stop", 0)])
+        self.assertEqual(disp.stats.dropped, 0)
+        self.assertNotIn("dispatcher_queue_full", disp.stats.alarms)
+
     def test_a_failed_day_does_not_stop_the_others(self):
         bad, good = self.make_day("s1"), self.make_day("s2")
         disp = self.dispatcher([bad, good])

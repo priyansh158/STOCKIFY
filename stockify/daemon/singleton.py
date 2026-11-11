@@ -10,6 +10,7 @@ the pid (Windows refuses reads of a locked byte).
 """
 from __future__ import annotations
 
+import errno
 import msvcrt
 import os
 from pathlib import Path
@@ -21,6 +22,10 @@ LOCK_OFFSET = 1 << 20           # the locked byte; the pid text sits at the star
 
 class AlreadyRunning(RuntimeError):
     """Another daemon holds this lab's lock."""
+
+
+class LockUnavailable(RuntimeError):
+    """The lock file itself cannot be opened or locked (permissions, a missing disk): not another daemon."""
 
 
 class DaemonLock:
@@ -59,12 +64,17 @@ def _holder(path: Path) -> str:
 def acquire(path: Path | None = None) -> DaemonLock:
     """Take the lock or raise `AlreadyRunning` at once. The caller keeps the returned lock for its lifetime."""
     path = Path(path) if path is not None else paths.daemon_lock_file()
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o600)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o600)
+    except OSError as e:
+        raise LockUnavailable(f"cannot take the daemon lock {path}: {e}") from None
     try:
         os.lseek(fd, LOCK_OFFSET, os.SEEK_SET)
         msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-    except OSError:
+    except OSError as e:
         os.close(fd)
+        if e.errno not in (errno.EACCES, errno.EDEADLK):
+            raise LockUnavailable(f"cannot take the daemon lock {path}: {e}") from None
         raise AlreadyRunning(f"another STOCKIFY daemon is already running on this lab ({_holder(path)}, lock "
                              f"{path}); stop it first") from None
     try:
