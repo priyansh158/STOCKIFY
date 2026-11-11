@@ -348,6 +348,56 @@ JValue market_record(const MarketState& m) {  // sod_state._market
 }  // namespace
 
 namespace {
+
+// A notification held while the strategy is disabled (sod_state.NOTIFICATION_FIELDS): the order or fill as the
+// strategy would have seen it.
+enum class Field { Int, Str };
+struct NotificationField {
+    std::string_view name;
+    Field type;
+};
+constexpr NotificationField kOrderNotification[] = {
+    {"order_id", Field::Int}, {"instrument", Field::Int}, {"side", Field::Str},        {"qty", Field::Int},
+    {"product", Field::Str},  {"type", Field::Str},       {"price", Field::Int},       {"trigger", Field::Int},
+    {"status", Field::Str},   {"reason", Field::Str},     {"filled_qty", Field::Int},  {"avg_price", Field::Int},
+    {"tag", Field::Str}};
+constexpr NotificationField kFillNotification[] = {{"order_id", Field::Int}, {"instrument", Field::Int},
+                                                   {"side", Field::Str},     {"qty", Field::Int},
+                                                   {"price", Field::Int},    {"t_ns", Field::Int},
+                                                   {"evidence", Field::Str}};
+
+void check_notification(const Json& n) {
+    if (!n.is_object()) {
+        throw bad("queued_notifications entry", "must be an object");
+    }
+    if (!n.contains("kind")) {
+        throw bad("queued_notifications entry", "is missing 'kind'");
+    }
+    const std::string& kind = as_str(n.at("kind"), "queued_notifications kind");
+    if (kind != "order" && kind != "fill") {
+        throw RunError("sod_state: queued_notifications: unknown kind " + esc(kind));
+    }
+    const std::string_view keys[] = {"kind", kind};
+    need(n, keys, "queued_notifications entry");
+    const Json& body = n.at(kind);
+    const std::span<const NotificationField> fields =
+        kind == "order" ? std::span<const NotificationField>(kOrderNotification)
+                        : std::span<const NotificationField>(kFillNotification);
+    std::vector<std::string_view> names;
+    for (const NotificationField& f : fields) {
+        names.push_back(f.name);
+    }
+    need(body, names, "queued_notifications " + kind);
+    for (const NotificationField& f : fields) {
+        const std::string where = "queued_notifications " + kind + "." + std::string(f.name);
+        if (f.type == Field::Int) {
+            as_int(body.at(std::string(f.name)), where);
+        } else {
+            as_str(body.at(std::string(f.name)), where);
+        }
+    }
+}
+
 struct Staged;  // what a valid state holds (defined with the restore code below)
 }
 
@@ -1202,12 +1252,34 @@ Staged SodState::parse(const Engine& e, const Json& state) {  // sod_state.parse
     }
 
     s.strategy_enabled = as_bool(state.at("strategy_enabled"), "strategy_enabled");
+    std::vector<std::string> reasons;
     for (const Json& r : as_list(state.at("pause_reasons"), "pause_reasons")) {
-        s.pause_reasons.insert(as_str(r, "pause_reasons"));
+        reasons.push_back(as_str(r, "pause_reasons"));
     }
+    if (std::find(reasons.begin(), reasons.end(), std::string()) != reasons.end()) {
+        throw bad("pause_reasons", "must not hold an empty reason");
+    }
+    for (std::size_t i = 1; i < reasons.size(); ++i) {
+        if (reasons[i - 1] >= reasons[i]) {
+            throw bad("pause_reasons", "must be sorted and unique");
+        }
+    }
+    s.pause_reasons.insert(reasons.begin(), reasons.end());
     // Checked in place, before the copy: a copy of a deeply nested value recurses (a bundle file's DOM keeps any depth).
     check_free_form(as_list(state.at("queued_notifications"), "queued_notifications"), "queued_notifications");
+    for (const Json& n : state.at("queued_notifications")) {
+        check_notification(n);
+    }
     s.queued = state.at("queued_notifications");
+    if (s.strategy_enabled && !reasons.empty()) {
+        throw RunError("sod_state: strategy_enabled is true, so pause_reasons must be empty");
+    }
+    if (s.strategy_enabled && !s.queued.empty()) {
+        throw RunError("sod_state: strategy_enabled is true, so queued_notifications must be empty");
+    }
+    if (!s.strategy_enabled && reasons.empty()) {
+        throw RunError("sod_state: strategy_enabled is false, so pause_reasons must not be empty");
+    }
 
     for (const Json& row : as_list(state.at("fsp_seen"), "fsp_seen")) {
         const Json& f = as_list(row, "fsp_seen row", 3);

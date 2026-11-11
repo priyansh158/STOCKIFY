@@ -335,7 +335,9 @@ class Engine {
     void reseed_for(TimeNs t);  // seed_mode per_day: re-create both streams at a seeded day's first event  // the final DAY_END after a last input past the last trading day (D-52)
 
     void log(std::string_view level, std::string_view msg);
-    void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9)
+    void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9); held while the strategy is disabled
+    bool hook_on(std::string_view hook);  // false (and a log line) while the strategy is disabled (A4 §3.11)
+    void on_strategy_control(std::string_view json);  // a journaled pause or resume (D-70)
     void track_open();
 
     // funds (A4 §6.5)
@@ -458,7 +460,7 @@ class Engine {
     std::optional<std::string> day_end_strategy_state_;     // save_state() at DAY_END, checked (day bundles only)
     std::optional<std::string> pending_strategy_state_;     // loaded before set_strategy: handed over then
     std::string strategy_name_;                             // a C++ strategy's registered name, for its refusals
-    bool strategy_enabled_ = true;                          // D-70 (Task 7) fills these three
+    bool strategy_enabled_ = true;                          // D-70, A4 §3.11: a journaled switch, carried day to day
     std::set<std::string> pause_reasons_;
     Json queued_notifications_ = Json::array();
 

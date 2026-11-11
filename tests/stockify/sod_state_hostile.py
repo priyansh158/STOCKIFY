@@ -100,6 +100,38 @@ def replace(old: str, new: str) -> Callable[[dict, str], str]:
     return make
 
 
+# ── Held notifications (D-70): the order or fill a paused strategy has not yet seen ─────────────────────────────
+
+def order_note() -> dict:
+    return {"kind": "order", "order": {"order_id": 7, "instrument": 1, "side": "BUY", "qty": 1, "product": "CNC",
+                                       "type": "MARKET", "price": 0, "trigger": 0, "status": "COMPLETE", "reason": "",
+                                       "filled_qty": 1, "avg_price": 1000, "tag": ""}}
+
+
+def fill_note() -> dict:
+    return {"kind": "fill", "fill": {"order_id": 7, "instrument": 1, "side": "BUY", "qty": 1, "price": 1000,
+                                     "t_ns": 1768200000000000000, "evidence": "bar"}}
+
+
+def note_with(note: dict, key: str, field: str, value) -> dict:  # noqa: ANN001
+    note[key][field] = value
+    return note
+
+
+def note_without(note: dict, key: str, field: str) -> dict:
+    del note[key][field]
+    return note
+
+
+def paused(**changes):  # noqa: ANN003
+    """A paused state (one reason) with these top-level changes."""
+    def make(st: dict, _text: str) -> dict:
+        st.update(strategy_enabled=False, pause_reasons=["manual"])
+        st.update(copy.deepcopy(changes))
+        return st
+    return make
+
+
 def order(st: dict, order_id: int) -> dict:
     return next(o for o in st["final_orders"] if o["order_id"] == order_id)
 
@@ -475,6 +507,47 @@ ROWS: tuple[Row, ...] = (
     Row("a pause reason that is a number", 6, put("pause_reasons", [5]), "pause_reasons must be a string"),
     Row("queued_notifications is an object", 6, put("queued_notifications", {}),
         "queued_notifications must be a list"),
+    # ── a paused strategy (D-70, A4 §3.11) ───────────────────────────────────
+    Row("a paused state with a held fill and a held order update is accepted and run", 9,
+        edit(lambda st: st.update(strategy_enabled=False, pause_reasons=["manual", "rms"],
+                                  queued_notifications=[order_note(), fill_note()])), None, run=True),
+    Row("a pause reason that is empty", 9, edit(lambda st: st.update(strategy_enabled=False, pause_reasons=[""])),
+        "pause_reasons must not hold an empty reason"),
+    Row("pause reasons out of order", 9, edit(lambda st: st.update(strategy_enabled=False, pause_reasons=["b", "a"])),
+        "pause_reasons must be sorted and unique"),
+    Row("a pause reason listed twice", 9, edit(lambda st: st.update(strategy_enabled=False, pause_reasons=["a", "a"])),
+        "pause_reasons must be sorted and unique"),
+    Row("enabled with a pause reason", 9, put("pause_reasons", ["manual"]),
+        "strategy_enabled is true, so pause_reasons must be empty"),
+    Row("enabled with a held notification", 9, put("queued_notifications", [fill_note()]),
+        "strategy_enabled is true, so queued_notifications must be empty"),
+    Row("disabled with no reason", 9, put("strategy_enabled", False),
+        "strategy_enabled is false, so pause_reasons must not be empty"),
+    Row("a held notification that is a number", 9, paused(queued_notifications=[5]),
+        "queued_notifications entry must be an object"),
+    Row("a held notification with no kind", 9, paused(queued_notifications=[{"fill": fill_note()["fill"]}]),
+        "queued_notifications entry is missing 'kind'"),
+    Row("a held notification of a number kind", 9, paused(queued_notifications=[{"kind": 1}]),
+        "queued_notifications kind must be a string"),
+    Row("a held notification of an unknown kind", 9, paused(queued_notifications=[{"kind": "cancel"}]),
+        "queued_notifications: unknown kind 'cancel'"),
+    Row("a held fill that lacks its body", 9, paused(queued_notifications=[{"kind": "fill"}]),
+        "queued_notifications entry is missing 'fill'"),
+    Row("a held fill that also holds an order body", 9,
+        paused(queued_notifications=[{**fill_note(), "order": order_note()["order"]}]),
+        "queued_notifications entry has unknown keys ['order']"),
+    Row("a held fill with a field missing", 9, paused(queued_notifications=[note_without(fill_note(), "fill", "evidence")]),
+        "queued_notifications fill is missing 'evidence'"),
+    Row("a held order with an unknown field", 9, paused(queued_notifications=[note_with(order_note(), "order", "x", 1)]),
+        "queued_notifications order has unknown keys ['x']"),
+    Row("a held fill with a text price", 9, paused(queued_notifications=[note_with(fill_note(), "fill", "price", "5")]),
+        "queued_notifications fill.price must be an integer"),
+    Row("a held fill with a price past int64", 9,
+        paused(queued_notifications=[note_with(fill_note(), "fill", "price", 2**63)]),
+        "queued_notifications fill.price does not fit in int64"),
+    Row("a held order with a number for its side", 9,
+        paused(queued_notifications=[note_with(order_note(), "order", "side", 1)]),
+        "queued_notifications order.side must be a string"),
     Row("a delivery row of three", 6, put("dp_done", [[2, "2026-01-12", 1]]), "dp_done row must be a list of 2"),
     Row("a market book of nine levels", 6, put("market.2.book", [[1, 1, 1]] * 9), "market.book must be a list of 10"),
     Row("a market band of three", 6, put("market.2.band", [1, 2, 3]), "market.band must be a list of 2"),

@@ -82,7 +82,8 @@ SIZE = {TICK_QUOTE: 104, TICK_FULL: 384, INDEX_K: 80, BAR_K: 88, CLOCK: 24, GAP_
 GAP_REASONS = {"disconnect": 1, "process_stop": 2, "token_expired": 3, "stall": 4, "not_subscribed": 5}
 # </block>
 # <block name="refdata-subtypes" same-as="docs/plan/A1_schemas.md:refdata-subtypes" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
-REFDATA_SUBTYPES = {"instrument_add": 1, "price_band": 2, "margin_requirement": 3, "spec_change": 4}
+REFDATA_SUBTYPES = {"instrument_add": 1, "price_band": 2, "margin_requirement": 3, "spec_change": 4,
+                    "strategy_control": 5}
 # </block>
 BASIS = {"raw": 0, "adjusted": 1}
 FLAG_CLOCK = 2

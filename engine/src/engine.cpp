@@ -469,6 +469,70 @@ void Engine::log(std::string_view level, std::string_view msg) {  // runner.log
     log_lines_.push_back(std::to_string(now_) + " " + std::string(level) + " " + std::string(msg));
 }
 
+namespace {
+
+// A notification held while the strategy is disabled, as the strategy would have seen it (the oracle's
+// {"kind": "order", "order": {...}} and {"kind": "fill", "fill": {...}}).
+Json order_notification(const OrderView& v) {
+    Json o = Json::object();
+    o["order_id"] = v.order_id;
+    o["instrument"] = v.instrument;
+    o["side"] = v.side;
+    o["qty"] = v.qty;
+    o["product"] = v.product;
+    o["type"] = v.type;
+    o["price"] = v.price;
+    o["trigger"] = v.trigger;
+    o["status"] = v.status;
+    o["reason"] = v.reason;
+    o["filled_qty"] = v.filled_qty;
+    o["avg_price"] = v.avg_price;
+    o["tag"] = v.tag;
+    Json n = Json::object();
+    n["kind"] = "order";
+    n["order"] = std::move(o);
+    return n;
+}
+
+Json fill_notification(const FillView& v) {
+    Json f = Json::object();
+    f["order_id"] = v.order_id;
+    f["instrument"] = v.instrument;
+    f["side"] = v.side;
+    f["qty"] = v.qty;
+    f["price"] = v.price;
+    f["t_ns"] = v.t_ns;
+    f["evidence"] = v.evidence;
+    Json n = Json::object();
+    n["kind"] = "fill";
+    n["fill"] = std::move(f);
+    return n;
+}
+
+OrderView order_of(const Json& o) {
+    return OrderView{o.at("order_id").get<OrderId>(), o.at("instrument").get<InstrumentId>(),
+                     o.at("side").get<std::string>(), o.at("qty").get<Qty>(), o.at("product").get<std::string>(),
+                     o.at("type").get<std::string>(), o.at("price").get<Paise>(), o.at("trigger").get<Paise>(),
+                     o.at("status").get<std::string>(), o.at("reason").get<std::string>(),
+                     o.at("filled_qty").get<Qty>(), o.at("avg_price").get<Paise>(), o.at("tag").get<std::string>()};
+}
+
+FillView fill_of(const Json& f) {
+    return FillView{f.at("order_id").get<OrderId>(), f.at("instrument").get<InstrumentId>(),
+                    f.at("side").get<std::string>(), f.at("qty").get<Qty>(), f.at("price").get<Paise>(),
+                    f.at("t_ns").get<TimeNs>(), f.at("evidence").get<std::string>()};
+}
+
+std::string join_reasons(const std::set<std::string>& reasons) {  // ", " between them, sorted (std::set)
+    std::string out;
+    for (const std::string& r : reasons) {
+        out += (out.empty() ? "" : ", ") + r;
+    }
+    return out;
+}
+
+}  // namespace
+
 void Engine::deliver() {  // runner._deliver
     if (delivering_) {
         return;
@@ -480,11 +544,95 @@ void Engine::deliver() {  // runner._deliver
             book_.callbacks.pop_front();
             if (!cb.is_fill) {
                 // The order as it is now (OrderView.of at delivery), not as it was when the callback was queued.
-                strategy_->on_order_update(ctx_, view_of(book_.orders.at(cb.order_id)));
+                const OrderView view = view_of(book_.orders.at(cb.order_id));
+                if (strategy_enabled_) {
+                    strategy_->on_order_update(ctx_, view);
+                } else {
+                    queued_notifications_.push_back(order_notification(view));
+                }
             } else {
                 const Fill& f = cb.fill;
-                strategy_->on_fill(ctx_, FillView{f.order_id, f.instrument, std::string(to_string(f.side)), f.qty,
-                                                  f.price, f.t_ns, f.evidence});
+                const FillView view{f.order_id, f.instrument, std::string(to_string(f.side)), f.qty,
+                                    f.price,    f.t_ns,       f.evidence};
+                if (strategy_enabled_) {
+                    strategy_->on_fill(ctx_, view);
+                } else {
+                    queued_notifications_.push_back(fill_notification(view));
+                }
+            }
+        }
+    } catch (...) {
+        delivering_ = false;
+        throw;
+    }
+    delivering_ = false;
+}
+
+bool Engine::hook_on(std::string_view hook) {  // runner._hook_on
+    if (strategy_enabled_) {
+        return true;
+    }
+    log("INFO", std::string(hook) + " skipped: strategy disabled (" + join_reasons(pause_reasons_) + ")");
+    return false;
+}
+
+void Engine::on_strategy_control(std::string_view text) {  // runner._on_strategy_control, runner.check_strategy_control
+    const auto refuse = [](std::string_view why) { return RunError("strategy_control: " + std::string(why)); };
+    const Json payload = Json::parse(text.begin(), text.end());
+    if (!payload.is_object()) {
+        throw refuse("payload must be an object");
+    }
+    if (payload.size() != 2 || !payload.contains("enabled") || !payload.contains("reasons")) {
+        throw refuse("payload must have exactly the keys 'enabled' and 'reasons'");
+    }
+    if (!payload.at("enabled").is_boolean()) {
+        throw refuse("enabled must be a boolean");
+    }
+    const bool enabled = payload.at("enabled").get<bool>();
+    const Json& list = payload.at("reasons");
+    if (!list.is_array() || !std::all_of(list.begin(), list.end(), [](const Json& r) { return r.is_string(); })) {
+        throw refuse("reasons must be a list of strings");
+    }
+    std::vector<std::string> reasons;
+    for (const Json& r : list) {
+        reasons.push_back(r.get<std::string>());
+    }
+    if (std::any_of(reasons.begin(), reasons.end(), [](const std::string& r) { return r.empty(); })) {
+        throw refuse("a reason must not be empty");
+    }
+    for (std::size_t i = 1; i < reasons.size(); ++i) {
+        if (reasons[i - 1] >= reasons[i]) {
+            throw refuse("reasons must be sorted and unique");
+        }
+    }
+    if (enabled && !reasons.empty()) {
+        throw refuse("reasons must be empty when enabled");
+    }
+    if (!enabled && reasons.empty()) {
+        throw refuse("reasons must not be empty when disabled");
+    }
+    const bool was = strategy_enabled_;
+    strategy_enabled_ = enabled;
+    pause_reasons_ = std::set<std::string>(reasons.begin(), reasons.end());
+    if (!enabled) {
+        if (was) {
+            log("INFO", "strategy disabled (" + join_reasons(pause_reasons_) + ")");
+        }
+        return;
+    }
+    if (was) {
+        return;
+    }
+    log("INFO", "strategy enabled");
+    const Json held = std::move(queued_notifications_);
+    queued_notifications_ = Json::array();
+    delivering_ = true;  // what the strategy places meanwhile is delivered after, as in a handler
+    try {
+        for (const Json& n : held) {
+            if (n.at("kind").get<std::string>() == "order") {
+                strategy_->on_order_update(ctx_, order_of(n.at("order")));
+            } else {
+                strategy_->on_fill(ctx_, fill_of(n.at("fill")));
             }
         }
     } catch (...) {
@@ -582,7 +730,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
         after_market(iid);
         deliver();
         const auto sb = sub_bars_.find(iid);
-        if (sb != sub_bars_.end() && sb->second.count(b.interval_s) != 0) {
+        if (sb != sub_bars_.end() && sb->second.count(b.interval_s) != 0 && hook_on("on_bar")) {
             strategy_->on_bar(ctx_, Bar{iid, b.interval_s, b.start_ns, e.t, b.open, b.high, b.low, b.close, b.volume,
                                         b.oi, false});
             deliver();
@@ -595,7 +743,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
         m.t = e.t;
         underlying_last_[iid] = f.value;
         build_bars(iid, e.t, f.value, std::nullopt, std::nullopt);
-        if (sub_ticks_.count(iid) != 0) {
+        if (sub_ticks_.count(iid) != 0 && hook_on("on_tick")) {
             strategy_->on_tick(ctx_, Tick{iid, e.t, f.value, 0, 0, std::nullopt, std::nullopt, false});
             deliver();
         }
@@ -627,7 +775,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
     build_bars(iid, e.t, q.ltp, q.volume, prev_vol);
     after_market(iid);
     deliver();
-    if (sub_ticks_.count(iid) != 0) {
+    if (sub_ticks_.count(iid) != 0 && hook_on("on_tick")) {
         const MarketState& mm = market_[iid];
         strategy_->on_tick(ctx_, Tick{iid, e.t, q.ltp, q.volume, q.atp, mm.bid, mm.ask, false});
         deliver();
@@ -720,7 +868,9 @@ void Engine::on_built(const InternalEvent& ev) {  // runner._on_built
     const std::array<std::int64_t, 6> b = it->second;
     acc->second.erase(it);
     market_[ev.instrument].bars[ev.interval_s].push_back(BarRow{ev.start, b[0], b[1], b[2], b[3], b[4], b[5]});
-    strategy_->on_bar(ctx_, Bar{ev.instrument, ev.interval_s, ev.start, now_, b[0], b[1], b[2], b[3], b[4], b[5], true});
+    if (hook_on("on_bar")) {
+        strategy_->on_bar(ctx_, Bar{ev.instrument, ev.interval_s, ev.start, now_, b[0], b[1], b[2], b[3], b[4], b[5], true});
+    }
     deliver();
 }
 
@@ -744,6 +894,10 @@ void Engine::on_gap(const Event& e) {  // runner._on_gap
 
 void Engine::on_refdata(const Event& e) {  // runner._on_refdata
     const RefDataFields r = decode_refdata(e);
+    if (refdata_subtype_name(r.subtype) == "strategy_control") {
+        on_strategy_control(r.json);
+        return;
+    }
     if (refdata_subtype_name(r.subtype) == "price_band") {
         const Json payload = Json::parse(r.json.begin(), r.json.end());
         market_[e.instrument].band = std::make_pair(payload.at("lower_paise").get<Paise>(),
@@ -777,7 +931,9 @@ void Engine::on_phase(const InternalEvent& ev) {  // runner._on_phase
             }
         }
     }
-    strategy_->on_session_phase(ctx_, PhaseChange{ev.group, ev.phase, now_});
+    if (hook_on("on_session_phase")) {
+        strategy_->on_session_phase(ctx_, PhaseChange{ev.group, ev.phase, now_});
+    }
     deliver();
 }
 
@@ -892,7 +1048,9 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
                                                    b.scan, b.somc, b.elm, b.addons, b.total()});
         }
     }
-    strategy_->on_session_end(ctx_);
+    if (hook_on("on_session_end")) {
+        strategy_->on_session_end(ctx_);
+    }
     deliver();
     book_.ledger.release_day(next_date(d));
     if (calendar_.day(d) != nullptr) {  // not the D-52 close-out's own (maybe non-trading) date
@@ -918,7 +1076,9 @@ void Engine::on_timer(const InternalEvent& ev) {  // runner._on_timer
     } else {
         timers_.erase(it);
     }
-    strategy_->on_timer(ctx_, ev.timer);
+    if (hook_on("on_timer")) {
+        strategy_->on_timer(ctx_, ev.timer);
+    }
     deliver();
 }
 

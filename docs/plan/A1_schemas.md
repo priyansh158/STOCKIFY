@@ -268,7 +268,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 <!-- </block> -->
 
 <!-- <block name="refdata-subtypes" same-as-pattern='(?P<key>\d) \x60(?P<value>[a-z_]+)\x60'> -->
-- REFDATA subtypes: 1 `instrument_add` (static fields + spec), 2 `price_band`, 3 `margin_requirement` (portfolio hash, amount, components, source), 4 `spec_change`. Because `size` is a u16, a REFDATA JSON payload is at most 65,503 bytes; larger content is split into several records (one instrument per `instrument_add`).
+- REFDATA subtypes: 1 `instrument_add` (static fields + spec), 2 `price_band`, 3 `margin_requirement` (portfolio hash, amount, components, source), 4 `spec_change`, 5 `strategy_control` (the instrument in the prefix is 0; payload `{"enabled": bool, "reasons": [str, …]}`, reasons sorted, empty exactly when enabled; A4 §3.11). Because `size` is a u16, a REFDATA JSON payload is at most 65,503 bytes; larger content is split into several records (one instrument per `instrument_add`).
 <!-- </block> -->
 <!-- <block name="gap-reasons" same-as-pattern='(?P<key>\d) (?P<value>[a-z_]+)'> -->
 - GAP reasons: 1 disconnect, 2 process_stop, 3 token_expired, 4 stall, 5 not_subscribed. Landing gaps scoped to a tier are expanded into one GAP record per affected instrument.
@@ -481,9 +481,9 @@ Each object holds exactly its listed keys: a missing key or one the schema does 
 | `counters` | `{next_order, next_fill, next_timer, charge_row}`: the next order, fill and timer ids, and the number of `charges.csv` rows already written (the next day numbers on from it) |
 | `rng` | `{slippage: [state, inc], strategy: [state, inc]}`: PCG32 stream 1 and stream 2 as they are after the day (unsigned 64-bit, A4 §4.5). With `per_day` a day's first event re-creates both from its `days[].seed` as usual; this is what events before it (a weekend timer) draw, as in a whole run |
 | `subscriptions` | `{ticks: [instrument_id, …] sorted, bars: {"<id>": [interval_s, …] sorted}}` |
-| `strategy_enabled` | `true` (D-70, Task 7, makes it a journaled switch) |
-| `pause_reasons` | `[]` sorted (D-70) |
-| `queued_notifications` | `[]` (D-70: `on_fill` / `on_order_update` held while disabled) |
+| `strategy_enabled` | `true`; `false` while a `strategy_control` record has paused the strategy (D-70, A4 §3.11), and the pause carries across days |
+| `pause_reasons` | `[]` when enabled; else the sorted, unique, non-empty reasons of the last disable (strictly ascending) |
+| `queued_notifications` | `[]` when enabled; else, in the order generated, the `on_order_update` / `on_fill` calls held while disabled: `{"kind": "order", "order": {order_id, instrument, side, qty, product, type, price, trigger, status, reason, filled_qty, avg_price, tag}}` (the order as the strategy would have seen it) or `{"kind": "fill", "fill": {order_id, instrument, side, qty, price, t_ns, evidence}}`; integers in int64, the rest strings |
 | `fsp_seen` | final settlement prices seen: `[[underlying_id, date, paise], …]` sorted (an `eod_close` fill of an expiring contract published after midnight settles at the FSP seen the day before, A4 §4.9) |
 | `market` | `{"<id>": {ltp, t, s0, s1, bid, ask, book, band, oi, min_interval, day}}` (A4 §2): `s0`/`s1` = `{t, ltp, volume, atp, high, low}` or null; `book` = the last depth `[[price, qty, orders], …]` (5 bids, then 5 asks) or null; `band` = `[lower, upper]` or null; `min_interval` = the smallest bar interval seen (null on tick data); `day` = the IST date of its last event |
 | `bar_history` | `{"<id>:<interval_s>": [[start_ns, open, high, low, close, volume, oi], …]}` in arrival order: **the full history, never trimmed** (C-2), since indicators run over every bar |

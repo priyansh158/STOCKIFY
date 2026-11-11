@@ -461,6 +461,29 @@ def _stream(v, name: str) -> list:  # noqa: ANN001
     return list(pair)
 
 
+# A notification held while the strategy is disabled (A1 §6.4, A4 §3.11): the order or fill as the strategy would have seen it.
+NOTIFICATION_FIELDS = {
+    "order": (("order_id", _int), ("instrument", _int), ("side", _str), ("qty", _int), ("product", _str),
+              ("type", _str), ("price", _int), ("trigger", _int), ("status", _str), ("reason", _str),
+              ("filled_qty", _int), ("avg_price", _int), ("tag", _str)),
+    "fill": (("order_id", _int), ("instrument", _int), ("side", _str), ("qty", _int), ("price", _int),
+             ("t_ns", _int), ("evidence", _str)),
+}
+
+
+def _notification(n) -> None:  # noqa: ANN001
+    if not isinstance(n, dict):
+        raise _bad("queued_notifications entry", "must be an object")
+    if "kind" not in n:
+        raise _bad("queued_notifications entry", "is missing 'kind'")
+    kind = _known(_str(n["kind"], "queued_notifications kind"), NOTIFICATION_FIELDS, "queued_notifications", "kind")
+    _need(n, ("kind", kind), "queued_notifications entry")
+    body = n[kind]
+    _need(body, [f for f, _ in NOTIFICATION_FIELDS[kind]], f"queued_notifications {kind}")
+    for field, check in NOTIFICATION_FIELDS[kind]:
+        check(body[field], f"queued_notifications {kind}.{field}")
+
+
 def _free_form(owner: str, v):  # noqa: ANN001, ANN202
     """A part the strategy or the notifier owns: any JSON, but bounded (depth, integers inside 64 bits, finite)."""
     for _, x in _walk_free_form(owner, v):
@@ -610,8 +633,21 @@ def parse(engine, state) -> dict:  # noqa: ANN001
             mine.add(isec)
 
     strategy_enabled = _bool(state["strategy_enabled"], "strategy_enabled")
-    pause_reasons = {_str(r, "pause_reasons") for r in _list(state["pause_reasons"], "pause_reasons")}
+    reasons = [_str(r, "pause_reasons") for r in _list(state["pause_reasons"], "pause_reasons")]
+    if "" in reasons:
+        raise _bad("pause_reasons", "must not hold an empty reason")
+    if any(a >= b for a, b in zip(reasons, reasons[1:])):
+        raise _bad("pause_reasons", "must be sorted and unique")
+    pause_reasons = set(reasons)
     queued = _free_form("queued_notifications", _list(state["queued_notifications"], "queued_notifications"))
+    for n in queued:
+        _notification(n)
+    if strategy_enabled and reasons:
+        raise StateError("sod_state: strategy_enabled is true, so pause_reasons must be empty")
+    if strategy_enabled and queued:
+        raise StateError("sod_state: strategy_enabled is true, so queued_notifications must be empty")
+    if not strategy_enabled and not reasons:
+        raise StateError("sod_state: strategy_enabled is false, so pause_reasons must not be empty")
 
     fsp_seen: dict = {}
     for row in _list(state["fsp_seen"], "fsp_seen"):

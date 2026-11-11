@@ -47,6 +47,30 @@ class RunError(RuntimeError):
     pass
 
 
+def check_strategy_control(payload) -> tuple[bool, list[str]]:  # noqa: ANN001
+    """A strategy_control record's payload (A1 §5, A4 §3.11), or a RunError the engine words the same: exactly
+    {"enabled": bool, "reasons": [str, …]}, the reasons non-empty strings in strictly ascending order, none when
+    enabled and at least one when disabled."""
+    if not isinstance(payload, dict):
+        raise RunError("strategy_control: payload must be an object")
+    if set(payload) != {"enabled", "reasons"}:
+        raise RunError("strategy_control: payload must have exactly the keys 'enabled' and 'reasons'")
+    enabled, reasons = payload["enabled"], payload["reasons"]
+    if type(enabled) is not bool:
+        raise RunError("strategy_control: enabled must be a boolean")
+    if type(reasons) is not list or any(type(r) is not str for r in reasons):
+        raise RunError("strategy_control: reasons must be a list of strings")
+    if any(r == "" for r in reasons):
+        raise RunError("strategy_control: a reason must not be empty")
+    if any(a >= b for a, b in zip(reasons, reasons[1:])):
+        raise RunError("strategy_control: reasons must be sorted and unique")
+    if enabled and reasons:
+        raise RunError("strategy_control: reasons must be empty when enabled")
+    if not enabled and not reasons:
+        raise RunError("strategy_control: reasons must not be empty when disabled")
+    return enabled, reasons
+
+
 # ── State ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -178,9 +202,9 @@ class Engine:
         self.charge_row_base = 0                       # charges.csv rows written on earlier days
         self.state_date: str | None = None             # the last trading day whose DAY_END ran
         self.day_end_strategy_state: dict | None = None  # save_state() at DAY_END, checked (day bundles only)
-        self.strategy_enabled = True                   # Task 7 (D-70) fills these three
+        self.strategy_enabled = True                   # D-70, A4 §3.11: a journaled switch, carried day to day
         self.pause_reasons: set[str] = set()
-        self.queued_notifications: list = []
+        self.queued_notifications: list = []           # on_fill / on_order_update held while disabled, in order
         self.started = False
         self.resumed = False
         self.busy: str | None = None                   # the call in progress (run / load_sod_state / eod_state)
@@ -397,7 +421,8 @@ class Engine:
             book.callbacks.append(("order", o.order_id))
 
     def _deliver(self) -> None:
-        """Queued on_order_update / on_fill callbacks, in the order generated (A4 §3.9)."""
+        """Queued on_order_update / on_fill callbacks, in the order generated (A4 §3.9). While the strategy is
+        disabled they are not delivered: each is kept, as the strategy would have seen it, for the enable (A4 §3.11)."""
         if self.delivering:
             return
         self.delivering = True
@@ -405,12 +430,48 @@ class Engine:
             while self.book.callbacks:
                 kind, x = self.book.callbacks.pop(0)
                 if kind == "order":
-                    o = self.book.orders[x]
-                    self.strategy.on_order_update(self.ctx, OrderView.of(o))
+                    view = OrderView.of(self.book.orders[x])
+                    if self.strategy_enabled:
+                        self.strategy.on_order_update(self.ctx, view)
+                    else:
+                        self.queued_notifications.append({"kind": "order", "order": dict(vars(view))})
                 else:
                     f = x
-                    self.strategy.on_fill(self.ctx, FillView(f.order_id, f.instrument_id, f.side, f.qty, f.price,
-                                                              f.t_ns, f.evidence))
+                    view = FillView(f.order_id, f.instrument_id, f.side, f.qty, f.price, f.t_ns, f.evidence)
+                    if self.strategy_enabled:
+                        self.strategy.on_fill(self.ctx, view)
+                    else:
+                        self.queued_notifications.append({"kind": "fill", "fill": dict(vars(view))})
+        finally:
+            self.delivering = False
+
+    def _hook_on(self, hook: str) -> bool:
+        """True when `hook` may run; while the strategy is disabled it is dropped, with a log line (A4 §3.11)."""
+        if self.strategy_enabled:
+            return True
+        self.log("INFO", f"{hook} skipped: strategy disabled ({', '.join(sorted(self.pause_reasons))})")
+        return False
+
+    def _on_strategy_control(self, payload) -> None:  # noqa: ANN001
+        """A journaled pause or resume (D-70). Enabling delivers what was held, in order, before any other hook."""
+        enabled, reasons = check_strategy_control(payload)
+        was = self.strategy_enabled
+        self.strategy_enabled, self.pause_reasons = enabled, set(reasons)
+        if not enabled:
+            if was:
+                self.log("INFO", f"strategy disabled ({', '.join(reasons)})")
+            return
+        if was:
+            return
+        self.log("INFO", "strategy enabled")
+        held, self.queued_notifications = self.queued_notifications, []
+        self.delivering = True
+        try:
+            for n in held:
+                if n["kind"] == "order":
+                    self.strategy.on_order_update(self.ctx, OrderView(**n["order"]))
+                else:
+                    self.strategy.on_fill(self.ctx, FillView(**n["fill"]))
         finally:
             self.delivering = False
 
@@ -1065,7 +1126,7 @@ class Engine:
                         self._cancel(self.book, o, "EOD")
             self._after_market(iid)
             self._deliver()
-            if iid in self.sub_bars and isec in self.sub_bars[iid]:
+            if iid in self.sub_bars and isec in self.sub_bars[iid] and self._hook_on("on_bar"):
                 self.strategy.on_bar(self.ctx, Bar(iid, isec, rec["start_ns"], rec["t_event"], rec["open"], rec["high"],
                                                    rec["low"], rec["close"], rec["volume"], rec["oi"]))
                 self._deliver()
@@ -1074,7 +1135,7 @@ class Engine:
             m.ltp, m.t = rec["value"], rec["t_event"]
             self._underlying_seen(iid, rec["value"])
             self._build_bars(iid, rec["t_event"], rec["value"], None, None)
-            if iid in self.sub_ticks:
+            if iid in self.sub_ticks and self._hook_on("on_tick"):
                 self.strategy.on_tick(self.ctx, Tick(iid, rec["t_event"], rec["value"], 0, 0, None, None))
                 self._deliver()
             return
@@ -1098,7 +1159,7 @@ class Engine:
         self._build_bars(iid, rec["t_event"], rec["ltp"], rec["volume"], prev_vol)
         self._after_market(iid)
         self._deliver()
-        if iid in self.sub_ticks:
+        if iid in self.sub_ticks and self._hook_on("on_tick"):
             self.strategy.on_tick(self.ctx, Tick(iid, rec["t_event"], rec["ltp"], rec["volume"], rec["atp"], m.bid,
                                                  m.ask))
             self._deliver()
@@ -1136,6 +1197,9 @@ class Engine:
         self.log("INFO", f"GAP {rec['reason']} {'start' if rec['phase'] == 0 else 'end'} scope {rec['instrument_id']}")
 
     def _on_refdata(self, rec: dict) -> None:
+        if rec["subtype"] == "strategy_control":
+            self._on_strategy_control(rec["payload"])
+            return
         if rec["subtype"] == "price_band":
             pl = rec["payload"]
             self.market.setdefault(rec["instrument_id"], Market()).band = (pl["lower_paise"], pl["upper_paise"])
@@ -1248,7 +1312,8 @@ class Engine:
             for o in list(self.book.orders.values()):
                 if o.status in ("PENDING", "OPEN", "TRIGGER_PENDING") and self.group_of(o.instrument_id, d) == "CM_CAS":
                     self._cancel(self.book, o, "R_CAS")
-        self.strategy.on_session_phase(self.ctx, PhaseChange(g, phase, self.now))
+        if self._hook_on("on_session_phase"):
+            self.strategy.on_session_phase(self.ctx, PhaseChange(g, phase, self.now))
         self._deliver()
 
     def _daily_bars(self, iid: int) -> bool:
@@ -1317,7 +1382,8 @@ class Engine:
             for b in self.margin.breakdown(self._fo_book(led), self.inst.__getitem__, self._ref_price, d):
                 self.margin_daily.append((d, b.underlying_id, self.margin_model, b.step, b.scan, b.somc, b.elm,
                                           b.addons, b.total))
-        self.strategy.on_session_end(self.ctx)
+        if self._hook_on("on_session_end"):
+            self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))
         if d in self.day_by_date:                     # not the D-52 close-out's own (maybe non-trading) date
@@ -1343,7 +1409,8 @@ class Engine:
             self.push(t + period, TIMER, "TIMER", timer_id)
         else:
             del self.timers[timer_id]
-        self.strategy.on_timer(self.ctx, timer_id)
+        if self._hook_on("on_timer"):
+            self.strategy.on_timer(self.ctx, timer_id)
         self._deliver()
 
     def _on_built(self, payload: tuple) -> None:
@@ -1352,7 +1419,9 @@ class Engine:
         if b is None:
             return
         self.market[iid].bars.setdefault(isec, []).append((start, b[0], b[1], b[2], b[3], b[4], b[5]))
-        self.strategy.on_bar(self.ctx, Bar(iid, isec, start, self.now, b[0], b[1], b[2], b[3], b[4], b[5], built=True))
+        if self._hook_on("on_bar"):
+            self.strategy.on_bar(self.ctx, Bar(iid, isec, start, self.now, b[0], b[1], b[2], b[3], b[4], b[5],
+                                               built=True))
         self._deliver()
 
     # ── Main loop ────────────────────────────────────────────────────────────
