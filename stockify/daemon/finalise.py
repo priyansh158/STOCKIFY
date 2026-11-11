@@ -3,7 +3,8 @@
     finalise_day("orb", day, files_complete=True, cutoff_passed=False)     # -> FinaliseResult
     next_sod_state("orb", next_day)                                        # the state the next day opens with
 
-A day is finalised once NSE's evening files are in (`files_complete`), or, if they never come, at the job's cut-off
+Each (session, day) is finalised under an OS file lock beside its journal (a second caller waits briefly, then gets
+`busy`; a crashed holder never blocks). A day is finalised once NSE's evening files are in (`files_complete`), or, if they never come, at the job's cut-off
 (`cutoff_passed`): until one of the two it is `waiting` and nothing is touched. Then:
 
     1. the SETTLE records the day needs are appended to the session journal (`ordered_t` keeps their `t` from going
@@ -24,11 +25,14 @@ finalises.
 from __future__ import annotations
 
 import csv
+import errno
 import json
 import logging
+import msvcrt
+import os
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from stockify import paths, store, timeutil
@@ -41,6 +45,8 @@ from stockify.oracle import sod_state
 log = logging.getLogger("stockify.daemon.finalise")
 
 FALLBACK_LABEL = "settlement_fallback"
+CLAIM_WAIT_S = 5.0                                  # how long a second caller waits for the day's claim before `busy`
+_CLAIM_OFFSET = 1 << 20                              # the locked byte of the claim file
 _RESTING = ("CREATED", "RUNNING", "PAUSED")          # the states a finished day arms; ARMED and STOPPED stay as they are
 
 
@@ -52,10 +58,59 @@ class FinaliseError(RuntimeError):
 class FinaliseResult:
     session_id: str
     day: date
-    status: str                                       # finalised | waiting | failed
+    status: str                                       # finalised | waiting | busy | failed
     labels: list[str] = field(default_factory=list)
     settle_count: int = 0
     error: str | None = None
+
+
+class Claim:
+    """An OS byte lock on a file beside the day's journal. The OS drops it when the holder ends, however it ends, so
+    a crashed holder never blocks the next caller; two handles in one process exclude each other too."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd: int | None = fd
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            os.lseek(fd, _CLAIM_OFFSET, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+    def __enter__(self) -> "Claim":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+def claim_path(session_id: str, day: date) -> Path:
+    return paths.journal_file(session_id, day).with_suffix(".finalise.lock")
+
+
+def try_claim(path: Path, wait_s: float) -> Claim | None:
+    """Take the claim, waiting up to `wait_s` seconds; None if someone else still holds it."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o600)
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            os.lseek(fd, _CLAIM_OFFSET, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return Claim(fd)
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EDEADLK):
+                os.close(fd)
+                raise
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                return None
+            time.sleep(0.05)
 
 
 def _split(body: bytes) -> list[bytes]:
@@ -138,14 +193,25 @@ def finalise_day(session_id: str, day: date, *, files_complete: bool, cutoff_pas
     `failed`; an I/O or database error is raised, for the caller to retry."""
     if not files_complete and not cutoff_passed:
         return FinaliseResult(session_id, day, "waiting")
+    claim = try_claim(claim_path(session_id, day), CLAIM_WAIT_S)
+    if claim is None:
+        log.info("session %s: %s is being finalised elsewhere", session_id, day)
+        return FinaliseResult(session_id, day, "busy")
     try:
-        return _finalise(session_id, day, forced=not files_complete, live=live)
-    except (FinaliseError, journal.JournalError, SessionDayError, RuntimeError) as e:
+        return _finalise(session_id, day, live=live)
+    except (FinaliseError, journal.JournalError, SessionDayError, _run_error()) as e:
         log.error("session %s: cannot finalise %s: %s", session_id, day, e)
         return FinaliseResult(session_id, day, "failed", error=str(e))
+    finally:
+        claim.release()
 
 
-def _finalise(session_id: str, day: date, *, forced: bool, live: SessionDay | None) -> FinaliseResult:
+def _run_error() -> type[BaseException]:
+    from stockify import engine
+    return engine.load().RunError
+
+
+def _finalise(session_id: str, day: date, *, live: SessionDay | None) -> FinaliseResult:
     d = day.isoformat()
     session = store.get_session(session_id)
     if session is None:
@@ -154,6 +220,8 @@ def _finalise(session_id: str, day: date, *, forced: bool, live: SessionDay | No
     row = store.get_session_day(session_id, d)
     jpath, bpath = paths.journal_file(session_id, day), paths.day_bundle_file(session_id, day)
     if row is not None and row["status"] == "finalised":                       # nothing to do, and nothing to arm
+        if live is not None:
+            live.close()
         _, n = _settle_keys(jpath)
         return FinaliseResult(session_id, day, "finalised", json.loads(row["labels_json"] or "[]"), n)
     if row is None or not jpath.exists() or not bpath.exists():
@@ -163,8 +231,9 @@ def _finalise(session_id: str, day: date, *, forced: bool, live: SessionDay | No
     finalised_already = journal.is_finalised(jpath)
     missing, total = _missing_settles(session_id, day, jpath)
     writer = None
-    if missing and finalised_already:
-        raise FinaliseError(f"{jpath.name} is finalised without the settlement records the files now give")
+    journal_lacks = bool(missing) and finalised_already     # finalised before the evening files: append nothing (I2)
+    if journal_lacks:
+        missing = []
     try:
         if missing:
             if live is not None:
@@ -184,31 +253,36 @@ def _finalise(session_id: str, day: date, *, forced: bool, live: SessionDay | No
             state_text = engine.eod_state()
             folder = paths.journal_day_dir(session_id, day)
             engine.write_artifacts(str(folder))
-            labels = sorted(set(engine.labels()) | ({FALLBACK_LABEL} if forced else set()))
+            labels = sorted(set(engine.labels()) | ({FALLBACK_LABEL} if journal_lacks else set()))
             if own:                                      # a replayed day's stored outputs are rebuilt from the replay
                 frame = store.session_last_frame(session_id, d)
                 outputs = engine.drain_outputs()
+                carried: list[int] = []
         finally:
             engine = None
         if own:
             store.reset_session_outputs(session_id, d)
-            store.apply_session_outputs(session_id, d, outputs, first_event_no=1, last_frame=frame, carried=[],
+            store.apply_session_outputs(session_id, d, outputs, first_event_no=1, last_frame=frame, carried=carried,
                                         latency_ns=int(cfg.get("latency_ms", 0)) * 1_000_000)
+            for oid in sorted(set(carried)):
+                log.warning("order %d of an earlier day has events today; it has no row for %s", oid, d)
         equity = [r for r in _csv_rows(folder, "equity.csv") if r["trade_date"] == d]
         if len(equity) != 1:
             raise FinaliseError(f"the engine wrote {len(equity)} equity rows for {d}, not one")
+        timeline = []
         warning = sod_state.size_warning(state_text, sod_state.warn_bytes())
         if warning:
             log.warning("session %s %s: %s", session_id, d, warning)
-            if row["eod_state_json"] is None:
-                now = timeutil.now_ns()
-                store.add_timeline(session_id, "sod_state_size", {"day": d, "warning": warning},
-                                   wall_ns=now, engine_ns=None)
+            timeline.append(("sod_state_size", {"day": d, "warning": warning}))
+        if journal_lacks:
+            log.warning("session %s %s: the journal was finalised before the settlement files; the day ends with "
+                        "the cut-off fallback", session_id, d)
+            timeline.append((FALLBACK_LABEL, {"day": d, "reason": "journal finalised before the settlement files"}))
         store.save_session_day_end(
             session_id, d, orders=_csv_rows(folder, "orders.csv"), positions=_csv_rows(folder, "positions_eod.csv"),
             equity={"nav_paise": equity[0]["nav_paise"], "cash_paise": equity[0]["cash_paise"],
                     "margin_paise": equity[0]["margin_blocked_paise"]},
-            eod_state_json=state_text, labels=labels)
+            eod_state_json=state_text, labels=labels, timeline=timeline, wall_ns=timeutil.now_ns())
         # 3. the journal
         if live is not None:
             live.close(finalise=True)
@@ -236,13 +310,29 @@ def _finalise(session_id: str, day: date, *, forced: bool, live: SessionDay | No
     return FinaliseResult(session_id, day, "finalised", labels, total)
 
 
+def previous_trading_day(day: date) -> date:
+    """The dated calendar's trading day before `day` (weekends and NSE holidays skipped)."""
+    from stockify.bundle import _is_trading_day
+    prev = day - timedelta(days=1)
+    for _ in range(60):
+        if _is_trading_day(prev):
+            return prev
+        prev -= timedelta(days=1)
+    raise FinaliseError(f"no trading day in the 60 days before {day}")
+
+
 def next_sod_state(session_id: str, day: date) -> dict | None:
-    """The state the session's `day` opens with: its newest earlier day's `eod_state_json`, or None for a session's
-    first day. An earlier day that is not finalised is an error, not a start from nothing."""
-    prev = store.previous_session_day(session_id, day.isoformat())
-    if prev is None:
+    """The state the session's `day` opens with: the `eod_state_json` of the calendar's previous trading day, or
+    None for a session's first day (no earlier day of its own). An earlier day that is missing or not finalised is
+    an error, never a start from nothing and never an older state handed on."""
+    d = day.isoformat()
+    if store.previous_session_day(session_id, d) is None:
         return None
-    if prev["status"] != "finalised" or not prev["eod_state_json"]:
-        raise FinaliseError(f"{session_id}: {prev['trade_date']} is not finalised ({prev['status']}); "
-                            f"{day} cannot start from it")
-    return json.loads(prev["eod_state_json"])
+    prev = previous_trading_day(day).isoformat()
+    row = store.get_session_day(session_id, prev)
+    if row is None:
+        raise FinaliseError(f"{session_id} has no record of {prev}, the trading day before {d}: it cannot start {d} "
+                            "from an older state")
+    if row["status"] != "finalised" or not row["eod_state_json"]:
+        raise FinaliseError(f"{session_id}: {prev} is not finalised ({row['status']}); {d} cannot start from it")
+    return json.loads(row["eod_state_json"])

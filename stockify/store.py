@@ -674,10 +674,12 @@ def session_last_frame(session_id: str, trade_date: str) -> tuple[int, int] | No
 
 
 def save_session_day_end(session_id: str, trade_date: str, *, orders: list[dict], positions: list[dict],
-                         equity: dict, eod_state_json: str, labels: list[str]) -> None:
+                         equity: dict, eod_state_json: str, labels: list[str],
+                         timeline: list[tuple[str, dict]] = (), wall_ns: int = 0) -> None:
     """A finished day's rows, in ONE transaction (DM 5.5): the day's orders are replaced by the engine's own book
     (`orders.csv` rows), its end-of-day positions and its equity row are replaced, and its `eod_state_json` and
-    labels are stored. Writing the same day again leaves the same rows. The day's `status` is not touched: it
+    labels are stored, with the day's timeline rows (`timeline`: (kind, detail with a `day`); an earlier attempt's rows
+    of the same kind and day are replaced). Writing the same day again leaves the same rows. The day's `status` is not touched: it
     becomes `finalised` only when everything else about the day is done."""
     conn = _connect()
     with _lock:
@@ -701,6 +703,10 @@ def save_session_day_end(session_id: str, trade_date: str, *, orders: list[dict]
                 "ON CONFLICT (session_id, trade_date) DO UPDATE SET eod_state_json = excluded.eod_state_json, "
                 "labels_json = excluded.labels_json",
                 (session_id, trade_date, eod_state_json, json.dumps(sorted(set(labels)))))
+            for kind, detail in timeline:
+                conn.execute("DELETE FROM session_timeline WHERE session_id = ? AND kind = ? "
+                             "AND json_extract(detail_json, '$.day') = ?", (session_id, kind, trade_date))
+                _write_timeline(conn, session_id, kind, detail, wall_ns, None)
             conn.commit()
         except BaseException:
             conn.rollback()

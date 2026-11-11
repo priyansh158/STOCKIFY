@@ -6,8 +6,12 @@ import csv
 import itertools
 import json
 import sqlite3
+import os
 import struct
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from datetime import date
 from pathlib import Path
@@ -15,11 +19,13 @@ from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.stockify.daemon import paper_fixture as pf
+from tests.stockify.daemon.test_engine_log import enable_logging
 from tests.stockify.daemon.test_session_day import pack_records
 
 from stockify import bundle as bundle_mod, engine, paths, store
 from stockify.daemon import finalise, journal, lifecycle, session_day
 from stockify.data import packs, refdata
+from stockify.oracle import sod_state
 
 SID = "s1"
 DAY2 = date(2026, 11, 18)
@@ -329,6 +335,208 @@ class FinaliseTest(pf.PaperDayTest):
         self.assertEqual(store.get_session_day(SID, DAY2.isoformat())["eod_state_json"], refs[1])
         self.assertNotEqual(refs[0], refs[1])
         self.assertTrue(state["ledger"], "a position was carried over")
+
+    # ── fix round 1 ───────────────────────────────────────────────────────────────────────────────────────────────
+
+    def test_a_day_that_is_being_finalised_is_busy_for_a_second_caller(self):
+        """C1: one claim per (session, day), an OS file lock beside the journal."""
+        self.traded_day().close()
+        jpath = paths.journal_file(SID, pf.DAY)
+        before = jpath.read_bytes()
+        with mock.patch.object(finalise, "CLAIM_WAIT_S", 0.1):
+            held = finalise.try_claim(finalise.claim_path(SID, pf.DAY), 0)
+            self.assertIsNotNone(held)
+            try:
+                res = self.fin()
+            finally:
+                held.release()
+            self.assertEqual(res.status, "busy")
+            self.assertEqual(jpath.read_bytes(), before)                       # nothing touched
+            self.assertEqual(store.get_session_day(SID, pf.EXPIRY)["status"], "open")
+            self.assertEqual(self.fin().status, "finalised")                   # released: it goes ahead
+
+    def test_two_threads_finalising_one_day_append_one_settle_set(self):
+        self.traded_day().close()
+        out, gate = [], threading.Barrier(2)
+
+        def work():
+            gate.wait()
+            out.append(self.fin().status)
+
+        threads = [threading.Thread(target=work) for _ in range(2)]
+        with mock.patch.object(finalise, "CLAIM_WAIT_S", 60):
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(120)
+        self.assertEqual(sorted(out), ["finalised", "finalised"])             # the second waited, then saw it done
+        self.assertEqual(len(self.settles()), self.expected_settles())
+        self.assertTrue(journal.is_finalised(paths.journal_file(SID, pf.DAY)))
+        self.assertEqual(store.get_session(SID)["status"], "ARMED")
+
+    def test_another_process_holding_the_claim_makes_the_day_busy_until_it_dies(self):
+        self.traded_day().close()
+        code = ("import sys; from pathlib import Path; from stockify.daemon import finalise; "
+                "c = finalise.try_claim(Path(sys.argv[1]), 0); print('held' if c else 'no', flush=True); sys.stdin.read()")
+        root = Path(__file__).resolve().parents[3]
+        env = {**os.environ, "PYTHONPATH": str(root)}
+        proc = subprocess.Popen([sys.executable, "-c", code, str(finalise.claim_path(SID, pf.DAY))], cwd=str(root),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True)
+        try:
+            self.assertEqual(proc.stdout.readline().strip(), "held")
+            with mock.patch.object(finalise, "CLAIM_WAIT_S", 0.2):
+                self.assertEqual(self.fin().status, "busy")
+            proc.kill()                                                       # a crashed holder never blocks
+            proc.wait(30)
+            with mock.patch.object(finalise, "CLAIM_WAIT_S", 5):
+                self.assertEqual(self.fin().status, "finalised")
+        finally:
+            proc.kill()
+            proc.stdout.close()
+            proc.stdin.close()
+        self.assertEqual(len(self.settles()), self.expected_settles())
+
+    def tables(self, sid):
+        row = store.get_session_day(sid, pf.EXPIRY)
+        return {"orders": store.session_rows(sid, "orders"), "events": store.session_rows(sid, "order_events"),
+                "fills": store.session_rows(sid, "fills"), "charges": store.session_rows(sid, "charges"),
+                "end": store.session_day_end(sid, pf.EXPIRY), "state": row["eod_state_json"],
+                "labels": row["labels_json"].replace(sid, "<sid>"), "status": row["status"],
+                "bundle": row["bundle_sha256"] is not None}
+
+    def test_live_and_replayed_finalisation_store_exactly_the_same_rows(self):
+        """I1."""
+        live = self.traded_day(sid="live")
+        self.assertEqual(self.fin(sid="live", live=live).status, "finalised")
+        self.traded_day(sid="replay").close()
+        self.assertEqual(self.fin(sid="replay").status, "finalised")
+        a, b = self.tables("live"), self.tables("replay")
+        self.assertTrue(a["orders"] and a["events"] and a["fills"])
+        for key in a:
+            with self.subTest(table=key):
+                self.assertEqual(a[key], b[key])
+
+    def test_a_replayed_finalisation_reports_carried_orders(self):
+        enable_logging(self)
+        self.traded_day().close()
+        with self.assertLogs("stockify.daemon.finalise", "WARNING") as logged:
+            with mock.patch.object(store, "apply_session_outputs",
+                                   side_effect=lambda *a, carried=None, **kw: carried.append(77) or 1):
+                res = self.fin()
+        self.assertEqual(res.status, "finalised", res.error)
+        self.assertTrue(any("77" in m for m in logged.output))
+
+    def test_a_finalised_journal_without_settles_ends_the_day_with_the_fallback(self):
+        """I2: the journal was finalised before the evening files; nothing is appended to it."""
+        sd = self.traded_day()
+        sd.close(finalise=True)
+        jpath = paths.journal_file(SID, pf.DAY)
+        before = jpath.read_bytes()
+        res = self.fin()
+        self.assertEqual((res.status, res.error), ("finalised", None))
+        self.assertIn("settlement_fallback", res.labels)
+        self.assertEqual(jpath.read_bytes(), before)
+        self.assertEqual(self.settles(), [])
+        kinds = [r["kind"] for r in store.timeline(SID)]
+        self.assertEqual(kinds.count("settlement_fallback"), 1)
+        self.assertEqual(store.get_session_day(SID, pf.EXPIRY)["status"], "finalised")
+        self.assertEqual(store.get_session(SID)["status"], "ARMED")
+        self.assertEqual(finalise.next_sod_state(SID, DAY2)["trade_date"], pf.EXPIRY)
+
+    def test_the_fallback_label_needs_an_expired_position_without_its_settle(self):
+        """M2: the cut-off alone is not the label; a missing settle for a position that expired is."""
+        self.traded_day(self.session_cfg(strategy={"kind": "script", "actions": []})).close()
+        with refdata.transaction() as conn:
+            conn.execute("DELETE FROM settlement_prices")
+            conn.execute("DELETE FROM fo_eod")
+        self.assertNotIn("settlement_fallback", self.fin(files_complete=False, cutoff_passed=True).labels)
+
+    def test_a_large_state_stores_its_timeline_row_with_the_day_and_only_once(self):
+        enable_logging(self)
+        """M1."""
+        self.traded_day().close()
+        with mock.patch.object(sod_state, "warn_bytes", return_value=1):
+            with mock.patch.object(store, "save_session_day_end", side_effect=sqlite3.OperationalError("locked")):
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.fin()
+            self.assertNotIn("sod_state_size", [r["kind"] for r in store.timeline(SID)])
+            with self.assertLogs("stockify.daemon.finalise", "WARNING"):
+                self.fin()
+        self.assertEqual([r["kind"] for r in store.timeline(SID)].count("sod_state_size"), 1)
+
+    def test_a_finalised_day_closes_the_live_day_it_is_given(self):
+        """M4."""
+        cfg = self.make_session()
+        sd = self.day(cfg)
+        sd.open(None, [], self.t("09:14:00"))
+        sd.feed(self.records, None)
+        self.assertEqual(self.fin(live=sd).status, "finalised")
+        again = self.day(cfg)
+        again.replay()                                                         # a finalised day: replay-only
+        self.assertIsNotNone(again.engine)
+        self.assertEqual(self.fin(live=again).status, "finalised")
+        self.assertIsNone(again.engine)
+
+    def test_replay_into_pushes_whole_records_in_batches(self):
+        """M5."""
+        self.traded_day().close()
+        jpath = paths.journal_file(SID, pf.DAY)
+        _, body, _ = journal.read(jpath)
+        pushed = []
+
+        class Spy:
+            def push(self, data):
+                pushed.append(bytes(data))
+
+        n = finalise.replay_into(Spy(), jpath, batch_records=7)
+        self.assertEqual(n, len(journal_records(pf.DAY)))
+        self.assertEqual(b"".join(pushed), body)
+        self.assertEqual(len(pushed), -(-n // 7))
+        with jpath.open("ab") as f:                                            # a torn tail is never pushed
+            f.write(b"\x01\x00\x20\x00partial")
+        pushed.clear()
+        self.assertEqual(finalise.replay_into(Spy(), jpath), n)
+        self.assertEqual(b"".join(pushed), body)
+        with self.assertRaises(ValueError):
+            finalise.replay_into(Spy(), jpath, batch_records=0)
+
+    def test_only_the_engines_run_error_is_a_failed_day(self):
+        """M6."""
+        self.traded_day().close()
+        with mock.patch.object(finalise, "replay_into", side_effect=RuntimeError("a bug")):
+            with self.assertRaises(RuntimeError):
+                self.fin()
+        with mock.patch.object(finalise, "replay_into", side_effect=engine.load().RunError("refused")):
+            res = self.fin()
+        self.assertEqual((res.status, res.error), ("failed", "refused"))
+
+    # ── the previous day is the calendar's (I3) ─────────────────────────────────────────────────────────────────
+
+    def put_day(self, day, status="finalised", state='{"trade_date": "x"}'):
+        store.upsert_session_day(SID, day, status=status, eod_state_json=state)
+
+    def test_next_state_skips_a_weekend(self):
+        store.create_session(SID, "s", self.buy_cfg(), 1)
+        self.put_day("2026-03-06", state='{"trade_date": "2026-03-06"}')      # a Friday
+        self.assertEqual(finalise.next_sod_state(SID, date(2026, 3, 9))["trade_date"], "2026-03-06")
+
+    def test_next_state_skips_a_holiday(self):
+        store.create_session(SID, "s", self.buy_cfg(), 1)
+        self.put_day("2026-03-02", state='{"trade_date": "2026-03-02"}')      # Holi was Tuesday the 3rd
+        self.assertEqual(finalise.next_sod_state(SID, date(2026, 3, 4))["trade_date"], "2026-03-02")
+
+    def test_a_missing_trading_day_fails_loudly_and_never_hands_on_an_older_state(self):
+        store.create_session(SID, "s", self.buy_cfg(), 1)
+        self.put_day("2026-03-02")
+        with self.assertRaises(finalise.FinaliseError) as caught:
+            finalise.next_sod_state(SID, date(2026, 3, 5))                    # Wednesday the 4th has no row
+        self.assertIn("2026-03-04", str(caught.exception))
+
+    def test_a_first_day_has_no_state_and_an_unfinalised_previous_day_fails(self):
+        self.assertIsNone(finalise.next_sod_state(SID, date(2026, 3, 4)))
+        self.put_day("2026-03-04", status="open")
+        with self.assertRaises(finalise.FinaliseError):
+            finalise.next_sod_state(SID, date(2026, 3, 5))
 
 
 if __name__ == "__main__":
