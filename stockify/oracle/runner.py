@@ -1418,6 +1418,8 @@ class Engine:
         b = self.built.get((iid, isec), {}).pop(start, None)
         if b is None:
             return
+        if self.market[iid].min_interval is not None:
+            return                                        # real bars arrived while it was building: never both (ST 5.9)
         self.market[iid].bars.setdefault(isec, []).append((start, b[0], b[1], b[2], b[3], b[4], b[5]))
         if self._hook_on("on_bar"):
             self.strategy.on_bar(self.ctx, Bar(iid, isec, start, self.now, b[0], b[1], b[2], b[3], b[4], b[5],

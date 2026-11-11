@@ -867,6 +867,9 @@ void Engine::on_built(const InternalEvent& ev) {  // runner._on_built
     }
     const std::array<std::int64_t, 6> b = it->second;
     acc->second.erase(it);
+    if (market_[ev.instrument].min_interval) {
+        return;  // real bars arrived while it was building: never both (ST 5.9)
+    }
     market_[ev.instrument].bars[ev.interval_s].push_back(BarRow{ev.start, b[0], b[1], b[2], b[3], b[4], b[5]});
     if (hook_on("on_bar")) {
         strategy_->on_bar(ctx_, Bar{ev.instrument, ev.interval_s, ev.start, now_, b[0], b[1], b[2], b[3], b[4], b[5], true});
