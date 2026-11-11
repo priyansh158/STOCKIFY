@@ -50,6 +50,11 @@ def _int(v) -> bool:  # noqa: ANN001
     return type(v) is int
 
 
+def _whole(v) -> bool:  # noqa: ANN001
+    """What the engine's JSON reader calls a whole number: an int from -2^63 to 2^64 - 1 (beyond that it reads a float)."""
+    return type(v) is int and -2**63 <= v <= 2**64 - 1
+
+
 def check_payload(p) -> dict:  # noqa: ANN001
     """The payload as given, or a PayloadError: exactly the keys above, integers only, the hash that of the legs."""
     if not isinstance(p, dict):
@@ -60,7 +65,7 @@ def check_payload(p) -> dict:  # noqa: ANN001
     if not (isinstance(sha, str) and len(sha) == 64 and set(sha) <= _HEX):
         raise PayloadError("portfolio_sha256 must be 64 lowercase hex digits")
     legs = p["legs"]
-    if not (isinstance(legs, list) and all(isinstance(x, list) and len(x) == 2 and _int(x[0]) and _int(x[1])
+    if not (isinstance(legs, list) and all(isinstance(x, list) and len(x) == 2 and _whole(x[0]) and _whole(x[1])
                                            for x in legs)):
         raise PayloadError("legs must be a list of [instrument, units] pairs of whole numbers")
     if any(not 1 <= x[0] <= MAX_IID or x[1] == 0 or not -MAX_I64 <= x[1] <= MAX_I64 for x in legs):
@@ -105,11 +110,20 @@ class LiveWithFallbackMargin(StaircaseMargin):
             fresh_s = (getattr(engine, "run_cfg", None) or {}).get("margin", {}).get("live_fresh_s", LIVE_FRESH_S)
         self._answers = answers
         self._fresh_ns = fresh_s * 10**9
-        self.l1_checks = 0
+        self._applied: set[tuple] = set()               # the distinct answers that priced something
+
+    @property
+    def l1_answers(self) -> int:
+        return len(self._applied)
 
     @property
     def labels(self) -> set[str]:
-        return super().labels | {f"margin_live:L1_checks={self.l1_checks}"}
+        return super().labels | {f"margin_live:L1_answers={self.l1_answers}"}
+
+    def _apply(self, a: dict) -> None:
+        """Note that this answer priced the book: a label that counts answers, not how often a book is priced."""
+        self._applied.add((a["portfolio_sha256"], a["span_paise"], a["exposure_paise"], a["additional_paise"],
+                           a["option_premium_paise"], a["requested_ns"]))
 
     def _live(self, legs, inst) -> dict | None:  # noqa: ANN001
         """The fresh answer for exactly this book's staircase legs, or None."""
@@ -122,11 +136,12 @@ class LiveWithFallbackMargin(StaircaseMargin):
         a = self._live(legs, inst)
         if a is None:
             return super().breakdown(legs, inst, price, date)
+        self._apply(a)
         return [UnderlyingMargin(0, a["span_paise"], 0, a["exposure_paise"], a["additional_paise"], step=L1_STEP)]
 
     def requirement(self, legs, inst, price, date: str) -> int:  # noqa: ANN001
         a = self._live(legs, inst)
         if a is None:
             return super().requirement(legs, inst, price, date)
-        self.l1_checks += 1
+        self._apply(a)
         return a["span_paise"] + a["exposure_paise"] + a["additional_paise"]

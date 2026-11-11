@@ -273,7 +273,7 @@ def build_pack(g: dict, folder: Path) -> Path:
             rank = 2
         elif k == "MARGIN_REQUIREMENT":                  # MEZ 5.1: a journaled Kite margin answer (instrument 0)
             t = ts(e["t"])
-            rec = P.enc_refdata(0, t, "margin_requirement", e["payload"])
+            rec = P.enc_refdata(iid, t, "margin_requirement", e["payload"])
             rank = 2
         elif k == "STRATEGY_CONTROL":                    # D-70: a journaled pause or resume (instrument 0)
             t = ts(e["t"])

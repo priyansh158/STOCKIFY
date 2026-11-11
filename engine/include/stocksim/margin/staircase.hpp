@@ -63,9 +63,6 @@ class StaircaseMargin : public MarginModel {
 
     // The legs the staircase prices, per underlying (NRML FUT/CE/PE with an underlying, units != 0).
     std::map<InstrumentId, Legs> group(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments) const;
-    // breakdown() without (record = false) recording the steps as used.
-    std::vector<UnderlyingMargin> priced(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
-                                         const Price& price, const std::string& date, bool record) const;
 
  private:
     UnderlyingMargin one(InstrumentId uid, const Legs& legs, const InstrumentTable& instruments, const Price& price,

@@ -1,10 +1,15 @@
 // MEZ 5.1: the live margin answer's hash, payload check and freshness, against stockify/fno/live_margin.py.
+#include <algorithm>
+#include <memory>
 #include <ostream>  // doctest prints string_view through operator<<
 #include <string>
 
 #include "doctest.h"
+#include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
+#include "stocksim/json_bundle.hpp"
 #include "stocksim/margin_live.hpp"
+#include "stocksim/strategy.hpp"
 
 using namespace stocksim;
 
@@ -52,4 +57,46 @@ TEST_CASE("the latest answer per hash, fresh from its record's time for fresh_ns
     answers.put(a, 120);
     REQUIRE(answers.fresh(sha, 130, 50) != nullptr);
     CHECK(answers.fresh(sha, 130, 50)->span == 1);
+}
+
+namespace {
+
+// The sod_state fixture's day-1 bundle (a flat-margin run), with the margin object replaced.
+std::unique_ptr<Engine> engine_with(const Json& margin) {
+    Bundle b = load_bundle(std::string(STOCKSIM_FIXTURES_DIR) + "/sod_state/day1_bundle.json");
+    b.root["run"]["margin"] = margin;
+    auto e = std::make_unique<Engine>(std::move(b));
+    e->set_strategy(make_strategy("noop_cpp"));
+    return e;
+}
+
+}  // namespace
+
+TEST_CASE("labels() binds the margin model's label set once: sorted, unique, the same on every call") {
+    const auto e = engine_with(Json{{"model", "live_with_fallback"}});
+    const std::vector<std::string> first = e->labels();
+    CHECK(std::is_sorted(first.begin(), first.end()));
+    CHECK(std::adjacent_find(first.begin(), first.end()) == first.end());
+    CHECK(std::find(first.begin(), first.end(), "margin_live:L1_answers=0") != first.end());
+    CHECK(e->labels() == first);
+}
+
+TEST_CASE("margin_now reads the book and changes no label") {
+    const auto e = engine_with(Json{{"model", "live_with_fallback"}});
+    const std::vector<std::string> before = e->labels();
+    const MarginNow now = e->margin_now();
+    CHECK(now.legs.empty());
+    CHECK(now.portfolio_sha256 == live_portfolio_sha256({}));
+    CHECK_FALSE(now.l1);
+    CHECK(e->labels() == before);
+    CHECK_THROWS_AS(engine_with(Json{{"model", "flat"}})->margin_now(), RunError);
+}
+
+TEST_CASE("live_fresh_s is 1 to 86,400 seconds") {
+    CHECK_NOTHROW(engine_with(Json{{"model", "live_with_fallback"}, {"live_fresh_s", 86400}}));
+    CHECK_NOTHROW(engine_with(Json{{"model", "live_with_fallback"}, {"live_fresh_s", 1}}));
+    for (const std::int64_t bad : {std::int64_t{0}, std::int64_t{-1}, std::int64_t{86401}, std::int64_t{10'000'000'000}}) {
+        CHECK_THROWS_AS(engine_with(Json{{"model", "live_with_fallback"}, {"live_fresh_s", bad}}), RunError);
+    }
+    CHECK_THROWS_AS(engine_with(Json{{"model", "live_with_fallback"}, {"live_fresh_s", 1.5}}), RunError);
 }

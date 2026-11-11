@@ -143,13 +143,7 @@ Engine::Engine(Bundle bundle)
     check_mis_rows(require(bundle_.root, "broker_policy", "bundle"));
     const Json& margin_cfg = require(run, "margin", "run");
     const std::string margin_model = require_string(margin_cfg, "model", "run.margin");
-    auto host = [this] {
-        return SpanLiteHost{[this] { return now_; },
-                            [this](const std::string& und, const std::string& expiry) { return ctx_.chain(und, expiry); },
-                            [this](InstrumentId iid, Date d) { return spec(iid, d); },
-                            [this](const std::string& label) { labels_.insert(label); },
-                            [this](const std::string& d) { return rate_on(bundle_.root, d); }};
-    };
+    auto host = [this] { return margin_host(false); };
     if (margin_model == "spanlite") {
         margin_ = std::make_unique<SpanLiteMargin>(bundle_.root, host());
     } else if (margin_model == "flat") {
@@ -158,6 +152,11 @@ Engine::Engine(Bundle bundle)
         margin_ = std::make_unique<StaircaseMargin>(bundle_.root, host(), margin_model, margin_model == "span_exact");
     } else if (margin_model == "live_with_fallback") {  // MEZ 5.1: the staircase; a fresh journaled answer prices the book
         const auto fresh = margin_cfg.find("live_fresh_s");
+        if (fresh != margin_cfg.end() && (!fresh->is_number_integer() || fresh->get<std::int64_t>() < 1 ||
+                                          fresh->get<std::int64_t>() > kLiveMaxFreshSeconds)) {
+            throw RunError("run.margin.live_fresh_s: must be a whole number of seconds from 1 to " +
+                           std::to_string(kLiveMaxFreshSeconds));
+        }
         const std::int64_t fresh_s = fresh == margin_cfg.end() ? kLiveFreshSeconds : fresh->get<std::int64_t>();
         live_answers_ = std::make_shared<LiveAnswers>();
         margin_ = std::make_unique<LiveWithFallbackMargin>(bundle_.root, host(), *live_answers_,
@@ -259,9 +258,22 @@ Outputs Engine::drain_outputs() {
     return out;
 }
 
+SpanLiteHost Engine::margin_host(bool quiet) const {  // quiet: no label reaches the run's (margin_now's scratch model)
+    return SpanLiteHost{[this] { return now_; },
+                        [this](const std::string& und, const std::string& expiry) { return ctx_.chain(und, expiry); },
+                        [this](InstrumentId iid, Date d) { return spec(iid, d); },
+                        [this, quiet](const std::string& label) {
+                            if (!quiet) {
+                                labels_.insert(label);
+                            }
+                        },
+                        [this](const std::string& d) { return rate_on(bundle_.root, d); }};
+}
+
 std::vector<std::string> Engine::labels() const {  // the run's labels and the margin model's (D-60), sorted
     std::set<std::string> all = labels_;
-    all.insert(margin_->used_labels().begin(), margin_->used_labels().end());
+    const std::set<std::string>& used = margin_->used_labels();  // once: a call may rebuild the set it returns
+    all.insert(used.begin(), used.end());
     return {all.begin(), all.end()};
 }
 
@@ -910,6 +922,9 @@ void Engine::on_refdata(const Event& e) {  // runner._on_refdata
         return;
     }
     if (refdata_subtype_name(r.subtype) == "margin_requirement") {  // MEZ 5.1: checked always, kept by the live model
+        if (e.instrument != 0) {
+            throw RunError("margin_requirement: the record's instrument must be 0");
+        }
         LiveAnswer answer = check_live_payload(r.json);
         if (live_margin_ != nullptr) {
             live_answers_->put(std::move(answer), now_);

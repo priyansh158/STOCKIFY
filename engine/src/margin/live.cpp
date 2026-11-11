@@ -184,7 +184,7 @@ const LiveAnswer* LiveWithFallbackMargin::live(const std::vector<MarginLeg>& leg
 Paise LiveWithFallbackMargin::requirement(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
                                           const Price& price, const std::string& date) const {
     if (const LiveAnswer* a = live(legs, instruments)) {
-        ++l1_checks_;
+        apply(*a);
         return checked_add(checked_add(a->span, a->exposure), a->additional);
     }
     return StaircaseMargin::requirement(legs, instruments, price, date);
@@ -194,20 +194,19 @@ std::vector<UnderlyingMargin> LiveWithFallbackMargin::breakdown(const std::vecto
                                                                 const InstrumentTable& instruments,
                                                                 const Price& price, const std::string& date) const {
     if (const LiveAnswer* a = live(legs, instruments)) {
+        apply(*a);
         return {UnderlyingMargin{0, a->span, 0, a->exposure, a->additional, kLiveStep}};
     }
     return StaircaseMargin::breakdown(legs, instruments, price, date);
 }
 
-std::vector<UnderlyingMargin> LiveWithFallbackMargin::fallback(const std::vector<MarginLeg>& legs,
-                                                               const InstrumentTable& instruments, const Price& price,
-                                                               const std::string& date) const {
-    return priced(legs, instruments, price, date, false);
+void LiveWithFallbackMargin::apply(const LiveAnswer& a) const {
+    applied_.insert({a.sha, a.span, a.exposure, a.additional, a.option_premium, a.requested_ns});
 }
 
 const std::set<std::string>& LiveWithFallbackMargin::used_labels() const {
     labels_ = StaircaseMargin::used_labels();
-    labels_.insert("margin_live:L1_checks=" + std::to_string(l1_checks_));
+    labels_.insert("margin_live:L1_answers=" + std::to_string(applied_.size()));
     return labels_;
 }
 

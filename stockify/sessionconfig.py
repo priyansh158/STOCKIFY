@@ -65,8 +65,8 @@ def _validate(raw: dict) -> dict:
     _need(isinstance(margin, dict), "margin", "must be an object")
     runconfig._known(margin, MARGIN_KEYS, "margin")
     fresh = margin.get("live_fresh_s", LIVE_FRESH_S)
-    _need(isinstance(fresh, int) and not isinstance(fresh, bool) and fresh >= 1, "margin.live_fresh_s",
-          f"must be a whole number of seconds, at least 1, got {fresh!r}")
+    if "live_fresh_s" in margin:
+        runconfig.check_live_fresh(fresh, margin.get("model", "live_with_fallback"))
     _need(raw.get("price_basis", "raw") == "raw", "price_basis",
           f"{raw.get('price_basis')!r}: a live session's prices are raw")
     _need(raw.get("seed_mode", "per_day") == "per_day", "seed_mode",
@@ -80,7 +80,8 @@ def _validate(raw: dict) -> dict:
     cfg = runconfig.validate(run, packs_required=False)
     cfg["schema"] = SCHEMA
     cfg["universe"] = copy.deepcopy(universe)
-    cfg["margin"]["live_fresh_s"] = fresh
+    if cfg["margin"]["model"] == "live_with_fallback":     # a number that means something only there (MEZ 5.1)
+        cfg["margin"]["live_fresh_s"] = fresh
     return cfg
 
 

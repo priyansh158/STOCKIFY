@@ -13,6 +13,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,7 @@ using LiveLegs = std::vector<std::pair<InstrumentId, Qty>>;  // sorted by instru
 inline constexpr Paise kLiveMaxPaise = 1'000'000'000'000'000'000;  // three of them still fit an int64
 inline constexpr const char* kLiveStep = "L1_kite";
 inline constexpr std::int64_t kLiveFreshSeconds = 360;  // sessionconfig.LIVE_FRESH_S
+inline constexpr std::int64_t kLiveMaxFreshSeconds = 86'400;
 
 // SHA-256 (lowercase hex) of the canonical JSON of the sorted [[iid, units], ...].
 std::string live_portfolio_sha256(LiveLegs legs);
@@ -65,16 +67,15 @@ class LiveWithFallbackMargin final : public StaircaseMargin {
     LiveLegs live_legs(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments) const;
     // The fresh answer for exactly this book now, or nullptr.
     const LiveAnswer* live(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments) const;
-    // The staircase's per-underlying rows, without recording their steps as used (a read, for the daemon).
-    std::vector<UnderlyingMargin> fallback(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
-                                           const std::function<std::optional<Paise>(InstrumentId)>& price,
-                                           const std::string& date) const;
+    // How many distinct answers priced the book (the label counts these, not how often funds were read).
+    std::size_t l1_answers() const { return applied_.size(); }
 
  private:
     const LiveAnswers& answers_;
     TimeNs fresh_ns_;
     std::function<TimeNs()> now_;
-    mutable std::int64_t l1_checks_ = 0;
+    void apply(const LiveAnswer& a) const;
+    mutable std::set<std::tuple<std::string, Paise, Paise, Paise, Paise, TimeNs>> applied_;
     mutable std::set<std::string> labels_;
 };
 

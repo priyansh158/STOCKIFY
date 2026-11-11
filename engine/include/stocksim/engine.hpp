@@ -40,6 +40,7 @@ namespace stocksim {
 class Engine;
 class LiveAnswers;             // margin_live.hpp (it needs Context, defined below)
 class LiveWithFallbackMargin;
+struct SpanLiteHost;
 
 // What the live margin model sees of the book now (Engine::margin_now, MEZ 5.1).
 struct MarginNow {
@@ -357,6 +358,7 @@ class Engine {
     std::optional<Paise> ref_price(InstrumentId iid) const;
     // The margin model's portfolio (D-80): NRML positions and MIS futures and options, one net NRML leg each.
     std::vector<MarginLeg> fo_book(const Ledger& ledger) const;
+    SpanLiteHost margin_host(bool quiet) const;  // what the margin models read of the engine (a quiet one adds no label)
     Paise blocked(const Ledger& ledger, Date d) const;
     Funds funds(const Ledger& ledger) const;
     bool reduces(InstrumentId iid, Product product, Side side, Qty qty) const;
@@ -492,7 +494,7 @@ class Engine {
     std::map<std::pair<std::string, std::string>, Context::ChainView> chain_cache_;
     OrderId orders_drained_ = 1;  // the next order id not yet drained
     std::size_t events_drained_ = 0, fills_drained_ = 0, charges_drained_ = 0;
-    std::set<std::string> labels_;
+    mutable std::set<std::string> labels_;  // margin_host(false) adds to it from const paths too
 };
 
 }  // namespace stocksim

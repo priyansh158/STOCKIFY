@@ -101,6 +101,18 @@ def _int(value, where: str, minimum: int | None = None) -> int:  # noqa: ANN001
     return value
 
 
+LIVE_FRESH_MAX_S = 86_400
+
+
+def check_live_fresh(value, model: str) -> int:  # noqa: ANN001
+    """MEZ 5.1: `margin.live_fresh_s` is 1 to a day, and means something only under `live_with_fallback`."""
+    _need(isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= LIVE_FRESH_MAX_S,
+          "margin.live_fresh_s", f"must be a whole number of seconds from 1 to {LIVE_FRESH_MAX_S}, got {value!r}")
+    _need(model == "live_with_fallback", "margin.live_fresh_s",
+          f"is only for margin.model 'live_with_fallback', not {model!r}")
+    return value
+
+
 def _known(given: dict, known, where: str) -> None:  # noqa: ANN001
     """REG 5.1: every key of `given` is one of `known`; else an error that names the key, its section and the
     closest known key."""
@@ -267,7 +279,7 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
     _choice(cfg["margin"]["model"], MARGIN_MODELS, "margin.model")
     if "live_fresh_s" in cfg["margin"]:
-        _int(cfg["margin"]["live_fresh_s"], "margin.live_fresh_s", 1)
+        check_live_fresh(cfg["margin"]["live_fresh_s"], cfg["margin"]["model"])
     pol = cfg["policies"]
     _choice(pol["preopen"], ("queue", "reject"), "policies.preopen")
     _choice(pol["cas"], ("none", "close_price"), "policies.cas")

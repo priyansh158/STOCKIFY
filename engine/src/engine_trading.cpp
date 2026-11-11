@@ -121,8 +121,11 @@ MarginNow Engine::margin_now() const {
     out.legs = live_margin_->live_legs(book, instruments_);
     out.portfolio_sha256 = live_portfolio_sha256(out.legs);
     out.l1 = live_margin_->live(book, instruments_) != nullptr;
-    out.fallback = live_margin_->fallback(book, instruments_, [this](InstrumentId i) { return ref_price(i); },
-                                          iso(date_of(now_)));
+    // The staircase's rows come from a scratch model whose host adds no label and whose step record is thrown away:
+    // reading the book must change nothing a replay would not reproduce.
+    const StaircaseMargin scratch(bundle_.root, margin_host(true), "live_with_fallback", false);
+    out.fallback = scratch.breakdown(book, instruments_, [this](InstrumentId i) { return ref_price(i); },
+                                     iso(date_of(now_)));
     return out;
 }
 

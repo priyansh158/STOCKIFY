@@ -1207,6 +1207,8 @@ class Engine:
             return
         if rec["subtype"] == "margin_requirement":     # MEZ 5.1: checked under every model, kept by the live one
             from stockify.fno import live_margin
+            if rec["instrument_id"] != 0:
+                raise RunError("margin_requirement: the record's instrument must be 0")
             try:
                 live_margin.check_payload(rec["payload"])
             except live_margin.PayloadError as exc:
