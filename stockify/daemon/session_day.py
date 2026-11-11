@@ -74,6 +74,8 @@ class SessionDay:
         self._replay_only = False
         self.resumed = False                    # True once the day was rebuilt from its journal (`replay`)
         self.open_process_stop = False          # the journal ends inside a GAP(process_stop) that never got its end
+        self.open_outage: str | None = None     # ... or inside a scope-all disconnect / token_expired gap (GK 5.3)
+        self.last_clock = 0                     # t of the journal's last CLOCK record, so a restart never repeats one
         caps = loader.load_json("paper.json")["engine_log"]        # the engine's log lines, throttled and capped
         self._elog = EngineLog(session_id, max_lines_per_min=caps["max_lines_per_min"],
                                max_line_chars=caps["max_line_chars"], sink=log_sink)
@@ -159,6 +161,7 @@ class SessionDay:
                 self._journal = self._writer(jpath)
             _, body, _ = journal.read(jpath)
             records, self.open_process_stop = self._survey(body)
+            self.open_outage, self.last_clock = self._tail(body)
             self._next_event_no = 1
             self.carried_orders = []
             if reconcile is None:
@@ -193,6 +196,21 @@ class SessionDay:
             off += size
             n += 1
         return n, open_stop
+
+    @staticmethod
+    def _tail(body: bytes) -> tuple[str | None, int]:
+        """(the reason of a scope-all disconnect / token_expired GAP start with no end after it, the last CLOCK's t)."""
+        outage, clock, off = None, 0, 0
+        while off < len(body):
+            kind, size = struct.unpack_from("<HH", body, off)
+            if kind == packs.GAP_K:
+                rec, _ = packs.decode(body, off)
+                if rec["reason"] in ("disconnect", "token_expired") and not rec["scope"]:
+                    outage = rec["reason"] if rec["phase"] == 0 else (None if outage == rec["reason"] else outage)
+            elif kind == packs.CLOCK:
+                clock = max(clock, packs.decode(body, off)[0]["t_event"])
+            off += size
+        return outage, clock
 
     def _push_and_store(self, batch: bytes, last_frame: tuple[int, int] | None) -> None:
         if batch:

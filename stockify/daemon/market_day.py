@@ -323,16 +323,42 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
     return opened
 
 
+def process_mark(sessions: list) -> tuple[int, int] | None:  # noqa: ANN001
+    """The `(frame_no, recv_ns)` this process has certainly dispatched: the minimum of its sessions' marks, none
+    when a session has no mark yet (GK 5.3). A session's own mark is the one stored with its day's outputs."""
+    marks = [store.session_last_frame(sd.session_id, sd.trade_date) for sd in sessions]
+    if not marks or None in marks:
+        return None
+    return min(marks, key=lambda m: m[1])
+
+
+def status_resume_at(day: date) -> int | None:
+    """`T + N` of an injected token_expiry the last run of `day` ended on, from `daemon_status.json`."""
+    try:
+        status = json.loads(paths.daemon_status_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(status, dict) or status.get("day") != day.isoformat():
+        return None
+    value = status.get("resume_at_ns")
+    return int(value) if isinstance(value, int) else None
+
+
 def write_status(day: date, exit_code: int, landing, clock, *, stop_requested: bool, sessions: list,  # noqa: ANN001
-                 failed: dict, alarms: list[str], skipped: dict | None = None) -> None:
+                 failed: dict, alarms: list[str], skipped: dict | None = None,
+                 resume_at_ns: int | None = None) -> None:
     """`daemon_status.json`: what the daemon last knew, for the next start and for the owner. Written whole, then
-    renamed into place."""
+    renamed into place. `resume_mark` is the process's minimum frame mark over its sessions (a replay restart skips
+    frames at or below it); `resume_at_ns` is a fault duration's `T + N`."""
+    mark = process_mark(sessions)
     last_frame = landing.max_frame_no()
     row = landing.conn.execute("SELECT IFNULL(MAX(recv_ns), 0) FROM packets WHERE frame_no = ?",
                                (last_frame,)).fetchone()
     status = {"schema": "stockify.daemon_status/1", "day": day.isoformat(), "exit_code": exit_code,
               "last_frame_no": last_frame, "last_frame_recv_ns": int(row[0]), "stopped_ns": clock.now_ns(),
               "stop_requested": stop_requested, "alarms": sorted(alarms),
+              "resume_mark": None if mark is None else {"frame_no": mark[0], "recv_ns": mark[1]},
+              "resume_at_ns": resume_at_ns,
               "skipped": {sid: {"reason": "subscription_cap", **detail} for sid, detail in sorted((skipped or {}).items())},
               "sessions": {sd.session_id: {"journal_records": sd.journal_records, "failed": sd.session_id in failed}
                            for sd in sessions}}
@@ -430,6 +456,12 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                        call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None,
                        lock=session.sub_lock)
     sessions = open_sessions(choose_sessions(session_ids), day, clock, pump, pins) if pump is not None else []
+    if replay:                                  # a restarted replay goes on after what the old process dispatched
+        ticker.resume_after = process_mark([sd for sd in sessions if sd.resumed]) if sessions and all(
+            sd.resumed for sd in sessions) else None
+        ticker.resume_not_before_ns = status_resume_at(day)
+        if ticker.resume_after is not None:
+            clock.set(max(clock.now_ns(), ticker.resume_after[1]))
     dispatcher = engine_thread = None
     engine_stop = threading.Event()
     engine_failed: list[str] = []
@@ -455,6 +487,28 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                              exc_info=True)
 
         engine_thread = threading.Thread(target=engine_main, name="engine", daemon=True)
+
+    if replay:
+        from stockify.daemon import replay_ticker
+
+        def kill_flush() -> None:
+            """`kill@T` (D-71): everything dispatched so far is on disk before the process ends, so a restart loses
+            nothing. The replay thread is the producer and is the caller, so no new frame arrives meanwhile."""
+            recorder.stop()
+            if engine_thread is not None:
+                engine_stop.set()
+                engine_thread.join(ENGINE_JOIN_S)
+            if dispatcher is not None and not (engine_thread is not None and engine_thread.is_alive()):
+                dispatcher.drain()
+            _each(sessions, "sync", lambda sd: sd.fsync())
+            with contextlib.suppress(Exception):
+                recorder.flush()
+            write_status(day, replay_ticker.KILLED_EXIT, landing, clock, stop_requested=False, sessions=sessions,
+                         failed=dict(dispatcher.stats.failed) if dispatcher is not None else {},
+                         alarms=list(recorder.stats.alarms), skipped=pins.refused)
+
+        ticker.on_kill = kill_flush
+        ticker.terminate = replay_ticker.terminate_process
 
     recorder.start()
     session.start()
@@ -584,7 +638,7 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
     try:
         write_status(day, code, landing, clock, stop_requested=stop_requested, sessions=[] if stuck else sessions,
                      failed=dict(dispatcher.stats.failed) if dispatcher is not None else {}, alarms=alarms,
-                     skipped=skipped)
+                     skipped=skipped, resume_at_ns=getattr(ticker, "resume_at_ns", None) if replay else None)
     except Exception:  # noqa: BLE001
         log.exception("could not write %s", paths.daemon_status_file())
     try:

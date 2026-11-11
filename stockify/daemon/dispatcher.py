@@ -107,7 +107,6 @@ class Dispatcher:
         self._batch_n = 0
         self._batch_t0 = 0
         self._stamp = 0
-        self._last_clock = 0
         self._next_poll = 0
         self._queued_cmds: set[int] = set()
         self._by_id = {s.session_id: s for s in self.sessions}
@@ -116,7 +115,14 @@ class Dispatcher:
         self._book: dict[str, frozenset[int]] = {}
         self._extras: dict[str, frozenset[int]] = {}     # open positions the bundle does not carry
         self._unbundled: set[tuple[str, int]] = set()
-        self._resume_end: set[str] = set()           # sessions whose open GAP(process_stop) ends at the next frame
+        self._resume_end: dict[str, str] = {}        # session -> the reason of its open gap, which ends at the next frame
+        self._last_clock = max([sd.last_clock for sd in sessions if sd.resumed] or [0])   # a restart repeats no CLOCK
+        self._skip: dict[str, int] = {}              # session -> recv_ns of its last dispatched frame (replay restarts)
+        if replay:
+            for sd in sessions:
+                mark = store.session_last_frame(sd.session_id, sd.trade_date) if sd.resumed else None
+                if mark is not None:
+                    self._skip[sd.session_id] = mark[1]
 
     # ── producers (any thread): cheap, never block ───────────────────────────
     def put_frame(self, item: tuple) -> None:
@@ -189,6 +195,8 @@ class Dispatcher:
         self._stamp = t
         if not self.replay:
             self._resume_gaps(t)
+        else:
+            self._resume_outages()
         self.apply_pending(t)
 
     def apply_pending(self, t: int) -> None:
@@ -210,7 +218,7 @@ class Dispatcher:
             if not sd.resumed or sid in self.stats.failed:
                 continue
             if sd.open_process_stop:
-                self._resume_end.add(sid)
+                self._resume_end[sid] = "process_stop"
             elif sd.last_t is not None and inside_market_hours(t):
                 try:
                     sd.feed([self._gap_record("start", "process_stop", sd.last_t, None)], None)
@@ -220,7 +228,15 @@ class Dispatcher:
                 self.stats.gaps += 1
                 self._open_gaps.add(("process_stop", None))
                 self._timeline(sid, "gap", {"cause": "process_crash", "phase": "start", "t_ns": sd.last_t}, t)
-                self._resume_end.add(sid)
+                self._resume_end[sid] = "process_stop"
+
+    def _resume_outages(self) -> None:
+        """A replay restarted after a fault duration (`token_expiry@T+Ns`): the journal ends inside a disconnect or
+        token_expired gap. The frames between T and T+N are lost, so the gap ends at the first new frame, and no
+        process_stop gap is journaled: a replay's restart is not a process that missed live frames (GK 5.3)."""
+        for sd in self.sessions:
+            if sd.resumed and sd.open_outage and sd.session_id not in self.stats.failed:
+                self._resume_end[sd.session_id] = sd.open_outage
 
     def journal_process_stop(self, t: int) -> None:
         """Journal a scope-all `GAP(process_stop)` start at `t` for every session, on the calling thread, never
@@ -361,15 +377,17 @@ class Dispatcher:
             for iid, record in self.encoder.encode(payload, recv_ns):
                 rank = packs.RANK[packs.PREFIX.unpack_from(record)[0]]
                 for sd in self.sessions:
+                    if recv_ns <= self._skip.get(sd.session_id, -1):
+                        continue                     # at or below this session's own mark: it has the frame already
                     if iid in sd.ids:
                         per.setdefault(sd.session_id, []).append((recv_ns, rank, record))
                     elif iid in self._extras.get(sd.session_id, ()):
                         self._note_unbundled(sd, iid, recv_ns)
-        for sid in sorted(self._resume_end):         # the first frame since the restart: the process-stop gap is over
-            per.setdefault(sid, []).insert(0, self._gap_record("end", "process_stop", recv_ns, None))
+        for sid, reason in sorted(self._resume_end.items()):    # the first frame since the restart: the open gap is over
+            per.setdefault(sid, []).insert(0, self._gap_record("end", reason, recv_ns, None))
             self.stats.gaps += 1
-            self._open_gaps.discard(("process_stop", None))
-            self._timeline(sid, "gap", {"cause": "process_stop_resumed", "phase": "end", "t_ns": recv_ns}, recv_ns)
+            self._open_gaps.discard((reason, None))
+            self._timeline(sid, "gap", {"cause": f"{reason}_resumed", "phase": "end", "t_ns": recv_ns}, recv_ns)
         self._resume_end.clear()
         self.stats.frames += 1
         self._stage(recv_ns, per, (frame_no, recv_ns) if frame_no else None)

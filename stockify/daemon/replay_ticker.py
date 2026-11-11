@@ -15,12 +15,18 @@ length prefix. Heartbeats are re-emitted from the per-minute counts.
 * `ReplayClock` follows the recorded receive times, so components stamping
   `clock.now_ns()` reproduce the original timeline.
 * Fault injection for tests: `disconnect@HH:MM:SS+90s`, `token_expiry@HH:MM:SS`,
-  `kill@HH:MM:SS` (IST on the replayed day).
+  `kill@HH:MM:SS` (IST on the replayed day). A duration on `token_expiry` is where the restart resumes
+  (`resume_at_ns`: the frames in between are lost); on `disconnect` it is the outage inside this run. `kill` runs
+  `on_kill` (the daemon drains and syncs) and then ends the process with `terminate(137)` (D-71).
+* Resume (GK 5.3): `resume_after=(frame_no, recv_ns)` skips every frame and heartbeat stamped at or before the old
+  process's last dispatched frame, and `resume_not_before_ns` skips everything before a fault's `T + N`. The
+  comparison is on the stamp, never on `frame_no` (a restarted recorder numbers its frames afresh).
 
 Select it with `--ticker replay:<YYYY-MM-DD>:<1x|10x|max>`.
 """
 from __future__ import annotations
 
+import ctypes
 import re
 import threading
 from dataclasses import dataclass
@@ -52,6 +58,17 @@ def source_for(day: date, path=None):
     if found is None:
         raise FileNotFoundError(f"no recording for {day}")
     return found
+
+
+KILLED_EXIT = 137
+
+
+def terminate_process(code: int = KILLED_EXIT) -> None:
+    """End this process the way the OS would on a kill: no cleanup, no atexit, no flush (Windows only, D-26)."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.TerminateProcess(kernel32.GetCurrentProcess(), code)
 
 
 class ReplayClock(Clock):
@@ -112,7 +129,8 @@ class ReplayTicker:
     MODE_LTP, MODE_QUOTE, MODE_FULL = MODE_LTP, MODE_QUOTE, MODE_FULL
 
     def __init__(self, source, clock: ReplayClock, *, speed: float | None = None,
-                 faults: list[Fault] | None = None, heartbeats: bool = True):
+                 faults: list[Fault] | None = None, heartbeats: bool = True,
+                 resume_after: tuple[int, int] | None = None, resume_not_before_ns: int | None = None):
         # A LandingDB is accepted directly for convenience.
         self.source = LandingSource.from_db(source) if isinstance(source, LandingDB) else source
         self.clock = clock
@@ -125,6 +143,11 @@ class ReplayTicker:
         self.on_close = None
         self.on_error = None
         self.on_noreconnect = None
+        self.on_kill = None                 # () before a `kill` ends the process: drain and sync what was dispatched
+        self.terminate = None               # (exit code) ends the process; the daemon sets `terminate_process`
+        self.resume_after = resume_after
+        self.resume_not_before_ns = resume_not_before_ns
+        self.resume_at_ns: int | None = None    # set when a token_expiry with a duration ended this run
         self.connected = False
         self.killed = False
         self.finished = threading.Event()
@@ -221,9 +244,14 @@ class ReplayTicker:
         down_until = None
         prev = None
         try:
+            mark = self.resume_after[1] if self.resume_after is not None else None
             for t_ns, mono, kind, payload in self._events():
                 if self._stop.is_set():
                     break
+                if mark is not None and t_ns <= mark:
+                    continue                              # the old process dispatched it already
+                if self.resume_not_before_ns is not None and t_ns < self.resume_not_before_ns:
+                    continue                              # lost in the outage the restart follows
                 while faults and faults[0].at_ns <= t_ns:
                     fault = faults.pop(0)
                     self.clock.set(fault.at_ns)
@@ -235,9 +263,15 @@ class ReplayTicker:
                         self.connected = False
                         self._fire(self.on_error, 403, "replay: injected token expiry")
                         self._fire(self.on_noreconnect)
+                        if fault.duration_ns:
+                            self.resume_at_ns = fault.at_ns + fault.duration_ns
                         return
                     elif fault.kind == "kill":
                         self.killed = True
+                        if self.on_kill is not None:
+                            self.on_kill()
+                        if self.terminate is not None:
+                            self.terminate(KILLED_EXIT)
                         return
                 if down_until is not None:
                     if t_ns < down_until:
@@ -265,13 +299,17 @@ class ReplayTicker:
             self.finished.set()
 
 
-def open_replay(spec: str, *, faults: list[str] | None = None, path=None):
-    """Build (ticker, clock) for a `replay:<date>:<speed>` spec (archive preferred)."""
+def open_replay(spec: str, *, faults: list[str] | None = None, path=None,
+                resume_after: tuple[int, int] | None = None, resume_not_before_ns: int | None = None):
+    """Build (ticker, clock) for a `replay:<date>:<speed>` spec (archive preferred). `resume_after` is the old
+    process's `(frame_no, recv_ns)` mark (frames at or before its stamp are skipped); `resume_not_before_ns` is a
+    fault duration's `T + N`."""
     day, speed = parse_spec(spec)
     source = source_for(day, path)
     first = source.first_recv_ns() or timeutil.ist_ns(day, "09:00")
-    clock = ReplayClock(int(first) - 1_000_000)
-    ticker = ReplayTicker(source, clock, speed=speed, faults=[parse_fault(f, day) for f in faults or []])
+    clock = ReplayClock(max(int(first) - 1_000_000, resume_after[1] if resume_after else 0))
+    ticker = ReplayTicker(source, clock, speed=speed, faults=[parse_fault(f, day) for f in faults or []],
+                          resume_after=resume_after, resume_not_before_ns=resume_not_before_ns)
     return ticker, clock
 
 
@@ -279,4 +317,5 @@ def ist_label(t_ns: int) -> str:
     return datetime.strftime(timeutil.ns_to_ist(t_ns), "%H:%M:%S")
 
 
-__all__ = ["ReplayTicker", "ReplayClock", "Fault", "parse_spec", "parse_fault", "open_replay", "ist_label"]
+__all__ = ["ReplayTicker", "ReplayClock", "Fault", "parse_spec", "parse_fault", "open_replay", "ist_label", "terminate_process",
+           "KILLED_EXIT"]

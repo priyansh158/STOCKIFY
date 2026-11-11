@@ -42,7 +42,7 @@ Files: `stockify/daemon/sessions.py`, `stockify/daemon/journal.py`.
 ## M5.4 Crash recovery (M)
 
 - [ ] **Recovery = replay today's journal from today's start-of-day state.** On restart, the daemon creates a fresh engine from the day bundle (which contains the SOD state), replays the journal (fast: one session's day is small), checks that the regenerated outputs match what is already stored (they must; a mismatch is a determinism bug → pause the session and alert), then continues live. No mid-day engine serialization is needed.
-- [ ] Test E-02: in replay mode, `taskkill /F` the daemon mid-day, restart, and the final artifacts equal an uninterrupted run's.
+- [x] Test E-02 (GK 5.3, D-71): in replay mode the daemon is killed by the OS mid-day (`--inject kill@HH:MM:SS`, exit 137), restarted, and the final artifacts, journal and end-of-day state equal an uninterrupted run's (`tests/stockify/daemon/test_e02_kill.py`).
 
 ## M5.5 Market data for sessions (S)
 
