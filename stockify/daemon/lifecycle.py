@@ -87,7 +87,8 @@ def start_continuous(session_id: str, *, wall_ns: int, engine_ns: int,
 
 
 def stop(session_id: str, *, wall_ns: int, conn: sqlite3.Connection | None = None) -> None:
-    """Final. Called at finalisation of the day after a `stop` command. The state, the `stopped` reason (earlier
+    """Final. Called by the dispatcher at the `stop` command, right after it journals `strategy_control(false, ..., "stopped")`
+    (D-72); the day's finalisation calls it again harmlessly. The state, the `stopped` reason (earlier
     reasons are kept) and stopped_ns are written in one transaction; a retried stop changes nothing and keeps
     the first stopped_ns."""
     def decide(s: dict):

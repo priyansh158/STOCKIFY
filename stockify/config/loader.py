@@ -174,7 +174,7 @@ def _check_mis_margin(doc: dict) -> None:
 PAPER_BOUNDS = {"clock_every_s": 3600, "dispatcher_queue_max": 10_000_000, "token_poll_s": 3600,
                 "commands_every_s": 60, "sod_state_warn_mb": 100_000,
                 "journal.fsync_every_s": 60, "margin_poll.debounce_s": 60, "margin_poll.every_s": 86_400,
-                "margin_poll.max_rps": 100}
+                "margin_poll.max_rps": 100, "dispatch.batch_max_items": 100_000, "dispatch.batch_max_ms": 1000}
 _PLAIN_DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
 
 
@@ -189,6 +189,7 @@ def _check_paper(doc: dict) -> None:
     """paper.json (stockify.paper/1): every key present, whole numbers within PAPER_BOUNDS, and
     `coverage_threshold` a plain decimal string (digits and one optional dot: no sign, spaces or exponent) in (0, 1]."""
     shape = {"clock_every_s": None, "journal": ("fsync_every_s",), "dispatcher_queue_max": None,
+             "dispatch": ("batch_max_items", "batch_max_ms"),
              "margin_poll": ("debounce_s", "every_s", "max_rps"), "token_poll_s": None,
              "coverage_threshold": "fraction", "commands_every_s": None, "sod_state_warn_mb": None}
     extra = set(doc) - set(shape) - {"schema"}

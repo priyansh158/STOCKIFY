@@ -20,6 +20,18 @@ once, and the engine thread journals a scope-all `GAP(stall)` start and end (the
 once the items queued before the loss are done, with a `gap` timeline row `{"cause": "dispatcher_overflow"}` per session. Silence is never an
 answer: the loss is in the journal.
 
+Staged records are fed in micro-batches: up to `dispatch.batch_max_items` items or `dispatch.batch_max_ms` (the
+clock's monotonic time, which only groups and never enters a record), at every command, and whenever the queue runs
+dry; one `feed` per session per batch, journal then engine then store. `append` stamps each record on its own, so the
+journal bytes are those of feeding item by item. A frame that leaves a session no records makes no store commit for it:
+its frame mark is held and written with the session's next feed or when the queue runs dry.
+
+Commands are polled on stamp time and, whenever the queue is empty, on the dispatcher's clock (a silent feed must
+not strand an owner's stop); the clock reading is the command's stamp, like any producer's. Pause, resume, stop_all
+and stop write the journal record first and the store second (D-68 outranks the order of the first brief); a crash
+between the two leaves the command unmarked, and reapplying it after the restart repeats the record and finishes
+the store write. `stop` ends with `lifecycle.stop`: the store says STOPPED from the command on.
+
 A session whose day fails (`SessionDayError` after a push or store error, or any error from its feed) is dropped
 from dispatch and listed in `stats.failed`; the others go on. Replay it to recover.
 """
@@ -57,6 +69,8 @@ class DispatcherStats:
     gaps: int = 0
     commands: int = 0
     dropped: int = 0
+    commands_delayed: int = 0           # a command that did not fit the queue: delayed, never lost
+    clamped: int = 0                    # items stamped inside an overflow stall, journaled after its END (t lifted)
     alarms: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)       # session_id -> first error
 
@@ -70,14 +84,22 @@ class Dispatcher:
         self.replay = replay
         self.clock_every_ns = int(cfg["clock_every_s"]) * SEC
         self.commands_every_ns = int(cfg["commands_every_s"]) * SEC
+        self.batch_max_items = int(cfg["dispatch"]["batch_max_items"])
+        self.batch_max_ns = int(cfg["dispatch"]["batch_max_ms"]) * 1_000_000
         self.queue: queue.Queue = queue.Queue(maxsize=int(cfg["dispatcher_queue_max"]))
         self.stats = DispatcherStats()
         self._lock = threading.Lock()
-        self._overflow: list[int] | None = None                 # [first stamp, last stamp, dropped] not yet journaled
+        self._overflow: list | None = None          # [first stamp, last stamp, dropped, [(reason, iid) of dropped gap ENDs]]
+        self._clamp_until = 0
+        self._open_gaps: set[tuple[str, int | None]] = set()
+        self._pending: dict[str, list] = {}
+        self._marks: dict[str, tuple[int, int]] = {}
+        self._batch_n = 0
+        self._batch_t0 = 0
+        self._stamp = 0
         self._last_clock = 0
         self._next_poll = 0
         self._queued_cmds: set[int] = set()
-        self._stopping: set[str] = set()
         self._by_id = {s.session_id: s for s in self.sessions}
 
     # ── producers (any thread): cheap, never block ───────────────────────────
@@ -100,20 +122,22 @@ class Dispatcher:
         try:
             self.queue.put_nowait(item)
         except queue.Full:
-            self._dropped(stamp)
+            self._dropped(stamp, item)
 
-    def _dropped(self, stamp: int) -> None:
+    def _dropped(self, stamp: int, item: tuple | None = None) -> None:
         with self._lock:
             self.stats.dropped += 1
             if "dispatcher_queue_full" not in self.stats.alarms:
                 self.stats.alarms.append("dispatcher_queue_full")
                 log.error("dispatcher queue full: item dropped; the loss is journaled as a stall gap")
             if self._overflow is None:
-                self._overflow = [stamp, stamp, 1]
+                self._overflow = [stamp, stamp, 1, []]
             else:
                 self._overflow[0] = min(self._overflow[0], stamp)
                 self._overflow[1] = max(self._overflow[1], stamp)
                 self._overflow[2] += 1
+            if item is not None and item[0] == GAP and item[1] == "end":
+                self._overflow[3].append((item[2], item[4]))
 
     # ── engine thread ────────────────────────────────────────────────────────
     def run(self, stop: threading.Event) -> None:
@@ -123,6 +147,8 @@ class Dispatcher:
                 item = self.queue.get(timeout=POLL_S)
             except queue.Empty:
                 self._flush_overflow()
+                self._flush(force_marks=True)
+                self._poll_commands(self.clock.now_ns())
                 continue
             self._process(item)
         self.drain()
@@ -136,6 +162,7 @@ class Dispatcher:
                 break
             self._process(item)
         self._flush_overflow()
+        self._flush(force_marks=True)
         if not self.queue.empty():
             self.drain()
 
@@ -144,9 +171,12 @@ class Dispatcher:
         kind = item[0]
         stamp = {FRAME: lambda: item[1][1], GAP: lambda: item[3], INJECT: lambda: item[1],
                  COMMAND: lambda: item[1]}[kind]()
+        self._stamp = stamp
         lost = self._overflow
         if lost is not None and stamp >= lost[0]:
             self._flush_overflow()           # items queued before the loss (earlier stamps) go first
+        if stamp < self._clamp_until:
+            self.stats.clamped += 1          # accepted inside a stall whose END is already journaled
         if kind != COMMAND:
             self._poll_commands(stamp)
         if kind == FRAME:
@@ -156,7 +186,8 @@ class Dispatcher:
         elif kind == INJECT:
             self._inject(item[1], item[2], item[3], item[4])
         else:
-            self._clock_and_deliver(stamp, {}, None)
+            self._stage(stamp, {}, None)
+            self._flush()                    # records before the command's own journal records
             self._command(item[1], item[2])
 
     # ── delivery ─────────────────────────────────────────────────────────────
@@ -168,27 +199,59 @@ class Dispatcher:
         self.stats.clocks += 1
         return boundary, _CLOCK_RANK, packs.enc_clock(boundary)
 
-    def _clock_and_deliver(self, stamp: int, per: dict[str, list], last_frame: tuple[int, int] | None) -> None:
-        """CLOCK first (when a boundary passed), then each session's records, as one feed per session."""
+    def _stage(self, stamp: int, per: dict[str, list], last_frame: tuple[int, int] | None) -> None:
+        """CLOCK first (when a boundary passed), then each session's records, staged for the next batch."""
         clock = self._clock_record(stamp)
         for sd in self.sessions:
-            if sd.session_id in self.stats.failed:
+            sid = sd.session_id
+            if sid in self.stats.failed:
                 continue
-            records = ([clock] if clock else []) + per.get(sd.session_id, [])
-            if not records and last_frame is None:
-                continue
-            self.stats.records += len(records)
-            try:
-                sd.feed(records, last_frame)
-            except Exception as e:  # noqa: BLE001
-                self._fail(sd.session_id, e)
+            recs = per.get(sid)
+            if clock or recs:
+                staged = self._pending.setdefault(sid, [])
+                if clock:
+                    staged.append(clock)
+                if recs:
+                    staged.extend(recs)
+            if last_frame is not None:
+                self._marks[sid] = last_frame
+        if self._batch_n == 0:
+            self._batch_t0 = self.clock.mono_ns()
+        self._batch_n += 1
+        if self._batch_n >= self.batch_max_items or self.clock.mono_ns() - self._batch_t0 >= self.batch_max_ns:
+            self._flush()
 
-    def _fail(self, sid: str, e: BaseException) -> None:
+    def _flush(self, force_marks: bool = False) -> None:
+        """One feed per session with staged records (and its latest frame mark). A session with no records keeps
+        its mark for later unless `force_marks` (the queue ran dry): no store commit for nothing."""
+        self._batch_n = 0
+        for sd in self.sessions:
+            sid = sd.session_id
+            recs = self._pending.pop(sid, None)
+            if sid in self.stats.failed:
+                self._marks.pop(sid, None)
+                continue
+            if recs:
+                mark = self._marks.pop(sid, None)
+            elif force_marks and sid in self._marks:
+                recs, mark = [], self._marks.pop(sid)
+            else:
+                continue
+            self.stats.records += len(recs)
+            try:
+                sd.feed(recs, mark)
+            except Exception as e:  # noqa: BLE001
+                self._fail(sid, e, self._stamp)
+
+    def _fail(self, sid: str, e: BaseException, t: int) -> None:
+        first = sid not in self.stats.failed
         self.stats.failed.setdefault(sid, repr(e))
         log.error("session %s failed (its day stays failed; replay it to recover): %r", sid, e)
         alarm = f"session_failed:{sid}"
         if alarm not in self.stats.alarms:
             self.stats.alarms.append(alarm)
+        if first:
+            self._timeline(sid, "session_failed", {"error": repr(e)}, t)
 
     def _frame(self, item: tuple) -> None:
         frame_no, recv_ns, _mono, payload, is_binary = item
@@ -200,7 +263,7 @@ class Dispatcher:
                     if iid in sd.ids:
                         per.setdefault(sd.session_id, []).append((recv_ns, rank, record))
         self.stats.frames += 1
-        self._clock_and_deliver(recv_ns, per, (frame_no, recv_ns) if frame_no else None)
+        self._stage(recv_ns, per, (frame_no, recv_ns) if frame_no else None)
 
     def _gap_record(self, phase: str, reason: str, t: int, iid: int | None) -> tuple[int, int, bytes]:
         return t, _GAP_RANK, packs.enc_gap(iid or 0, t, _PHASE[phase], reason)
@@ -215,25 +278,26 @@ class Dispatcher:
             for sd in targets:
                 self._timeline(sd.session_id, "stall_replay_only",
                                {"phase": phase, "reason": reason, "t_ns": t, "instrument_id": iid}, t)
-            self._clock_and_deliver(t, {}, None)
+            self._stage(t, {}, None)
             return
         if reason not in packs.GAP_REASONS:
             log.warning("gap reason %r has no journal record; not journaled", reason)
-            self._clock_and_deliver(t, {}, None)
+            self._stage(t, {}, None)
             return
         record = self._gap_record(phase, reason, t, iid)
         self.stats.gaps += 1
-        self._clock_and_deliver(t, {sd.session_id: [record] for sd in targets}, None)
+        (self._open_gaps.add if phase == "start" else self._open_gaps.discard)((reason, iid))
+        self._stage(t, {sd.session_id: [record] for sd in targets}, None)
 
     def _inject(self, t: int, session_id: str | None, rank: int, record: bytes) -> None:
         targets = self.sessions if session_id is None else [s for s in self.sessions if s.session_id == session_id]
-        self._clock_and_deliver(t, {sd.session_id: [(t, rank, record)] for sd in targets}, None)
+        self._stage(t, {sd.session_id: [(t, rank, record)] for sd in targets}, None)
 
     def _timeline(self, sid: str, kind: str, detail: dict, t: int) -> None:
         try:
             store.add_timeline(sid, kind, detail, wall_ns=t, engine_ns=t)
-        except KeyError:
-            log.warning("no session %s for the timeline row %s", sid, kind)
+        except Exception:  # noqa: BLE001 — a timeline row is a courtesy; never cost the queue
+            log.warning("no timeline row %s for session %s", kind, sid, exc_info=True)
 
     # ── overflow ─────────────────────────────────────────────────────────────
     def _flush_overflow(self) -> None:
@@ -244,14 +308,18 @@ class Dispatcher:
             lost, self._overflow = self._overflow, None
         if lost is None:
             return
-        first, last, count = lost
+        first, last, count, ends = lost
+        self._clamp_until = max(self._clamp_until, last)
         for phase, t in (("start", first), ("end", last)):
             record = self._gap_record(phase, "stall", t, None)
             self.stats.gaps += 1
-            self._clock_and_deliver(t, {sd.session_id: [record] for sd in self.sessions}, None)
+            self._stage(t, {sd.session_id: [record] for sd in self.sessions}, None)
             for sd in self.sessions:
                 self._timeline(sd.session_id, "gap", {"cause": "dispatcher_overflow", "phase": phase,
                                                       "dropped": count, "from_ns": first, "to_ns": last}, t)
+        for reason, iid in ends:             # a gap END the queue refused must not leave its gap open
+            if (reason, iid) in self._open_gaps or (self.replay and reason == "stall"):
+                self._gap("end", reason, last, iid)
 
     # ── commands ─────────────────────────────────────────────────────────────
     def _poll_commands(self, stamp: int) -> None:
@@ -265,8 +333,9 @@ class Dispatcher:
             try:
                 self.queue.put_nowait((COMMAND, stamp, row))
             except queue.Full:
-                self._dropped(stamp)
-                break                                     # kept in the store: polled again next time
+                self.stats.commands_delayed += 1          # delayed, not lost: it stays in the store
+                self._next_poll = 0                       # and is offered again at the next chance
+                break
             self._queued_cmds.add(row["cmd_id"])
 
     def _command(self, t: int, row: dict) -> None:
@@ -299,34 +368,46 @@ class Dispatcher:
         return "ok" if not notes else "error: " + "; ".join(notes)
 
     def _apply_one(self, sd: SessionDay, name: str, args: dict, cmd_id: int, t: int) -> None:
+        """Journal first, store second (D-68). The reason set is worked out from the store's current one with the
+        rules `lifecycle` applies, journaled, and then `lifecycle` makes its atomic change."""
         sid = sd.session_id
         if sid in self.stats.failed:
             raise RuntimeError("its day failed; replay it first")
-        if sid in self._stopping:
+        session = store.get_session(sid)
+        if session is None:
+            raise RuntimeError("no such session in the store")
+        held = set(session["pause_reasons"])
+        if session["status"] == "STOPPED":
             if name == "stop":
-                return
-            raise RuntimeError("it is stopping")
+                return                                    # already stopped: nothing to journal or change
+            raise RuntimeError("it is STOPPED")
         reason = args.get("reason", _REASON_DEFAULT)
         if name == "pause":
-            reasons = lifecycle.pause(sid, reason, wall_ns=t, engine_ns=t)
-            self._control(sd, reasons, t)
+            lifecycle._check_reason(reason)
+            reasons = sorted(held | {reason})
         elif name == "stop_all":
-            reasons = lifecycle.pause(sid, "stop_all", wall_ns=t, engine_ns=t)
-            self._control(sd, reasons, t)
+            reasons = sorted(held | {"stop_all"})
         elif name == "resume":
-            reasons = lifecycle.resume(sid, reason, wall_ns=t, engine_ns=t)
-            self._control(sd, reasons, t)
+            lifecycle._check_reason(reason)
+            reasons = sorted(held - ({reason, "stop_all"} if reason == "owner" else {reason}))
         else:
-            # `stop`: the strategy goes off for good now; the day is finalised and the status STOPPED (lifecycle.stop)
-            # by the day's finalisation, which is not the dispatcher's to do (RECON, per-session stop rule).
-            held = (store.get_session(sid) or {}).get("pause_reasons", [])
-            self._stopping.add(sid)
-            self._control(sd, sorted({*held, "stopped"}), t)
+            reasons = sorted(held | {"stopped"})
+        self._control(sd, reasons, t)                     # the journal record exists before the store changes
+        if name in ("pause", "stop_all"):
+            stored = lifecycle.pause(sid, "stop_all" if name == "stop_all" else reason, wall_ns=t, engine_ns=t)
+        elif name == "resume":
+            stored = lifecycle.resume(sid, reason, wall_ns=t, engine_ns=t)
+        else:
+            lifecycle.stop(sid, wall_ns=t)
             self._timeline(sid, "stop_requested", {"cmd_id": cmd_id}, t)
+            return
+        if stored != reasons:
+            log.warning("session %s: journaled reasons %s, stored %s (another writer changed them)", sid, reasons, stored)
 
     def _control(self, sd: SessionDay, reasons: list[str], t: int) -> None:
+        self._flush()
         try:
             sd.control(not reasons, reasons, t)
         except Exception as e:  # noqa: BLE001
-            self._fail(sd.session_id, e)
+            self._fail(sd.session_id, e, t)
             raise
