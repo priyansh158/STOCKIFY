@@ -193,5 +193,38 @@ class SecretsTest(unittest.TestCase):
         assert_no_secret(self._secret_root, secret)
 
 
+class SessionDaySecretsTest(unittest.TestCase):
+    """A session-day (journal, bundle, engine, store) with a trading strategy leaves no planted secret in a file or a log."""
+
+    def test_a_trading_session_day_leaves_no_secret_behind(self):
+        from stockify import engine
+        if not engine.available():
+            self.skipTest("stockify._engine is not built")
+        from tests.stockify.daemon import test_session_day as sdt
+
+        class Day(sdt.SessionDayTest):
+            def runTest(self):
+                secret = plant_secrets(self)
+                logs = _LogCapture(self)
+                sd = self.day()
+                sd.open(None, ["owner"], self.t("09:14:00"))
+                sd.control(True, [], self.t("09:14:30"))
+                for i in range(0, len(self.records), 11):
+                    sd.feed(self.records[i:i + 11], (i, self.records[i][0]))
+                sd.fsync()
+                sd.close(finalise=True)
+                logs.handler.flush()
+                for record in logs.records:
+                    self.assertNotIn(secret, record.getMessage())
+                self.assertEqual(len(sdt.store.session_rows(sdt.SID, "fills")), 1)     # it really traded
+                assert_no_secret(self._secret_root, secret)
+
+        case = Day()
+        result = unittest.TestResult()
+        case.run(result)
+        self.assertEqual((result.errors, result.failures), ([], []))
+        self.assertEqual(result.testsRun, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -493,3 +493,104 @@ def mark_command(cmd_id: int, applied_ns: int, result: str) -> None:
         conn.execute("UPDATE session_commands SET applied_ns = ?, result = ? WHERE cmd_id = ?",
                      (int(applied_ns), result, int(cmd_id)))
         conn.commit()
+
+
+# ── a paper session's day outputs (M5.3, D-68; A1 §4 session_orders, session_order_events, session_fills, session_charges) ──
+
+_SESSION_ROW_TABLES = {  # name -> (SQL table, key column, key field of the engine's row)
+    "orders": ("session_orders", "order_id", "order_id"),
+    "order_events": ("session_order_events", "event_no", None),
+    "fills": ("session_fills", "fill_id", "fill_id"),
+    "charges": ("session_charges", "row_no", "row_no"),
+}
+
+
+# The order status each event leaves behind (engine_trading.cpp); SUBMIT, FILL and MODIFY leave it as it was.
+_EVENT_STATUS = {"ACTIVATE": "OPEN", "TRIGGER": "OPEN", "COMPLETE": "COMPLETE", "CANCEL": "CANCELLED",
+                 "REJECT": "REJECTED", "SLICE": "SLICED"}
+
+
+def apply_session_outputs(session_id: str, trade_date: str, outputs: dict, *, first_event_no: int,
+                          last_frame: tuple[int, int] | None) -> int:
+    """Store what `Engine.drain_outputs()` returned for one batch, in ONE transaction. Orders, fills and charges are
+    upserted by their ids and order events are numbered from `first_event_no`, so applying the same outputs again
+    changes nothing. The engine drains an order's row once, when it is created; its later changes arrive as events
+    alone, so an order's `status` follows its newest status-changing event (`_EVENT_STATUS`). A batch that is older
+    than what is stored for an order (a stale repeat) leaves that order as it is. `last_frame` = (frame_no,
+    recv_ns), when given, is stored on the (session, day) row. If any row is bad, nothing is stored. Returns the
+    next event_no."""
+    events = list(outputs.get("order_events", ()))
+    conn = _connect()
+    with _lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO session_order_events (session_id, trade_date, event_no, row_json) "
+                "VALUES (?, ?, ?, ?)",
+                [(session_id, trade_date, first_event_no + i, json.dumps(e, sort_keys=True))
+                 for i, e in enumerate(events)])
+            rows = {int(o["order_id"]): o for o in outputs.get("orders", ())}
+            changes: dict[int, list[str]] = {}          # order id -> its events in this batch, oldest first
+            newest: dict[int, int] = {}
+            for i, e in enumerate(events):
+                oid = int(e["order_id"])
+                changes.setdefault(oid, []).append(e["event"])
+                newest[oid] = first_event_no + i
+            for oid in sorted(set(rows) | set(changes)):
+                if oid in newest:
+                    stored = conn.execute(
+                        "SELECT MAX(event_no) FROM session_order_events WHERE session_id = ? AND trade_date = ? "
+                        "AND json_extract(row_json, '$.order_id') = ?", (session_id, trade_date, oid)).fetchone()[0]
+                    if stored is not None and stored > newest[oid]:
+                        continue                                    # a later event is stored: this batch is stale
+                row = rows.get(oid)         # the engine drains an order's row when it is created, so it is as of then
+                if row is None:             # later changes arrive as events alone: the newest one sets the status
+                    old = conn.execute("SELECT row_json FROM session_orders WHERE session_id = ? AND trade_date = ? "
+                                       "AND order_id = ?", (session_id, trade_date, oid)).fetchone()
+                    status = next((_EVENT_STATUS[ev] for ev in reversed(changes[oid]) if ev in _EVENT_STATUS), None)
+                    if old is None or status is None:
+                        continue
+                    row = {**json.loads(old["row_json"]), "status": status}
+                conn.execute("INSERT OR REPLACE INTO session_orders (session_id, trade_date, order_id, row_json) "
+                             "VALUES (?, ?, ?, ?)", (session_id, trade_date, oid, json.dumps(row, sort_keys=True)))
+            conn.executemany(
+                "INSERT OR REPLACE INTO session_fills (session_id, trade_date, fill_id, row_json) VALUES (?, ?, ?, ?)",
+                [(session_id, trade_date, int(f["fill_id"]), json.dumps(f, sort_keys=True))
+                 for f in outputs.get("fills", ())])
+            conn.executemany(
+                "INSERT OR REPLACE INTO session_charges (session_id, trade_date, row_no, row_json) "
+                "VALUES (?, ?, ?, ?)",
+                [(session_id, trade_date, int(c["row_no"]), json.dumps(c, sort_keys=True))
+                 for c in outputs.get("charges", ())])
+            if last_frame is not None:
+                conn.execute(
+                    "INSERT INTO session_days (session_id, trade_date, last_frame_no, last_frame_recv_ns) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT (session_id, trade_date) DO UPDATE SET "
+                    "last_frame_no = excluded.last_frame_no, last_frame_recv_ns = excluded.last_frame_recv_ns",
+                    (session_id, trade_date, int(last_frame[0]), int(last_frame[1])))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    return first_event_no + len(events)
+
+
+def session_rows(session_id: str, table: str, *, trade_date: str | None = None, offset: int = 0,
+                 limit: int = 500) -> list[dict]:
+    """A paper session's stored rows in key order (orders | order_events | fills | charges), optionally of one day,
+    as the dicts the engine produced; an order event also carries its `event_no`."""
+    if table not in _SESSION_ROW_TABLES:
+        raise ValueError(f"unknown session table {table!r}")
+    sql_table, key, _ = _SESSION_ROW_TABLES[table]
+    sql, args = f"SELECT trade_date, {key}, row_json FROM {sql_table} WHERE session_id = ?", [session_id]
+    if trade_date is not None:
+        sql, args = sql + " AND trade_date = ?", [*args, trade_date]
+    rows = _connect().execute(sql + f" ORDER BY trade_date, {key} LIMIT ? OFFSET ?",
+                              (*args, int(limit), int(offset))).fetchall()
+    out = []
+    for r in rows:
+        d = json.loads(r["row_json"])
+        if table == "order_events":
+            d["event_no"] = r[key]
+        out.append(d)
+    return out
