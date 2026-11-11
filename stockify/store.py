@@ -10,6 +10,7 @@ Schema changes are numbered files in stockify/data/migrations/lab, never drops (
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from typing import Optional
@@ -264,3 +265,144 @@ def run_rows(run_id: str, table: str, *, offset: int = 0, limit: int = 500) -> l
     if table == "orders":
         return [json.loads(r["row_json"]) for r in rows]
     return [dict(r) for r in rows]
+
+
+# ── sessions (M5.2; A1 §4 sessions, session_days, session_timeline, session_commands) ──
+
+SESSION_DAY_FIELDS = ("bundle_sha256", "journal_path", "sod_state_json", "eod_state_json", "coverage", "parity",
+                      "status", "finalised_ns", "coverage_json", "labels_json", "last_frame_no",
+                      "last_frame_recv_ns")
+
+
+def _session_row(row) -> dict:
+    d = dict(row)
+    d["pause_reasons"] = sorted(set(json.loads(d.pop("pause_reasons_json", None) or "[]")))
+    d["config"] = json.loads(d["config_json"]) if d.get("config_json") else None
+    return d
+
+
+def create_session(session_id: str, name: str, cfg: dict, created_ns: int) -> None:
+    """Insert a CREATED session. The id becomes a folder name (journals), so it must be one safe path segment
+    (else ValueError); a duplicate id raises sqlite3.IntegrityError."""
+    if not paths.safe_segment(session_id, 128):
+        raise ValueError(f"not a valid session id: {session_id!r}")
+    conn = _connect()
+    with _lock:
+        conn.execute("INSERT INTO sessions (session_id, name, status, pause_reason, pause_reasons_json, config_json, "
+                     "created_ns) VALUES (?, ?, 'CREATED', NULL, '[]', ?, ?)",
+                     (session_id, name, json.dumps(cfg, sort_keys=True, separators=(",", ":")), int(created_ns)))
+        conn.commit()
+
+
+def get_session(session_id: str) -> dict | None:
+    """The session row; `pause_reasons` is a sorted list and `config` the parsed session config."""
+    row = _connect().execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    return _session_row(row) if row else None
+
+
+def list_sessions(*, status: str | None = None) -> list[dict]:
+    """Oldest created first."""
+    sql, args = "SELECT * FROM sessions", ()
+    if status is not None:
+        sql, args = sql + " WHERE status = ?", (status,)
+    return [_session_row(r) for r in
+            _connect().execute(sql + " ORDER BY created_ns, session_id", args).fetchall()]
+
+
+def set_session_state(session_id: str, status: str, reasons: list[str]) -> None:
+    """Write status and the pause-reason set (stored sorted and unique; `pause_reason` keeps the first for
+    display). The state machine itself lives in stockify.daemon.lifecycle."""
+    rs = sorted(set(reasons))
+    conn = _connect()
+    with _lock:
+        cur = conn.execute("UPDATE sessions SET status = ?, pause_reason = ?, pause_reasons_json = ? "
+                           "WHERE session_id = ?",
+                           (status, rs[0] if rs else None, json.dumps(rs), session_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(session_id)
+
+
+def set_session_stopped_ns(session_id: str, stopped_ns: int) -> None:
+    conn = _connect()
+    with _lock:
+        conn.execute("UPDATE sessions SET stopped_ns = ? WHERE session_id = ?", (int(stopped_ns), session_id))
+        conn.commit()
+
+
+def add_timeline(session_id: str, kind: str, detail: dict, *, wall_ns: int, engine_ns: int | None) -> None:
+    conn = _connect()
+    with _lock:
+        conn.execute("INSERT INTO session_timeline (session_id, engine_ns, wall_ns, kind, detail_json) "
+                     "VALUES (?, ?, ?, ?, ?)",
+                     (session_id, engine_ns, int(wall_ns), kind, json.dumps(detail, sort_keys=True)))
+        conn.commit()
+
+
+def timeline(session_id: str, *, offset: int = 0, limit: int = 200) -> list[dict]:
+    """Rows in the order they were written, each with `detail` parsed."""
+    rows = _connect().execute(
+        "SELECT session_id, engine_ns, wall_ns, kind, detail_json FROM session_timeline WHERE session_id = ? "
+        "ORDER BY rowid LIMIT ? OFFSET ?", (session_id, int(limit), int(offset))).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["detail"] = json.loads(d.pop("detail_json") or "null")
+        out.append(d)
+    return out
+
+
+def upsert_session_day(session_id: str, trade_date: str, **fields) -> None:
+    """Create or update one (session, day) row, touching only the given columns; an unknown column is a
+    ValueError."""
+    unknown = set(fields) - set(SESSION_DAY_FIELDS)
+    if unknown:
+        raise ValueError(f"not session_days columns: {sorted(unknown)}")
+    cols = list(fields)
+    action = (f"UPDATE SET {', '.join(f'{c} = excluded.{c}' for c in cols)}" if cols else "NOTHING")
+    conn = _connect()
+    with _lock:
+        conn.execute(
+            f"INSERT INTO session_days (session_id, trade_date{''.join(', ' + c for c in cols)}) "
+            f"VALUES (?, ?{', ?' * len(cols)}) ON CONFLICT (session_id, trade_date) DO {action}",
+            (session_id, trade_date, *fields.values()))
+        conn.commit()
+
+
+def get_session_day(session_id: str, trade_date: str) -> dict | None:
+    row = _connect().execute("SELECT * FROM session_days WHERE session_id = ? AND trade_date = ?",
+                             (session_id, trade_date)).fetchone()
+    return dict(row) if row else None
+
+
+def add_command(session_id: str | None, command: str, args: dict | None, created_ns: int) -> int:
+    """Queue an owner command for the daemon (session_id None = every session). Returns its cmd_id."""
+    conn = _connect()
+    with _lock:
+        cur = conn.execute("INSERT INTO session_commands (session_id, command, args_json, created_ns) "
+                           "VALUES (?, ?, ?, ?)",
+                           (session_id, command, None if args is None else json.dumps(args, sort_keys=True),
+                            int(created_ns)))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def pending_commands() -> list[dict]:
+    """Commands not yet marked, oldest first (created_ns, then cmd_id); `args` parsed."""
+    rows = _connect().execute("SELECT * FROM session_commands WHERE applied_ns IS NULL "
+                              "ORDER BY created_ns, cmd_id").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.pop("args_json")
+        d["args"] = None if raw is None else json.loads(raw)
+        out.append(d)
+    return out
+
+
+def mark_command(cmd_id: int, applied_ns: int, result: str) -> None:
+    conn = _connect()
+    with _lock:
+        conn.execute("UPDATE session_commands SET applied_ns = ?, result = ? WHERE cmd_id = ?",
+                     (int(applied_ns), result, int(cmd_id)))
+        conn.commit()
