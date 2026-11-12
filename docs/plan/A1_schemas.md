@@ -202,6 +202,20 @@ CREATE TABLE run_charges (run_id TEXT, row_no INTEGER, kind TEXT, order_id INTEG
 -- research (M6)
 CREATE TABLE trial_families (family_id TEXT PRIMARY KEY, description TEXT, objective TEXT, created_ns INTEGER);
 CREATE TABLE holdout_unlocks (unlock_ns INTEGER, run_id TEXT, family_id TEXT, reason TEXT);
+-- migration 0005 (AM 6.2), additive: runs gain role (trial | sensitivity | oos | rerun, default trial) and job_id;
+-- trial_families gains named (1 once the owner named it); holdout_unlocks gains job_id.
+--   ALTER TABLE runs ADD COLUMN role TEXT NOT NULL DEFAULT 'trial';  ALTER TABLE runs ADD COLUMN job_id TEXT;
+--   ALTER TABLE trial_families ADD COLUMN named INTEGER NOT NULL DEFAULT 0;
+--   ALTER TABLE holdout_unlocks ADD COLUMN job_id TEXT;
+--   CREATE INDEX ix_runs_family ON runs (family_id, role, status);
+--   CREATE UNIQUE INDEX ux_unlock_job ON holdout_unlocks (job_id, reason) WHERE job_id IS NOT NULL;  -- a job unlocks once per reason
+CREATE TABLE research_jobs (job_id TEXT PRIMARY KEY, kind TEXT NOT NULL,   -- sweep | walkforward | sensitivity
+  name TEXT, family_id TEXT, status TEXT NOT NULL, created_ns INTEGER NOT NULL, finished_ns INTEGER,
+  folder TEXT, spec_json TEXT,     -- the job's input (sweep spec, windows parameters)
+  state_json TEXT,                 -- what the job decided: windows, chosen params, train and test run ids
+  error TEXT);
+-- triggers: runs_are_never_deleted (BEFORE DELETE ON runs aborts, M6.4); holdout_unlocks_no_update and
+-- holdout_unlocks_no_delete abort (the unlock log is append-only, M6.6).
 
 -- sessions (M5)
 CREATE TABLE sessions (session_id TEXT PRIMARY KEY, name TEXT, family_id TEXT, status TEXT, pause_reason TEXT,

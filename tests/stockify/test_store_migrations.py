@@ -130,6 +130,18 @@ class LabMigrationTests(SandboxedDBTest):
         self.assertEqual([r["wall_ns"] for r in store.margin_live_rows(start_ns=6)], [9])
         self.assertEqual([r["wall_ns"] for r in store.margin_live_rows(end_ns=9)], [5])
 
+    def test_research_migration_adds_columns_table_and_triggers(self):
+        """AM 6.2 (migration 0005): additive columns on 0001 tables, research_jobs, and the three triggers."""
+        self._make_v1_lab()
+        conn = store._connect()
+        self.assertGreaterEqual(store.SCHEMA_VERSION, 5)
+        self.assertEqual(_columns(conn, "runs")[-2:], ["role", "job_id"])
+        self.assertIn("named", _columns(conn, "trial_families"))
+        self.assertIn("job_id", _columns(conn, "holdout_unlocks"))
+        self.assertIn("state_json", _columns(conn, "research_jobs"))
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+        self.assertEqual(names, {"runs_are_never_deleted", "holdout_unlocks_no_update", "holdout_unlocks_no_delete"})
+
     def test_reopening_a_migrated_lab_is_a_no_op(self):
         store.init_db()
         support.reset_sqlite_singleton(store)
