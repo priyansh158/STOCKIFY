@@ -15,7 +15,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "parity": ("M5", "nightly journal parity"),
     "compare": ("M6", "compare runs"),
     "export": ("M6", "export a run"),
     "sweep": ("M6", "parameter sweep"),
@@ -596,6 +595,30 @@ def _cmd_margin_live_report(args) -> int:
     return 0
 
 
+def _cmd_parity_journal(args) -> int:
+    """RD 5.1: replay a finalised session-day's journal and compare it with the store (reads only). Exit 0: identical;
+    1: a difference (one `differs:` line); 2: bad arguments or an unknown session; 3: not finalised, nothing checked."""
+    from datetime import date
+    from stockify import parity, store
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD; got {args.date!r}", file=sys.stderr)
+        return 2
+    if store.get_session(args.session) is None:
+        print(f"no such session: {args.session!r}", file=sys.stderr)
+        return 2
+    result = parity.journal_parity(args.session, day)
+    if result.outcome == "skipped":
+        print(f"skipped: {result.summary['reason']}", file=sys.stderr)
+        return 3
+    if result.outcome == "fail":
+        print(result.difference_line)
+        return 1
+    print(f"identical: {args.session} {args.date} ({result.summary['records']} journal records)")
+    return 0
+
+
 def _cmd_compare_strategies(args) -> int:
     from stockify import runs
     from stockify.tools import compare_strategies as cs
@@ -845,6 +868,14 @@ def main(argv: list[str] | None = None) -> int:
     lr.add_argument("--from", dest="start", help="first IST trade date, YYYY-MM-DD (default: all)")
     lr.add_argument("--to", dest="end", help="last IST trade date, YYYY-MM-DD (default: all)")
     lr.set_defaults(func=_cmd_margin_live_report)
+
+    pa = sub.add_parser("parity", help="nightly parity gates (M5.10)")
+    pasub = pa.add_subparsers(dest="parity_command", required=True)
+    pj = pasub.add_parser("journal", help="replay a finalised session-day's journal and compare it with the store "
+                                          "(reads only; exit 0 identical, 1 a difference, 3 not finalised)")
+    pj.add_argument("--session", required=True, help="session id")
+    pj.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
+    pj.set_defaults(func=_cmd_parity_journal)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)

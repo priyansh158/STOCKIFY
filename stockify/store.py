@@ -509,6 +509,44 @@ def get_session_day(session_id: str, trade_date: str) -> dict | None:
     return dict(row) if row else None
 
 
+def put_parity_result(session_id: str, trade_date: str, kind: str, outcome: str, summary: dict, *,
+                      created_ns: int) -> None:
+    """Record a parity result (kind `journal` | `recorder`; outcome `pass` | `fail`) in ONE transaction: the
+    `parity_results` row is replaced, and a `journal` result is also the day's `session_days.parity`."""
+    if outcome not in ("pass", "fail"):
+        raise ValueError(f"a parity result is pass or fail, not {outcome!r}")
+    if kind not in ("journal", "recorder"):
+        raise ValueError(f"unknown parity kind {kind!r}")
+    conn = _connect()
+    with _lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO parity_results (session_id, trade_date, kind, outcome, summary_json, "
+                "created_ns) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, trade_date, kind, outcome, json.dumps(summary, sort_keys=True), int(created_ns)))
+            if kind == "journal":
+                conn.execute(
+                    "INSERT INTO session_days (session_id, trade_date, parity) VALUES (?, ?, ?) "
+                    "ON CONFLICT (session_id, trade_date) DO UPDATE SET parity = excluded.parity",
+                    (session_id, trade_date, outcome))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def get_parity_result(session_id: str, trade_date: str, kind: str) -> dict | None:
+    """One stored parity result (its summary decoded), or None."""
+    row = _one("SELECT * FROM parity_results WHERE session_id = ? AND trade_date = ? AND kind = ?",
+               (session_id, trade_date, kind))
+    if row is None:
+        return None
+    out = dict(row)
+    out["summary"] = json.loads(out.pop("summary_json") or "{}")
+    return out
+
+
 def add_command(session_id: str | None, command: str, args: dict | None, created_ns: int) -> int:
     """Queue an owner command for the daemon (session_id None = every session; a named session must exist, else
     KeyError). Returns its cmd_id."""
@@ -721,6 +759,14 @@ def _day_rows(conn, session_id: str, trade_date: str) -> dict[str, dict[int, dic
             f"SELECT {key}, row_json FROM {table} WHERE session_id = ? AND trade_date = ? ORDER BY {key}",
             (session_id, trade_date))}
     return out
+
+
+def session_day_rows(session_id: str, trade_date: str) -> dict[str, dict[int, dict]]:
+    """{table name: {SQL key: row}} for one day's stored orders, order_events, fills and charges, keyed by the
+    table's own key column (order_id, event_no, fill_id, row_no), not by a field of the row. Reads only."""
+    conn = _connect()
+    with _lock:
+        return _day_rows(conn, session_id, trade_date)
 
 
 def preview_session_outputs(session_id: str, trade_date: str, outputs: dict, *,
