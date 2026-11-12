@@ -45,6 +45,7 @@ from stockify.oracle import sod_state
 log = logging.getLogger("stockify.daemon.finalise")
 
 FALLBACK_LABEL = "settlement_fallback"
+COVERAGE_UNAVAILABLE = "coverage_unavailable"       # coverage could not be worked out: advisory, the day still finalises
 COVERAGE_LOW = "coverage_low"                       # the timeline kind of a day under the coverage threshold
 CLAIM_WAIT_S = 5.0                                  # how long a second caller waits for the day's claim before `busy`
 _CLAIM_OFFSET = 1 << 20                              # the locked byte of the claim file
@@ -181,14 +182,15 @@ def _missing_settles(session_id: str, day: date, jpath: Path) -> tuple[list[tupl
     return missing, n + len(missing)
 
 
-def _coverage(session_id: str, day: date, jpath: Path) -> coverage_mod.Coverage:
-    """The day's coverage over its own bundle's instruments, from the journal as it stands (read only)."""
+def _coverage(session_id: str, day: date, jpath: Path) -> coverage_mod.Coverage | str:
+    """The day's coverage over its own bundle's instruments, from the journal as it stands (read only); or, when it
+    cannot be worked out, the reason. Coverage is advisory: it never stops a day from finalising."""
     bundle = json.loads(paths.day_bundle_file(session_id, day).read_text(encoding="utf-8"))
     _, body, _ = journal.read(jpath)
     try:
         return coverage_mod.coverage(bundle, body, _bundle_ids(session_id, day), coverage_mod.configured_threshold())
     except coverage_mod.CoverageError as e:
-        raise FinaliseError(f"{session_id}: no coverage for {day}: {e}") from e
+        return str(e)
 
 
 def _csv_rows(folder: Path, name: str) -> list[dict]:
@@ -291,7 +293,10 @@ def _finalise(session_id: str, day: date, *, live: SessionDay | None) -> Finalis
             log.warning("session %s %s: %s", session_id, d, warning)
             timeline.append(("sod_state_size", {"day": d, "warning": warning}))
         cov = _coverage(session_id, day, jpath)
-        if cov.below_threshold:
+        if isinstance(cov, str):
+            log.warning("session %s %s: coverage is unavailable (%s); the day finalises without it", session_id, d, cov)
+            timeline.append((COVERAGE_UNAVAILABLE, {"day": d, "reason": cov}))
+        elif cov.below_threshold:
             log.warning("session %s %s: coverage %s is under the threshold (%d of %d continuous seconds); the day is "
                         "flagged", session_id, d, coverage_mod.as_float(cov), cov.covered_s, cov.continuous_s)
             timeline.append((COVERAGE_LOW, {"day": d, **{k: v for k, v in coverage_mod.as_json(cov).items()
@@ -305,8 +310,11 @@ def _finalise(session_id: str, day: date, *, live: SessionDay | None) -> Finalis
             equity={"nav_paise": equity[0]["nav_paise"], "cash_paise": equity[0]["cash_paise"],
                     "margin_paise": equity[0]["margin_blocked_paise"]},
             eod_state_json=state_text, labels=labels, timeline=timeline, wall_ns=timeutil.now_ns())
-        store.upsert_session_day(session_id, d, coverage=coverage_mod.as_float(cov),
-                                 coverage_json=json.dumps(coverage_mod.as_json(cov), sort_keys=True))
+        if isinstance(cov, str):
+            store.upsert_session_day(session_id, d, coverage=None, coverage_json=json.dumps({"unavailable": cov}))
+        else:
+            store.upsert_session_day(session_id, d, coverage=coverage_mod.as_float(cov),
+                                     coverage_json=json.dumps(coverage_mod.as_json(cov), sort_keys=True))
         # 3. the journal
         if live is not None:
             live.close(finalise=True)

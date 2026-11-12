@@ -223,6 +223,25 @@ class FinaliseTest(pf.PaperDayTest):
         self.fin()                                                              # a re-run adds no second flag
         self.assertEqual(len(self.coverage_flags()), 1)
 
+    def test_a_day_whose_coverage_cannot_be_computed_still_finalises(self):
+        self.traded_day().close()
+        with mock.patch.object(finalise.coverage_mod, "coverage",
+                               side_effect=finalise.coverage_mod.CoverageError("no continuous phase")):
+            res = self.fin()
+        self.assertEqual((res.status, res.error), ("finalised", None))
+        row = store.get_session_day(SID, pf.EXPIRY)
+        self.assertEqual(row["status"], "finalised")
+        self.assertIsNone(row["coverage"])
+        self.assertEqual(json.loads(row["coverage_json"]), {"unavailable": "no continuous phase"})
+        rows = [r for r in store.timeline(SID, limit=100) if r["kind"] == "coverage_unavailable"]
+        self.assertEqual([r["detail"]["reason"] for r in rows], ["no continuous phase"])
+        self.assertEqual(self.coverage_flags(), [])
+        self.assertEqual(finalise.next_sod_state(SID, DAY2)["trade_date"], pf.EXPIRY)    # the next day opens
+        with mock.patch.object(finalise.coverage_mod, "coverage",
+                               side_effect=finalise.coverage_mod.CoverageError("no continuous phase")):
+            self.fin()
+        self.assertEqual(len([r for r in store.timeline(SID, limit=100) if r["kind"] == "coverage_unavailable"]), 1)
+
     def test_next_day_refuses_unfinalised_previous_day(self):
         self.assertIsNone(finalise.next_sod_state(SID, pf.DAY))               # no earlier day at all
         self.traded_day().close()
