@@ -276,7 +276,8 @@ def _check_paper(doc: dict) -> None:
 
 
 _SIGNED_DECIMAL = re.compile(r"-?[0-9]+(\.[0-9]+)?")
-RESEARCH_OBJECTIVES = ("sharpe", "net_pnl", "sortino", "calmar")
+# Equal to stockify.research.registry.OBJECTIVES (a test holds them equal; the registry imports the store).
+RESEARCH_OBJECTIVES = ("sharpe", "sortino", "calmar", "cagr", "net_pnl")
 
 
 def _research_decimal(value, where: str) -> Decimal:

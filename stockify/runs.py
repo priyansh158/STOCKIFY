@@ -76,17 +76,36 @@ def _config_json(cfg: dict) -> str:
     return numerics.dumps_canonical(cfg)
 
 
-def queue(config) -> str:  # noqa: ANN001
+def _with_family(cfg: dict) -> dict:
+    """`cfg` with its `family_id` filled by the default family when it has none (an explicit one is kept), and
+    the family row ensured (M6.4)."""
+    from stockify.research import registry
+    if cfg.get("family_id") is None:
+        cfg = {**cfg, "family_id": registry.default_family_id(cfg)}
+    registry.ensure_family(cfg["family_id"])
+    return cfg
+
+
+def _check_role(role, job_id) -> None:  # noqa: ANN001
+    from stockify.research import registry
+    registry.check_role(role)
+    if job_id is not None and not isinstance(job_id, str):
+        raise ValueError(f"job_id must be a string or None, not {job_id!r}")
+
+
+def queue(config, *, role: str = "trial", job_id: str | None = None) -> str:  # noqa: ANN001
     """Validate the config (RunConfigError propagates), write `runs/<id>/request.json` and a `queued` row.
-    Starts nothing; returns the run id."""
-    cfg = runconfig.load(config)
+    A config without a `family_id` gets the default family (written into the stored config too); `role` is one
+    of registry.ROLES (else ValueError). Starts nothing; returns the run id."""
+    _check_role(role, job_id)
+    cfg = _with_family(runconfig.load(config))
     run_id = queued_run_id(cfg["name"])
     folder = paths.run_path(run_id)
     folder.mkdir(parents=True)
     text = _config_json(cfg)
     (folder / "request.json").write_text(text + "\n", encoding="utf-8", newline="\n")
-    store.create_run({"run_id": run_id, "status": "queued", "name": cfg["name"], "family_id": cfg.get("family_id"),
-                      "config_json": text, "folder": str(folder), "impl": "engine"})
+    store.create_run({"run_id": run_id, "status": "queued", "name": cfg["name"], "family_id": cfg["family_id"],
+                      "role": role, "job_id": job_id, "config_json": text, "folder": str(folder), "impl": "engine"})
     return run_id
 
 
@@ -107,16 +126,19 @@ def _fail(run_id: str, e: BaseException) -> RunFailed:
     return RunFailed(run_id, err)
 
 
-def launch(config=None, *, run_id: str | None = None, impl: str = "engine", report: bool = True) -> str:  # noqa: ANN001
+def launch(config=None, *, run_id: str | None = None, impl: str = "engine", report: bool = True,  # noqa: ANN001
+           role: str = "trial", job_id: str | None = None) -> str:
     """Run a config to completion and return its run id.
 
     With `run_id`, run that `queued` row (its stored config; `config` is ignored). Without, validate `config`
     and pick `<name>-<bundle sha12>`. A failure at any stage after validation, bundle resolution included,
-    leaves the row `failed` and raises RunFailed.
+    leaves the row `failed` and raises RunFailed. A new row gets `role` (one of registry.ROLES, else ValueError),
+    `job_id` and the default family when the config has none; a queued row keeps what `queue` stored.
     """
     from stockify import bundle as bundle_mod
     if impl not in IMPLS:
         raise ValueError(f"impl must be one of {IMPLS}, not {impl!r}")
+    _check_role(role, job_id)
     if run_id is not None:
         try:
             paths.run_path(run_id)
@@ -131,7 +153,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
             raise RunNotQueued(f"run {run_id} stopped being queued before it started")
         _claim(run_id)
     else:
-        cfg = runconfig.load(config)
+        cfg = _with_family(runconfig.load(config))
     text = _config_json(cfg)
 
     try:
@@ -140,15 +162,15 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         if run_id is None:
             run_id = queued_run_id(cfg["name"])
             store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
-                              "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
-                              "started_ns": timeutil.now_ns()})
+                              "family_id": cfg["family_id"], "role": role, "job_id": job_id,
+                              "config_json": text, "impl": impl, "started_ns": timeutil.now_ns()})
         raise _fail(run_id, e) from e
 
     if run_id is None:
         run_id = bundle_run_id(cfg["name"], b)
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
-                          "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
-                          "started_ns": timeutil.now_ns()})
+                          "family_id": cfg["family_id"], "role": role, "job_id": job_id,
+                          "config_json": text, "impl": impl, "started_ns": timeutil.now_ns()})
         _claim(run_id)
     folder = paths.run_path(run_id)
     try:
@@ -223,15 +245,20 @@ def _summarise(folder: Path) -> tuple[dict, dict]:
 
 def import_run(folder) -> str:  # noqa: ANN001
     """Rebuild the `runs` row and child rows from a finished run folder; returns the run id (the folder name).
-    A new row is `done`; an existing row keeps a `cancelled` status, any other becomes `done`."""
+    A new row is `done`; an existing row keeps a `cancelled` status, any other becomes `done`. The family is the
+    folder's `family_id`; a pre-M6 folder has none, so the stored row's family is kept (a new row gets the default
+    family). An existing row keeps its `role` and `job_id`."""
     folder = Path(folder)
     run_id = folder.name
     if paths.run_path(run_id).resolve() != folder.resolve():
         raise ValueError(f"{folder} is not a run folder in {paths.runs_dir()}")
     fields, children = _summarise(folder)
     cfg = json.loads((folder / "run.json").read_text(encoding="utf-8"))
-    fields.update(name=cfg.get("name"), family_id=cfg.get("family_id"), config_json=_config_json(cfg))
     row = store.get_run(run_id)
+    if cfg.get("family_id") is None:
+        cfg = {**cfg, "family_id": (row or {}).get("family_id")}
+    cfg = _with_family(cfg)
+    fields.update(name=cfg.get("name"), family_id=cfg["family_id"], config_json=_config_json(cfg))
     if row is None:
         store.create_run({"run_id": run_id, "status": "done", **fields})
     else:
@@ -270,8 +297,10 @@ def rerun(run_id: str) -> tuple[str, bool]:
     impl = "oracle" if manifest.get("engine") == "oracle" else "engine"
     new_id = unique_run_id(f"{run_id}-rerun")
     folder = paths.run_path(new_id)
-    store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"),
-                      "family_id": cfg.get("family_id"), "config_json": _config_json(cfg), "impl": impl,
+    src_row = store.get_run(run_id) or {}
+    cfg = _with_family({**cfg, "family_id": src_row.get("family_id") or cfg.get("family_id")})   # the source's family
+    store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"), "role": "rerun",
+                      "family_id": cfg["family_id"], "config_json": _config_json(cfg), "impl": impl,
                       "folder": str(folder), "started_ns": timeutil.now_ns()})
     _claim(new_id)
     try:

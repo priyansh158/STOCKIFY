@@ -80,6 +80,9 @@ def _validate(raw: dict) -> dict:
     cfg = runconfig.validate(run, packs_required=False)
     cfg["schema"] = SCHEMA
     cfg["universe"] = copy.deepcopy(universe)
+    if cfg.get("family_id") is None:                       # M6.4: every session has a family (dataset `live`)
+        from stockify.research import registry
+        cfg["family_id"] = registry.family_for_session(cfg)
     if cfg["margin"]["model"] == "live_with_fallback":     # a number that means something only there (MEZ 5.1)
         cfg["margin"]["live_fresh_s"] = fresh
     return cfg
