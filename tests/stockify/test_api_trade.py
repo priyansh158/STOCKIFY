@@ -301,6 +301,34 @@ class RoundTwoTests(TradeBase):
             self.assertNotIn("priya", r.text)
             self.assertNotIn("lab", r.text)
 
+    def test_orders_and_fills_come_back_in_a_typed_shape(self):
+        self.make("a")
+        store.upsert_session_day("a", DAY)
+        store.apply_session_outputs("a", DAY, {
+            "orders": [{"order_id": 1, "parent_id": 0, "instrument_id": 7, "side": "BUY", "product": "NRML",
+                        "type": "LIMIT", "validity": "DAY", "qty": 65, "price_paise": 1000, "trigger_paise": 0,
+                        "tag": "", "t_submit_ns": 4, "t_activate_ns": 4, "status": "COMPLETE", "filled_qty": 65,
+                        "avg_price_paise": 999, "reason": "", "not_in_the_dto": 1}],
+            "fills": [{"fill_id": 1, "order_id": 1, "t_ns": 5, "instrument_id": 7, "side": "BUY", "qty": 65,
+                       "price_paise": 999, "evidence": "ltp"}]}, first_event_no=1, last_frame=None)
+        (o,) = self.client.get("/api/trade/sessions/a/orders").json()
+        self.assertEqual((o["order_id"], o["side"], o["qty"], o["filled_qty"], o["avg_price_paise"], o["status"]),
+                         (1, "BUY", 65, 65, 999, "COMPLETE"))
+        self.assertIsNone(o["tag"])                  # a blank cell is null, never an empty string
+        self.assertIsNone(o["reason"])
+        self.assertNotIn("not_in_the_dto", o)
+        (f,) = self.client.get("/api/trade/sessions/a/fills").json()
+        self.assertEqual((f["fill_id"], f["t_ns"], f["qty"], f["price_paise"], f["evidence"]), (1, 5, 65, 999, "ltp"))
+
+    def test_an_order_row_with_no_id_is_a_clean_409(self):
+        self.make("a")
+        store.upsert_session_day("a", DAY)
+        store.apply_session_outputs("a", DAY, {"orders": [{"order_id": 3, "qty": "many"}]}, first_event_no=1,
+                                    last_frame=None)
+        r = self.client.get("/api/trade/sessions/a/orders")
+        self.assertEqual(r.status_code, 409)
+        self.assertIsInstance(r.json()["detail"], str)
+
     def test_malformed_rows_are_a_clean_error_not_a_500(self):
         self.make("a")
         store.upsert_session_day("a", DAY)

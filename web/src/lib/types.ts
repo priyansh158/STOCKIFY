@@ -333,6 +333,37 @@ export interface SessionMarginDTO {
   error?: string | null;
 }
 
+export interface SessionOrderDTO {
+  order_id: number;
+  parent_id?: number | null;
+  instrument_id?: number | null;
+  side?: string | null;
+  product?: string | null;
+  type?: string | null;
+  validity?: string | null;
+  qty?: number | null;
+  price_paise?: number | null;
+  trigger_paise?: number | null;
+  tag?: string | null;
+  t_submit_ns?: number | null;
+  t_activate_ns?: number | null;
+  status?: string | null;
+  filled_qty?: number | null;
+  avg_price_paise?: number | null;
+  reason?: string | null;
+}
+
+export interface SessionFillDTO {
+  fill_id: number;
+  order_id?: number | null;
+  t_ns?: number | null;
+  instrument_id?: number | null;
+  side?: string | null;
+  qty?: number | null;
+  price_paise?: number | null;
+  evidence?: string | null;
+}
+
 export interface TradeLoginDTO {
   waiting_for_login: boolean;
   day: string;

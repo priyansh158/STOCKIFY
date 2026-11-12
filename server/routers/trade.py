@@ -21,8 +21,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionMarginDTO,
-                            SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
+from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionFillDTO,
+                            SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
 
 router = APIRouter(tags=["trade"])
 
@@ -373,16 +373,25 @@ def _rows(session_id: str, table: str, trade_date: str | None, offset: int, limi
     return _scrub(store.session_rows(session_id, table, trade_date=day, offset=offset, limit=limit)) if day else []
 
 
-@router.get("/api/trade/sessions/{session_id}/orders", response_model=list[dict[str, Any]])
+def _typed(model: type[BaseModel], rows: list[dict]) -> list[Any]:
+    """The stored rows as `model`: a blank cell is null, a key the model does not name is left out, and a row the model
+    cannot read (a key field missing or not a number) is a clean 409, never a 500."""
+    try:
+        return [model.model_validate({k: (None if v == "" else v) for k, v in r.items()}) for r in rows]
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=f"a stored {model.__name__} row is malformed: {type(e).__name__}") from e
+
+
+@router.get("/api/trade/sessions/{session_id}/orders", response_model=list[SessionOrderDTO])
 def session_orders(session_id: str, trade_date: str | None = Query(None), offset: int = Query(0, ge=0),
-                   limit: int = Query(500, ge=1, le=5000)) -> list[dict]:
-    return _rows(session_id, "orders", trade_date, offset, limit)
+                   limit: int = Query(500, ge=1, le=5000)) -> list[SessionOrderDTO]:
+    return _typed(SessionOrderDTO, _rows(session_id, "orders", trade_date, offset, limit))
 
 
-@router.get("/api/trade/sessions/{session_id}/fills", response_model=list[dict[str, Any]])
+@router.get("/api/trade/sessions/{session_id}/fills", response_model=list[SessionFillDTO])
 def session_fills(session_id: str, trade_date: str | None = Query(None), offset: int = Query(0, ge=0),
-                  limit: int = Query(500, ge=1, le=5000)) -> list[dict]:
-    return _rows(session_id, "fills", trade_date, offset, limit)
+                  limit: int = Query(500, ge=1, le=5000)) -> list[SessionFillDTO]:
+    return _typed(SessionFillDTO, _rows(session_id, "fills", trade_date, offset, limit))
 
 
 @router.get("/api/trade/sessions/{session_id}/timeline", response_model=list[SessionTimelineDTO])

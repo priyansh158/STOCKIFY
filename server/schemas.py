@@ -353,6 +353,39 @@ class SessionMarginDTO(BaseModel):
     error: str | None = None
 
 
+class SessionOrderDTO(BaseModel):
+    """One paper order as the engine stored it (A1 6.3 orders.csv). Money in paise; an unset number is null."""
+    order_id: int
+    parent_id: int | None = None
+    instrument_id: int | None = None
+    side: str | None = None
+    product: str | None = None
+    type: str | None = None
+    validity: str | None = None
+    qty: int | None = None
+    price_paise: int | None = None
+    trigger_paise: int | None = None
+    tag: str | None = None
+    t_submit_ns: int | None = None
+    t_activate_ns: int | None = None
+    status: str | None = None
+    filled_qty: int | None = None
+    avg_price_paise: int | None = None
+    reason: str | None = None
+
+
+class SessionFillDTO(BaseModel):
+    """One paper fill as the engine stored it (A1 6.3 fills.csv); `t_ns` is UTC epoch nanoseconds."""
+    fill_id: int
+    order_id: int | None = None
+    t_ns: int | None = None
+    instrument_id: int | None = None
+    side: str | None = None
+    qty: int | None = None
+    price_paise: int | None = None
+    evidence: str | None = None
+
+
 class TradeLoginDTO(BaseModel):
     """The owner's Kite login window for the next session, on the owner's own clock."""
     waiting_for_login: bool
