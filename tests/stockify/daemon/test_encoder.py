@@ -230,7 +230,7 @@ class PaperConfigTests(unittest.TestCase):
         self.assertEqual(doc["clock_every_s"], 1)
         self.assertEqual(doc["journal"], {"fsync_every_s": 5})
         self.assertEqual(doc["dispatcher_queue_max"], 200000)
-        self.assertEqual(doc["margin_poll"], {"debounce_s": 2, "every_s": 300, "max_rps": 10})
+        self.assertEqual(doc["margin_poll"], {"debounce_s": 2, "every_s": 300, "max_rps": 3})
         self.assertEqual((doc["token_poll_s"], doc["commands_every_s"], doc["sod_state_warn_mb"]), (15, 1, 64))
         self.assertEqual(doc["coverage_threshold"], "0.98")
 
@@ -243,7 +243,7 @@ class PaperConfigTests(unittest.TestCase):
                 (tmp / "paper.json").write_text(json.dumps({**good, "coverage_threshold": text}), encoding="utf-8")
                 self.assertEqual(loader.load_json("paper.json", tmp)["coverage_threshold"], text)
         top = {**good, "clock_every_s": 3600, "journal": {"fsync_every_s": 60}, "dispatcher_queue_max": 10_000_000,
-               "margin_poll": {"debounce_s": 60, "every_s": 86_400, "max_rps": 100}, "token_poll_s": 3600,
+               "margin_poll": {"debounce_s": 60, "every_s": 86_400, "max_rps": 10}, "token_poll_s": 3600,
                "commands_every_s": 60, "sod_state_warn_mb": 100_000}
         (tmp / "paper.json").write_text(json.dumps(top), encoding="utf-8")
         self.assertEqual(loader.load_json("paper.json", tmp)["token_poll_s"], 3600)
@@ -258,7 +258,7 @@ class PaperConfigTests(unittest.TestCase):
                          ("clock_every_s", 3601), ("journal", {"fsync_every_s": 61}), ("dispatcher_queue_max", 10_000_001),
                          ("margin_poll", {"debounce_s": 61, "every_s": 300, "max_rps": 10}),
                          ("margin_poll", {"debounce_s": 2, "every_s": 86_401, "max_rps": 10}),
-                         ("margin_poll", {"debounce_s": 2, "every_s": 300, "max_rps": 101}),
+                         ("margin_poll", {"debounce_s": 2, "every_s": 300, "max_rps": 11}),
                          ("token_poll_s", 3601), ("commands_every_s", 61), ("sod_state_warn_mb", 100_001),
                          ("clock_every_s", 0), ("journal", {"fsync_every_s": 0}), ("dispatcher_queue_max", -1),
                          ("margin_poll", {"debounce_s": 2, "every_s": 300}), ("token_poll_s", True),

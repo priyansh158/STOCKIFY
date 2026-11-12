@@ -520,6 +520,15 @@ class DispatcherTest(pf.PaperDayTest):
         self.assertEqual(pokes[0].portfolio_sha256, sd.engine.margin_now()["portfolio_sha256"])
         self.assertTrue(pokes[0].fallback)
 
+    def test_a_snapshot_that_cannot_be_queued_pokes_nothing(self):
+        sd = self.make_day("s1", self._buy())
+        disp = self.dispatcher([sd], replay=False)
+        poller = self._poller(disp)
+        with mock.patch("stockify.daemon.margin_poller.put_latest", side_effect=RuntimeError("full")):
+            self.play(disp)
+            disp.drain()
+        self.assertFalse(poller.pending("s1"))                     # no poke without the snapshot it is about
+
     def test_periodic_snapshots_come_every_every_s_of_stamp_time_and_only_with_legs(self):
         sd = self.make_day("s1", self._buy())
         disp = self.dispatcher([sd], replay=False)

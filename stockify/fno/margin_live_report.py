@@ -9,7 +9,9 @@ force at the request (the file's created time to the request). Rows that are err
 
 The L2 column is experimental and computed here in Python only; no engine, run or journal uses it. L2 is the
 staircase total corrected by the median Kite / staircase ratio of the EARLIER answers of the same type and
-underlying (no look-ahead; the first answer of a group has none to learn from and is left out of the L2 figures).
+underlying (no look-ahead; the first answer of a group has none to learn from and is left out of the L2 figures). The
+earlier answers are every one in the log before it, whatever the report's --from and --to say, so the same answer
+has the same L2 in any window; the window only picks which answers are reported.
 It says how much of the gap a simple learned correction would remove, which is what the deferred L2 (D-69) would be.
 """
 from __future__ import annotations
@@ -47,7 +49,7 @@ def _age_bucket(age) -> str:  # noqa: ANN001
     return UNKNOWN
 
 
-def _rows(start: date | None, end: date | None) -> list[dict]:
+def _rows() -> list[dict]:
     from stockify import store
     from stockify.fno import span_validate as sv
     try:
@@ -55,16 +57,12 @@ def _rows(start: date | None, end: date | None) -> list[dict]:
             every = store.margin_live_rows()
     except sqlite3.OperationalError:                     # no lab yet, or one from before the log: nothing logged
         return []
-    out = []
-    for r in every:
-        day = r.get("trade_date")
-        if not day or r.get("step") != "current":
-            continue                                    # a row from before the log existed has no gap to report
-        d = date.fromisoformat(day)
-        if (start is not None and d < start) or (end is not None and d > end):
-            continue
-        out.append(r)
-    return out
+    return [r for r in every if r.get("trade_date") and r.get("step") == "current"]   # older rows have no gap
+
+
+def _in_window(r: dict, start: date | None, end: date | None) -> bool:
+    d = date.fromisoformat(r["trade_date"])
+    return not ((start is not None and d < start) or (end is not None and d > end))
 
 
 def _table(title: str, groups: dict[str, list[dict]], order: list[str] | None = None) -> list[str]:
@@ -88,20 +86,23 @@ def _rupees(paise: int) -> str:
     return fmt(paise)
 
 
-def _l2(answers: list[dict]) -> list[str]:
-    """The experimental L2 figures (see the module doc), by portfolio type."""
+def _l2(history: list[dict], window: list[dict]) -> list[str]:
+    """The experimental L2 figures (see the module doc), by portfolio type, for the answers in `window`. Each is
+    corrected by every earlier answer in `history` (the whole log, not only the report's window)."""
     by_type: dict[str, list[tuple[int, int]]] = {}          # type -> [(staircase |gap| ppm, L2 |gap| ppm)]
     ratios: dict[tuple, list[Fraction]] = {}
     seen: dict[str, int] = {}
-    for r in sorted(answers, key=lambda r: r["wall_ns"]):
+    shown = {id(r) for r in window}
+    for r in sorted(history, key=lambda r: r["wall_ns"]):
         m = _market(r)
         typ, key = m.get("type", UNKNOWN), (m.get("type"), m.get("underlying"))
-        seen[typ] = seen.get(typ, 0) + 1
         ours, kite = r["ours_total_paise"], r["kite_total_paise"]
+        if id(r) in shown:
+            seen[typ] = seen.get(typ, 0) + 1
         if ours is None or ours <= 0 or kite is None or kite <= 0:
             continue
         earlier = ratios.get(key)
-        if earlier:
+        if earlier and id(r) in shown:
             est = ours * quantile_fraction(earlier)
             by_type.setdefault(typ, []).append(
                 (abs(_half_up(Fraction(ours - kite, kite) * 1_000_000)),
@@ -109,14 +110,14 @@ def _l2(answers: list[dict]) -> list[str]:
         ratios.setdefault(key, []).append(Fraction(kite, ours))
     lines = ["", "L2 (experimental, Python only: the staircase scaled by the median Kite / staircase ratio of the earlier "
                  "answers of the same type and underlying)",
-             f"  {'':<16}{'answers':>9}{'staircase ppm':>15}{'L2 ppm':>10}"]
+             f"  {'':<16}{'answers':>14}{'staircase ppm':>15}{'L2 ppm':>10}"]
     if not by_type:
         return lines + ["  no group has an earlier answer to learn from yet"]
     for typ in sorted(by_type):
         pairs = by_type[typ]
         stair = _half_up(quantile([p[0] for p in pairs], MEDIAN))
         l2 = _half_up(quantile([p[1] for p in pairs], MEDIAN))
-        lines.append(f"  {typ:<16}{f'{len(pairs)} of {seen[typ]}':>9}{stair:>15}{l2:>10}")
+        lines.append(f"  {typ:<16}{f'{len(pairs)} of {seen[typ]}':>14}{stair:>15}{l2:>10}")
     return lines
 
 
@@ -128,11 +129,13 @@ def quantile_fraction(values: list[Fraction]) -> Fraction:
 
 def report(*, start: date | None, end: date | None) -> str:
     """The text of the live-margin disagreement report for the IST trade dates from `start` to `end` (inclusive)."""
-    rows = _rows(start, end)
+    every = _rows()
+    rows = [r for r in every if _in_window(r, start, end)]
     span = f"{start.isoformat() if start else 'the first day'} to {end.isoformat() if end else 'the last day'}"
     if not rows:
         return f"no live margin rows for {span} (the paper daemon's poller writes them while a session holds a book)\n"
     answers = [r for r in rows if not r.get("error") and r.get("gap_paise") is not None]
+    history = [r for r in every if not r.get("error") and r.get("gap_paise") is not None]
     errors = len(rows) - len(answers)
     lines = [f"Live Kite margin answers against the staircase, {span} (IST trade dates)",
              f"{len(rows)} rows, {len(answers)} answers, {errors} error{'s' if errors != 1 else ''}",
@@ -155,7 +158,7 @@ def report(*, start: date | None, end: date | None) -> str:
     lines += _table("by underlying", by_und)
     lines += _table("by IST hour", by_hour)
     lines += _table("by SPAN file age", by_age, [b[0] for b in AGE_BUCKETS] + [UNKNOWN])
-    lines += _l2(answers)
+    lines += _l2(history, answers)
     expiry = [r for r in answers if _market(r).get("expiry_day")]
     lines += ["", f"Answers with a leg expiring that day (kept for the X-9 expiry-day add-on check): {len(expiry)}"]
     return "\n".join(lines) + "\n"

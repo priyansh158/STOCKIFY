@@ -46,6 +46,21 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("SECRET123", stream.getvalue())
         self.assertIn("request_token=***", stream.getvalue())
 
+    def test_header_and_json_forms_are_blanked_too(self):
+        """IWB 5.2: error text from the Kite client and `requests` can carry these forms, not only `name=value`."""
+        header = "HTTP 403 Authorization: token abcd1234abcd1234:SECRET123tok rejected"
+        out = log_redaction.redact(header)
+        self.assertNotIn("SECRET123tok", out)
+        self.assertNotIn("abcd1234abcd1234", out)
+        self.assertIn("HTTP 403", out)
+        body = log_redaction.redact('{"status": "error", "access_token": "SECRET123tok", "n": 1}')
+        self.assertNotIn("SECRET123tok", body)
+        self.assertIn('"status": "error"', body)
+        self.assertIn('"n": 1', body)
+        single = log_redaction.redact("{'api_secret': 'SECRET123tok'}")
+        self.assertNotIn("SECRET123tok", single)
+        self.assertEqual(log_redaction.redact("access_token=SECRET123tok&x=1"), "access_token=***&x=1")
+
 
 if __name__ == "__main__":
     unittest.main()

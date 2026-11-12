@@ -143,16 +143,20 @@ class Dispatcher:
         """A RecorderSession gap tap."""
         self._offer((GAP, phase, reason, t, iid), t)
 
-    def put_inject(self, t: int, session_id: str | None, rank: int, record: bytes) -> None:
+    def put_inject(self, t: int, session_id: str | None, rank: int, record: bytes) -> bool:
         """A record for one session (or all, with None) that is neither a frame nor a gap: a band, a margin
-        answer, a control. `t` is its stamp, `clock.now_ns()` at the producer."""
-        self._offer((INJECT, t, session_id, rank, record), t)
+        answer, a control. `t` is its stamp, `clock.now_ns()` at the producer. True when it was queued, False when
+        the queue was full and it was dropped (the loss is journaled as a stall gap): a producer that logs the record
+        as applied must check."""
+        return self._offer((INJECT, t, session_id, rank, record), t)
 
-    def _offer(self, item: tuple, stamp: int) -> None:
+    def _offer(self, item: tuple, stamp: int) -> bool:
         try:
             self.queue.put_nowait(item)
+            return True
         except queue.Full:
             self._dropped(stamp, item)
+            return False
 
     def _dropped(self, stamp: int, item: tuple | None = None) -> None:
         with self._lock:
@@ -360,16 +364,15 @@ class Dispatcher:
             return
         try:
             legs = [(int(i), int(u)) for i, u in now["legs"]]
-            if filled:
-                poller.poke(sid)
-            elif not legs:
-                self._snap_next[sid] = self._stamp + poller.every_ns
-                return
             self._snap_next[sid] = self._stamp + poller.every_ns
+            if not filled and not legs:
+                return
             from stockify.daemon.margin_poller import MarginSnapshot, put_latest
             put_latest(poller.snapshots, MarginSnapshot(
                 sid, self._stamp, legs, now["portfolio_sha256"], [dict(r) for r in now["fallback"]],
                 "poke" if filled else "periodic"))
+            if filled:
+                poller.poke(sid)                       # after the snapshot it is about: never a poke without one
         except Exception:  # noqa: BLE001 — the poller is a courtesy; the day's feed already succeeded
             log.warning("session %s: handing the book to the margin poller failed", sid, exc_info=True)
 

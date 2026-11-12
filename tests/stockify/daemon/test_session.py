@@ -185,6 +185,49 @@ class AuthFailureTests(SessionTest):
         session.token_rejected("again")                                  # a second 403 changes nothing
         self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
 
+    def test_two_403s_make_one_gap_and_one_stop(self):
+        """IWB 5.2: the ticker's 403 and the poller's, in either order or at the same instant, are one expiry."""
+        for first, second in (("on_error", "rejected"), ("rejected", "on_error"), ("on_error", "on_error"),
+                              ("rejected", "rejected")):
+            session = self.fake_session()
+            taps = []
+            session.gap_taps.append(lambda *a, taps=taps: taps.append(a))
+            for how in (first, second):
+                if how == "on_error":
+                    session._on_error(None, 403, "Handshake status 403")
+                else:
+                    session.token_rejected("margin 403")
+            starts = [c for c in session.recorder.landing.open_gap.call_args_list if c.args[1] == "token_expired"]
+            self.assertEqual(len(starts), 1, (first, second))
+            self.assertEqual(len([t for t in taps if t[:2] == ("start", "token_expired")]), 1)
+            self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
+
+    def test_two_threads_with_a_403_each_make_one_gap_and_one_stop(self):
+        import threading
+        for _ in range(60):
+            session = self.fake_session()
+            taps = []
+            session.gap_taps.append(lambda *a, taps=taps: taps.append(a))
+            gate = threading.Barrier(2)
+
+            def ticker():
+                gate.wait()
+                session._on_error(None, 403, "Handshake status 403")
+
+            def poller():
+                gate.wait()
+                session.token_rejected("margin 403")
+
+            threads = [threading.Thread(target=ticker), threading.Thread(target=poller)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            starts = [c for c in session.recorder.landing.open_gap.call_args_list if c.args[1] == "token_expired"]
+            self.assertEqual(len(starts), 1)
+            self.assertEqual(len([t for t in taps if t[:2] == ("start", "token_expired")]), 1)
+            self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
+
     def test_a_lookalike_exception_from_elsewhere_is_not_an_expiry(self):
         class TokenException(Exception):
             pass

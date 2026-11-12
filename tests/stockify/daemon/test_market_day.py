@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
+import kite_client
 from tests.stockify.daemon import paper_fixture as pf
 
 from stockify import __main__ as cli
@@ -390,6 +391,126 @@ class MarketDayTest(pf.PaperDayTest):
         with mock.patch.object(market_day, "run_market_day", lambda **kw: calls.append(kw) or 0):
             self.assertEqual(cli.main([*base, "--replay-sandbox", str(real)]), 2)
         self.assertEqual(len(calls), 1)                                   # the real one never reached the daemon
+
+
+class FakeTicket:
+    def __init__(self):
+        self.released = 0
+
+    def release(self) -> None:
+        self.released += 1
+
+
+class FakeLiveTicker:
+    """Stands in for KiteTicker on the live path: never connects, says what was done to it."""
+
+    def __init__(self, events: list):
+        self.events = events
+        self.budget_ticket = FakeTicket()
+
+    def connect(self, threaded: bool = False) -> None:
+        self.events.append("ticker.connect")
+
+    def close(self, *args) -> None:
+        self.events.append("ticker.close")
+
+    def subscribe(self, tokens) -> None:
+        pass
+
+    def unsubscribe(self, tokens) -> None:
+        pass
+
+    def set_mode(self, mode, tokens) -> None:
+        pass
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class MarginPollerWiringTest(pf.PaperDayTest):
+    """IWB 5.2: the live run starts the margin poller after the engine thread and before the ticker connects, stops
+    it right after the ticker, never builds one in a replay, and a 403 seen twice is one token expiry."""
+
+    def setUp(self):
+        super().setUp()
+        import kite_client
+        from stockify import daemon, timeutil
+        from stockify.daemon.clock import ManualClock
+        self.record(seconds=120)
+        real = loader.load_json
+        for target, value in ((loader, {"load_json": lambda name, *a, **kw: pf.UNIVERSE if name == "universe.json"
+                                        else real(name, *a, **kw)}),):
+            for name, fn in value.items():
+                patcher = mock.patch.object(target, name, fn)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+        self.events: list[str] = []
+        self.clock = ManualClock(timeutil.ist_ns(DAY, "10:00:00"))
+        self.ticker = FakeLiveTicker(self.events)
+        for target, name, value in (("stockify.daemon.ticker", "make_live_ticker", lambda *a, **kw: self.ticker),
+                                    ("stockify.daemon.ticker", "live_call_in_ticker", lambda fn, *args: fn(*args)),
+                                    ("stockify.kite_readonly", "client", lambda: None)):
+            patcher = mock.patch(f"{target}.{name}", value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for obj, name, value in ((kite_client, "is_authenticated", lambda: True),
+                                 (kite_client, "load_cached_token", lambda: {"access_token": "not-a-real-token"}),
+                                 (kite_client, "_api_key", lambda: "not-a-real-key"),
+                                 (daemon, "_ensure_refdata", lambda day: None)):
+            patcher = mock.patch.object(obj, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        store.create_session("s1", "s1", self.session_cfg(strategy={"kind": "script", "actions": []}), 1)
+        lifecycle.arm("s1", wall_ns=2)
+
+    def run_live(self, stop: threading.Event, factory):
+        with mock.patch.object(market_day, "_margin_poller", factory):
+            return market_day.run_market_day(ticker_spec="live", session_ids=["s1"], clock=self.clock, stop=stop,
+                                             token_fresh=lambda: True)
+
+    def test_start_and_stop_order_in_a_live_run(self):
+        stop = threading.Event()
+        built = []
+        real = market_day._margin_poller
+
+        def factory(dispatcher, session, clock):
+            poller = real(dispatcher, session, clock)
+            poller.start = lambda: (self.events.append("poller.start"), stop.set())[0]
+            poller.stop = lambda: self.events.append("poller.stop")
+            built.append((poller, dispatcher))
+            return poller
+
+        self.assertEqual(self.run_live(stop, factory), exitcodes.OK)
+        [(poller, dispatcher)] = built
+        self.assertIs(dispatcher.margin_poller, poller)
+        self.assertEqual([e for e in self.events if e.startswith(("poller", "ticker"))],
+                         ["poller.start", "ticker.connect", "ticker.close", "poller.stop"])
+
+    def test_a_replay_never_builds_a_poller(self):
+        called = []
+        with mock.patch.object(market_day, "_margin_poller", lambda *a: called.append(a)):
+            self.assertEqual(market_day.run_market_day(ticker_spec=SPEC, session_ids=["s1"]), exitcodes.OK)
+        self.assertEqual(called, [])
+
+    def test_a_403_seen_twice_is_one_gap_and_one_token_expiry(self):
+        stop = threading.Event()
+        real = market_day._margin_poller
+
+        def factory(dispatcher, session, clock):
+            poller = real(dispatcher, session, clock)
+
+            def start():
+                poller.on_token_rejected()                 # two 403s, as two requests of a day's polling would give
+                poller.on_token_rejected()
+                stop.set()
+
+            poller.start = start
+            poller.stop = lambda: None
+            return poller
+
+        self.assertEqual(self.run_live(stop, factory), exitcodes.TOKEN_EXPIRED)
+        starts = [r for r in decode("s1") if r["kind"] == "GAP" and r["reason"] == "token_expired"
+                  and r["phase"] == 0]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(store.get_session("s1")["status"], "PAUSED")
 
 
 if __name__ == "__main__":

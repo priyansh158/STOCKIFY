@@ -99,6 +99,7 @@ class RecorderSession:
         self.connected = False
         self.stopped = threading.Event()
         self._lock = threading.Lock()
+        self._token_expired = False             # test-and-set under `_lock`: one expiry however many 403s arrive
         # Every subscription diff (re-centre, first build, pin) is computed and applied under this lock, on the ticker
         # thread: one order, so `manager.current` is always what Kite holds (RM 5.5).
         self.sub_lock = threading.RLock()
@@ -200,6 +201,9 @@ class RecorderSession:
         log.error("ticker error: code %s, reason %s", code, redact(reason))
         if is_auth_failure(code, reason):
             with self._lock:
+                if self._token_expired:                    # the ticker's 403 and a REST 403 are one expiry (IWB 5.2)
+                    return
+                self._token_expired = True
                 if self._disconnect_gap is not None:
                     now = self.clock.now_ns()
                     self.recorder.landing.close_gap(self._disconnect_gap, now)
@@ -212,9 +216,9 @@ class RecorderSession:
 
     def token_rejected(self, reason: str) -> None:
         """Another Kite call (the margin poller's, IWB 5.1) was refused with a 403: the token is dead, so this is the
-        ticker's own 403 path (a `token_expired` gap, exit 76, the sessions paused). Safe from any thread; once only."""
-        if not self.stopped.is_set():
-            self._on_error(None, 403, reason)
+        ticker's own 403 path (a `token_expired` gap, exit 76, the sessions paused). Safe from any thread: the flag
+        is set under the lock, so a ticker 403 and a poller 403 together give one gap and one stop."""
+        self._on_error(None, 403, reason)
 
     def _on_noreconnect(self, ws) -> None:  # noqa: ANN001
         if self.exit_code == exitcodes.OK:

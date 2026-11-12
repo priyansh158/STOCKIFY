@@ -53,14 +53,17 @@ def answer(span="150000.5", exposure="60000.25", additional="0", premium="1000")
 class FakeDispatcher:
     replay = False
 
-    def __init__(self, on_put=None):
+    def __init__(self, on_put=None, accept=True):
         self.puts: list[tuple] = []
         self.on_put = on_put
+        self.accept = accept
 
     def put_inject(self, t, session_id, rank, record):
         if self.on_put:
             self.on_put()
-        self.puts.append((t, session_id, rank, record))
+        if self.accept:
+            self.puts.append((t, session_id, rank, record))
+        return self.accept
 
 
 class FakeKite:
@@ -346,6 +349,233 @@ class LiveReportTests(SandboxedDBTest):
         text = report.report(start=None, end=None)
         self.assertIn("L2 (experimental", text)
         self.assertIn("2 of 3", text)                         # the first row has no earlier row to learn from
+
+
+# ── IWB 5.2: the review's fixes ──────────────────────────────────────────────────────────────────────────────────
+
+LONG_CALL = [(CALL, 65)]
+
+
+class _Err(Exception):
+    def __init__(self, text, code=None):
+        super().__init__(text)
+        self.code = code
+
+
+def _named(name, module="kiteconnect.exceptions"):
+    cls = type(name, (Exception,), {})
+    cls.__module__ = module
+    return cls
+
+
+class PartialAnswerTests(PollerBase):
+    def test_an_answer_missing_or_nulling_a_required_figure_is_refused_and_kept(self):
+        for key in ("span", "exposure", "additional"):
+            for how in ("missing", "null"):
+                final = {"span": 1500.0, "exposure": 600.0, "additional": 0.0, "option_premium": 10.0}
+                if how == "missing":
+                    del final[key]
+                else:
+                    final[key] = None
+                p = self.make(FakeKite(ManualClock(T0), result={"final": final}))
+                self.q.put_nowait(snap(sid=f"{key}-{how}"))
+                p.step()
+                row = store.margin_live_rows(session_id=f"{key}-{how}")[0]
+                self.assertIn(f"final.{key}", row["error"], (key, how))
+                self.assertEqual(json.loads(row["kite_json"])["final"], final)       # what Kite said is kept
+                self.assertIsNone(row["kite_total_paise"])
+        self.assertEqual(self.disp.puts, [])                                          # nothing was journaled
+
+    def test_a_missing_option_premium_is_fine(self):
+        p = self.make(FakeKite(ManualClock(T0), result={"final": {"span": 1500.0, "exposure": 600.0,
+                                                                  "additional": 0.0}}))
+        self.q.put_nowait(snap())
+        p.step()
+        [(_, _, _, record)] = self.disp.puts
+        self.assertEqual(self.decode(record)["payload"]["option_premium_paise"], 0)
+
+    def test_a_zero_total_is_refused_for_a_future_or_a_short_option_only(self):
+        zero = {"final": {"span": 0.0, "exposure": 0.0, "additional": 0.0, "option_premium": 0.0}}
+        p = self.make(FakeKite(ManualClock(T0), result=zero))
+        self.q.put_nowait(snap(sid="hedged"))                                        # a future and a short call
+        self.q.put_nowait(snap(sid="short", legs=[(CALL, -65)]))
+        p.step()
+        self.assertEqual(self.disp.puts, [])
+        for sid in ("hedged", "short"):
+            [row] = store.margin_live_rows(session_id=sid)
+            self.assertIn("zero", row["error"])
+            self.assertIn("final", json.loads(row["kite_json"]))
+        self.q.put_nowait(snap(sid="long", legs=LONG_CALL))                          # a bought option can need none
+        p.step()
+        [(_, sid, _, record)] = self.disp.puts
+        self.assertEqual(sid, "long")
+        self.assertEqual(self.decode(record)["payload"]["span_paise"], 0)
+
+
+class JournalFirstTests(PollerBase):
+    def test_an_answer_the_dispatcher_did_not_queue_is_an_error_row_that_keeps_kites_answer(self):
+        p = self.make(dispatcher=FakeDispatcher(accept=False))
+        self.q.put_nowait(snap())
+        p.step()
+        [row] = store.margin_live_rows()
+        self.assertIn("not_journaled", row["error"])
+        self.assertIsNone(row["kite_total_paise"])                                   # no applied answer is logged
+        self.assertIsNone(row["gap_paise"])
+        self.assertEqual(json.loads(row["kite_json"])["final"]["span"], 150000.5)
+
+    def test_the_real_dispatcher_says_whether_it_queued(self):
+        from stockify.daemon.dispatcher import Dispatcher
+        from stockify.daemon.encoder import FrameEncoder
+        from stockify.config import loader
+        cfg = {**loader.load_json("paper.json"), "dispatcher_queue_max": 1}
+        disp = Dispatcher([], FrameEncoder({}), clock=ManualClock(T0), cfg=cfg, replay=False)
+        rank = packs.RANK[packs.REFDATA_K]
+        self.assertIs(disp.put_inject(T0, "s1", rank, b"x"), True)
+        self.assertIs(disp.put_inject(T0, "s1", rank, b"x"), False)                  # the queue is full: dropped
+        self.assertEqual(disp.stats.dropped, 1)
+
+    def test_an_answer_that_arrives_after_stop_is_never_journaled(self):
+        holder = []
+
+        class StoppingKite(FakeKite):
+            def basket_order_margins(self, orders, *, consider_positions=False, mode=None):
+                holder[0].stop()                                                     # the shutdown begins mid-request
+                return super().basket_order_margins(orders, consider_positions=consider_positions, mode=mode)
+
+        p = self.make()
+        self.kite = StoppingKite(self.clock)
+        holder.append(p)
+        self.q.put_nowait(snap())
+        p.step()
+        self.assertEqual(self.disp.puts, [])
+        [row] = store.margin_live_rows()
+        self.assertIn("stopped", row["error"])
+        self.assertIsNone(row["kite_total_paise"])
+        self.assertIn("final", json.loads(row["kite_json"]))
+
+    def test_the_module_says_only_what_is_guaranteed(self):
+        text = Path(mp.__file__).read_text(encoding="utf-8")
+        self.assertIn("queued", text)
+        self.assertNotIn("journaled as a\nREFDATA", text)
+
+
+class RejectionTests(PollerBase):
+    def test_only_a_token_rejection_stops_the_recorder(self):
+        token, perm = _named("TokenException")("Incorrect api_key or access_token"), \
+            _named("PermissionException")("Insufficient permission for that call")
+        token.code = perm.code = 403
+        for exc, stops in ((token, True), (_Err("Forbidden", code=403), True), (perm, False),
+                           (_Err("Insufficient permission for that call", code=403), False),
+                           (_Err("Too many requests", code=429), False)):
+            p = self.make(FakeKite(ManualClock(T0), error=exc))
+            self.q.put_nowait(snap())
+            p.step()
+            self.assertEqual(len(self.rejected), 1 if stops else 0, repr(exc))
+            self.assertTrue(store.margin_live_rows()[-1]["error"])
+
+
+class BackoffTests(PollerBase):
+    def test_a_429_backs_off_exponentially_up_to_every_s_and_a_success_resets_it(self):
+        p = self.make()
+        self.kite.error = _Err("Too many requests", code=429)
+        self.q.put_nowait(snap())
+        delays = []
+        for _ in range(14):
+            self.assertEqual(p.step(), 1)
+            delays.append(p.blocked_until_ns - self.clock.now_ns())
+            self.advance(delays[-1] / SEC - 0.5)
+            self.assertEqual(p.step(), 0)                                            # still backing off
+            self.advance(0.5)
+        self.assertEqual(delays[:4], [1 * SEC, 2 * SEC, 4 * SEC, 8 * SEC])
+        self.assertTrue(all(b >= a for a, b in zip(delays, delays[1:])))
+        self.assertEqual(max(delays), 300 * SEC)                                     # capped at every_s
+        self.kite.error = None
+        self.assertEqual(p.step(), 1)                                                # the retry succeeds
+        self.assertEqual(len(self.disp.puts), 1)
+        self.kite.error = _Err("Too many requests", code=429)
+        self.q.put_nowait(snap(engine_ns=T0 + 600 * SEC))
+        self.advance(1)
+        p.step()
+        self.assertEqual(p.blocked_until_ns - self.clock.now_ns(), 1 * SEC)          # reset by the success
+
+    def test_a_missing_login_writes_one_error_row_per_login_state_change(self):
+        import kite_client
+        state = {"login": False}
+        p = self.make()
+
+        def factory():
+            if not state["login"]:
+                raise kite_client.KiteNotAuthenticated("no token")
+            return self.kite
+
+        p.client_factory = factory
+        for n in range(3):
+            self.q.put_nowait(snap(engine_ns=T0 + n * 300 * SEC))
+            p.step()
+            self.advance(300)
+        self.assertEqual(len(store.margin_live_rows()), 1)
+        self.assertEqual(self.kite.calls, [])
+        state["login"] = True
+        self.q.put_nowait(snap(engine_ns=T0 + 900 * SEC))
+        p.step()
+        self.assertEqual(len(self.kite.calls), 1)
+        state["login"] = False                                                       # the login is lost again
+        self.advance(300)
+        self.q.put_nowait(snap(engine_ns=T0 + 1200 * SEC))
+        p.step()
+        self.assertEqual(len(store.margin_live_rows()), 3)                           # the first, the answer, this one
+
+
+class SpinAndConfigTests(PollerBase):
+    def test_a_poke_with_no_snapshot_does_not_spin_the_thread(self):
+        p = self.make()
+        p.poke("s1")
+        self.advance(5)
+        self.assertEqual(p.step(), 0)
+        self.assertGreaterEqual(p._next_wait_s(), mp.IDLE_WAIT_S)
+
+    def test_max_rps_defaults_to_3_and_is_bounded_at_10(self):
+        from stockify.config import loader
+        self.assertEqual(loader.load_json("paper.json")["margin_poll"]["max_rps"], 3)
+        self.assertEqual(loader.PAPER_BOUNDS["margin_poll.max_rps"], 10)
+        with self.assertRaises(ValueError):
+            self.make(cfg={"margin_poll": {"debounce_s": 2, "every_s": 300, "max_rps": 11}})
+        self.make(cfg={"margin_poll": {"debounce_s": 2, "every_s": 300, "max_rps": 10}})
+
+
+class RedactTests(unittest.TestCase):
+    def test_the_poller_error_text_hides_header_and_json_tokens(self):
+        for text in ("HTTP 403 Authorization: token abcd1234abcd1234:SECRETvalueXYZ rejected",
+                     'body {"access_token": "SECRETvalueXYZ", "x": 1}',
+                     "access_token=SECRETvalueXYZ&y=1"):
+            self.assertNotIn("SECRETvalueXYZ", mp.redact(text), text)
+        self.assertIn('"x": 1', mp.redact('body {"access_token": "SECRETvalueXYZ", "x": 1}'))
+
+
+class LiveReportWindowTests(SandboxedDBTest):
+    db_modules = (store,)
+
+    def test_l2_learns_from_every_earlier_answer_not_only_those_in_the_window(self):
+        day1 = timeutil.ist_ns(DAY, "10:15:00")
+        day2 = timeutil.ist_ns(date(2026, 11, 18), "10:15:00")
+        for n in range(3):
+            add_live(wall_ns=day1 + n * SEC, gap=-200_000, kite_total=20_200_000)
+        add_live(wall_ns=day2, gap=-200_000, kite_total=20_200_000)
+        whole = report.report(start=None, end=None)
+        window = report.report(start=date(2026, 11, 18), end=None)
+        self.assertIn("1 of 1", window)                                              # learned from the earlier day
+        self.assertIn("3 of 4", whole)
+
+    def test_the_l2_columns_line_up(self):
+        base = timeutil.ist_ns(DAY, "10:15:00")
+        for n in range(12):
+            add_live(wall_ns=base + n * SEC, gap=-200_000, kite_total=20_200_000)
+        lines = report.report(start=None, end=None).splitlines()
+        i = next(k for k, ln in enumerate(lines) if ln.startswith("L2"))
+        header, row = lines[i + 1], lines[i + 2]
+        self.assertIn("11 of 12", row)
+        self.assertEqual(len(header), len(row))
+        self.assertEqual(header.index("L2 ppm") + len("L2 ppm"), len(row))
 
 
 if __name__ == "__main__":

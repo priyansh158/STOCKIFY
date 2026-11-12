@@ -626,6 +626,7 @@ def _margin_poller(dispatcher, session, clock):  # noqa: ANN001, ANN202
     token-expiry path."""
     import queue
     from stockify import kite_readonly
+    from stockify.config import loader
     from stockify.daemon.margin_poller import MarginPoller
     return MarginPoller(queue.Queue(maxsize=256), dispatcher, client_factory=kite_readonly.client, clock=clock,
                         cfg=loader.load_json("paper.json"),
