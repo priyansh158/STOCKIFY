@@ -434,6 +434,11 @@ def _summary_line(m: dict, labels) -> str:  # noqa: ANN001
             f"labels {', '.join(labels)}")
 
 
+def _run_roles() -> tuple[str, ...]:
+    from stockify.research import registry
+    return tuple(registry.ROLES)
+
+
 def _cmd_run(args) -> int:
     """Exit 0 done, 1 run failed (or re-run not reproduced), 2 bad config / usage / a --run-id not queued."""
     import json
@@ -478,7 +483,8 @@ def _cmd_run(args) -> int:
         return 2
     try:
         config = _with_unlock(args.config, args.unlock_holdout)
-        run_id = runs.launch(config, run_id=args.run_id, impl=args.impl, report=not args.no_report)
+        run_id = runs.launch(config, run_id=args.run_id, impl=args.impl, report=not args.no_report,
+                             role=args.role, job_id=args.job_id)
     except (runconfig.RunConfigError, runs.RunNotQueued) as e:
         print(e, file=sys.stderr)
         return 2
@@ -1014,6 +1020,10 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     rn.add_argument("--no-report", action="store_true", help="skip report.md and the charts")
     rn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    rn.add_argument("--role", default="trial", choices=_run_roles(),
+                    help="how the run counts (default trial: counts toward N in the deflated Sharpe); the research "
+                         "tools set the others for their own runs")
+    rn.add_argument("--job-id", help="the research job this run belongs to (set by the research tools)")
     rn.set_defaults(func=_cmd_run)
     g = sub.add_parser("golden", help="golden scenarios (A3)")
     gsub = g.add_subparsers(dest="golden_command", required=True)
