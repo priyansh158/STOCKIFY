@@ -129,6 +129,13 @@ class CheckResult:
     prices: dict[str, int]                 # what each price came from -> paise
     labels: list[str] = field(default_factory=list)
     at_defaulted: bool = False
+    kite: dict | None = None               # `--live`: Kite's answer in paise (span, exposure, additional, premium)
+
+    @property
+    def kite_total(self) -> int | None:
+        """Kite's span + exposure + additional (D-62: not the premium), when it was asked."""
+        k = self.kite
+        return None if k is None else k["span_paise"] + k["exposure_paise"] + k["additional_paise"]
 
     @property
     def total(self) -> int:
@@ -167,8 +174,23 @@ def _rows_for(legs: list[tuple[str, int, str]], day: date) -> tuple[dict[int, di
     return rows, signed, {u: v[0] for u, v in unds.items()}
 
 
-def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | None = None) -> CheckResult:
-    """The staircase requirement of the basket at `at` IST on `day` (default: the latest archived day)."""
+def _ask_kite(rows: dict[int, dict], signed: list[tuple[int, int]], client) -> dict:  # noqa: ANN001
+    """Kite's `/margins/basket` answer for the basket (read-only, `consider_positions=False`), as paise."""
+    from stockify.daemon.margin_poller import MarginPoller, kite_parts
+    from server.log_redaction import redact
+    try:
+        answer = client().basket_order_margins(
+            MarginPoller._orders([(rows[i], u) for i, u in signed]), consider_positions=False)
+        return kite_parts(answer)
+    except Exception as exc:  # noqa: BLE001 — a failed ask is reported, never a traceback; secrets stay out of it
+        raise CheckDataError(f"Kite did not answer: {redact(' '.join(str(exc).split()))[:300]}") from exc
+
+
+def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | None = None, *, live: bool = False,
+          client=None) -> CheckResult:  # noqa: ANN001
+    """The staircase requirement of the basket at `at` IST on `day` (default: the latest archived day). With `live`
+    Kite is also asked for the same basket (IWB 5.1; `client` is a factory of a ReadOnlyKite, default
+    `kite_readonly.client`); the staircase itself never reads that answer."""
     from stockify import bundle as B
     from stockify import timeutil
     from stockify.data import refdata
@@ -235,8 +257,14 @@ def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | N
         model = StaircaseMargin(engine.bundle, engine)
         parts = model.breakdown([(i, "NRML", u) for i, u in signed], rows.__getitem__, quotes.get, d)
     named = [(next(u for u, i in index_of.items() if i == b.underlying_id), b) for b in parts]
+    kite = None
+    if live:
+        if client is None:
+            from stockify import kite_readonly
+            client = kite_readonly.client
+        kite = _ask_kite(rows, signed, client)
     return CheckResult(day, at, now_ns, legs, file, chosen["created_ns"], named, prices,
-                       sorted(model.labels | engine.labels), at_defaulted=defaulted)
+                       sorted(model.labels | engine.labels), at_defaulted=defaulted, kite=kite)
 
 
 def check_text(res: CheckResult) -> str:
@@ -260,6 +288,15 @@ def check_text(res: CheckResult) -> str:
             lines += [f"  exposure (ELM)      {_rupees(b.elm)}", f"  expiry-day add-on   {_rupees(b.addons)}"]
         lines.append(f"  total               {_rupees(b.total)}")
     lines += ["", f"Requirement: {_rupees(res.total)}", ""]
+    if res.kite is not None:
+        k = res.kite
+        lines += ["Kite's answer (live, consider_positions=false; read-only, no order is placed):",
+                  f"  SPAN                {_rupees(k['span_paise'])}",
+                  f"  exposure            {_rupees(k['exposure_paise'])}",
+                  f"  additional          {_rupees(k['additional_paise'])}",
+                  f"  total               {_rupees(res.kite_total)}   (the premium of bought options, "
+                  f"{_rupees(k['option_premium_paise'])}, is not margin: D-62)",
+                  f"The staircase minus Kite: {_rupees(res.total - res.kite_total)}", ""]
     if res.prices:
         lines.append("Prices (from the SPAN file; live prices move the exposure): "
                      + ", ".join(f"{k} {_rupees(v)}" for k, v in sorted(res.prices.items())))
@@ -315,6 +352,8 @@ def quantile(values: list[int], q: Fraction) -> Fraction | None:
 class Scorecard:
     rows: list[ScoreRow]
     notes: list[str]
+    live_answers: int = 0       # margin_live rows with Kite's answer (IWB 5.1: the daemon's poller)
+    live_errors: int = 0        # margin_live rows that are an error (403, 429, network, a refused answer)
 
     def groups(self) -> dict[tuple[str, str], list[ScoreRow]]:
         out: dict[tuple[str, str], list[ScoreRow]] = {}
@@ -384,6 +423,9 @@ def scorecard() -> Scorecard:
     from stockify.fno.span_exact import SpanCalcError, SpanMissingError, span_paise
     with sv.read_only():
         stored = store.margin_calibrations()
+        live = store.margin_live_rows()
+    live_errors = sum(1 for r in live if r.get("error"))
+    live_answers = sum(1 for r in live if not r.get("error") and r.get("kite_total_paise") is not None)
     notes: list[str] = []
     by_day: dict[date, set[str]] = {}
     for r in stored:
@@ -445,7 +487,7 @@ def scorecard() -> Scorecard:
                 out.append(ScoreRow(r["sample_id"], und, s.kind, day,
                                     calibrate.kite_target(json.loads(r["kite_json"])), _kite_paise(s.kite_span),
                                     _kite_paise(s.kite_exposure), steps, expiring))
-    return Scorecard(sorted(out, key=lambda r: r.sample_id), notes)
+    return Scorecard(sorted(out, key=lambda r: r.sample_id), notes, live_answers, live_errors)
 
 
 def _money(x: Fraction | None) -> str:
@@ -482,6 +524,10 @@ def scorecard_text(card: Scorecard) -> str:
         lines.append(f"Note: {note}")
     if card.notes:
         lines.append("")
+    if card.live_answers or card.live_errors:
+        lines += [f"Live Kite answers: {card.live_answers} logged, {card.live_errors} error"
+                  f"{'s' if card.live_errors != 1 else ''} (the paper daemon's poller; `margin live-report` groups "
+                  "their gaps)", ""]
     # Overall headline per step
     lines += ["## All answers", "",
               "| Step | Priced | Median error | p90 | Median relative | p90 relative | SPAN max |",

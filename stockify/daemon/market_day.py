@@ -16,7 +16,7 @@ dead engine thread is logged and the recorder carries on.
 
 Shutdown (a stop request: Ctrl+C or Ctrl+Break, or the end of the day), in this order:
 
-    1. stop the ticker (and give back its connection ticket);
+    1. stop the ticker (and give back its connection ticket) and the margin poller (IWB 5.1);
     2. drain both queues: the recorder's into the landing file, the dispatcher's into the journals;
     3. fsync the journals (checksums, then records: `JournalWriter.fsync`);
     4. if a stop was requested inside market hours, journal a scope-all GAP(process_stop) start and sync again;
@@ -510,7 +510,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         ticker.on_resume_reached = lambda: token_watch.write_status(resume_at_ns=None)    # used: never applied twice
         if ticker.resume_after is not None:
             clock.set(max(clock.now_ns(), ticker.resume_after[1]))
-    dispatcher = engine_thread = None
+    dispatcher = engine_thread = poller = None
     engine_stop = threading.Event()
     engine_failed: list[str] = []
     if sessions:
@@ -535,6 +535,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                              exc_info=True)
 
         engine_thread = threading.Thread(target=engine_main, name="engine", daemon=True)
+        if not replay:                          # IWB 5.1: Kite's answers are in a replayed journal already
+            poller = _margin_poller(dispatcher, session, clock)
+            dispatcher.margin_poller = poller
 
     if replay:
         from stockify.daemon import replay_ticker
@@ -562,6 +565,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     session.start()
     if engine_thread is not None:
         engine_thread.start()
+    if poller is not None:
+        poller.start()
     ticker.connect(threaded=True)
     log.info("recording %s: %d instruments, landing %s; %d paper session(s)", day, len(manager.current), landing.path,
              len(sessions))
@@ -607,16 +612,30 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                               clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,
                               engine_thread=engine_thread, engine_stop=engine_stop, engine_failed=engine_failed,
                               stop_requested=stop_requested, signals=signals, pump=pump, skipped=pins.refused,
-                              used_token_mtime=used_token_mtime)
+                              used_token_mtime=used_token_mtime, poller=poller)
         finally:
             restore_signals()
     return exitcodes.ENGINE_STUCK if stuck else session.exit_code
 
 
+POLLER_JOIN_S = 5.0                             # a request in flight is abandoned after this; the thread is a daemon
+
+
+def _margin_poller(dispatcher, session, clock):  # noqa: ANN001, ANN202
+    """The live run's margin poller (IWB 5.1): asks through the read-only Kite view; a 403 starts the ticker's own
+    token-expiry path."""
+    import queue
+    from stockify import kite_readonly
+    from stockify.daemon.margin_poller import MarginPoller
+    return MarginPoller(queue.Queue(maxsize=256), dispatcher, client_factory=kite_readonly.client, clock=clock,
+                        cfg=loader.load_json("paper.json"),
+                        on_token_rejected=lambda: session.token_rejected("Kite rejected the token on a margin request"))
+
+
 def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: date, sessions: list,  # noqa: ANN001
               dispatcher, engine_thread, engine_stop: threading.Event, engine_failed: list[str],
               stop_requested: bool, signals: StopSignals, pump: LogPump | None, skipped: dict | None = None,
-              used_token_mtime: int | None = None) -> bool:
+              used_token_mtime: int | None = None, poller=None) -> bool:  # noqa: ANN001
     """The shutdown steps in the module doc. Returns True when the engine thread would not stop: then the main
     thread touches neither the dispatcher nor the journals nor the store (it would race the live thread, or hang
     on whatever the thread is stuck in), leaves the journals unfinalised for the next start to resume by replay,
@@ -635,6 +654,10 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
     except Exception as e:                      # the reactor may already be gone
         log.debug("ticker close: %s", e)
     daemon._release_ticket(ticker)
+    if poller is not None:                      # no new Kite request, no new injected answer, before the queues drain
+        poller.stop()
+        if poller.is_alive():
+            poller.join(POLLER_JOIN_S)
     # 2. both queues: the recorder's into the landing file, then the dispatcher's into the journals
     try:
         recorder.stop()

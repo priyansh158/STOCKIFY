@@ -176,6 +176,15 @@ class AuthFailureTests(SessionTest):
         session._on_error(None, 0, TokenException("Incorrect `api_key` or `access_token`."))
         self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
 
+    def test_a_403_on_the_margin_poll_takes_the_same_path(self):
+        """IWB 5.1: the poller's `token_rejected` is the ticker's own 403 path (gap, exit 76), safe from any thread."""
+        session = self.fake_session()
+        session.token_rejected("Kite rejected the token on a margin request")
+        self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
+        self.assertTrue(session.stopped.is_set())
+        session.token_rejected("again")                                  # a second 403 changes nothing
+        self.assertEqual(session.exit_code, exitcodes.TOKEN_EXPIRED)
+
     def test_a_lookalike_exception_from_elsewhere_is_not_an_expiry(self):
         class TokenException(Exception):
             pass

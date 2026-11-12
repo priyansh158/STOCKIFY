@@ -86,6 +86,8 @@ class LabMigrationTests(SandboxedDBTest):
             conn.execute(
                 "INSERT INTO margin_calibration (sample_id, wall_ns, underlying, t0_paise, t1_paise) VALUES (?,?,?,?,?)",
                 (i + 1, 1000 + i, "NIFTY", 100 * i, 200 * i))
+        conn.execute("INSERT INTO margin_live (session_id, wall_ns, portfolio_sha256, kite_json, model_json) "
+                     "VALUES ('s1', 5, 'ab', '{}', '[]')")
         conn.execute("INSERT INTO runs (run_id, name, status) VALUES ('r1', 'n', 'done')")
         conn.execute("INSERT INTO sessions (session_id, name, status, pause_reason) VALUES ('s1', 'x', 'paused', 'p')")
         conn.execute("INSERT INTO session_days (session_id, trade_date, parity) VALUES ('s1', '2026-11-05', 'pending')")
@@ -111,6 +113,22 @@ class LabMigrationTests(SandboxedDBTest):
         self.assertEqual([r[0] for r in conn.execute("SELECT version FROM schema_version ORDER BY version")],
                          list(range(1, store.SCHEMA_VERSION + 1)))
         self.assertTrue(path.exists())
+
+    def test_margin_live_gains_the_disagreement_columns_and_keeps_its_rows(self):
+        """IWB 5.1 (migration 0004): the version is 4 and an old row survives with NULL in the new columns."""
+        self._make_v1_lab()
+        conn = store._connect()
+        self.assertGreaterEqual(store.SCHEMA_VERSION, 4)
+        cols = _columns(conn, "margin_live")
+        for name in ("engine_ns", "trade_date", "legs_json", "market_json", "span_file", "step", "kite_total_paise",
+                     "ours_total_paise", "gap_paise", "gap_ppm", "request_ns", "response_ns", "error"):
+            self.assertEqual(cols.count(name), 1, name)
+        [row] = store.margin_live_rows()
+        self.assertEqual((row["session_id"], row["wall_ns"], row["portfolio_sha256"]), ("s1", 5, "ab"))
+        self.assertIsNone(row["gap_paise"])
+        store.add_margin_live({"session_id": "s1", "wall_ns": 9, "gap_paise": -3, "step": "current"})
+        self.assertEqual([r["wall_ns"] for r in store.margin_live_rows(start_ns=6)], [9])
+        self.assertEqual([r["wall_ns"] for r in store.margin_live_rows(end_ns=9)], [5])
 
     def test_reopening_a_migrated_lab_is_a_no_op(self):
         store.init_db()
@@ -198,13 +216,14 @@ class MigrationFileTests(unittest.TestCase):
     def test_failed_migration_leaves_nothing_half_applied(self):
         conn = sqlite3.connect(":memory:", isolation_level=None)
         migrate.apply(conn, "lab", self.tmp)
-        (self.tmp / "lab" / "0004_bad.sql").write_text(
+        last = max(int(f.name[:4]) for f in (self.tmp / "lab").glob("*.sql"))
+        (self.tmp / "lab" / f"{last + 1:04d}_bad.sql").write_text(
             "ALTER TABLE sessions ADD COLUMN extra_one TEXT;\n"
             "ALTER TABLE sessions ADD COLUMN strategy_label TEXT;\n", encoding="utf-8")  # duplicate column
         with self.assertRaises(sqlite3.OperationalError):
             migrate.apply(conn, "lab", self.tmp)
         self.assertNotIn("extra_one", _columns(conn, "sessions"))
-        self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 3)
+        self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], last)
 
 
 if __name__ == "__main__":

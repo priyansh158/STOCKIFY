@@ -18,7 +18,7 @@ from typing import Optional
 from stockify import paths
 from stockify.data import migrate
 
-SCHEMA_VERSION = 3   # = the number of files in stockify/data/migrations/lab
+SCHEMA_VERSION = 4   # = the number of files in stockify/data/migrations/lab
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -115,6 +115,40 @@ def margin_calibrations(underlying: str | None = None) -> list[dict]:
     if underlying is not None:
         sql, args = sql + " WHERE underlying = ?", (underlying,)
     return [dict(r) for r in _all(sql + " ORDER BY sample_id", args)]
+
+
+MARGIN_LIVE_FIELDS = ("session_id", "wall_ns", "portfolio_sha256", "kite_json", "model_json", "engine_ns", "trade_date",
+                      "legs_json", "market_json", "span_file", "step", "kite_total_paise", "ours_total_paise",
+                      "gap_paise", "gap_ppm", "request_ns", "response_ns", "error")
+
+
+def add_margin_live(row: dict) -> int:
+    """One live-margin request of a paper session (IWB 5.1): Kite's answer beside the model's, or the error. Keys are
+    column names; a key left out is NULL. Returns the row id. The error text must already be redacted."""
+    conn = _connect()
+    with _lock:
+        cur = conn.execute(
+            f"INSERT INTO margin_live ({', '.join(MARGIN_LIVE_FIELDS)}) "
+            f"VALUES ({', '.join('?' * len(MARGIN_LIVE_FIELDS))})", tuple(row.get(k) for k in MARGIN_LIVE_FIELDS))
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def margin_live_rows(*, session_id: str | None = None, start_ns: int | None = None,
+                     end_ns: int | None = None) -> list[dict]:
+    """The live-margin log in request order; `start_ns` inclusive, `end_ns` exclusive (on wall_ns)."""
+    where, args = [], []
+    if session_id is not None:
+        where.append("session_id = ?")
+        args.append(session_id)
+    if start_ns is not None:
+        where.append("wall_ns >= ?")
+        args.append(start_ns)
+    if end_ns is not None:
+        where.append("wall_ns < ?")
+        args.append(end_ns)
+    sql = "SELECT * FROM margin_live" + (" WHERE " + " AND ".join(where) if where else "")
+    return [dict(r) for r in _all(sql + " ORDER BY wall_ns, rowid", tuple(args))]
 
 
 def write_recorder_status(row: dict) -> None:

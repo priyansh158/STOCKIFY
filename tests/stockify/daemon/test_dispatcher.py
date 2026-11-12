@@ -492,6 +492,69 @@ class DispatcherTest(pf.PaperDayTest):
         self.assertEqual(len(store.session_rows("s1", "fills")), 1)
         self.assertLess(len(feeds["s2"]) * 5, len(feeds["s1"]))
 
+    # ── IWB 5.1: the margin poller's snapshots ───────────────────────────────
+    def _poller(self, disp):
+        import queue as q
+        from stockify.daemon import margin_poller as mp
+        poller = mp.MarginPoller(q.Queue(maxsize=64), disp, client_factory=lambda: None, clock=disp.clock,
+                                 cfg=self.paper)
+        disp.margin_poller = poller
+        return poller
+
+    def test_a_fill_pokes_the_poller_and_a_snapshot_of_the_book_follows(self):
+        sd = self.make_day("s1", self._buy())
+        disp = self.dispatcher([sd], replay=False)
+        poller = self._poller(disp)
+        self.play(disp)
+        disp.drain()
+        self.assertEqual(len(store.session_rows("s1", "fills")), 1)
+        self.assertTrue(poller.pending("s1"))                     # the fill's poke, not yet served
+        snaps = []
+        while not poller.snapshots.empty():
+            snaps.append(poller.snapshots.get_nowait())
+        pokes = [x for x in snaps if x.reason == "poke"]
+        self.assertEqual(len(pokes), 1)                            # one fill, one snapshot (not one per batch)
+        [(iid, units)] = pokes[0].legs
+        self.assertEqual((iid, units), (self.ces[4], 65))
+        self.assertEqual(pokes[0].session_id, "s1")
+        self.assertEqual(pokes[0].portfolio_sha256, sd.engine.margin_now()["portfolio_sha256"])
+        self.assertTrue(pokes[0].fallback)
+
+    def test_periodic_snapshots_come_every_every_s_of_stamp_time_and_only_with_legs(self):
+        sd = self.make_day("s1", self._buy())
+        disp = self.dispatcher([sd], replay=False)
+        poller = self._poller(disp)
+        self.play(disp)
+        disp.drain()
+        snaps = []
+        while not poller.snapshots.empty():
+            snaps.append(poller.snapshots.get_nowait())
+        periodic = [x for x in snaps if x.reason == "periodic"]
+        self.assertTrue(all(x.legs for x in periodic))             # flat books put nothing
+        times = [x.engine_ns for x in periodic]
+        self.assertTrue(all(b - a >= poller.every_ns for a, b in zip(times, times[1:])), times)
+
+    def test_a_replay_dispatcher_takes_no_snapshots_and_a_flat_session_pokes_nothing(self):
+        sd = self.make_day("s1", self._buy())
+        disp = self.dispatcher([sd], replay=True)
+        poller = self._poller(disp)
+        self.play(disp)
+        disp.drain()
+        self.assertTrue(poller.snapshots.empty())
+        self.assertFalse(poller.pending("s1"))
+
+    def test_a_session_with_another_margin_model_is_never_polled(self):
+        flat = self.session_cfg(strategy={"kind": "script", "actions": self._buy()["strategy"]["actions"]},
+                                margin={"model": "flat"})
+        sd = self.make_day("s1", flat)
+        disp = self.dispatcher([sd], replay=False)
+        poller = self._poller(disp)
+        self.play(disp)
+        disp.drain()
+        self.assertTrue(poller.snapshots.empty())
+        self.assertFalse(poller.pending("s1"))
+        self.assertEqual(len(store.session_rows("s1", "fills")), 1)    # the day itself was unaffected
+
     def test_throughput_100k_frames_for_3_sessions(self):
         days = [self.make_day(f"t{i}") for i in range(3)]
         disp = self.dispatcher(days)

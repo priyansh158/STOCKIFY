@@ -97,6 +97,64 @@ class MarginCheckTests(ArchiveTest):
         self.assertIn("₹2,19,708.00", out)
         self.assertIn("nsccl.20261109.i1.zip", out)
 
+    def test_check_live_prints_kites_answer_beside_the_staircases(self):
+        # IWB 5.1: `--live` asks Kite (read-only, consider_positions=False) for the same basket. Kite: SPAN 150,000.50,
+        # exposure 60,000.25, additional 0 -> ₹2,10,000.75; the staircase's ₹2,19,708.00 is ₹9,707.25 above it.
+        calls = []
+
+        class Kite:
+            def basket_order_margins(self, orders, *, consider_positions=False, mode=None):
+                calls.append((orders, consider_positions))
+                return {"final": {"span": 150000.5, "exposure": 60000.25, "additional": 0, "option_premium": 0}}
+
+        res = MC.check([("SELL", 65, "NIFTY26NOV25000CE"), ("SELL", 65, "NIFTY26NOV25000PE")], DAY, "10:00",
+                       live=True, client=lambda: Kite())
+        self.assertEqual(res.kite, {"span_paise": 15_000_050, "exposure_paise": 6_000_025, "additional_paise": 0,
+                                    "option_premium_paise": 0})
+        [(orders, consider)] = calls
+        self.assertIs(consider, False)
+        self.assertEqual([(o["tradingsymbol"], o["transaction_type"], o["quantity"], o["product"]) for o in orders],
+                         [("NIFTY26NOV25000CE", "SELL", 65, "NRML"), ("NIFTY26NOV25000PE", "SELL", 65, "NRML")])
+        text = MC.check_text(res)
+        self.assertIn("Kite's answer (live", text)
+        self.assertIn("₹2,10,000.75", text)
+        self.assertIn("₹2,19,708.00", text)
+        self.assertIn("₹9,707.25", text)
+
+    def test_check_live_error_is_a_data_error_with_no_secret(self):
+        class Kite:
+            def basket_order_margins(self, orders, *, consider_positions=False, mode=None):
+                raise RuntimeError("403 access_token=SECRETvalue123")
+
+        with self.assertRaises(MC.CheckDataError) as ctx:
+            MC.check([("SELL", 65, "NIFTY26NOV25000CE")], DAY, "10:00", live=True, client=lambda: Kite())
+        self.assertIn("Kite", str(ctx.exception))
+        self.assertNotIn("SECRETvalue123", str(ctx.exception))
+
+    def test_check_without_live_never_asks_kite(self):
+        def boom():
+            raise AssertionError("no Kite call without --live")
+        res = MC.check([("SELL", 65, "NIFTY26NOV25000CE")], DAY, "10:00", client=boom)
+        self.assertIsNone(res.kite)
+        self.assertNotIn("Kite's answer", MC.check_text(res))
+
+    def test_live_report_command_prints_and_filters(self):
+        code, out, err = run_cli(["margin", "live-report"])
+        self.assertEqual(code, 1)                                  # nothing logged yet
+        self.assertIn("no live margin rows", err)
+        store.add_margin_live({"session_id": "s1", "wall_ns": WALL, "trade_date": "2026-11-09", "step": "current",
+                               "kite_total_paise": 100, "ours_total_paise": 110, "gap_paise": 10, "gap_ppm": 100000,
+                               "market_json": json.dumps({"type": "future", "underlying": "NIFTY", "span_age_s": 60})})
+        code, out, err = run_cli(["margin", "live-report", "--from", "2026-11-09", "--to", "2026-11-09"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 rows, 1 answers", out)
+        self.assertEqual(run_cli(["margin", "live-report", "--from", "2026-13-01"])[0], 2)
+
+    def test_check_command_has_a_live_flag(self):
+        code, out, err = run_cli(["margin", "check", "--leg", "SELL 65 NIFTY26NOV99999CE", "--live"])
+        self.assertEqual(code, 2)                                  # parsed; the symbol is what is refused
+        self.assertIn("NIFTY26NOV99999CE", err)
+
     def test_check_defaults_to_the_latest_archived_day(self):
         self.assertEqual(MC.latest_archived_day(), DAY)
         code, out, err = run_cli(["margin", "check", *self.STRADDLE, "--at", "10:00"])

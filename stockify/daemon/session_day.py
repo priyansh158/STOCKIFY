@@ -75,6 +75,7 @@ class SessionDay:
         self.resumed = False                    # True once the day was rebuilt from its journal (`replay`)
         self.open_process_stop = False          # the journal ends inside a GAP(process_stop) that never got its end
         self.open_outage: str | None = None     # ... or inside a scope-all disconnect / token_expired gap (GK 5.3)
+        self.last_fills = 0                     # fills the engine reported in the last push (the margin poller's poke)
         self.last_clock = 0                     # t of the journal's last CLOCK record, so a restart never repeats one
         self.last_control: list[str] | None = None   # the reasons of the journal's last `strategy_control` (None: none)
         caps = loader.load_json("paper.json")["engine_log"]        # the engine's log lines, throttled and capped
@@ -223,6 +224,7 @@ class SessionDay:
             self.engine.push(batch)
         carried: list[int] = []
         outputs = self.engine.drain_outputs()
+        self.last_fills = len(outputs.get("fills") or ())
         self._elog.feed(outputs.get("log") or [])
         self._next_event_no = store.apply_session_outputs(
             self.session_id, self.trade_date, outputs, first_event_no=self._next_event_no,

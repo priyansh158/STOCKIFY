@@ -210,6 +210,12 @@ class RecorderSession:
                 self._gap("start", "token_expired", now)
             self.stop(exitcodes.TOKEN_EXPIRED)
 
+    def token_rejected(self, reason: str) -> None:
+        """Another Kite call (the margin poller's, IWB 5.1) was refused with a 403: the token is dead, so this is the
+        ticker's own 403 path (a `token_expired` gap, exit 76, the sessions paused). Safe from any thread; once only."""
+        if not self.stopped.is_set():
+            self._on_error(None, 403, reason)
+
     def _on_noreconnect(self, ws) -> None:  # noqa: ANN001
         if self.exit_code == exitcodes.OK:
             self.stop(exitcodes.RECONNECT_EXHAUSTED)

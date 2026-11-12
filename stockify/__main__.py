@@ -556,7 +556,7 @@ def _cmd_margin_check(args) -> int:
         print(f"--date must be YYYY-MM-DD and --at HH:MM (IST); got {args.date!r}, {args.at!r}", file=sys.stderr)
         return 2
     try:
-        res = mc.check(legs, day, args.at)
+        res = mc.check(legs, day, args.at, live=args.live)
     except mc.CheckInputError as e:                     # the request is wrong
         print(e, file=sys.stderr)
         return 2
@@ -571,10 +571,28 @@ def _cmd_margin_scorecard(args) -> int:
     """MEZ 4.11: every staircase step against every stored Kite answer (offline; writes nothing)."""
     from stockify.fno import margin_check as mc
     card = mc.scorecard()
-    if not card.rows:
+    if not card.rows and not (card.live_answers or card.live_errors):
         print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
         return 1
     _print_console(mc.scorecard_text(card))
+    return 0
+
+
+def _cmd_margin_live_report(args) -> int:
+    """IWB 5.1: where Kite's live margin answers and the staircase disagree (offline; reads the lab, writes nothing)."""
+    from datetime import date
+    from stockify.fno import margin_live_report as mlr
+    try:
+        start = date.fromisoformat(args.start) if args.start else None
+        end = date.fromisoformat(args.end) if args.end else None
+    except ValueError:
+        print(f"--from and --to must be YYYY-MM-DD; got {args.start!r}, {args.end!r}", file=sys.stderr)
+        return 2
+    text = mlr.report(start=start, end=end)
+    if text.startswith("no live margin rows"):
+        print(text.strip(), file=sys.stderr)
+        return 1
+    _print_console(text)
     return 0
 
 
@@ -814,10 +832,19 @@ def main(argv: list[str] | None = None) -> int:
                                    "IST that can be tomorrow, whose i1 file NSE creates the evening before)")
     mk.add_argument("--at", help="IST time HH:MM: the SPAN file in force is the last created by then "
                                  "(default 15:30)")
+    mk.add_argument("--live", action="store_true",
+                    help="also ask Kite for this basket (read-only /margins/basket, consider_positions=false; needs "
+                         "a fresh Kite login) and print its answer beside the staircase's")
     mk.set_defaults(func=_cmd_margin_check)
     mgsub.add_parser("scorecard", help="every staircase step's error against every stored Kite answer, by portfolio "
                                        "type (offline; reads the lab, writes nothing)"
                      ).set_defaults(func=_cmd_margin_scorecard)
+
+    lr = mgsub.add_parser("live-report", help="where Kite's live margin answers and the staircase disagree, by portfolio "
+                                              "type, underlying, IST hour and SPAN-file age (offline; reads the lab)")
+    lr.add_argument("--from", dest="start", help="first IST trade date, YYYY-MM-DD (default: all)")
+    lr.add_argument("--to", dest="end", help="last IST trade date, YYYY-MM-DD (default: all)")
+    lr.set_defaults(func=_cmd_margin_live_report)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)

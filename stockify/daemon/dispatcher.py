@@ -112,6 +112,11 @@ class Dispatcher:
         self._by_id = {s.session_id: s for s in self.sessions}
         self.on_book = None                         # (SessionDay, frozenset[int]) on the engine thread, when a book changes
         self.on_failed = None                       # (session_id) once, when a session's day fails
+        # The margin poller (IWB 5.1), set by the daemon for a live run; None in a replay. The engine thread alone reads
+        # the book for it (`margin_now`) and hands it plain snapshots; the poller holds no engine.
+        self.margin_poller = None
+        self._snap_next: dict[str, int] = {}         # session -> stamp from which the next periodic snapshot is due
+        self._no_margin: set[str] = set()            # sessions whose margin model has no `margin_now` (never polled)
         self._book: dict[str, frozenset[int]] = {}
         self._extras: dict[str, frozenset[int]] = {}     # open positions the bundle does not carry
         self._unbundled: set[tuple[str, int]] = set()
@@ -334,6 +339,39 @@ class Dispatcher:
                 continue
             if self.on_book is not None and recs:
                 self._watch_book(sd)
+            if self.margin_poller is not None and not self.replay and recs:
+                self._snapshot(sd)
+
+    def _snapshot(self, sd: SessionDay) -> None:
+        """After a batch (engine thread, the engine idle): a fill pokes the poller and puts a snapshot of the book on
+        its queue (reason "poke"); otherwise, every `every_s` of stamp time, one more ("periodic") while the book has
+        legs. Reading the book is the only cost, and only when one of those is due. Never fails the day."""
+        sid, poller = sd.session_id, self.margin_poller
+        if sid in self._no_margin:
+            return
+        filled = sd.last_fills > 0
+        if not filled and self._stamp < self._snap_next.get(sid, 0):
+            return
+        try:
+            now = sd.engine.margin_now()
+        except Exception as e:  # noqa: BLE001 — another margin model has none: this session is never polled
+            self._no_margin.add(sid)
+            log.info("session %s: no margin snapshots (%s)", sid, e)
+            return
+        try:
+            legs = [(int(i), int(u)) for i, u in now["legs"]]
+            if filled:
+                poller.poke(sid)
+            elif not legs:
+                self._snap_next[sid] = self._stamp + poller.every_ns
+                return
+            self._snap_next[sid] = self._stamp + poller.every_ns
+            from stockify.daemon.margin_poller import MarginSnapshot, put_latest
+            put_latest(poller.snapshots, MarginSnapshot(
+                sid, self._stamp, legs, now["portfolio_sha256"], [dict(r) for r in now["fallback"]],
+                "poke" if filled else "periodic"))
+        except Exception:  # noqa: BLE001 — the poller is a courtesy; the day's feed already succeeded
+            log.warning("session %s: handing the book to the margin poller failed", sid, exc_info=True)
 
     def _watch_book(self, sd: SessionDay) -> None:
         """Read the book between pushes (engine thread); report it when it changed. Never fails the day."""
