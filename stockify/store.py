@@ -451,18 +451,22 @@ def list_research_jobs(kind: str | None = None, offset: int = 0, limit: int = 50
 
 def backfill_null_families(compute) -> int:  # noqa: ANN001
     """For each runs row whose family_id IS NULL call `compute(row) -> str | None`; a string is written to that
-    column only (and only while it is still NULL). Returns how many rows were set. One transaction."""
+    column only (and only while it is still NULL). Returns how many rows were set. The lock is not held while
+    `compute` runs (it may call any store function); the updates are one transaction, each guarded by
+    `family_id IS NULL`, so a row that got a family meanwhile is left alone."""
+    rows = _all("SELECT * FROM runs WHERE family_id IS NULL ORDER BY run_id")
+    chosen = []
+    for row in rows:
+        fam = compute(dict(row))
+        if fam is not None:
+            chosen.append((fam, row["run_id"]))
     conn = _connect()
     with _lock:
         try:
-            rows = [dict(r) for r in conn.execute("SELECT * FROM runs WHERE family_id IS NULL ORDER BY run_id")]
             n = 0
-            for row in rows:
-                fam = compute(row)
-                if fam is None:
-                    continue
+            for fam, run_id in chosen:
                 n += conn.execute("UPDATE runs SET family_id = ? WHERE run_id = ? AND family_id IS NULL",
-                                  (fam, row["run_id"])).rowcount
+                                  (fam, run_id)).rowcount
             conn.commit()
             return n
         except BaseException:

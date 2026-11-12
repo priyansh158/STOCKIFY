@@ -150,6 +150,25 @@ class ResearchStoreTests(SandboxedDBTest):
         self.assertEqual(store.get_run("b")["family_id"], "keep")
         self.assertIsNone(store.get_run("c")["family_id"])
 
+    def test_backfill_compute_may_call_the_store_without_deadlock(self):
+        import threading
+        store.add_family("fam-a", objective="o")
+        _run("a", family_id=None)
+        _run("b", family_id=None)
+        out = {}
+
+        def compute(row):
+            return "fam-a" if store.get_family("fam-a") else None   # a store call from inside the callback
+
+        def work():
+            out["n"] = store.backfill_null_families(compute)
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "backfill deadlocked: compute ran under the store lock")
+        self.assertEqual(out.get("n"), 2)
+        self.assertEqual(store.get_run("a")["family_id"], "fam-a")
+
 
 if __name__ == "__main__":
     unittest.main()
