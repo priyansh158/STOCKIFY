@@ -188,6 +188,7 @@ class RunIntegrationTests(RunsTestBase):
         request = json.loads((paths.run_path(rid) / "request.json").read_text(encoding="utf-8"))
         self.assertEqual(request["family_id"], fam)
         self.assertEqual(store.get_family(fam)["objective"], "sharpe")
+        store.create_research_job({"job_id": "job1", "kind": "sensitivity", "status": "running", "created_ns": 1})
         rid2 = runs.queue(run_config(name="t2", strategy=BUY), role="sensitivity", job_id="job1")
         self.assertEqual((store.get_run(rid2)["role"], store.get_run(rid2)["job_id"]), ("sensitivity", "job1"))
 
@@ -207,6 +208,7 @@ class RunIntegrationTests(RunsTestBase):
         self.assertEqual(store.list_runs(), [])
 
     def test_launch_stores_role_job_and_family(self):
+        store.create_research_job({"job_id": "j9", "kind": "walkforward", "status": "running", "created_ns": 1})
         rid = runs.launch(run_config(name="t", strategy=BUY), impl="oracle", report=False, role="oos", job_id="j9")
         row = store.get_run(rid)
         self.assertEqual((row["status"], row["role"], row["job_id"]), ("done", "oos", "j9"))

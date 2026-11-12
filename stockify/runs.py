@@ -100,12 +100,28 @@ def _check_role(role, job_id) -> None:  # noqa: ANN001
         raise ValueError(f"job_id must be a string or None, not {job_id!r}")
 
 
+def _require_job_for_variant(role: str, job_id: str | None) -> None:
+    """A run that is not a `trial` drops out of N in the deflated Sharpe, so only a real research job may give one:
+    its job_id must name a research_jobs row. Applies to new rows made by queue and launch; `rerun` writes its own
+    role="rerun" row straight to the store and never comes here."""
+    if role == "trial":
+        return
+    if not job_id:
+        raise runconfig.RunConfigError(
+            f"role {role!r} needs a job_id: only a research job (sweep, walk-forward, sensitivity) may mark its "
+            "runs as variants, because they do not count toward the number of trials")
+    if store.get_research_job(job_id) is None:
+        raise runconfig.RunConfigError(
+            f"role {role!r}: there is no research job {job_id!r}; a run can only be a variant of a real research job")
+
+
 def queue(config, *, role: str = "trial", job_id: str | None = None) -> str:  # noqa: ANN001
     """Validate the config (RunConfigError propagates), write `runs/<id>/request.json` and a `queued` row.
     A config without a `family_id` gets the default family (written into the stored config too); `role` is one
     of registry.ROLES (else ValueError). Starts nothing; returns the run id."""
     from stockify.research import holdout
     _check_role(role, job_id)
+    _require_job_for_variant(role, job_id)
     loaded = runconfig.load(config)
     reason = holdout.enforce(loaded)          # before the family row, the folder and the run row (M6.6)
     cfg = _with_family(loaded)
@@ -173,6 +189,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         _claim(run_id)
         _log_unlock(reason, run_id, cfg, job_id)     # a run queued before the holdout was set; no-op if queue logged
     else:
+        _require_job_for_variant(role, job_id)
         loaded = runconfig.load(config)
         reason = holdout.enforce(loaded)      # before any row or folder (M6.6)
         cfg = _with_family(loaded)

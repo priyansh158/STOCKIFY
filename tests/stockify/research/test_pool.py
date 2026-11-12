@@ -14,7 +14,8 @@ import tests.support as support  # noqa: F401  — must precede project imports
 
 import stockify.store as store
 from stockify import __main__ as cli
-from stockify import paths, research
+from stockify import paths, research, runs
+from stockify.runconfig import RunConfigError
 from stockify.research import pool
 from stockify.research.pool import PoolJob, PoolOutcome
 from tests.stockify.test_bundle import BundleTest, run as run_config
@@ -127,6 +128,16 @@ class PoolBehaviourTests(PoolTestBase):
         self.assertEqual(json.loads(p.config_text), {"name": "c"})
         self.assertTrue(hasattr(p.stdout, "write") and hasattr(p.stderr, "write"))   # files, never subprocess.PIPE
 
+    def test_kill_uses_taskkill_on_the_process_tree_when_there_is_a_pid(self):
+        FakePopen.script = {"j0": {"polls": 99}}
+        FakePopen.pid = 4321
+        self.addCleanup(lambda: delattr(FakePopen, "pid"))
+        with mock.patch.object(pool, "_sleep", side_effect=KeyboardInterrupt),                 mock.patch.object(pool.os, "name", "nt"), mock.patch.object(pool.subprocess, "run") as run:
+            with self.assertRaises(KeyboardInterrupt):
+                pool.run_all(self.jobs(1), popen=FakePopen)
+        self.assertEqual(run.call_args.args[0], ["taskkill", "/PID", "4321", "/T", "/F"])
+        self.assertTrue(FakePopen.instances[0].killed)
+
     def test_no_work_no_children(self):
         self.assertEqual(pool.run_all([], popen=FakePopen), [])
 
@@ -191,6 +202,52 @@ class DefaultWorkersTests(unittest.TestCase):
                 self.assertEqual(pool.default_workers(req), want)
 
 
+class VariantNeedsARealJobTests(BundleTest):
+    """A role other than trial takes a run out of N, so only a real research job may give one (queue and launch)."""
+
+    def setUp(self):
+        super().setUp()
+        support.reset_sqlite_singleton(store)
+        self.addCleanup(support.reset_sqlite_singleton, store)
+
+    def cfg(self, name="t"):
+        return run_config(name=name, strategy=BUY)
+
+    def test_a_variant_role_without_a_real_job_is_refused_everywhere(self):
+        for role in ("sensitivity", "oos", "rerun"):
+            for job in (None, "", "nope"):
+                with self.subTest(role=role, job=job):
+                    with self.assertRaisesRegex(RunConfigError, "role .* (needs a job_id|no research job)"):
+                        runs.queue(self.cfg(), role=role, job_id=job)
+                    with self.assertRaisesRegex(RunConfigError, "role .* (needs a job_id|no research job)"):
+                        runs.launch(self.cfg(), role=role, job_id=job, impl="oracle", report=False)
+        self.assertEqual(store.list_runs(), [])
+
+    def test_cli_refuses_it_with_exit_2_and_a_plain_message(self):
+        path = paths.lab_dir() / "v.run.json"
+        path.write_text(json.dumps(self.cfg()), encoding="utf-8")
+        for argv in (["--role", "sensitivity"], ["--role", "oos", "--job-id", "ghost"]):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = cli.main(["run", "--config", str(path), "--impl", "oracle", "--no-report", *argv])
+            self.assertEqual(code, 2)
+            self.assertRegex(err.getvalue(), "^role '(sensitivity|oos)'")
+        self.assertEqual(store.list_runs(), [])
+
+    def test_a_real_research_job_may_mark_its_runs(self):
+        store.create_research_job({"job_id": "real", "kind": "sensitivity", "status": "running", "created_ns": 1})
+        rid = runs.launch(self.cfg(), role="sensitivity", job_id="real", impl="oracle", report=False)
+        self.assertEqual((store.get_run(rid)["role"], store.get_run(rid)["job_id"]), ("sensitivity", "real"))
+        self.assertTrue(runs.queue(self.cfg("t2"), role="oos", job_id="real"))
+
+    def test_trial_needs_no_job_and_rerun_still_works(self):
+        rid = runs.launch(self.cfg(), impl="oracle", report=False)           # trial, no job
+        self.assertEqual(store.get_run(rid)["role"], "trial")
+        new_id, same = runs.rerun(rid)                                       # rerun writes its own row, exempt
+        self.assertEqual(store.get_run(new_id)["role"], "rerun")
+        self.assertTrue(same)
+
+
 class CliFlagTests(unittest.TestCase):
     def setUp(self):
         quiet = contextlib.ExitStack()
@@ -224,6 +281,9 @@ class RealProcessTests(BundleTest):
         self.addCleanup(support.reset_sqlite_singleton, store)
 
     def test_two_real_subprocesses_run_a_tiny_config(self):
+        for n in ("pa", "pb"):
+            store.create_research_job({"job_id": "job-" + n, "kind": "sensitivity", "status": "running",
+                                       "created_ns": 1})
         jobs = [PoolJob(run_config(name=n, strategy=BUY), role="sensitivity", job_id="job-" + n, impl="oracle")
                 for n in ("pa", "pb")]
         out = pool.run_all(jobs, workers=2)
