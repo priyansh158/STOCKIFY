@@ -436,7 +436,7 @@ def _summary_line(m: dict, labels) -> str:  # noqa: ANN001
 
 def _run_roles() -> tuple[str, ...]:
     from stockify.research import registry
-    return tuple(registry.ROLES)
+    return tuple(r for r in registry.ROLES if r != "rerun")      # only runs.rerun sets "rerun"
 
 
 def _cmd_run(args) -> int:

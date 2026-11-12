@@ -57,6 +57,24 @@ def _last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
+def _reported_run_id(out: str) -> str | None:
+    """The run id from a child's stdout: the LAST non-empty line that is a direct child of the runs folder with a
+    valid run id. Earlier lines (a library warning, a print in strategy code) are never taken for it."""
+    from stockify import paths
+    try:
+        base = os.path.normcase(str(paths.runs_dir().resolve()))
+    except OSError:
+        return None
+    for line in reversed([ln.strip() for ln in out.splitlines() if ln.strip()]):
+        try:
+            folder = Path(line)
+            if os.path.normcase(str(folder.resolve().parent)) == base and paths.safe_segment(folder.name, 128):
+                return folder.name
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def _kill(proc) -> None:  # noqa: ANN001
     """Kill a child and its children (a run may start stocksim_run), then reap it. No new process group: kill()
     is TerminateProcess, which needs none, and without one Ctrl-C reaches the children as well."""
@@ -93,11 +111,10 @@ def _outcome(live: _Live, code: int) -> PoolOutcome:
     out = live.out_path.read_text(encoding="utf-8", errors="replace")
     err = live.err_path.read_text(encoding="utf-8", errors="replace")
     if code == 0:
-        folder = _last_line(out.splitlines()[0] if out.strip() else "")
-        run_id = Path(folder).name if folder else None
+        run_id = _reported_run_id(out)
         if run_id:
             return PoolOutcome(run_id, "done", None)
-        return PoolOutcome(None, "failed", "the run printed no run folder")
+        return PoolOutcome(None, "failed", "the run did not report its folder")
     return PoolOutcome(None, "failed", _last_line(err) or f"exit code {code}")
 
 
@@ -133,9 +150,17 @@ def run_all(jobs: list[PoolJob], *, workers: int | None = None, popen=subprocess
                 if job.job_id is not None:
                     cmd += ["--job-id", job.job_id]
                 cmd += ["--impl", job.impl, "--no-report"]
-                out, err = open(out_path, "w", encoding="utf-8"), open(err_path, "w", encoding="utf-8")
+                out = open(out_path, "w", encoding="utf-8")
                 try:
-                    proc = popen(cmd, stdout=out, stderr=err, env=dict(os.environ))
+                    err = open(err_path, "w", encoding="utf-8")
+                except OSError:
+                    out.close()
+                    raise
+                # The one key added to the parent's environment: the child writes its stdout and stderr as UTF-8, so
+                # a non-ASCII lab path survives the trip through the files (which are read back as UTF-8).
+                child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+                try:
+                    proc = popen(cmd, stdout=out, stderr=err, env=child_env)
                 except OSError as e:
                     out.close()
                     err.close()
@@ -155,7 +180,10 @@ def run_all(jobs: list[PoolJob], *, workers: int | None = None, popen=subprocess
         return results  # type: ignore[return-value]
     except BaseException:
         for item in live:
-            _kill(item.proc)
+            try:                           # one child that will not die must not leave the others running
+                _kill(item.proc)
+            except Exception:  # noqa: BLE001
+                pass
             item.close()
         raise
     finally:

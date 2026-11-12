@@ -68,6 +68,11 @@ class FakePopen:
         return self.returncode
 
 
+def rp(name: str) -> str:
+    """What a finished child prints on stdout: its run folder, a direct child of the runs dir."""
+    return f"{paths.runs_dir() / name}\n"
+
+
 class PoolTestBase(unittest.TestCase):
     def setUp(self):
         FakePopen.live = FakePopen.peak = 0
@@ -89,14 +94,14 @@ class PoolBehaviourTests(PoolTestBase):
         self.assertEqual(FakePopen.peak, 3)
 
     def test_results_are_in_input_order_even_when_jobs_finish_out_of_order(self):
-        FakePopen.script = {"j0": {"polls": 9, "out": "C:/lab/runs/r0\n"}, "j1": {"polls": 1, "out": "C:/lab/runs/r1\n"},
-                            "j2": {"polls": 4, "out": "C:/lab/runs/r2\n"}}
+        FakePopen.script = {"j0": {"polls": 9, "out": rp("r0")}, "j1": {"polls": 1, "out": rp("r1")},
+                            "j2": {"polls": 4, "out": rp("r2")}}
         out = pool.run_all(self.jobs(3), workers=3, popen=FakePopen)
         self.assertEqual([o.run_id for o in out], ["r0", "r1", "r2"])
         self.assertEqual([o.status for o in out], ["done"] * 3)
 
     def test_failed_job_is_reported_not_raised(self):
-        FakePopen.script = {"j1": {"code": 1, "err": "summary\nrunner exited 3: boom\n"}, "j0": {"out": "x/r0\n"}}
+        FakePopen.script = {"j1": {"code": 1, "err": "summary\nrunner exited 3: boom\n"}, "j0": {"out": rp("r0")}}
         out = pool.run_all(self.jobs(2), workers=2, popen=FakePopen)
         self.assertEqual(out[0], PoolOutcome("r0", "done", None))
         self.assertEqual(out[1], PoolOutcome(None, "failed", "runner exited 3: boom"))
@@ -132,11 +137,49 @@ class PoolBehaviourTests(PoolTestBase):
         FakePopen.script = {"j0": {"polls": 99}}
         FakePopen.pid = 4321
         self.addCleanup(lambda: delattr(FakePopen, "pid"))
-        with mock.patch.object(pool, "_sleep", side_effect=KeyboardInterrupt),                 mock.patch.object(pool.os, "name", "nt"), mock.patch.object(pool.subprocess, "run") as run:
+        with mock.patch.object(pool, "_sleep", side_effect=KeyboardInterrupt), \
+                mock.patch.object(pool.os, "name", "nt"), mock.patch.object(pool.subprocess, "run") as run:
             with self.assertRaises(KeyboardInterrupt):
                 pool.run_all(self.jobs(1), popen=FakePopen)
         self.assertEqual(run.call_args.args[0], ["taskkill", "/PID", "4321", "/T", "/F"])
         self.assertTrue(FakePopen.instances[0].killed)
+
+    def test_the_run_id_is_the_last_reported_folder_not_the_first_line(self):
+        noise = "UserWarning: something\nprinted by strategy code\n"
+        FakePopen.script = {"j0": {"out": noise + "C:/elsewhere/r9\n" + rp("real")},
+                            "j1": {"out": "just a warning\n"}, "j2": {"out": rp("a") + "trailing text\n"}}
+        a, b, c = pool.run_all(self.jobs(3), popen=FakePopen)
+        self.assertEqual(a, PoolOutcome("real", "done", None))
+        self.assertEqual(b, PoolOutcome(None, "failed", "the run did not report its folder"))
+        self.assertEqual(c, PoolOutcome("a", "done", None))             # last line that is a runs folder
+
+    def test_a_path_outside_the_runs_folder_is_not_a_run(self):
+        FakePopen.script = {"j0": {"out": str(paths.lab_dir() / "other" / "r0") + "\n"}}
+        (o,) = pool.run_all(self.jobs(1), popen=FakePopen)
+        self.assertEqual((o.run_id, o.status), (None, "failed"))
+
+    def test_one_kill_that_raises_does_not_leave_the_rest_running(self):
+        for i in range(3):
+            FakePopen.script[f"j{i}"] = {"polls": 99}
+        real_kill = FakePopen.kill
+
+        def flaky(self):
+            if self.job_id == "j0":
+                raise RuntimeError("access denied")
+            real_kill(self)
+        with mock.patch.object(FakePopen, "kill", flaky), mock.patch.object(pool, "_sleep", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                pool.run_all(self.jobs(3), workers=3, popen=FakePopen)
+        self.assertEqual([p.killed for p in FakePopen.instances], [False, True, True])
+
+    def test_child_env_is_the_parents_plus_utf8_io_and_nothing_else(self):
+        pool.run_all(self.jobs(1), popen=FakePopen)
+        self.assertEqual(FakePopen.instances[0].child_env, {**os.environ, "PYTHONIOENCODING": "utf-8"})
+
+    def test_non_ascii_output_survives(self):
+        FakePopen.script = {"j0": {"code": 1, "err": "bad: \u20b9 caf\u00e9\n"}}
+        (o,) = pool.run_all(self.jobs(1), popen=FakePopen)
+        self.assertEqual(o.error, "bad: \u20b9 caf\u00e9")
 
     def test_no_work_no_children(self):
         self.assertEqual(pool.run_all([], popen=FakePopen), [])
@@ -267,8 +310,9 @@ class CliFlagTests(unittest.TestCase):
                 mock.patch.object(store, "get_run", return_value={"folder": "f"}):
             cli.main(["run", "--config", "x.json"])
         self.assertEqual((launch.call_args.kwargs["role"], launch.call_args.kwargs["job_id"]), ("trial", None))
-        with self.assertRaises(SystemExit):
-            cli.main(["run", "--config", "x.json", "--role", "nope"])
+        for bad in ("nope", "rerun"):                      # "rerun" is only ever set by runs.rerun
+            with self.subTest(role=bad), self.assertRaises(SystemExit):
+                cli.main(["run", "--config", "x.json", "--role", bad])
 
 
 class RealProcessTests(BundleTest):
