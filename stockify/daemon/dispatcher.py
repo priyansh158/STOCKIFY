@@ -207,7 +207,9 @@ class Dispatcher:
 
         `outage_from`: the run waited for a Kite login that came after the open (CDM 5.1), so a session that starts
         now missed the frames since then: its journal opens with a scope-all `GAP(token_expired)` from that time,
-        which ends at the first frame."""
+        which ends at the first frame. `since` is the intended start; the journal's own t is `max(since, its last t)`
+        (D-68), so a session that already journaled something later (a pause at its start) has the gap there, and the
+        timeline row gives that journaled t."""
         self._stamp = t
         if not self.replay:
             self._resume_gaps(t)
@@ -268,7 +270,8 @@ class Dispatcher:
                 continue
             self.stats.gaps += 1
             self._open_gaps.add(("token_expired", None))
-            self._timeline(sid, "gap", {"cause": "late_login", "phase": "start", "t_ns": since}, t)
+            journaled = sd.last_t if sd.last_t is not None else since       # D-68 may have lifted it above `since`
+            self._timeline(sid, "gap", {"cause": "late_login", "phase": "start", "t_ns": journaled}, t)
             self._resume_end[sid] = "token_expired"
 
     def _resume_outages(self) -> None:

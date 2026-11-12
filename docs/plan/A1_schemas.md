@@ -730,7 +730,7 @@ for the day's NSE files and is cut off at the next trading day's `day_bundles` t
 `refdata` is retried every `token_dependent_retry.every_min` until `until`, a failure that is not about the login then
 leaves D-1's refdata in use (bundle label `refdata_stale`), and a later login runs it at once. A session whose
 previous trading day is not finalised stays ARMED with the timeline row `blocked_on_finalise`. `backup` is `null`-safe: no
-`storage.json` `backup.target` is a logged skip. Only `compaction` blocks sleep.
+`storage.json` `backup.target` is a logged skip. Only `compaction` blocks sleep. `backup` given as a plain time retries at 15 minute gaps (scheduler `DEFAULT_RETRY_MIN`).
 
 ### 7.9 `storage.json`
 

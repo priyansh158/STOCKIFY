@@ -241,19 +241,25 @@ def _failed(sid: str, day: str) -> bool:
 
 
 def summary_ready(day: date) -> bool:
-    """Every session that opened `day` has finalised it or failed it, and at least one finalised: the summary then
-    names them all."""
+    """Every session that opened `day` has finalised it or failed it, and there is at least one: the summary then
+    names them all (a day where every session failed is told too, as that)."""
     d = day.isoformat()
-    finalised = waiting = 0
+    done = waiting = 0
     for s in store.list_sessions():
         row = store.get_session_day(s["session_id"], d)
         if row is None:
             continue
-        if row.get("status") == "finalised":
-            finalised += 1
-        elif not _failed(s["session_id"], d):
+        if row.get("status") == "finalised" or _failed(s["session_id"], d):
+            done += 1
+        else:
             waiting += 1
-    return finalised > 0 and waiting == 0
+    return done > 0 and waiting == 0
+
+
+def _every_session_failed(day: str) -> bool:
+    rows = [(s["session_id"], store.get_session_day(s["session_id"], day)) for s in store.list_sessions()]
+    rows = [(sid, row) for sid, row in rows if row is not None]
+    return bool(rows) and all(row.get("status") != "finalised" and _failed(sid, day) for sid, row in rows)
 
 
 def _session_lines(session: dict, day: str) -> list[str] | None:
@@ -300,7 +306,8 @@ def daily_summary(day: date) -> tuple[str, str] | None:
     if not blocks:
         return None
     subject = f"[STOCKIFY] Paper trading summary for {day:%a %d %b %Y}"
-    body = (f"What the paper-trading sessions did on {day:%A %d %B %Y}. No real orders were placed.\n\n"
+    lead = "Every session failed on this day: there are no results.\n\n" if _every_session_failed(d) else ""
+    body = (f"What the paper-trading sessions did on {day:%A %d %B %Y}. No real orders were placed.\n\n" + lead
             + "\n\n".join("\n".join(b) for b in blocks) + "\n\n- STOCKIFY daemon\n")
     return subject, body
 

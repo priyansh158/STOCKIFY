@@ -67,6 +67,7 @@ ALIVE = ("ARMED", "RUNNING", "PAUSED")            # the states `--sessions all` 
 MARKET_GROUPS = ("CM", "FO_FUT", "FO_OPT")        # a stop inside any of these is a stop mid-session
 MARKET_PHASES = ("PREOPEN", "CONTINUOUS")
 ENGINE_JOIN_S = 30.0
+IDLE_PASS_S = 60.0                                # how often a running live day does its catch-up and retries blocked starts
 
 
 def inside_market_hours(now_ns: int) -> bool:
@@ -282,7 +283,7 @@ def band_sink(dispatcher, sessions: list):  # noqa: ANN001
 
 def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: ANN001
                   pins: SessionPins | None = None, *, clear_token_expired: bool = False,
-                  refdata_stale: bool = False) -> list:
+                  refdata_stale: bool = False, blocked: list[str] | None = None) -> list:
     """Open each chosen session's day. One that cannot open is timelined and left out; the others go on. With `pins`,
     a session whose instruments would take the subscriptions past the cap does not run: an ARMED one stays ARMED,
     with the timeline row `subscription_cap`.
@@ -294,7 +295,8 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
 
     A session whose previous trading day is not finalised yet cannot start from its state: an ARMED one stays ARMED
     with one `blocked_on_finalise` timeline row per day (CDM 5.1); the catch-up finalises it and the next start opens
-    it. `refdata_stale`: the day's refdata refresh failed, so the bundle says so (a label)."""
+    it. `blocked` (out) collects those sessions' ids. `refdata_stale`: the day's refdata refresh failed, so the bundle
+    says so (a label)."""
     from stockify.daemon.finalise import FinaliseError, next_sod_state
     from stockify.daemon.session_day import SessionDay
     opened = []
@@ -324,6 +326,8 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                     if row["status"] != "ARMED":
                         raise
                     _blocked_on_finalise(sid, day, str(e), now)
+                    if blocked is not None:
+                        blocked.append(sid)
                     sd.close()
                     continue
                 sd.open(sod, reasons, now, refdata_stale=refdata_stale)
@@ -355,6 +359,35 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
             continue
         opened.append(sd)
     return opened
+
+
+def _idle_passes(idle_stop: threading.Event, day: date, blocked: list[str], before_open, on_idle,  # noqa: ANN001
+                 restart: threading.Event) -> None:
+    """The running live day's side work, off the recorder's thread (CDM 5.2): every IDLE_PASS_S first the blocked
+    sessions (finalise D-1 again, unthrottled; once each can take D-1's state, ask for the restart), then the rest of
+    the catch-up. Every step is guarded: nothing here can stop the recording."""
+    from stockify.daemon.finalise import FinaliseError, next_sod_state
+    while not idle_stop.wait(IDLE_PASS_S):
+        if blocked and not restart.is_set():
+            try:
+                if before_open is not None:
+                    before_open(day)
+                ready = 0
+                for sid in blocked:
+                    try:
+                        next_sod_state(sid, day)
+                        ready += 1
+                    except FinaliseError:
+                        pass
+                if ready:
+                    restart.set()
+            except Exception:  # noqa: BLE001
+                log.exception("retrying the blocked session start failed")
+        if on_idle is not None and not restart.is_set():
+            try:
+                on_idle()
+            except Exception:  # noqa: BLE001
+                log.exception("the catch-up pass failed")
 
 
 def _blocked_on_finalise(sid: str, day: date, why: str, now: int) -> None:
@@ -424,14 +457,21 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                    stop: threading.Event | None = None, power=None,  # noqa: ANN001
                    session_ids: list[str] | None = None,
                    token_fresh: Callable[[], bool] | None = None, clock=None,  # noqa: ANN001
-                   on_idle: Callable[[], None] | None = None, login_poll_s: float = token_watch.POLL_S) -> int:
+                   on_idle: Callable[[], None] | None = None, login_poll_s: float = token_watch.POLL_S,
+                   before_open: Callable[[date], None] | None = None) -> int:
     """Record one IST trading day and run the chosen paper sessions on it (`session_ids`: None = every armed,
     running or paused session, [] = none, which is the recorder alone). Returns an exit code from `exitcodes`.
 
     A live run with no usable Kite login waits in the process (`token_watch.wait_for_login`, polling every
     `login_poll_s`, running `on_idle` each time) until the unsubscribe time; a login that never comes ends it with
     TOKEN_EXPIRED. A usable login is a fresh token that is not the file Kite last rejected. `clock` is for a live
-    run's tests. `faults` need the replay ticker: with the live one they are refused (`LiveFaultsRefused`)."""
+    run's tests. `faults` need the replay ticker: with the live one they are refused (`LiveFaultsRefused`).
+
+    Only what the open needs runs before the sessions open: the refdata, then `before_open(day)` (the daemon's D-1
+    finalise, unthrottled), each guarded so that nothing there can stop the recording from starting. The rest of the
+    catch-up (`on_idle`: parity, backup, summary) runs on a thread once the recorder is up, every IDLE_PASS_S. A session
+    left ARMED because D-1 was not finalised (`blocked_on_finalise`) is tried again on those passes: once D-1 is
+    finalised the run ends with OK, and the daemon's next pass opens it (the restart machinery, GK 5.4)."""
     from stockify import daemon
     from stockify.config import loader
     from stockify.daemon.clock import WallClock
@@ -487,11 +527,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
             late_login = True
         if token_watch.read_status().get("waiting_for_login"):
             token_watch.login_accepted()
-        stale = daemon.refresh_refdata(day, clock, stop, on_idle)      # no bundle is made before the refdata is in
+        stale = daemon.refresh_refdata(day, clock, stop, on_idle, fresh)   # no bundle is made before the refdata is in
         if stale is None:
             return exitcodes.OK
-        if on_idle is not None:                                        # D-1 is finalised before D's bundles (CDM 5.1)
-            on_idle()
         used_token_mtime = token_watch.token_mtime_ns()       # the file the ticker is built with (stat, before the read)
         payload = kite_client.load_cached_token()
         from stockify.daemon import conn_budget
@@ -537,8 +575,14 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     pins = SessionPins(manager, cap=int(loader.load_json("kite_limits.json")["ws_max_instruments"]),
                        call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None,
                        lock=session.sub_lock)
+    if before_open is not None and not replay:             # D-1 finalised before D's bundles (CDM 5.1); never fatal
+        try:
+            before_open(day)
+        except Exception:  # noqa: BLE001
+            log.exception("the work before the open failed; the open goes on")
+    blocked: list[str] = []
     sessions = (open_sessions(choose_sessions(session_ids), day, clock, pump, pins, clear_token_expired=True,
-                           refdata_stale=bool(stale))
+                              refdata_stale=bool(stale), blocked=blocked)
                 if pump is not None else [])
     if replay:                                  # a restarted replay goes on after what the old process dispatched
         ticker.resume_after = process_mark([sd for sd in sessions if sd.resumed]) if sessions and all(
@@ -624,6 +668,14 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     stop_requested = False
     signals = StopSignals(stop)
     restore_signals = signals.install()
+    restart = threading.Event()                  # a blocked session can start now: end the run, the daemon starts it again
+    idle_stop = threading.Event()
+    idle_thread = None
+    if not replay and (on_idle is not None or blocked):
+        idle_thread = threading.Thread(
+            target=_idle_passes, name="idle", daemon=True,
+            args=(idle_stop, day, blocked, before_open, on_idle, restart))
+        idle_thread.start()
     try:
         while not stop.is_set() and not session.stopped.is_set():
             session.tick()
@@ -638,6 +690,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                                 "runs out (Windows then hibernates; the stop is recorded as a gap)")
             if replay and ticker.finished.is_set():
                 break
+            if restart.is_set():
+                log.info("D-1 is finalised: ending the run so that the blocked session(s) %s start", ", ".join(blocked))
+                break
             if clock.now_ns() >= end_ns:
                 log.info("unsubscribe time reached")
                 break
@@ -648,6 +703,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         stop_requested = True
         stop.set()
     finally:
+        idle_stop.set()
+        if idle_thread is not None:
+            idle_thread.join(2.0)               # a daemon thread: a job still running is left to the crash-safe steps
         try:                                    # the handlers stay until shutdown is over: a second Ctrl+C is ignored
             stuck = _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing,
                               clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,

@@ -344,7 +344,7 @@ class SessionDayWiringTest(pf.PaperDayTest):
 
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
-class LateLoginTest(pf.PaperDayTest):
+class LiveBase(pf.PaperDayTest):
     def setUp(self):
         super().setUp()
         self.record(seconds=120)
@@ -366,6 +366,27 @@ class LateLoginTest(pf.PaperDayTest):
         store.create_session("s1", "s1", self.session_cfg(strategy={"kind": "script", "actions": []}), 1)
         lifecycle.arm("s1", wall_ns=2)
 
+    def run_live(self, *, stop=None, login_at=None, **kw):
+        """One live run on the manual clock; the margin poller's start stops it (nothing else ends a live run)."""
+        stop = stop or threading.Event()
+        real = market_day._margin_poller
+
+        def factory(dispatcher, session, clock):
+            poller = real(dispatcher, session, clock)
+            poller.start = lambda: stop.set() if self.stop_at_poller else None
+            poller.stop = lambda: None
+            return poller
+
+        fresh = (lambda: self.clock.now_ns() >= login_at) if login_at else (lambda: True)
+        with mock.patch.object(market_day, "_margin_poller", factory):
+            return market_day.run_market_day(ticker_spec="live", session_ids=["s1"], clock=self.clock, stop=stop,
+                                             token_fresh=fresh, **kw)
+
+    stop_at_poller = True
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class LateLoginTest(LiveBase):
     def test_late_login_after_0910_still_runs_session(self):
         """Login at 10:00 IST: refdata, the bundle, then RUNNING, with a token gap from the 09:15 open."""
         login_at = timeutil.ist_ns(pf.DAY, "10:00")
@@ -386,6 +407,244 @@ class LateLoginTest(pf.PaperDayTest):
         gaps = [r for r in tmd.decode("s1") if r["kind"] == "GAP" and r["reason"] == "token_expired"
                 and r["phase"] == 0]
         self.assertEqual([g["t_event"] for g in gaps], [timeutil.ist_ns(pf.DAY, "09:15:00")])
+        [row] = [r for r in store.timeline("s1") if r["kind"] == "gap" and r["detail"]["cause"] == "late_login"]
+        self.assertEqual(row["detail"]["t_ns"], gaps[0]["t_event"])          # the journaled t, not an intended one
+
+    def test_the_timeline_gives_the_journaled_t_after_a_d68_lift(self):
+        """A paused session's journal already holds a `strategy_control` at the start; the gap's journaled t is lifted
+        to it (D-68), and the timeline row says that t, not 09:15."""
+        store.set_session_state("s1", "ARMED", ["owner"])
+        self.run_live(login_at=timeutil.ist_ns(pf.DAY, "10:00"))
+        gaps = [r for r in tmd.decode("s1") if r["kind"] == "GAP" and r["reason"] == "token_expired"
+                and r["phase"] == 0]
+        [row] = [r for r in store.timeline("s1") if r["kind"] == "gap" and r["detail"]["cause"] == "late_login"]
+        self.assertEqual(row["detail"]["t_ns"], gaps[0]["t_event"])
+        self.assertGreater(gaps[0]["t_event"], timeutil.ist_ns(pf.DAY, "09:15:00"))
+
+
+PREV = "2026-11-16"                                                              # the trading day before pf.DAY
+
+
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class OpenSequenceTest(LiveBase):
+    """CDM 5.2: what the open needs runs unthrottled before the sessions open; the rest of the catch-up runs only
+    after the recorder is up; a blocked session opens as soon as D-1 is finalised."""
+
+    def setUp(self):
+        super().setUp()
+        from stockify.daemon import finalise
+        store.upsert_session_day("s1", PREV, status="open")
+        self.d1_done = False
+
+        def next_sod_state(sid, day):                       # a real state is the engine's business, not this test's
+            if not self.d1_done:
+                raise finalise.FinaliseError(f"{PREV} is not finalised (open)")
+            return None
+
+        for patcher in (mock.patch.object(market_day, "IDLE_PASS_S", 0.05),
+                        mock.patch("stockify.daemon.finalise.next_sod_state", next_sod_state)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def finalise_prev(self):
+        self.d1_done = True
+
+    def test_d1_finalises_late_then_the_session_opens_that_day(self):
+        calls = []
+
+        def before_open(day):
+            calls.append(day)
+            if len(calls) >= 2:                                                  # the retry: now it finalises
+                self.finalise_prev()
+
+        self.stop_at_poller = False
+        opened = []
+        real_open = market_day.open_sessions
+
+        def watching(*a, **kw):
+            out = real_open(*a, **kw)
+            opened.append([sd.session_id for sd in out])
+            return out
+
+        with mock.patch.object(market_day, "open_sessions", watching):
+            # the first run: blocked, then the idle pass finalises D-1 and the run ends so that it can start again
+            self.assertEqual(self.run_live(before_open=before_open), exitcodes.OK)
+            self.assertEqual(opened, [[]])
+            self.assertEqual(store.get_session("s1")["status"], "ARMED")
+            kinds = [r["kind"] for r in store.timeline("s1")]
+            self.assertEqual(kinds.count("blocked_on_finalise"), 1)
+            self.stop_at_poller = True
+            self.assertEqual(self.run_live(before_open=before_open), exitcodes.OK)      # the daemon's next pass
+        self.assertEqual(opened[-1], ["s1"])
+        self.assertEqual(store.get_session("s1")["status"], "RUNNING")
+        self.assertTrue(paths.journal_file("s1", pf.DAY).exists())
+
+    def test_before_open_runs_unthrottled_in_the_daemon(self):
+        from stockify import daemon
+        ran = []
+        state = scheduler.State()
+        state.mark("nse_fetch", MON)
+        state.mark("margin_files", MON)
+
+        def fake_market_day(**kw):
+            kw["on_idle"]()                                                      # tried: the 15 minute throttle starts
+            kw["before_open"](WED)                                               # and this still runs
+            return exitcodes.TOKEN_EXPIRED
+
+        def fake_job(job, d, st, now=None):
+            ran.append((job, d))
+
+        clock = ManualClock(ist(WED, "08:40"))
+        with mock.patch.object(market_day, "run_market_day", fake_market_day), \
+                mock.patch.object(daemon, "_run_job", fake_job):
+            daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
+                              token_fresh=lambda: False, send_reminder=lambda s, b: None)
+        self.assertEqual(ran.count(("finalise", MON)), 2)                        # loop top; the idle pass is throttled
+
+    def test_a_failing_catch_up_still_starts_the_recorder(self):
+        def boom(*a, **kw):
+            raise RuntimeError("calendar broke")
+
+        self.finalise_prev()
+        with mock.patch("stockify.daemon.scheduler.missed_jobs", boom):
+            code = self.run_live(on_idle=lambda: scheduler.missed_jobs(0, None), before_open=boom)
+        self.assertEqual(code, exitcodes.OK)
+        self.assertIn("ticker.connect", self.events)
+
+    def test_the_rest_of_the_catch_up_runs_after_the_recorder_is_up(self):
+        order = []
+        self.ticker.connect = lambda threaded=False: order.append("connect")
+        stop = threading.Event()
+        self.stop_at_poller = False
+
+        def idle():
+            order.append("idle")
+            stop.set()
+
+        self.finalise_prev()
+        self.run_live(stop=stop, on_idle=idle)
+        self.assertEqual(order[:2], ["connect", "idle"])
+
+
+class ParityGiveUpTest(JobsBase):
+    def test_skipped_parity_is_tried_8_times_a_day_then_given_up_once(self):
+        from stockify import daemon, parity
+        self.sessions_with_day(MON, "finalised")
+
+        def skipped(sid, d):
+            return parity.ParityResult(sid, d, "recorder", "skipped", {"reason": "MON was not recorded"})
+
+        with mock.patch("stockify.parity.journal_parity",
+                        lambda sid, d: parity.ParityResult(sid, d, "journal", "pass")), \
+                mock.patch("stockify.parity.recorder_parity", skipped):
+            for n in range(1, 8):
+                daemon._run_job("parity", MON, self.state, ist(WED, "08:00"))
+                self.assertFalse(self.state.done("parity", MON), n)
+            self.assertEqual([r for r in store.timeline("s1") if r["kind"] == "parity_gave_up"], [])
+            daemon._run_job("parity", MON, self.state, ist(WED, "08:00"))            # the 8th
+        self.assertTrue(self.state.done("parity", MON))
+        [row] = [r for r in store.timeline("s1") if r["kind"] == "parity_gave_up"]
+        self.assertIn("was not recorded", json.dumps(row["detail"]))
+        self.assertEqual(row["detail"]["day"], MON.isoformat())
+
+
+class BackupRetryTest(JobsBase):
+    def run_job(self, errors=(), refused=False):
+        from stockify import backup, daemon
+        real = loader.load_json
+
+        def fake(t, *, day):
+            if refused:
+                raise backup.BackupRefused("no")
+            res = backup.BackupResult()
+            res.errors.extend(errors)
+            return res
+
+        with mock.patch.object(loader, "load_json", lambda n, *a, **k: {"backup": {"target": "X"}}
+                               if n == "storage.json" else real(n, *a, **k)), \
+                mock.patch("stockify.backup.run", fake):
+            daemon._run_job("backup", WED, self.state, ist(WED, "06:00"))
+
+    def test_copy_errors_are_retried_at_most_3_times_a_day(self):
+        for n in (1, 2):
+            self.run_job(errors=["copy failed"])
+            self.assertFalse(self.state.done("backup", WED), n)
+        self.run_job(errors=["copy failed"])
+        self.assertTrue(self.state.done("backup", WED))                          # the third try is the last
+
+    def test_a_success_is_done_at_once(self):
+        self.run_job()
+        self.assertTrue(self.state.done("backup", WED))
+
+    def test_a_refused_target_is_a_logged_skip(self):
+        self.run_job(refused=True)
+        self.assertTrue(self.state.done("backup", WED))
+
+    def test_backup_is_throttled_between_tries(self):
+        self.assertGreater(scheduler.retry_every_ns("backup"), 0)
+
+
+SDK_TOKEN_ERROR = type("TokenException", (Exception,), {"__module__": "kiteconnect.exceptions"})
+
+
+class RefdataTokenTest(unittest.TestCase):
+    def setUp(self):
+        cal.reload()
+        support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
+
+    def test_the_sdks_token_exception_is_a_token_failure_that_waits_for_the_login(self):
+        from stockify import daemon
+        from stockify.daemon import token_watch
+        clock = ManualClock(ist(WED, "09:00"))
+        flags, calls = [], []
+
+        def fresh():
+            flags.append(token_watch.read_status().get("waiting_for_login"))
+            return clock.now_ns() >= ist(WED, "10:30")
+
+        def fake(day):
+            calls.append(clock.now_ns())
+            if len(calls) == 1:
+                raise SDK_TOKEN_ERROR("Incorrect api_key or access_token")
+
+        with mock.patch.object(daemon, "_ensure_refdata", fake), mock.patch("stockify.daemon.notify.post"):
+            stale = daemon.refresh_refdata(WED, clock, threading.Event(), token_fresh=fresh)
+        self.assertFalse(stale)                                                  # never the stale label
+        self.assertIn(True, flags)                                               # waiting_for_login was set
+        self.assertEqual(len(calls), 2)
+        self.assertGreaterEqual(calls[1], ist(WED, "10:30"))                     # retried at once on the login
+
+    def test_the_last_give_up_logs_the_class_and_a_traceback(self):
+        import logging
+        from stockify import daemon
+        was = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+        with mock.patch.object(daemon, "_ensure_refdata", side_effect=TypeError("a bug")):
+            with self.assertLogs("stockify.daemon", "WARNING") as logs:
+                stale = daemon.refresh_refdata(WED, ManualClock(ist(WED, "10:00")), threading.Event())
+        self.assertTrue(stale)
+        errors = [r for r in logs.records if r.levelno >= logging.ERROR]
+        self.assertTrue(any("TypeError" in r.getMessage() for r in errors))
+        self.assertTrue(all(r.exc_info for r in logs.records))
+
+
+class AllFailedSummaryTest(JobsBase):
+    def test_a_day_where_every_session_failed_is_summarised_and_done(self):
+        from stockify import daemon
+        from stockify.daemon import notify
+        self.sessions_with_day(MON)
+        store.add_timeline("s1", "session_failed", {"error": "x"}, wall_ns=ist(MON, "12:00"), engine_ns=None)
+        self.assertTrue(notify.summary_ready(MON))
+        subject, body = notify.daily_summary(MON)
+        self.assertIn("every session failed", body.lower())
+        sent = []
+        with mock.patch.object(notify, "post_daily_summary", lambda d, cb: (sent.append(d), cb(None), True)[2]):
+            daemon._summary_flight.clear()
+            daemon._daily_summary(MON, self.state)
+            daemon._daily_summary(MON, self.state)
+        self.assertEqual(sent, [MON])
+        self.assertTrue(self.state.done("daily_summary", MON))
 
 
 if __name__ == "__main__":

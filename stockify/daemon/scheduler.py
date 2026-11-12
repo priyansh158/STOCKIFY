@@ -33,6 +33,7 @@ every `retry_every_min`, not once the next morning (CAM 4.4). The wake time is
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -45,6 +46,7 @@ CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
 CATCH_UP = ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary", "backup")
 DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary")   # one day's jobs, in dependency order
+DEFAULT_RETRY_MIN = {"backup": 15}                  # a job given as a plain time retries at this gap
 DEPENDS = {"parity": "finalise", "daily_summary": "finalise"}
 HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files",)   # fetched the same evening (CAM 4.4), not the next morning
 
@@ -128,6 +130,7 @@ class State:
 
     def __init__(self, path=None):
         self.path = path or (paths.lab_dir() / "scheduler_state.json")
+        self._lock = threading.Lock()                       # the open's finalise and the idle pass can both mark
         try:
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
@@ -137,19 +140,20 @@ class State:
         return day.isoformat() in self.data.get(job, [])
 
     def mark(self, job: str, day: date) -> None:
-        days = set(self.data.get(job, []))
-        days.add(day.isoformat())
-        self.data[job] = sorted(days)[-60:]                 # keep the last 60 entries
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        with self._lock:
+            days = set(self.data.get(job, []))
+            days.add(day.isoformat())
+            self.data[job] = sorted(days)[-60:]             # keep the last 60 entries
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(self.path)
 
 
 def retry_every_ns(job: str, cfg: dict | None = None) -> int:
     """The gap between two attempts of a catch-up job (`retry_every_min`); 0 when it has none."""
     spec = (cfg or schedule())["jobs"].get(job)
     if not isinstance(spec, dict):
-        return 0
+        return DEFAULT_RETRY_MIN.get(job, 0) * 60 * 1_000_000_000 if isinstance(spec, str) else 0
     return int(spec.get("retry_every_min", 0)) * 60 * 1_000_000_000
 
 
