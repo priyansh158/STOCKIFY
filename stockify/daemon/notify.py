@@ -233,7 +233,10 @@ def _symbol(instrument_id: int) -> str:
 
 
 def _failed(sid: str, day: str) -> bool:
-    """The session has a `session_failed` row from that IST day."""
+    """The session's day could not be finalised (`finalised_failed`), or it has a `session_failed` row from that IST day."""
+    row = store.get_session_day(sid, day)
+    if row is not None and row.get("status") == "finalised_failed":
+        return True
     d = date.fromisoformat(day)
     lo, hi = timeutil.ist_ns(d, "00:00"), timeutil.ist_ns(d + timedelta(days=1), "00:00")
     return any(r["kind"] == "session_failed" and lo <= (r["wall_ns"] or 0) < hi

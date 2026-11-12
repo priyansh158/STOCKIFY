@@ -38,7 +38,7 @@ from pathlib import Path
 
 from stockify import paths, store, timeutil
 from stockify.daemon import finalise, journal, lifecycle, notify
-from stockify.daemon.session_day import SessionDayError
+from stockify.daemon.session_day import SessionDayError, StrategyChanged
 
 log = logging.getLogger("stockify.parity")
 
@@ -154,6 +154,8 @@ def journal_parity(session_id: str, day: date) -> ParityResult:
             raise finalise.FinaliseError(f"the journal of {d} is not finalised, though the day is")
         twin, records = _regenerated(session_id, day)
     except (finalise.FinaliseError, journal.JournalError, SessionDayError, *run_error) as e:
+        if isinstance(e, StrategyChanged):                          # I-1: refused, never replayed with the new code
+            finalise._note_strategy_changed(session_id, day, e)
         summary.update(error=f"{type(e).__name__}: {e}", first_difference=None)
         return _record(ParityResult(session_id, day, KIND, "fail", summary))
     stored = _stored(session_id, day)

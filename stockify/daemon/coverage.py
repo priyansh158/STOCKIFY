@@ -11,6 +11,12 @@ cut to the continuous time; a gap that never closed runs to the end of the phase
 threshold is flagged, not changed. The frames a recorder dropped on a full queue are not in the journal and are not
 counted here: they cost the recording, not the live session (parity reports them).
 
+Time the journal does not show (I-2): continuous time in which the session saw no frame or clock record for longer
+than the clock cadence plus a tolerance (`configured_bounds`: paper.json `clock_every_s` and
+`coverage_gap_tolerance_s`) is uncovered too, as a gap of reason `unseen`. That covers a process that died, a failed
+session, a dead engine, a restart after the close and a day with no records at all, none of which journals a GAP.
+GAP, REFDATA and SETTLE records are not frames and show nothing. Without a cadence only journaled gaps count.
+
 `journal_body` is the journal's records without its header (`journal.read(path)[1]`).
 """
 from __future__ import annotations
@@ -41,6 +47,12 @@ class Coverage:
 def configured_threshold() -> Fraction:
     """`coverage_threshold` of paper.json (a plain decimal string in (0, 1]), exact."""
     return Fraction(loader.load_json("paper.json")["coverage_threshold"])
+
+
+def configured_bounds() -> tuple[int, int]:
+    """(clock cadence ns, tolerance ns) of paper.json: a record is expected at least this often, plus this much."""
+    doc = loader.load_json("paper.json")
+    return int(doc["clock_every_s"]) * _NS, int(doc["coverage_gap_tolerance_s"]) * _NS
 
 
 def _merge(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -109,9 +121,43 @@ def _gaps(journal_body: bytes, ids: set[int], continuous: list[tuple[int, int]])
     return found
 
 
-def coverage(bundle: dict, journal_bytes: bytes, ids: set[int], threshold: Fraction) -> Coverage:
+_NOT_FRAMES = (packs.GAP_K, packs.REFDATA_K, packs.SETTLE_K)
+
+
+def _unseen(journal_body: bytes, continuous: list[tuple[int, int]], limit_ns: int) -> list[dict]:
+    """The stretches of continuous time between two frame or clock records (or the day's edges and one) further apart
+    than `limit_ns`."""
+    times: list[int] = []
+    off = 0
+    while off < len(journal_body):
+        kind, size = struct.unpack_from("<HH", journal_body, off)
+        if kind not in _NOT_FRAMES:
+            times.append(packs.decode(journal_body, off)[0]["t_event"])
+        off += size
+    times.sort()
+    first, last = continuous[0][0], continuous[-1][1]
+    before = [t for t in times if t <= first]           # the last record at or before the open starts the day covered
+    after = [t for t in times if t >= last]
+    marks = [before[-1] if before else first, *[t for t in times if first < t < last],
+             after[0] if after else last]
+    out = []
+    for a, b in zip(marks, marks[1:]):
+        if b - a > limit_ns:
+            span = _intersect([(a, b)], continuous)
+            if span:
+                out.append({"reason": "unseen", "scope": "all", "start_ns": a, "end_ns": b, "closed": True})
+    return out
+
+
+def coverage(bundle: dict, journal_bytes: bytes, ids: set[int], threshold: Fraction, *,
+             cadence_ns: int | None = None, tolerance_ns: int = 0) -> Coverage:
     continuous = _continuous(bundle, set(ids))
     gaps = _gaps(journal_bytes, set(ids), continuous)
+    if cadence_ns is not None:
+        gaps += _unseen(journal_bytes, continuous, cadence_ns + tolerance_ns)
+        gaps.sort(key=lambda g: (g["start_ns"], g["end_ns"], g["reason"], g["scope"]))
+        for g in gaps:
+            g.setdefault("counted_s", _length(_intersect([(g["start_ns"], g["end_ns"])], continuous)) // _NS)
     uncovered = _length(_intersect(_merge([(g["start_ns"], g["end_ns"]) for g in gaps]), continuous))
     total = _length(continuous)
     fraction = Fraction(total - uncovered, total)

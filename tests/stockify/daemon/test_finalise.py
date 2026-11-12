@@ -84,12 +84,19 @@ class FinaliseTest(pf.PaperDayTest):
         self.addCleanup(sd.close)
         return sd
 
-    def traded_day(self, cfg=None, sid=SID):
-        """Day one, fed and left unfinalised; returns the still open SessionDay."""
+    def rest_of_day(self, until: str = "15:40:00"):
+        """A CLOCK record every second after the last recorded one, to `until`: the session kept seeing the day."""
+        last = max(t for t, _, _ in self.records)
+        rank = packs.RANK[packs.CLOCK]
+        return [(t, rank, packs.enc_clock(t)) for t in range((last // SEC + 1) * SEC, self.t(until) + 1, SEC)]
+
+    def traded_day(self, cfg=None, sid=SID, full_day=False):
+        """Day one, fed and left unfinalised; returns the still open SessionDay. The recorded fixture is only two
+        minutes long: `full_day` adds the clock to the close, so the day is fully covered (I-2)."""
         cfg = self.make_session(cfg, sid)
         sd = self.day(cfg, sid=sid)
         sd.open(None, [], self.t("09:14:00"))
-        sd.feed(self.records, None)
+        sd.feed(self.records + (self.rest_of_day() if full_day else []), None)
         return sd
 
     def fin(self, day=pf.DAY, sid=SID, **kw):
@@ -195,7 +202,7 @@ class FinaliseTest(pf.PaperDayTest):
         return [r for r in store.timeline(SID, limit=100) if r["kind"] == "coverage_low"]
 
     def test_finalising_stores_the_days_coverage(self):
-        self.traded_day().close()
+        self.traded_day(full_day=True).close()
         self.fin()
         value, doc = self.stored_coverage()
         self.assertEqual(value, 1.0)
@@ -204,11 +211,13 @@ class FinaliseTest(pf.PaperDayTest):
         self.assertEqual(self.coverage_flags(), [])
 
     def test_a_day_with_a_long_gap_is_flagged_and_not_paused(self):
-        sd = self.traded_day()
+        cfg = self.make_session()
+        sd = self.day(cfg)
+        sd.open(None, [], self.t("09:14:00"))
         rank = packs.RANK[packs.GAP_K]
         a, b = self.t("10:00:00"), self.t("11:00:00")
-        sd.feed([(a, rank, packs.enc_gap(0, a, 0, "disconnect")), (b, rank, packs.enc_gap(0, b, 1, "disconnect"))],
-                None)
+        gaps = [(a, rank, packs.enc_gap(0, a, 0, "disconnect")), (b, rank, packs.enc_gap(0, b, 1, "disconnect"))]
+        sd.feed(sorted([*self.records, *self.rest_of_day(), *gaps], key=lambda r: (r[0], r[1])), None)
         sd.close()
         self.fin()
         value, doc = self.stored_coverage()
@@ -566,6 +575,155 @@ class FinaliseTest(pf.PaperDayTest):
         with mock.patch.object(finalise, "replay_into", side_effect=engine.load().RunError("refused")):
             res = self.fin()
         self.assertEqual((res.status, res.error), ("failed", "refused"))
+
+    # ── C-1: a failed session-day never retires the session ─────────────────────────────────────────────────────
+
+    def two_day_cfg(self):
+        """A session whose universe exists on both days (the index and the near future)."""
+        act = [{"on_event": 60, "place": {"instrument": self.fut, "side": "BUY", "qty": 65, "product": "NRML",
+                                          "type": "MARKET"}}]
+        with refdata.transaction() as conn:
+            conn.execute("INSERT INTO fo_eod (trade_date, instrument_id, settle_paise) VALUES (?, ?, 2411000)",
+                         (DAY2.isoformat(), self.fut))
+        clock = packs.RANK[packs.CLOCK]
+        self.records = [r for r in self.records
+                        if packs.decode(r[2], 0)[0]["instrument_id"] in (self.idx, self.fut) or r[1] == clock]
+        return self.session_cfg(strategy={"kind": "script", "actions": act},
+                                universe=["NSE:NIFTY 50", "NFO:NIFTY26NOVFUT"])
+
+    def failed_row(self, day=pf.DAY, sid=SID):
+        """What the dispatcher's `_fail` leaves: a `session_failed` timeline row stamped inside the trade day."""
+        store.add_timeline(sid, "session_failed", {"error": "OperationalError('database is locked')"},
+                           wall_ns=self.t("11:02:00") + (day - pf.DAY).days * SHIFT, engine_ns=None)
+
+    def run_finalise_job(self, day=pf.DAY):
+        from stockify import daemon
+        from stockify.daemon import scheduler
+        state = scheduler.State()
+        state.mark("nse_fetch", day)
+        daemon._finalise_job(day, state, self.t("19:30:00") + (day - pf.DAY).days * SHIFT)
+        return state
+
+    def test_a_day_with_a_session_failed_row_is_still_finalised_from_its_journal(self):
+        self.traded_day().close()
+        self.failed_row()
+        state = self.run_finalise_job()
+        self.assertEqual(store.get_session_day(SID, pf.EXPIRY)["status"], "finalised")
+        self.assertTrue(journal.is_finalised(paths.journal_file(SID, pf.DAY)))
+        self.assertTrue(state.done("finalise", pf.DAY))
+        self.assertEqual(finalise.next_sod_state(SID, DAY2)["trade_date"], pf.EXPIRY)
+
+    def test_a_transient_store_error_on_day_one_still_lets_day_two_open(self):
+        cfg = self.two_day_cfg()
+        sd = self.traded_day(cfg)
+        with mock.patch.object(store, "apply_session_outputs", side_effect=sqlite3.OperationalError("database is locked")):
+            with self.assertRaises(sqlite3.OperationalError):
+                sd.feed([(self.t("11:02:00"), packs.RANK[packs.CLOCK], packs.enc_clock(self.t("11:02:00")))], None)
+        sd.close()
+        self.failed_row()
+        self.run_finalise_job()
+        two = self.day(cfg, day=DAY2)
+        two.open(finalise.next_sod_state(SID, DAY2), [], self.t("09:14:00") + SHIFT)
+        self.assertEqual(store.get_session_day(SID, DAY2.isoformat())["status"], "open")
+
+    def test_a_day_that_cannot_be_finalised_is_marked_failed_and_the_session_is_armed(self):
+        self.traded_day().close()
+        res = finalise.finalise_day(SID, pf.DAY, files_complete=True, cutoff_passed=False)
+        self.assertEqual(res.status, "finalised")
+        store.upsert_session_day(SID, pf.EXPIRY, status="open")                 # as if it had not finished
+        with mock.patch.object(finalise, "replay_into", side_effect=engine.load().RunError("poison record")):
+            res = self.fin()
+        self.assertEqual(res.status, "failed")
+        finalise.record_failure(SID, pf.DAY, res.error, wall_ns=5)
+        row = store.get_session_day(SID, pf.EXPIRY)
+        self.assertEqual(row["status"], finalise.FAILED_STATUS)
+        rows = [r for r in store.timeline(SID, limit=100) if r["kind"] == "session_failed"]
+        self.assertEqual([(r["detail"]["while"], r["detail"]["error"]) for r in rows], [("finalise", "poison record")])
+        self.assertEqual(store.get_session(SID)["status"], "ARMED")
+
+    def test_the_next_day_after_a_failed_day_carries_the_last_good_state_and_says_so(self):
+        store.create_session(SID, "s", self.buy_cfg(), 1)
+        self.put_day("2026-03-02", state='{"trade_date": "2026-03-02"}')            # the 3rd was a holiday
+        self.put_day("2026-03-04", status=finalise.FAILED_STATUS, state=None)
+        state, origin = finalise.next_sod_state_from(SID, date(2026, 3, 5))
+        self.assertEqual((state["trade_date"], origin), ("2026-03-02", "2026-03-02"))
+        self.assertEqual(finalise.next_sod_state(SID, date(2026, 3, 5))["trade_date"], "2026-03-02")
+        self.put_day("2026-03-05", state='{"trade_date": "2026-03-05"}')
+        self.assertEqual(finalise.next_sod_state_from(SID, date(2026, 3, 6)), ({"trade_date": "2026-03-05"}, None))
+
+    def test_a_first_day_that_failed_hands_on_nothing_and_says_so(self):
+        store.create_session(SID, "s", self.buy_cfg(), 1)
+        self.put_day("2026-03-04", status=finalise.FAILED_STATUS, state=None)
+        self.assertEqual(finalise.next_sod_state_from(SID, date(2026, 3, 5)), (None, "start"))
+
+    def test_an_unfinalised_day_between_still_blocks(self):
+        store.create_session(SID, "s", self.buy_cfg(), 1)
+        self.put_day("2026-03-02")
+        self.put_day("2026-03-04", status="open", state=None)
+        with self.assertRaises(finalise.FinaliseError):
+            finalise.next_sod_state_from(SID, date(2026, 3, 5))
+
+    def test_the_day_after_a_failed_one_opens_with_the_origin_label(self):
+        cfg = self.two_day_cfg()
+        self.traded_day(cfg).close()
+        self.fin()
+        store.upsert_session_day(SID, pf.EXPIRY, status=finalise.FAILED_STATUS)
+        self.assertEqual(finalise.next_sod_state_from(SID, DAY2), (None, "start"))
+        two = self.day(cfg, day=DAY2)
+        two.open(None, [], self.t("09:14:00") + SHIFT, sod_from="start")
+        bundle = json.loads(paths.day_bundle_file(SID, DAY2).read_text(encoding="utf-8"))
+        self.assertIn("sod_from:start", bundle["labels"])
+
+    def test_refinalise_finalises_a_failed_day_again(self):
+        self.traded_day().close()
+        self.fin()
+        store.upsert_session_day(SID, pf.EXPIRY, status=finalise.FAILED_STATUS)
+        res = finalise.refinalise(SID, pf.DAY)
+        self.assertEqual((res.status, store.get_session_day(SID, pf.EXPIRY)["status"]), ("finalised", "finalised"))
+
+    def test_the_refinalise_command(self):
+        import contextlib
+        import io
+        from stockify import __main__ as cli
+        self.traded_day().close()
+        self.fin()
+        store.upsert_session_day(SID, pf.EXPIRY, status=finalise.FAILED_STATUS)
+        argv = ["session", "refinalise", "--session", SID, "--date", pf.EXPIRY]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(argv), 0)
+        self.assertIn("finalised", out.getvalue())
+        self.assertEqual(store.get_session_day(SID, pf.EXPIRY)["status"], "finalised")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["session", "refinalise", "--session", "nope", "--date", pf.EXPIRY]), 2)
+            self.assertEqual(cli.main(["session", "refinalise", "--session", SID, "--date", "2026-11-30"]), 2)
+        self.assertIn("no such session", err.getvalue())
+
+    # ── I-1: the strategy source is pinned ──────────────────────────────────────────────────────────────────────
+
+    def changed_strategy(self):
+        real = bundle_mod.strategy_ref
+        return mock.patch.object(bundle_mod, "strategy_ref",
+                                 side_effect=lambda cfg: {**real(cfg), "source_sha256": "f" * 64})
+
+    def test_a_changed_strategy_is_refused_at_finalise_and_nothing_is_rewritten(self):
+        self.traded_day().close()
+        stored = json.loads(paths.day_bundle_file(SID, pf.DAY).read_text(encoding="utf-8"))["strategy"]["source_sha256"]
+        with self.changed_strategy():
+            res = self.fin()
+        self.assertEqual(res.status, "failed")
+        self.assertIn(stored, res.error)
+        self.assertIn("f" * 64, res.error)
+        self.assertNotEqual(store.get_session_day(SID, pf.EXPIRY)["status"], "finalised")
+        rows = [r for r in store.timeline(SID, limit=100) if r["kind"] == "strategy_changed"]
+        self.assertEqual([(r["detail"]["stored"], r["detail"]["current"]) for r in rows], [(stored, "f" * 64)])
+        self.assertEqual(self.fin().status, "finalised")                       # the code is back: it finalises
+
+    def test_a_changed_strategy_is_refused_when_the_engine_is_built(self):
+        self.traded_day().close()
+        with self.changed_strategy(), self.assertRaises(session_day.StrategyChanged):
+            finalise.fresh_engine(SID, pf.DAY)
 
     # ── the previous day is the calendar's (I3) ─────────────────────────────────────────────────────────────────
 

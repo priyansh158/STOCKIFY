@@ -595,6 +595,40 @@ def _cmd_margin_live_report(args) -> int:
     return 0
 
 
+def _cmd_session_refinalise(args) -> int:
+    """C-1: finalise a session-day again, from its journal, without waiting for NSE's files (a day that failed, or was
+    left open). Exit 0: finalised; 1: it cannot be finalised (the reason is printed; the day stays `finalised_failed`);
+    2: bad arguments, an unknown session or a day the session never opened; 3: busy elsewhere, try again; 4: could not
+    run (a locked database, an engine that is not built)."""
+    from datetime import date
+    from stockify import store
+    from stockify.daemon import finalise
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD; got {args.date!r}", file=sys.stderr)
+        return 2
+    if store.get_session(args.session) is None:
+        print(f"no such session: {args.session!r}", file=sys.stderr)
+        return 2
+    if store.get_session_day(args.session, args.date) is None:
+        print(f"session {args.session!r} has no record of {args.date}", file=sys.stderr)
+        return 2
+    try:
+        result = finalise.refinalise(args.session, day)
+    except Exception as e:  # noqa: BLE001 — a locked database or an engine that is not built
+        print(f"refinalise: could not run: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 4
+    if result.status == "finalised":
+        print(f"finalised: {args.session} {args.date} ({result.settle_count} settlement records)")
+        return 0
+    if result.status == "failed":
+        print(f"cannot finalise {args.session} {args.date}: {result.error}", file=sys.stderr)
+        return 1
+    print(f"{result.status}: {args.session} {args.date}; try again shortly", file=sys.stderr)
+    return 3
+
+
 def _cmd_parity_journal(args) -> int:
     """RD 5.1: replay a finalised session-day's journal and compare it with the store (reads only). Exit 0: identical;
     1: a difference (one `differs:` line); 2: bad arguments or an unknown session; 3: not finalised, nothing checked; 4: could not run (a locked
@@ -960,6 +994,14 @@ def main(argv: list[str] | None = None) -> int:
     lr.add_argument("--from", dest="start", help="first IST trade date, YYYY-MM-DD (default: all)")
     lr.add_argument("--to", dest="end", help="last IST trade date, YYYY-MM-DD (default: all)")
     lr.set_defaults(func=_cmd_margin_live_report)
+
+    se = sub.add_parser("session", help="paper session maintenance")
+    sesub = se.add_subparsers(dest="session_command", required=True)
+    rf = sesub.add_parser("refinalise", help="finalise a failed or unfinished session-day again from its journal "
+                                             "(exit 0 finalised, 1 cannot, 2 bad arguments, 3 busy, 4 could not run)")
+    rf.add_argument("--session", required=True, help="session id")
+    rf.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
+    rf.set_defaults(func=_cmd_session_refinalise)
 
     pa = sub.add_parser("parity", help="nightly parity gates (M5.10)")
     pasub = pa.add_subparsers(dest="parity_command", required=True)

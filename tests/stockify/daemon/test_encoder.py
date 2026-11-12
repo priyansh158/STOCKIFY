@@ -233,6 +233,7 @@ class PaperConfigTests(unittest.TestCase):
         self.assertEqual(doc["margin_poll"], {"debounce_s": 2, "every_s": 300, "max_rps": 3})
         self.assertEqual((doc["token_poll_s"], doc["commands_every_s"], doc["sod_state_warn_mb"]), (15, 1, 64))
         self.assertEqual(doc["coverage_threshold"], "0.98")
+        self.assertEqual(doc["coverage_gap_tolerance_s"], 5)
 
     def test_plain_decimals_and_bounds_are_accepted(self):
         tmp = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
@@ -259,7 +260,7 @@ class PaperConfigTests(unittest.TestCase):
                          ("margin_poll", {"debounce_s": 61, "every_s": 300, "max_rps": 10}),
                          ("margin_poll", {"debounce_s": 2, "every_s": 86_401, "max_rps": 10}),
                          ("margin_poll", {"debounce_s": 2, "every_s": 300, "max_rps": 11}),
-                         ("token_poll_s", 3601), ("commands_every_s", 61), ("sod_state_warn_mb", 100_001),
+                         ("token_poll_s", 3601), ("coverage_gap_tolerance_s", 3601), ("coverage_gap_tolerance_s", 0), ("commands_every_s", 61), ("sod_state_warn_mb", 100_001),
                          ("clock_every_s", 0), ("journal", {"fsync_every_s": 0}), ("dispatcher_queue_max", -1),
                          ("margin_poll", {"debounce_s": 2, "every_s": 300}), ("token_poll_s", True),
                          ("coverage_threshold", "1.5"), ("coverage_threshold", 0.98),

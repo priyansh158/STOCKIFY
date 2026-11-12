@@ -285,6 +285,21 @@ class ParityJournalTest(_Base):
         self.assertIn("database is locked", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
+    def test_a_changed_strategy_fails_parity_naming_both_hashes_and_is_never_replayed(self):
+        """I-1: a day is not replayed with other code than it was made with."""
+        from stockify import bundle as bundle_mod
+        self.finalised_day()
+        stored = json.loads(paths.day_bundle_file(SID, pf.DAY).read_text(encoding="utf-8"))["strategy"]["source_sha256"]
+        real = bundle_mod.strategy_ref
+        with mock.patch.object(bundle_mod, "strategy_ref",
+                               side_effect=lambda cfg: {**real(cfg), "source_sha256": "e" * 64}):
+            res = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(res.outcome, "fail")
+        self.assertIn(stored, res.summary["error"])
+        self.assertIn("e" * 64, res.summary["error"])
+        rows = [r for r in store.timeline(SID, limit=100) if r["kind"] == "strategy_changed"]
+        self.assertEqual([(r["detail"]["stored"], r["detail"]["current"]) for r in rows], [(stored, "e" * 64)])
+
     def test_an_unloadable_engine_does_not_mask_the_days_own_error(self):
         self.finalised_day()
         with mock.patch.object(engine, "load", side_effect=ImportError("not built")), \

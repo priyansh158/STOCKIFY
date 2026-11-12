@@ -116,5 +116,69 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(cov.configured_threshold(), Fraction("0.98"))
 
 
+def clocks(a: str, b: str, step_s: int = 1) -> bytes:
+    """A CLOCK record every `step_s` seconds from `a` to `b` inclusive."""
+    return b"".join(packs.enc_clock(t) for t in range(at(a), at(b) + 1, step_s * SEC))
+
+
+CADENCE, TOLERANCE = 1 * SEC, 5 * SEC
+
+
+def seen(body: bytes, ids=frozenset({1})) -> "cov.Coverage":
+    return cov.coverage(bundle(), body, set(ids), THRESHOLD, cadence_ns=CADENCE, tolerance_ns=TOLERANCE)
+
+
+class UnseenTimeTest(unittest.TestCase):
+    """I-2: continuous time in which the session saw no record at all is uncovered, though the journal holds no GAP."""
+
+    def test_a_full_journal_is_fully_covered(self):
+        c = seen(clocks("09:00:00", "15:30:00"))
+        self.assertEqual((c.fraction, c.gaps), (Fraction(1), []))
+
+    def test_no_records_at_all_is_zero_coverage(self):
+        c = seen(b"")
+        self.assertEqual((c.fraction, c.covered_s, c.below_threshold), (Fraction(0), 0, True))
+        self.assertEqual([g["reason"] for g in c.gaps], ["unseen"])
+
+    def test_a_journal_that_stops_at_11_is_uncovered_to_the_close(self):
+        """A process that died, a failed session, a dead engine."""
+        c = seen(clocks("09:00:00", "11:00:00"))
+        self.assertEqual(c.continuous_s - c.covered_s, 4 * 3600 + 30 * 60)
+        self.assertTrue(c.below_threshold)
+
+    def test_a_hole_in_the_middle_with_no_gap_record_counts(self):
+        c = seen(clocks("09:00:00", "11:00:00") + clocks("11:30:00", "15:30:00"))
+        self.assertEqual(c.continuous_s - c.covered_s, 30 * 60)
+
+    def test_a_restart_after_the_close_with_no_frames_leaves_the_tail_uncovered(self):
+        c = seen(clocks("09:00:00", "14:00:00") + packs.enc_gap(0, at("16:00:00"), 1, "process_stop"))
+        self.assertEqual(c.continuous_s - c.covered_s, 90 * 60)
+
+    def test_settles_refdata_and_gaps_are_not_frames(self):
+        late = at("20:00:00")
+        body = (clocks("09:00:00", "11:00:00") + packs.enc_settle(1, late, 0, DAY.isoformat(), 100)
+                + packs.enc_refdata(0, late, "strategy_control", {"enabled": True, "reasons": []})
+                + packs.enc_gap(0, late, 0, "process_stop"))
+        self.assertEqual(seen(body).continuous_s - seen(body).covered_s, 4 * 3600 + 30 * 60)
+
+    def test_the_tolerance_comes_from_the_caller(self):
+        edge = clocks("09:00:00", "15:30:00", step_s=6)             # a record every 6 s: cadence 1 s + tolerance 5 s
+        self.assertEqual(seen(edge).fraction, Fraction(1))
+        wide = clocks("09:00:00", "15:30:00", step_s=7)
+        self.assertLess(seen(wide).fraction, Fraction(1))
+
+    def test_an_overlap_with_a_journaled_gap_counts_once(self):
+        body = clocks("09:00:00", "10:00:00") + gap("disconnect", "10:00:00", "10:30:00") + clocks("10:30:00", "15:30:00")
+        c = seen(body)
+        self.assertEqual(c.continuous_s - c.covered_s, 30 * 60)
+
+    def test_without_a_cadence_only_journaled_gaps_count(self):
+        self.assertEqual(cov.coverage(bundle(), b"", {1}, THRESHOLD).fraction, Fraction(1))
+
+    def test_the_bounds_are_read_from_paper_json(self):
+        cadence, tolerance = cov.configured_bounds()
+        self.assertEqual((cadence, tolerance), (1 * SEC, 5 * SEC))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -297,8 +297,8 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
     with one `blocked_on_finalise` timeline row per day (CDM 5.1); the catch-up finalises it and the next start opens
     it. `blocked` (out) collects those sessions' ids. `refdata_stale`: the day's refdata refresh failed, so the bundle
     says so (a label)."""
-    from stockify.daemon.finalise import FinaliseError, next_sod_state
-    from stockify.daemon.session_day import SessionDay
+    from stockify.daemon.finalise import FinaliseError, next_sod_state_from
+    from stockify.daemon.session_day import SessionDay, StrategyChanged
     opened = []
     for row in rows:
         sid, now = row["session_id"], clock.now_ns()
@@ -321,7 +321,7 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                 if stale:
                     reasons.remove("token_expired")
                 try:
-                    sod = next_sod_state(sid, day)
+                    sod, sod_from = next_sod_state_from(sid, day)
                 except FinaliseError as e:
                     if row["status"] != "ARMED":
                         raise
@@ -330,7 +330,7 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                         blocked.append(sid)
                     sd.close()
                     continue
-                sd.open(sod, reasons, now, refdata_stale=refdata_stale)
+                sd.open(sod, reasons, now, refdata_stale=refdata_stale, sod_from=sod_from)
                 if stale:
                     lifecycle.resume(sid, "token_expired", wall_ns=now, engine_ns=now)
                     store.add_timeline(sid, "login", {"t_ns": now, "reasons": reasons, "cause": "new_day"},
@@ -340,6 +340,9 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                     lifecycle.start_continuous(sid, wall_ns=now, engine_ns=now)
         except Exception as e:  # noqa: BLE001 — never cost the recording
             log.exception("session %s cannot run %s: %r", sid, day, e)
+            if isinstance(e, StrategyChanged):
+                from stockify.daemon.finalise import _note_strategy_changed
+                _note_strategy_changed(sid, day, e)
             try:
                 store.add_timeline(sid, "session_failed", {"error": repr(e), "day": day.isoformat()},
                                    wall_ns=now, engine_ns=now)

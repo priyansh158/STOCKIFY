@@ -240,15 +240,14 @@ def _finalise_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
     for NSE's evening files, then goes at the next trading day's `day_bundles` time. One session's trouble never stops
     another. The job is done when every session is finalised or has failed for good; `waiting`, `busy` and raised
     errors are tried again (finalise's own claim keeps a second scheduler out)."""
-    from stockify import store
-    from stockify.daemon import finalise, notify, scheduler
+    from stockify.daemon import finalise, scheduler
     from stockify.data import calendar
     cutoff_passed = now_ns >= scheduler.plan(calendar.next_trading_day("FO", day)).day_bundles_ns
     files_complete = state.done("nse_fetch", day)
     complete = True
     for sid, row in _day_sessions(day):
-        if row["status"] == "finalised" or notify._failed(sid, day.isoformat()):
-            continue
+        if row["status"] in ("finalised", finalise.FAILED_STATUS):      # a day the dispatcher failed is still finalised
+            continue                                                    # from its journal (C-1); only a failed finalise stops
         try:
             res = finalise.finalise_day(sid, day, files_complete=files_complete, cutoff_passed=cutoff_passed)
         except Exception:  # noqa: BLE001
@@ -258,10 +257,10 @@ def _finalise_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         if res.status == "failed":
             log.error("session %s cannot finalise %s: %s", sid, day, res.error)
             try:
-                store.add_timeline(sid, "session_failed", {"error": res.error, "day": day.isoformat(),
-                                                           "while": "finalise"}, wall_ns=now_ns, engine_ns=None)
+                finalise.record_failure(sid, day, res.error, wall_ns=now_ns)
             except Exception:  # noqa: BLE001
-                log.exception("no timeline row for the failed session %s", sid)
+                log.exception("could not record the failed finalise of session %s", sid)
+                complete = False
         elif res.status != "finalised":
             complete = False
     if complete:

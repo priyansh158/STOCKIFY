@@ -142,6 +142,12 @@ class FinaliseJobTest(JobsBase):
         self.assertTrue(self.state.done("finalise", MON))
         kinds = [r["kind"] for r in store.timeline("s1")]
         self.assertIn("session_failed", kinds)
+        self.assertEqual(store.get_session_day("s1", MON.isoformat())["status"], "finalised_failed")   # C-1: carried on
+
+    def test_a_day_the_dispatcher_failed_is_still_offered_to_finalise(self):
+        self.sessions_with_day(MON)
+        store.add_timeline("s1", "session_failed", {"error": "x"}, wall_ns=ist(MON, "11:02"), engine_ns=None)
+        self.assertEqual(self.run_job("09:00", nse_done=True), [("s1", MON, True, True)])
 
     def test_a_day_with_no_sessions_is_done(self):
         self.assertEqual(self.run_job("09:00", nse_done=True), [])
@@ -442,7 +448,9 @@ class OpenSequenceTest(LiveBase):
             return None
 
         for patcher in (mock.patch.object(market_day, "IDLE_PASS_S", 0.05),
-                        mock.patch("stockify.daemon.finalise.next_sod_state", next_sod_state)):
+                        mock.patch("stockify.daemon.finalise.next_sod_state", next_sod_state),
+                        mock.patch("stockify.daemon.finalise.next_sod_state_from",
+                                   lambda sid, day: (next_sod_state(sid, day), None))):
             patcher.start()
             self.addCleanup(patcher.stop)
 

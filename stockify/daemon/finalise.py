@@ -38,12 +38,14 @@ from pathlib import Path
 from stockify import paths, store, timeutil
 from stockify.config import loader
 from stockify.daemon import coverage as coverage_mod, journal, lifecycle, notify
-from stockify.daemon.session_day import SessionDay, SessionDayError, session_engine
+from stockify.daemon.session_day import SessionDay, SessionDayError, StrategyChanged, session_engine
 from stockify.data import packs
 from stockify.oracle import sod_state
 
 log = logging.getLogger("stockify.daemon.finalise")
 
+FAILED_STATUS = "finalised_failed"                  # a day that could not be finalised: the next day carries the last good state
+STRATEGY_CHANGED = "strategy_changed"               # the timeline kind of a day refused because the strategy's code moved (I-1)
 FALLBACK_LABEL = "settlement_fallback"
 COVERAGE_UNAVAILABLE = "coverage_unavailable"       # coverage could not be worked out: advisory, the day still finalises
 COVERAGE_LOW = "coverage_low"                       # the timeline kind of a day under the coverage threshold
@@ -152,7 +154,7 @@ def _config(session_id: str) -> dict:
 
 def fresh_engine(session_id: str, day: date):  # noqa: ANN201
     """A new engine on the day's own bundle (its `sod_state` included), the session's strategy set."""
-    return session_engine(paths.day_bundle_file(session_id, day), _config(session_id))
+    return session_engine(paths.day_bundle_file(session_id, day), _config(session_id), session_id)
 
 
 def _bundle_ids(session_id: str, day: date) -> set[int]:
@@ -201,8 +203,10 @@ def _coverage(session_id: str, day: date, jpath: Path) -> coverage_mod.Coverage 
     cannot be worked out, the reason. Coverage is advisory: it never stops a day from finalising."""
     bundle = json.loads(paths.day_bundle_file(session_id, day).read_text(encoding="utf-8"))
     _, body, _ = journal.read(jpath)
+    cadence_ns, tolerance_ns = coverage_mod.configured_bounds()
     try:
-        return coverage_mod.coverage(bundle, body, _bundle_ids(session_id, day), coverage_mod.configured_threshold())
+        return coverage_mod.coverage(bundle, body, _bundle_ids(session_id, day), coverage_mod.configured_threshold(),
+                                     cadence_ns=cadence_ns, tolerance_ns=tolerance_ns)
     except coverage_mod.CoverageError as e:
         return str(e)
 
@@ -231,11 +235,53 @@ def finalise_day(session_id: str, day: date, *, files_complete: bool, cutoff_pas
         return FinaliseResult(session_id, day, "busy")
     try:
         return _finalise(session_id, day, live=live)
+    except StrategyChanged as e:
+        log.error("session %s: %s is not finalised: %s", session_id, day, e)
+        _note_strategy_changed(session_id, day, e)
+        return FinaliseResult(session_id, day, "failed", error=str(e))
     except (FinaliseError, journal.JournalError, SessionDayError, _run_error()) as e:
         log.error("session %s: cannot finalise %s: %s", session_id, day, e)
         return FinaliseResult(session_id, day, "failed", error=str(e))
     finally:
         claim.release()
+
+
+def _note_strategy_changed(session_id: str, day: date, e: StrategyChanged) -> None:
+    """One `strategy_changed` timeline row per session, day and pair of hashes (I-1)."""
+    detail = {"day": day.isoformat(), "stored": e.stored, "current": e.current}
+    try:
+        if any(r["kind"] == STRATEGY_CHANGED and r["detail"] == detail for r in store.timeline(session_id, limit=1_000_000)):
+            return
+        store.add_timeline(session_id, STRATEGY_CHANGED, detail, wall_ns=timeutil.now_ns(), engine_ns=None)
+    except Exception:  # noqa: BLE001 — the refusal is already logged and returned
+        log.warning("no strategy_changed row for session %s", session_id, exc_info=True)
+
+
+def record_failure(session_id: str, day: date, error: str | None, *, wall_ns: int) -> None:
+    """A day that cannot be finalised for good: its row says `finalised_failed`, a `session_failed` timeline row says
+    why, and a resting session is armed, so the next day opens from the last good state (`next_sod_state_from`) and
+    the session is never retired by one bad day (C-1; D-84). `refinalise` can still finalise it. A finalised day is
+    never changed."""
+    d = day.isoformat()
+    row = store.get_session_day(session_id, d)
+    if row is not None and row["status"] == "finalised":
+        return
+    store.upsert_session_day(session_id, d, status=FAILED_STATUS)
+    store.add_timeline(session_id, "session_failed", {"error": error, "day": d, "while": "finalise"},
+                       wall_ns=wall_ns, engine_ns=None)
+    session = store.get_session(session_id)
+    if session is not None and session["status"] in _RESTING and not store.later_session_days(session_id, d):
+        lifecycle.arm(session_id, wall_ns=wall_ns)
+
+
+def refinalise(session_id: str, day: date) -> FinaliseResult:
+    """The owner's way to finalise a day again (`session refinalise`): a day that failed, or was left open, is replayed
+    from its journal now, without waiting for NSE's files (the cut-off fallback applies if they are missing). A failure
+    is recorded like the nightly job's."""
+    res = finalise_day(session_id, day, files_complete=True, cutoff_passed=True)
+    if res.status == "failed":
+        record_failure(session_id, day, res.error, wall_ns=timeutil.now_ns())
+    return res
 
 
 def _run_error() -> type[BaseException]:
@@ -347,9 +393,10 @@ def _finalise(session_id: str, day: date, *, live: SessionDay | None) -> Finalis
     # 4. the session, 5. the day's row
     now = timeutil.now_ns()
     status = store.get_session(session_id)["status"]
+    later = bool(store.later_session_days(session_id, d))       # a session that has gone on to a later day is not armed
     if status == "STOPPED":
         lifecycle.stop(session_id, wall_ns=now)
-    elif status in _RESTING:
+    elif status in _RESTING and not later:
         lifecycle.arm(session_id, wall_ns=now)
     store.upsert_session_day(session_id, d, status="finalised", finalised_ns=now)
     log.info("session %s: %s finalised (%d settlement records)", session_id, d, total)
@@ -368,18 +415,35 @@ def previous_trading_day(day: date) -> date:
     raise FinaliseError(f"no trading day in the 60 days before {day}")
 
 
-def next_sod_state(session_id: str, day: date) -> dict | None:
-    """The state the session's `day` opens with: the `eod_state_json` of the calendar's previous trading day, or
-    None for a session's first day (no earlier day of its own). An earlier day that is missing or not finalised is
-    an error, never a start from nothing and never an older state handed on."""
+def next_sod_state_from(session_id: str, day: date) -> tuple[dict | None, str | None]:
+    """(the state the session's `day` opens with, where it came from). The state is the `eod_state_json` of the
+    calendar's previous trading day, or None for a session's first day (no earlier day of its own); the origin is then
+    None. An earlier day that is missing or not finalised is an error, never a start from nothing and never an older
+    state handed on, with one exception (D-84): a day that is `finalised_failed` is passed over, and the last good
+    (finalised) day before it supplies the state, the origin being that day (`start` when the session has no good day:
+    it starts from nothing, as its first day did). Each failed day on the way must be the calendar's previous trading
+    day of the one after it. The bundle is labelled `sod_from:<origin>`."""
     d = day.isoformat()
     if store.previous_session_day(session_id, d) is None:
-        return None
-    prev = previous_trading_day(day).isoformat()
-    row = store.get_session_day(session_id, prev)
-    if row is None:
-        raise FinaliseError(f"{session_id} has no record of {prev}, the trading day before {d}: it cannot start {d} "
-                            "from an older state")
-    if row["status"] != "finalised" or not row["eod_state_json"]:
-        raise FinaliseError(f"{session_id}: {prev} is not finalised ({row['status']}); {d} cannot start from it")
-    return json.loads(row["eod_state_json"])
+        return None, None
+    current, passed = day, False
+    while True:
+        prev_day = previous_trading_day(current)
+        prev = prev_day.isoformat()
+        row = store.get_session_day(session_id, prev)
+        if row is None:
+            if passed and store.previous_session_day(session_id, prev) is None:
+                return None, "start"                          # the failed days were the session's first
+            raise FinaliseError(f"{session_id} has no record of {prev}, the trading day before {current.isoformat()}: "
+                                f"it cannot start {d} from an older state")
+        if row["status"] == FAILED_STATUS:
+            current, passed = prev_day, True
+            continue
+        if row["status"] != "finalised" or not row["eod_state_json"]:
+            raise FinaliseError(f"{session_id}: {prev} is not finalised ({row['status']}); {d} cannot start from it")
+        return json.loads(row["eod_state_json"]), (prev if passed else None)
+
+
+def next_sod_state(session_id: str, day: date) -> dict | None:
+    """The state the session's `day` opens with (see `next_sod_state_from`)."""
+    return next_sod_state_from(session_id, day)[0]

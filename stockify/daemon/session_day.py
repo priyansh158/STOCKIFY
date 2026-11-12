@@ -41,9 +41,33 @@ class SessionDayError(RuntimeError):
     """A session-day that cannot be opened, replayed or fed."""
 
 
-def session_engine(bundle_path: Path, cfg: dict):  # noqa: ANN201
+class StrategyChanged(SessionDayError):
+    """The strategy's source is not the code the day's bundle was made with (I-1): the day is not rebuilt with other
+    code. `stored` is the bundle's `source_sha256`, `current` the checkout's (the helper-inclusive hash, REG 5.6)."""
+
+    def __init__(self, session_id: str, stored: str, current: str, bundle_path: Path) -> None:
+        super().__init__(f"the strategy of {session_id} changed since {Path(bundle_path).name} was made: the bundle "
+                         f"says source_sha256 {stored}, the code now says {current}; the day is not replayed "
+                         "with other code")
+        self.session_id, self.stored, self.current = session_id, stored, current
+
+
+def check_strategy_source(bundle_path: Path, cfg: dict, session_id: str = "") -> None:
+    """Refuse a bundle whose recorded strategy hash is not the one the strategy has now (I-1)."""
+    try:
+        stored = json.loads(Path(bundle_path).read_text(encoding="utf-8"))["strategy"]["source_sha256"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise SessionDayError(f"cannot read the strategy hash of {Path(bundle_path).name}: {e}") from e
+    current = bundle_mod.strategy_ref(cfg)["source_sha256"]
+    if stored != current:
+        raise StrategyChanged(session_id, stored, current, bundle_path)
+
+
+def session_engine(bundle_path: Path, cfg: dict, session_id: str = ""):  # noqa: ANN201
     """The engine for one day of a session: built from the day bundle (which applies its `sod_state`, all of it
-    or nothing) with the session's strategy set. Sessions build engines nowhere else."""
+    or nothing) with the session's strategy set, after the strategy's source hash is checked against the bundle's
+    (`StrategyChanged`). Sessions build engines nowhere else."""
+    check_strategy_source(bundle_path, cfg, session_id)
     mod = engine.load()
     e = mod.Engine(str(bundle_path))
     chosen = engine.strategy_for({"strategy": cfg["strategy"]})
@@ -100,7 +124,8 @@ class SessionDay:
         """Bytes a reopened journal cut from its torn tail (set aside in `<journal>.torn`)."""
         return self._journal.torn_bytes if self._journal is not None else 0
 
-    def open(self, sod_state: dict | None, reasons: list[str], t0: int, *, refdata_stale: bool = False) -> None:
+    def open(self, sod_state: dict | None, reasons: list[str], t0: int, *, refdata_stale: bool = False,
+             sod_from: str | None = None) -> None:
         """Write the day's bundle, build the engine, open the journal. If the state's `strategy_enabled` /
         `pause_reasons` differ from `reasons` (the session's set now), the journal's first record is a
         `strategy_control(enabled = not reasons, reasons)` at `t0`. A journal that already holds records is a
@@ -112,7 +137,7 @@ class SessionDay:
         if jpath.exists() and jpath.stat().st_size > journal.HEADER_SIZE:
             raise SessionDayError(f"{jpath.name} already holds records: replay it, do not open it afresh")
         bundle = bundle_mod.resolve_session_day(self.session_id, self.cfg, self.day, sod_state,
-                                                 refdata_stale=refdata_stale)
+                                                 refdata_stale=refdata_stale, sod_from=sod_from)
         text = bundle_mod.dumps(bundle) + "\n"
         bpath = paths.day_bundle_file(self.session_id, self.day)
         tmp = bpath.with_name(bpath.name + ".tmp")
@@ -120,7 +145,7 @@ class SessionDay:
         os.replace(tmp, bpath)
         self.bundle_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
         self.ids = frozenset(int(i["id"]) for i in bundle["instruments"])
-        self.engine = session_engine(bpath, self.cfg)
+        self.engine = session_engine(bpath, self.cfg, self.session_id)
         try:
             self._journal = self._writer(jpath)
             if self._journal.records:
@@ -169,11 +194,11 @@ class SessionDay:
             self.carried_orders = []
             if reconcile is None:
                 store.reset_session_outputs(self.session_id, self.trade_date)
-                self.engine = session_engine(bpath, self.cfg)
+                self.engine = session_engine(bpath, self.cfg, self.session_id)
                 if body:
                     self._push_and_store(body, None)
             else:
-                self.engine = session_engine(bpath, self.cfg)
+                self.engine = session_engine(bpath, self.cfg, self.session_id)
                 if body:
                     self.engine.push(body)
                 outputs = self.engine.drain_outputs()

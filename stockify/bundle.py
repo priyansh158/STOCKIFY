@@ -834,12 +834,13 @@ def _sod_instruments(sod_state: dict | None) -> set[int]:
 
 
 def resolve_session_day(session_id: str, cfg: dict, day: date, sod_state: dict | None, *,
-                        refdata_stale: bool = False) -> dict:
+                        refdata_stale: bool = False, sod_from: str | None = None) -> dict:
     """The bundle for one trading day of a paper session (`sessionconfig.load`'s `cfg`), resolved before the open.
 
     One day, `packs: []`, the day's seed (`seed_mode: per_day`), the previous day's `sod_state` embedded as given,
     and `prev_days` / `next_days` (A1 §6.2). Labels are `resolve_bundle`'s, plus `session:<session_id>` and, when
-    the refdata refresh failed, `refdata_stale`. Only what is known at resolve time goes in: SPAN files archived by
+    the refdata refresh failed, `refdata_stale`, and, when an earlier day failed and its last good state is carried
+    on, `sod_from:<that day>` (`sod_from:start` for none; D-84). Only what is known at resolve time goes in: SPAN files archived by
     the refdata job's time (the previous end-of-day file and `i1`); the intraday `i2`..`i4` come later and are
     labelled `margin_span:sod_files_only`; the day's ELM file is left out too (`margin_elm:sod_files_only`: the day
     steps from B1 to B2). Raises `BundleError` on a non-trading day or an unsafe `session_id`."""
@@ -869,6 +870,8 @@ def resolve_session_day(session_id: str, cfg: dict, day: date, sod_state: dict |
     labels = set(out["labels"]) | {f"session:{session_id}"}
     if refdata_stale:
         labels.add("refdata_stale")
+    if sod_from is not None:
+        labels.add(f"sod_from:{sod_from}")
     if cfg["margin"]["model"] in SPAN_MODELS and NO_DERIVATIVES_LABEL not in labels:
         labels |= {"margin_span:sod_files_only", "margin_elm:sod_files_only"}
     out["labels"] = sorted(labels)

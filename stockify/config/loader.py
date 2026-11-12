@@ -172,7 +172,7 @@ def _check_mis_margin(doc: dict) -> None:
 # paper.json whole-number keys and their largest accepted value (RM 5.3): generous, but a typo (an hour as 3600000,
 # a queue of a billion frames) is refused. A bound is a sanity limit, not a market rule.
 PAPER_BOUNDS = {"clock_every_s": 3600, "dispatcher_queue_max": 10_000_000, "token_poll_s": 3600,
-                "commands_every_s": 60, "sod_state_warn_mb": 100_000,
+                "coverage_gap_tolerance_s": 3600, "commands_every_s": 60, "sod_state_warn_mb": 100_000,
                 "journal.fsync_every_s": 60, "margin_poll.debounce_s": 60, "margin_poll.every_s": 86_400,
                 "margin_poll.max_rps": 10, "dispatch.batch_max_items": 100_000, "dispatch.batch_max_ms": 1000,
                 "engine_log.max_lines_per_min": 10_000, "engine_log.max_line_chars": 10_000}
@@ -242,7 +242,7 @@ def _check_paper(doc: dict) -> None:
     shape = {"clock_every_s": None, "journal": ("fsync_every_s",), "dispatcher_queue_max": None,
              "dispatch": ("batch_max_items", "batch_max_ms"),
              "margin_poll": ("debounce_s", "every_s", "max_rps"), "token_poll_s": None,
-             "coverage_threshold": "fraction", "commands_every_s": None, "sod_state_warn_mb": None,
+             "coverage_threshold": "fraction", "coverage_gap_tolerance_s": None, "commands_every_s": None, "sod_state_warn_mb": None,
              "engine_log": ("max_lines_per_min", "max_line_chars")}
     extra = set(doc) - set(shape) - {"schema"}
     if extra:
