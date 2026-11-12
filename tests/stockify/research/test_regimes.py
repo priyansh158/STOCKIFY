@@ -11,7 +11,7 @@ import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
 import stockify.store as store
-from stockify import paths
+from stockify import paths, timeutil
 from stockify.data import calendar, refdata, ticks
 from stockify.research import bootstrap, plain, regimes, report
 from tests.stockify.research.fixtures import make_run, weekdays
@@ -34,13 +34,14 @@ def navs_from(pnls: list[int], capital: int = CAPITAL) -> list[int]:
 class FakeDay:
     """A recorded day: only the question `vix_close` asks of it."""
 
-    def __init__(self, ltps: list[int]):
+    def __init__(self, ltps: list[int], at: str = "15:29"):
         self.ltps, self.asked = ltps, []
+        self.recv_ns = timeutil.ist_ns(date(2026, 1, 27), at)          # when the last VIX print arrived
 
     def packets(self, columns=None, instrument_ids=None, kinds=()):
         self.asked.append((tuple(columns or ()), set(instrument_ids or ()), tuple(kinds)))
         for i, v in enumerate(self.ltps):
-            yield {"seq": i, "ltp": v, "instrument_id": next(iter(instrument_ids or {0}))}
+            yield {"seq": i, "ltp": v, "recv_ns": self.recv_ns, "instrument_id": next(iter(instrument_ids or {0}))}
 
     def close(self):
         pass
@@ -194,10 +195,27 @@ class ExpiryTests(RegimeTest):
         rep = regimes.report(self.mk(PNL6))
         self.assertTrue(any("calendar" in n for n in rep.notes))
 
-    def test_refdata_expiries_win_over_the_calendar(self):
+    def test_refdata_expiries_win_inside_its_span_and_nothing_is_double_counted(self):
         self.underlying()
+        self.future("2026-01-27")
+        self.future("2026-02-03", actual="2026-02-02")        # moved a day early: 02-03 must not come back
+        got = regimes.expiry_days(date(2026, 1, 27), date(2026, 2, 10))
+        self.assertIn(date(2026, 2, 2), got)
+        self.assertNotIn(date(2026, 2, 3), got)
+        self.assertEqual(got, {date(2026, 1, 27), date(2026, 2, 2), date(2026, 2, 10)})   # 02-10 is past the span
+
+    def test_refdata_covering_only_the_last_weeks_still_marks_the_early_expiry_days(self):
+        self.underlying()
+        self.future("2026-01-27")
         self.future("2026-02-03")
-        self.assertEqual(regimes.expiry_days(date(2026, 1, 1), date(2026, 3, 31)), {date(2026, 2, 3)})
+        lo, hi = date(2026, 1, 5), date(2026, 2, 4)
+        early = {e["date"] for e in calendar.generated_expiries("NIFTY", lo, date(2026, 1, 26))}
+        self.assertTrue(early)
+        self.assertEqual(regimes.expiry_days(lo, hi), early | {date(2026, 1, 27), date(2026, 2, 3)})
+        rep = regimes.report(self.mk([1] * 22, start="2026-01-05"))
+        self.assertEqual(sum(b.days for b in rep.expiry), 22)
+        self.assertEqual(self.by_label(rep.expiry)["expiry day"].days, len(early) + 2)
+        self.assertTrue(any("2026-01-05 to 2026-01-26" in n and "calendar" in n for n in rep.notes), rep.notes)
 
 
 class VixTests(RegimeTest):
@@ -236,6 +254,23 @@ class VixTests(RegimeTest):
             rep = regimes.report(self.mk(PNL6))
         self.assertEqual(set(rep.vix_source.values()), {"recorded"})
         self.assertIn("2026-01-27", rep.vix_source)
+
+    def test_a_partial_recorded_day_does_not_set_the_vix(self):
+        partial = FakeDay([1111, 1333], at="11:00")                    # the recorder stopped mid-session
+        with mock.patch.object(ticks, "open_day", return_value=partial):
+            self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))
+            self.sql("INSERT INTO tick_days (trade_date, status) VALUES ('2026-01-27', 'recording')")
+        with mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at="15:29")):
+            self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))    # status says not finished
+        self.sql("UPDATE tick_days SET status = 'verified'")
+        with mock.patch.object(ticks, "open_day", return_value=partial):
+            self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1333, "recorded"))    # the status decides
+        self.sql("DELETE FROM tick_days")
+
+    def test_a_complete_recorded_day_without_a_status_row_sets_the_vix_from_15_25(self):
+        for at, want in (("15:24", "bhavcopy"), ("15:25", "recorded"), ("15:31", "recorded")):
+            with self.subTest(at=at), mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at=at)):
+                self.assertEqual(regimes.vix_close(date(2026, 1, 27))[1], want)
 
     def test_vix_falls_back_to_bhavcopy(self):
         with mock.patch.object(ticks, "open_day", return_value=None):
@@ -384,6 +419,12 @@ class CacheTests(RegimeTest):
             report.run_research("a", use_cache=False)
         self.assertEqual(built.call_count, 2)
         self.assertFalse(self.path.exists())
+
+    def test_the_cache_key_covers_the_calendar_data(self):
+        key = regimes.cache_key(["2026-01-28"], [CAPITAL + 1], CAPITAL)
+        with mock.patch.object(regimes, "calendar_digest", return_value="other"):
+            self.assertNotEqual(key, regimes.cache_key(["2026-01-28"], [CAPITAL + 1], CAPITAL))
+        self.assertEqual(len(regimes.calendar_digest()), 64)
 
     def test_the_digest_covers_the_range_and_the_tick_days(self):
         lo, hi = date(2026, 1, 28), date(2026, 2, 4)

@@ -25,12 +25,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
 
-from stockify import store
+from stockify import store, timeutil
 from stockify.config import loader
 from stockify.data import calendar, instruments, refdata, ticks
 from stockify.research import settings
 
-CODE_VERSION = "1"            # bump when the buckets or the way they are built change: it invalidates the cache
+CODE_VERSION = "2"            # bump when the buckets or the way they are built change: it invalidates the cache
+                              # (2: expiries from the calendar outside refdata's span; only a full day sets the VIX)
 NO_DATA = "no data"
 EXPIRY_DAY = "expiry day"
 OTHER_DAYS = "other days"
@@ -38,6 +39,8 @@ SEGMENT = "CM"                # the cash segment's calendar decides "the previou
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 DIMENSIONS = ("month", "weekday", "expiry", "vix", "gap")
 _DERIVATIVE_KINDS = ("FUT", "CE", "PE")
+COMPLETE_STATUSES = ("verified", "landing_deleted")   # tick_days statuses of a finished, archived day (compact.ARCHIVED)
+CLOSE_FROM_IST = (15, 25)                             # a recorded day with no tick_days row counts if it ran to here
 
 
 @dataclass(frozen=True)
@@ -143,18 +146,33 @@ def _previous(day: date) -> date:
     return calendar.previous_trading_day(SEGMENT, day)
 
 
+def _day_is_complete(day: date, last_recv_ns: int | None) -> bool:
+    """Whether a recorded day ran the whole session. The `tick_days` status decides when there is a row (verified or
+    landing_deleted); with no row, the last VIX print must be at or after 15:25 IST. A partial day (the recorder
+    started late or stopped early) would give a mid-session value, not the close."""
+    row = refdata._connect().execute("SELECT status FROM tick_days WHERE trade_date = ?",
+                                     (day.isoformat(),)).fetchone()
+    if row is not None:
+        return row["status"] in COMPLETE_STATUSES
+    if last_recv_ns is None:
+        return False
+    t = timeutil.ns_to_ist(last_recv_ns)
+    return (t.hour, t.minute) >= CLOSE_FROM_IST
+
+
 def _recorded_close(day: date, vix_id: int) -> int | None:
-    """The last VIX print of the day's tick archive, or None when the day was not recorded or has no VIX packet."""
+    """The last VIX print of the day's tick archive, only for a complete day; None when the day was not recorded,
+    is partial or has no VIX packet."""
     try:
         recorded = ticks.open_day(day)
         if recorded is None:
             return None
-        last = None
+        last = last_ns = None
         with recorded:
-            for p in recorded.packets(["ltp"], instrument_ids={vix_id}, kinds=("index",)):
+            for p in recorded.packets(["ltp", "recv_ns"], instrument_ids={vix_id}, kinds=("index",)):
                 if p["ltp"] is not None:
-                    last = int(p["ltp"])
-        return last
+                    last, last_ns = int(p["ltp"]), p.get("recv_ns")
+        return last if last is not None and _day_is_complete(day, last_ns) else None
     except (OSError, ValueError, sqlite3.Error):          # an unreadable archive is a miss, bhavcopy answers instead
         return None
 
@@ -191,7 +209,21 @@ def opening_gap(day: date) -> int | None:
     return None if g is None else _div_round(g.numerator, g.denominator)
 
 
+def _span(conn, und: str) -> tuple[date, date] | None:
+    """The first and last date refdata holds for the underlying, counting both the listed expiry and the actual
+    one, so a contract moved by actual_expiry stays inside the span and its nominal date is not also generated."""
+    marks = ",".join("?" * len(_DERIVATIVE_KINDS))
+    row = conn.execute(f"SELECT MIN(MIN(expiry), MIN(COALESCE(actual_expiry, expiry))) AS lo, "
+                       f"MAX(MAX(expiry), MAX(COALESCE(actual_expiry, expiry))) AS hi "
+                       f"FROM instruments WHERE underlying = ? AND kind IN ({marks})",
+                       (und, *_DERIVATIVE_KINDS)).fetchone()
+    return None if row["lo"] is None else (date.fromisoformat(row["lo"]), date.fromisoformat(row["hi"]))
+
+
 def _expiries(start: date, end: date) -> tuple[set[date], list[str]]:
+    """Per underlying: refdata's expiries inside the span refdata covers, the calendar rules for every date outside
+    it (before its first or after its last expiry). Never a union, so an expiry moved by actual_expiry is not
+    counted twice."""
     conn = refdata._connect()
     notes: list[str] = []
     unders = sorted(r["key"] for r in conn.execute("SELECT key FROM index_underlyings"))
@@ -200,21 +232,30 @@ def _expiries(start: date, end: date) -> tuple[set[date], list[str]]:
         notes.append("refdata lists no index underlyings, so expiry days come from the calendar rules")
     found: set[date] = set()
     marks = ",".join("?" * len(_DERIVATIVE_KINDS))
-    from_rules: list[str] = []
     for und in unders:
-        rows = conn.execute(
-            f"SELECT DISTINCT COALESCE(actual_expiry, expiry) AS e FROM instruments WHERE underlying = ? "
-            f"AND kind IN ({marks}) AND COALESCE(actual_expiry, expiry) BETWEEN ? AND ?",
-            (und, *_DERIVATIVE_KINDS, start.isoformat(), end.isoformat())).fetchall()
-        if rows:
-            found.update(date.fromisoformat(r["e"]) for r in rows)
+        span = _span(conn, und)
+        if span is None:
+            outside = [(start, end)]
         else:
-            found.update(e["date"] for e in calendar.generated_expiries(und, start, end))
-            from_rules.append(und)
-    if from_rules and len(notes) == 0:
-        notes.append(f"expiry days of {', '.join(from_rules)} come from the calendar rules: refdata has no "
-                     "contracts for them in this range")
+            lo, hi = span
+            rows = conn.execute(
+                f"SELECT DISTINCT COALESCE(actual_expiry, expiry) AS e FROM instruments WHERE underlying = ? "
+                f"AND kind IN ({marks}) AND COALESCE(actual_expiry, expiry) BETWEEN ? AND ?",
+                (und, *_DERIVATIVE_KINDS, max(start, lo).isoformat(), min(end, hi).isoformat())).fetchall()
+            found.update(date.fromisoformat(r["e"]) for r in rows)
+            outside = [(start, min(end, lo - timedelta(days=1))), (max(start, hi + timedelta(days=1)), end)]
+        spans = [(a, b) for a, b in outside if a <= b]
+        for a, b in spans:
+            found.update(e["date"] for e in calendar.generated_expiries(und, a, b))
+        if spans and not notes_has_global(notes):
+            where = " and ".join(f"{a.isoformat()} to {b.isoformat()}" for a, b in spans)
+            notes.append(f"expiry days of {und} from {where} come from the calendar rules: refdata has no "
+                         "contracts there")
     return found, notes
+
+
+def notes_has_global(notes: list[str]) -> bool:
+    return any(n.startswith("refdata lists no index underlyings") for n in notes)
 
 
 def expiry_days(start: date, end: date) -> set[date]:
@@ -243,10 +284,11 @@ def refdata_digest(start: date, end: date) -> str:
         "SELECT DISTINCT underlying, expiry, actual_expiry FROM instruments WHERE kind IN ('FUT','CE','PE') "
         "AND underlying IN (SELECT key FROM index_underlyings) AND COALESCE(actual_expiry, expiry) BETWEEN ? AND ? "
         "ORDER BY 1, 2, 3", (start.isoformat(), hi))]
+    spans = {u[0]: _span(conn, u[0]) for u in unders}
     tick = [list(r) for r in conn.execute(
         "SELECT trade_date, status, digest FROM tick_days WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date",
         (lo, hi))]
-    blob = {"ids": ids, "index_eod": eod, "underlyings": unders, "expiries": exp, "tick_days": tick}
+    blob = {"ids": ids, "index_eod": eod, "underlyings": unders, "expiries": exp, "spans": spans, "tick_days": tick}
     text = json.dumps(blob, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -329,11 +371,21 @@ def report(run_id: str) -> RegimeReport:
 
 # ── the cache's side: a key, and a strict way back from JSON ─────────────────────────────────
 
+def calendar_digest() -> str:
+    """SHA-256 of the calendar data `previous_trading_day` and `generated_expiries` read: holidays, special
+    sessions and the contract rules."""
+    blob = {"holidays": sorted(calendar._holidays()),
+            "special": sorted((k[0], k[1], [dict(r) for r in v]) for k, v in calendar._special_sessions().items()),
+            "rules": calendar._rules()}
+    text = json.dumps(blob, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def cache_key(dates: list[str], navs: list[int], capital: int) -> str:
     """SHA-256 of the NAV series, the capital, the regime settings, the refdata digest and the code version."""
     digest = refdata_digest(date.fromisoformat(dates[0]), date.fromisoformat(dates[-1])) if dates else ""
     blob = {"dates": dates, "navs": navs, "capital": capital, "settings": _cfg(), "refdata": digest,
-            "code_version": CODE_VERSION}
+            "calendar": calendar_digest(), "code_version": CODE_VERSION}
     text = json.dumps(blob, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
