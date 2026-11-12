@@ -118,6 +118,20 @@ class TracebackRedactionTests(unittest.TestCase):
         slog.setup()
         self.assertIsInstance(handler.formatter, slog.RedactFormatter)
 
+    def test_a_log_file_that_cannot_be_opened_never_stops_the_daemon(self):
+        """M5 final re-review open item 3: an unwritable logs folder must not stop the daemon before the recorder."""
+        import sys
+        from unittest import mock
+        from stockify import log as slog
+        before = list(logging.root.handlers)
+        self.addCleanup(setattr, sys, "excepthook", sys.excepthook)
+        with mock.patch.object(slog, "file_handler", side_effect=PermissionError(13, "denied")):
+            slog.setup(file="stockify-daemon.log")                      # must not raise
+        added = [h for h in logging.root.handlers if h not in before]
+        for h in added:
+            self.addCleanup(logging.root.removeHandler, h)
+        self.assertFalse([h for h in added if isinstance(h, logging.FileHandler)])  # console only
+
     def test_the_log_file_rotates_at_the_configured_size(self):
         import tempfile
         from pathlib import Path

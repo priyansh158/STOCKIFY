@@ -81,12 +81,16 @@ def setup(verbose: bool = False, *, file: str | None = None) -> None:
         format=_FORMAT,
     )
     if file:
-        from stockify import paths
-        max_bytes, backups = configured_caps()
-        root = logging.getLogger()
-        target = paths.logs_dir() / file
-        if not any(getattr(h, "baseFilename", None) == str(target) for h in root.handlers):
-            root.addHandler(file_handler(target, max_bytes=max_bytes, backups=backups))
+        try:                                       # a log file that cannot be opened must never stop the recorder
+            from stockify import paths
+            max_bytes, backups = configured_caps()
+            root = logging.getLogger()
+            target = paths.logs_dir() / file
+            if not any(getattr(h, "baseFilename", None) == str(target) for h in root.handlers):
+                root.addHandler(file_handler(target, max_bytes=max_bytes, backups=backups))
+        except (OSError, ValueError) as e:
+            logging.getLogger("stockify.log").warning(
+                "log file %s could not be opened (%s); logging to the console only", file, type(e).__name__)
         sys.excepthook = _excepthook
     for handler in logging.getLogger().handlers:
         if not isinstance(handler.formatter, RedactFormatter):
