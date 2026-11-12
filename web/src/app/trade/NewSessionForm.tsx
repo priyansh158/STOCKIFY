@@ -7,17 +7,16 @@ import { parseRupeesToPaise } from "@/lib/format";
 import { coerceParam, validateParams } from "@/lib/params";
 import { createSession } from "@/lib/trade";
 import type { Strategy, StrategyParam } from "@/lib/types";
-import { buttonStyle, Card } from "../tests/ui";
+import { Panel } from "./ui";
 
-const inputClass = "min-h-11 w-full rounded-md border bg-transparent px-3 py-2 text-sm";
-const inputStyle = { borderColor: "rgba(0,255,65,0.25)", color: "var(--color-fg)", background: "var(--color-bg-soft)" };
+const inputClass = "stk-field";
 
 function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-sm" style={{ color: "var(--color-fg)" }}>{label}</span>
+      <span className="text-sm text-fg">{label}</span>
       {children}
-      {help && <span className="text-xs" style={{ color: "var(--color-fg-muted)" }}>{help}</span>}
+      {help && <span className="stk-label">{help}</span>}
     </label>
   );
 }
@@ -89,24 +88,24 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="stk-mono-tight min-h-11 w-full rounded-md border px-4 py-2" style={buttonStyle}>
-        + New session
+      <button type="button" onClick={() => setOpen(true)} className="stk-btn">
+        New session
       </button>
     );
   }
 
   return (
-    <Card>
-      <form onSubmit={submit} className="flex flex-col gap-4" noValidate aria-label="New paper session" aria-describedby={problems.length ? "new-session-problems" : undefined}>
-        <div className="flex items-center justify-between">
-          <h2 className="stk-mono-tight" style={{ color: "var(--color-green-soft)" }}>New session</h2>
-          <button type="button" onClick={() => setOpen(false)} className="min-h-11 px-3 text-sm" style={{ color: "var(--color-fg-muted)" }}>
+    <Panel>
+      <form onSubmit={submit} className="grid items-start gap-4 md:grid-cols-2" noValidate aria-label="New paper session" aria-describedby={problems.length ? "new-session-problems" : undefined}>
+        <div className="flex items-center justify-between md:col-span-2">
+          <h2 className="font-semibold text-green-soft">New session</h2>
+          <button type="button" onClick={() => setOpen(false)} className="stk-btn" data-tone="quiet">
             Close
           </button>
         </div>
 
         <Field label="Strategy" help={strategy?.doc}>
-          <select className={inputClass} style={inputStyle} value={chosen} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
+          <select className={inputClass} value={chosen} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
             {strategies.map((s) => (
               <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
                 {s.name}{s.kind === "cpp" ? " (C++)" : ""}
@@ -120,16 +119,16 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
           const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
           if (p.type === "bool") {
             return (
-              <label key={p.name} className="flex min-h-11 items-center gap-3">
+              <label key={p.name} className="flex items-center gap-3">
                 <input type="checkbox" className="h-5 w-5" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
                   onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
-                <span className="text-sm">{label}<span className="block text-xs" style={{ color: "var(--color-fg-muted)" }}>{p.help}</span></span>
+                <span className="text-sm">{label}<span className="stk-label block">{p.help}</span></span>
               </label>
             );
           }
           return (
             <Field key={p.name} label={label} help={p.help}>
-              <input className={inputClass} style={inputStyle} value={String(v)} aria-invalid={bad.has(p.name)}
+              <input className={inputClass} value={String(v)} aria-invalid={bad.has(p.name)}
                 inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
                 placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
                 onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
@@ -138,29 +137,29 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
         })}
 
         <Field label="Name (optional)" help="A short name to tell sessions apart.">
-          <input className={inputClass} style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} />
+          <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Symbols to follow" help="Comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
-          <input className={inputClass} style={inputStyle} value={symbols} aria-invalid={bad.has("symbols")} onChange={(e) => setSymbols(e.target.value)} />
+          <input className={inputClass} value={symbols} aria-invalid={bad.has("symbols")} onChange={(e) => setSymbols(e.target.value)} />
         </Field>
         <Field label="Starting money (₹)" help="Pretend money. Nothing real is used.">
-          <input className={inputClass} style={inputStyle} inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
+          <input className={inputClass} inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
         </Field>
-        <label className="flex min-h-11 items-center gap-3">
+        <label className="flex items-center gap-3 md:col-span-2">
           <input type="checkbox" className="h-5 w-5" checked={allowUnverified} onChange={(e) => setAllowUnverified(e.target.checked)} />
           <span className="text-sm">Allow charge rates not yet checked against the broker (the result is labelled)</span>
         </label>
 
         {problems.length > 0 && (
-          <ul id="new-session-problems" role="alert" className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)" }}>
+          <ul id="new-session-problems" role="alert" className="rounded-md border border-red px-3 py-2 text-sm text-red-soft md:col-span-2">
             {problems.map((p) => <li key={p}>{p}</li>)}
           </ul>
         )}
 
-        <button type="submit" disabled={busy} className="stk-mono-tight min-h-11 rounded-md border px-4 py-2 disabled:opacity-60" style={buttonStyle}>
+        <button type="submit" disabled={busy} className="stk-btn md:col-span-2 md:w-fit">
           {busy ? "Creating…" : "Create session"}
         </button>
       </form>
-    </Card>
+    </Panel>
   );
 }

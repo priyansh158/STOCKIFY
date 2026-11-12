@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { pct, rupees } from "@/lib/format";
+import { istWhen, pct, rupees } from "@/lib/format";
 import { listStrategies } from "@/lib/tests";
 import { getKiteStatus, listSessions, signedRupees, stopAll, tone } from "@/lib/trade";
 import type { SessionDTO, Strategy } from "@/lib/types";
-import { Card, Stat } from "../tests/ui";
+import { Empty, Panel, Skeleton, Table } from "./ui";
 import { CommandMessage, ConfirmDialog, LoginBanner, PauseReasons, StatusChip, useCommandWatch } from "./Commands";
 import NewSessionForm from "./NewSessionForm";
 
@@ -14,31 +14,26 @@ const FAST_MS = 2000; // while any session is RUNNING
 const SLOW_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;
 
-function SessionCard({ s }: { s: SessionDTO }) {
+function SessionRow({ s }: { s: SessionDTO }) {
   return (
-    <li>
-      <Link href={`/trade/${encodeURIComponent(s.session_id)}`} className="block min-h-11">
-        <Card tone={s.status === "PAUSED" ? "amber" : undefined}>
-          <div className="mb-1 flex flex-wrap items-center gap-2">
-            <StatusChip status={s.status} />
-          </div>
-          <div className="font-medium" style={{ color: "var(--color-fg)" }}>
-            {s.name || s.session_id}
-          </div>
-          <PauseReasons reasons={s.pause_reasons} />
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            <Stat
-              label="Made or lost today"
-              value={signedRupees(s.today_pnl_paise, rupees)}
-              tone={tone(s.today_pnl_paise)}
-            />
-            <Stat label="Positions held" value={s.open_positions === null || s.open_positions === undefined ? "—" : String(s.open_positions)} />
-            <Stat label="Market data received today" value={s.coverage_today === null || s.coverage_today === undefined ? "—" : pct(s.coverage_today)} />
-            <Stat label="Last replay check" value={s.parity_last ?? "—"} />
-          </div>
-        </Card>
-      </Link>
-    </li>
+    <tr>
+      <td>
+        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} className="font-medium text-green-soft underline-offset-2 hover:underline">
+          {s.name || s.session_id}
+        </Link>
+        <div className="stk-label">{istWhen(s.created_ist)}</div>
+      </td>
+      <td>
+        <StatusChip status={s.status} />
+        <PauseReasons reasons={s.pause_reasons} />
+      </td>
+      <td className={`num stk-mono ${tone(s.today_pnl_paise) === "up" ? "text-green" : tone(s.today_pnl_paise) === "down" ? "text-red-soft" : ""}`}>
+        {signedRupees(s.today_pnl_paise, rupees)}
+      </td>
+      <td className="num">{s.open_positions === null || s.open_positions === undefined ? "—" : s.open_positions}</td>
+      <td className="num">{s.coverage_today === null || s.coverage_today === undefined ? "—" : pct(s.coverage_today)}</td>
+      <td>{s.parity_last ?? "—"}</td>
+    </tr>
   );
 }
 
@@ -105,20 +100,20 @@ export default function TradePage() {
   }, [watch, fail]);
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-8 pb-32 sm:py-12">
+    <div className="mx-auto max-w-6xl px-4 py-8 pb-28 sm:py-10">
       <div className="mb-6 flex items-center justify-between">
-        <Link href="/" className="stk-mono-tight flex min-h-11 items-center" style={{ color: "var(--color-fg-muted)" }}>
-          ← Home
+        <Link href="/" className="stk-btn" data-tone="quiet" >
+          Home
         </Link>
-        <div className="stk-mono-tight" style={{ color: "var(--color-fg-muted)" }} aria-live="polite">
+        <div className="stk-label" aria-live="polite">
           {anyRunning ? "Live, updating" : "Updating slowly"}
         </div>
       </div>
 
-      <h1 className="stk-mono mb-2 text-2xl font-bold sm:text-3xl" style={{ color: "var(--color-green)" }}>
+      <h1 className="mb-2 text-2xl font-bold text-green sm:text-3xl">
         Paper trading
       </h1>
-      <p className="mb-6 text-sm" style={{ color: "var(--color-fg-muted)" }}>
+      <p className="mb-6 text-sm text-fg-muted">
         Strategies trade live prices with pretend money. Simulation only: no real orders are ever sent.
       </p>
 
@@ -130,51 +125,56 @@ export default function TradePage() {
 
       {error && (
         <div className="mb-4" role="alert">
-          <Card tone="red">
-            <p className="text-sm" style={{ color: "var(--color-red-soft)" }}>
+          <Panel tone="red">
+            <p className="text-sm text-red-soft">
               Could not reach the API: {error}
             </p>
-          </Card>
+          </Panel>
         </div>
       )}
 
       <NewSessionForm strategies={strategies} />
 
-      <h2 className="stk-mono-tight mb-3 mt-8" style={{ color: "var(--color-fg-muted)" }}>
+      <h2 className="mb-3 mt-8 text-sm font-semibold text-fg-muted">
         Sessions
       </h2>
       {sessions === null ? (
-        <Card>
-          <p className="py-6 text-center text-sm" style={{ color: "var(--color-fg-muted)" }}>
-            Loading…
-          </p>
-        </Card>
+        <div className="flex flex-col gap-3" aria-busy="true" aria-label="Loading sessions">
+          <Skeleton className="h-10" />
+          <Skeleton className="h-16" />
+          <Skeleton className="h-16" />
+        </div>
       ) : sessions.length === 0 ? (
-        <Card>
-          <p className="py-6 text-center text-sm" style={{ color: "var(--color-fg-muted)" }}>
-            No paper sessions yet. Create one above.
-          </p>
-        </Card>
+        <Empty>No paper sessions yet. Create one above.</Empty>
       ) : (
-        <ul className="flex flex-col gap-3">
+        <Table
+          caption="Paper sessions"
+          head={[
+            { label: "Session" },
+            { label: "Status" },
+            { label: "Made or lost today", num: true },
+            { label: "Positions held", num: true },
+            { label: "Market data received", num: true },
+            { label: "Last replay check" },
+          ]}
+        >
           {sessions.map((s) => (
-            <SessionCard key={s.session_id} s={s} />
+            <SessionRow key={s.session_id} s={s} />
           ))}
-        </ul>
+        </Table>
       )}
 
       <div
-        className="fixed inset-x-0 bottom-0 z-20 border-t px-4 py-3"
-        style={{ background: "var(--color-bg-soft)", borderColor: "rgba(255,68,68,0.5)" }}
+        className="fixed inset-x-0 bottom-0 z-20 border-t border-red bg-bg-soft px-4 py-3"
       >
-        <div className="mx-auto flex max-w-2xl flex-col gap-2">
+        <div className="mx-auto flex max-w-6xl items-center justify-end gap-4">
           <CommandMessage message={cmd.message} failed={cmd.failed} />
           <button
             type="button"
             onClick={() => setConfirm(true)}
             disabled={!anyLive || sending}
-            className="stk-mono-tight min-h-11 w-full rounded-md border px-4 py-2 font-bold disabled:opacity-50"
-            style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)", background: "rgba(255,68,68,0.10)" }}
+            className="stk-btn"
+            data-tone="danger"
           >
             {sending ? "Sending…" : "Stop all"}
           </button>

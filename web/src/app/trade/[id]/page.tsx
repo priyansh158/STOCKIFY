@@ -30,7 +30,7 @@ import type {
   TradeLoginDTO,
 } from "@/lib/types";
 import { useTicks } from "@/lib/useTicks";
-import { buttonStyle, Card, Stat } from "../../tests/ui";
+import { Empty, Panel, Skeleton, Stat, Table } from "../ui";
 import { CommandMessage, ConfirmDialog, LoginBanner, PauseReasons, StatusChip, useCommandWatch } from "../Commands";
 
 const FAST_MS = 2000; // while RUNNING
@@ -50,18 +50,10 @@ const NO_EXTRA: Extra = { positions: [], positionsNote: null, orders: [], fills:
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mt-8">
-      <h2 className="stk-mono-tight mb-3" style={{ color: "var(--color-fg-muted)" }}>{title}</h2>
+    <section className="min-w-0">
+      <h2 className="mb-2 text-sm font-semibold text-fg-muted">{title}</h2>
       {children}
     </section>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <Card>
-      <p className="py-4 text-center text-sm" style={{ color: "var(--color-fg-muted)" }}>{children}</p>
-    </Card>
   );
 }
 
@@ -71,105 +63,129 @@ function sideWord(side: string | null, past = false): string {
   return side ?? "—";
 }
 
-function PositionCard({ p, ltp }: { p: SessionPositionDTO; ltp: number | null }) {
-  const livePaise = ltp === null ? null : Math.round(ltp * 100);
-  const mark = livePaise ?? p.mark_paise ?? null;
-  const unrealised =
-    livePaise !== null && p.avg_price_paise !== null && p.avg_price_paise !== undefined
-      ? (livePaise - p.avg_price_paise) * p.qty
-      : p.unrealised_paise ?? null;
+function PositionsTable({ rows, tickOf }: { rows: SessionPositionDTO[]; tickOf: (p: SessionPositionDTO) => number | null }) {
   return (
-    <li>
-      <Card>
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="font-medium">{p.tradingsymbol ?? `Instrument ${p.instrument_id}`}</span>
-          <span className="text-sm" style={{ color: "var(--color-fg-muted)" }}>
-            {p.qty > 0 ? `Holding ${p.qty}` : `Short ${Math.abs(p.qty)}`}
-          </span>
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          <Stat label="Bought or sold at (avg)" value={rupees(p.avg_price_paise)} />
-          <Stat label={livePaise !== null ? "Price now (live)" : "Last known price"} value={rupees(mark)} />
-          <div className="col-span-2">
-            <Stat label="Made or lost so far on this" value={signedRupees(unrealised, rupees)} tone={tone(unrealised)} />
-          </div>
-        </div>
-        {livePaise === null && (
-          <p className="mt-2 text-xs" style={{ color: "var(--color-fg-muted)" }}>
-            {p.source === "eod" ? "From the end of the last day." : "Worked out from today's fills."}
-          </p>
-        )}
-      </Card>
-    </li>
+    <Table
+      caption="Positions held now"
+      head={[
+        { label: "Instrument" },
+        { label: "Holding", num: true },
+        { label: "Average price", num: true },
+        { label: "Price now", num: true },
+        { label: "Made or lost so far", num: true },
+        { label: "Price source" },
+      ]}
+    >
+      {rows.map((p) => {
+        const ltp = tickOf(p);
+        const livePaise = ltp === null ? null : Math.round(ltp * 100);
+        const mark = livePaise ?? p.mark_paise ?? null;
+        const unrealised =
+          livePaise !== null && p.avg_price_paise !== null && p.avg_price_paise !== undefined
+            ? (livePaise - p.avg_price_paise) * p.qty
+            : p.unrealised_paise ?? null;
+        const t = tone(unrealised);
+        return (
+          <tr key={`${p.instrument_id}-${p.product ?? ""}`}>
+            <td className="font-medium">{p.tradingsymbol ?? `Instrument ${p.instrument_id}`}</td>
+            <td className="num">{p.qty > 0 ? `${p.qty} held` : `${Math.abs(p.qty)} short`}</td>
+            <td className="num">{rupees(p.avg_price_paise)}</td>
+            <td className="num">{rupees(mark)}</td>
+            <td className={`num ${t === "up" ? "text-green" : t === "down" ? "text-red-soft" : ""}`}>{signedRupees(unrealised, rupees)}</td>
+            <td className="text-fg-muted">
+              {livePaise !== null ? "Live" : p.source === "eod" ? "End of the last day" : "Worked out from today's fills"}
+            </td>
+          </tr>
+        );
+      })}
+    </Table>
   );
 }
 
-function OrderCard({ o, name }: { o: Row; name: (id: number | null) => string }) {
-  const side = str(o.side);
-  const qty = num(o.qty);
-  const filled = num(o.filled_qty);
-  const status = str(o.status);
-  const reason = str(o.reason);
-  const limit = num(o.price_paise);
+function OrdersTable({ rows, name }: { rows: Row[]; name: (id: number | null) => string }) {
   return (
-    <li>
-      <Card>
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="font-medium">
-            {sideWord(side)} {qty ?? "—"} {name(num(o.instrument_id))}
-          </span>
-          <span className="text-sm" style={{ color: "var(--color-fg-muted)" }}>{status ?? "—"}</span>
-        </div>
-        <div className="mt-2 grid grid-cols-2 gap-3">
-          <Stat label="Filled" value={filled === null ? "—" : `${filled} of ${qty ?? "—"}`} />
-          <Stat label="Average price" value={rupees(num(o.avg_price_paise))} />
-          {limit ? <Stat label="Limit price" value={rupees(limit)} /> : null}
-          {str(o.type) ? <Stat label="Kind" value={str(o.type) as string} /> : null}
-        </div>
-        {reason && <p className="mt-2 text-sm" style={{ color: "var(--color-amber)" }}>{reason}</p>}
-      </Card>
-    </li>
+    <Table
+      caption="Paper orders"
+      head={[
+        { label: "Order" },
+        { label: "Filled", num: true },
+        { label: "Average price", num: true },
+        { label: "Status" },
+      ]}
+    >
+      {rows.map((o, i) => {
+        const qty = num(o.qty);
+        const filled = num(o.filled_qty);
+        const limit = num(o.price_paise);
+        const reason = str(o.reason);
+        return (
+          <tr key={String(o.order_id ?? i)}>
+            <td>
+              <span className="font-medium">
+                {sideWord(str(o.side))} {qty ?? "—"} {name(num(o.instrument_id))}
+              </span>
+              {limit ? <div className="stk-label">Limit {rupees(limit)}</div> : null}
+            </td>
+            <td className="num">{filled === null ? "—" : `${filled} of ${qty ?? "—"}`}</td>
+            <td className="num">{rupees(num(o.avg_price_paise))}</td>
+            <td>
+              {str(o.status) ?? "—"}
+              {reason && <div className="text-amber">{reason}</div>}
+            </td>
+          </tr>
+        );
+      })}
+    </Table>
   );
 }
 
-function FillCard({ f, name }: { f: Row; name: (id: number | null) => string }) {
-  const t = num(f.t_ns);
+function FillsTable({ rows, name }: { rows: Row[]; name: (id: number | null) => string }) {
   return (
-    <li>
-      <Card>
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="font-medium">
-            {sideWord(str(f.side), true)} {num(f.qty) ?? "—"} {name(num(f.instrument_id))}
-          </span>
-          <span className="stk-mono text-sm">{rupees(num(f.price_paise))}</span>
-        </div>
-        {t !== null && (
-          <p className="mt-1 text-xs" style={{ color: "var(--color-fg-muted)" }}>
-            {new Date(t / 1e6).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })} IST
-          </p>
-        )}
-      </Card>
-    </li>
+    <Table
+      caption="Trades that went through"
+      head={[{ label: "Trade" }, { label: "Price", num: true }, { label: "Time (IST)", num: true }]}
+    >
+      {rows.map((f, i) => {
+        const t = num(f.t_ns);
+        return (
+          <tr key={String(f.fill_id ?? i)}>
+            <td className="font-medium">
+              {sideWord(str(f.side), true)} {num(f.qty) ?? "—"} {name(num(f.instrument_id))}
+            </td>
+            <td className="num">{rupees(num(f.price_paise))}</td>
+            <td className="num">
+              {t === null ? "—" : new Date(t / 1e6).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })}
+            </td>
+          </tr>
+        );
+      })}
+    </Table>
   );
 }
 
-function StatsCard({ s }: { s: SessionStatsDTO }) {
-  if (s.days === 0) return <Empty>No finished days yet.</Empty>;
+function StatsTable({ all, full }: { all: SessionStatsDTO; full: SessionStatsDTO }) {
+  const rows: { label: string; get: (s: SessionStatsDTO) => { text: string; t?: "up" | "down" } }[] = [
+    { label: "Days counted", get: (s) => ({ text: String(s.days) }) },
+    { label: "Total made or lost", get: (s) => ({ text: signedRupees(s.pnl_paise, rupees), t: tone(s.pnl_paise) }) },
+    { label: "Days it made money", get: (s) => ({ text: String(s.win_days) }) },
+    { label: "Days it lost money", get: (s) => ({ text: String(s.loss_days) }) },
+    { label: "Best day", get: (s) => ({ text: signedRupees(s.best_day_paise, rupees), t: tone(s.best_day_paise) }) },
+    { label: "Worst day", get: (s) => ({ text: signedRupees(s.worst_day_paise, rupees), t: tone(s.worst_day_paise) }) },
+    { label: "Biggest fall from a high point", get: (s) => ({ text: rupees(s.max_drawdown_paise) }) },
+  ];
+  const cell = (c: { text: string; t?: "up" | "down" }, empty: boolean) => (
+    <td className={`num ${c.t === "up" ? "text-green" : c.t === "down" ? "text-red-soft" : ""}`}>{empty ? "—" : c.text}</td>
+  );
   return (
-    <Card>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="col-span-2">
-          <Stat label={`Total made or lost over ${s.days} ${s.days === 1 ? "day" : "days"}`} value={signedRupees(s.pnl_paise, rupees)} tone={tone(s.pnl_paise)} />
-        </div>
-        <Stat label="Days it made money" value={String(s.win_days)} />
-        <Stat label="Days it lost money" value={String(s.loss_days)} />
-        <Stat label="Best day" value={signedRupees(s.best_day_paise, rupees)} tone={tone(s.best_day_paise)} />
-        <Stat label="Worst day" value={signedRupees(s.worst_day_paise, rupees)} tone={tone(s.worst_day_paise)} />
-        <div className="col-span-2">
-          <Stat label="Biggest fall from a high point" value={rupees(s.max_drawdown_paise)} />
-        </div>
-      </div>
-    </Card>
+    <Table caption="Results, all days and full-data days" head={[{ label: "Measure" }, { label: "All days", num: true }, { label: "Days with nearly complete data", num: true }]}>
+      {rows.map((r) => (
+        <tr key={r.label}>
+          <td>{r.label}</td>
+          {cell(r.get(all), all.days === 0 && r.label !== "Days counted")}
+          {cell(r.get(full), full.days === 0 && r.label !== "Days counted")}
+        </tr>
+      ))}
+    </Table>
   );
 }
 
@@ -178,7 +194,7 @@ function MarginCard({ rows }: { rows: SessionMarginDTO[] }) {
   if (!last) return <Empty>No margin check yet. Kite is asked while positions are open.</Empty>;
   const gap = last.gap_paise ?? null;
   return (
-    <Card>
+    <Panel>
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Kite says it needs" value={rupees(last.kite_total_paise)} />
         <Stat label="Our model says" value={rupees(last.ours_total_paise)} />
@@ -189,11 +205,11 @@ function MarginCard({ rows }: { rows: SessionMarginDTO[] }) {
           />
         </div>
       </div>
-      <p className="mt-2 text-xs" style={{ color: "var(--color-fg-muted)" }}>
+      <p className="mt-2 stk-label">
         Margin is the money a broker holds back while positions are open. Checked {istWhen(last.wall_ist)}.
       </p>
-      {last.error && <p className="mt-1 text-sm" style={{ color: "var(--color-red-soft)" }}>{last.error}</p>}
-    </Card>
+      {last.error && <p className="mt-1 text-sm text-red-soft">{last.error}</p>}
+    </Panel>
   );
 }
 
@@ -208,7 +224,7 @@ function detailText(d: unknown): string | null {
     if (v === undefined || v === null) continue;
     bits.push(Array.isArray(v) ? v.join(", ") : String(v));
   }
-  return bits.length ? bits.join(" · ") : null;
+  return bits.length ? bits.join("; ") : null;
 }
 
 export default function SessionPage({ params }: { params: Promise<{ id: string }> }) {
@@ -304,94 +320,93 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       `The last usable login is ${login.last_usable_local}; the market opens at ${login.market_open_local}.`
     : undefined;
 
+  const tickOf = (p: SessionPositionDTO): number | null =>
+    p.instrument_token != null ? ticks?.[String(p.instrument_token)]?.ltp ?? null : null;
+
   return (
-    <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-      <div className="mb-6 flex items-center justify-between">
-        <Link href="/trade" className="stk-mono-tight flex min-h-11 items-center" style={{ color: "var(--color-fg-muted)" }}>
-          ← Paper trading
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:py-10">
+      <div className="mb-4 flex items-center justify-between">
+        <Link href="/trade" className="stk-btn" data-tone="quiet">
+          Back to paper trading
         </Link>
-        <div className="stk-mono-tight" style={{ color: "var(--color-fg-muted)" }} aria-live="polite">
+        <div className="stk-label" aria-live="polite">
           {running ? "Live, updating" : ""}
         </div>
       </div>
 
       {missing && (
-        <Card tone="red">
-          <p role="alert" className="text-sm" style={{ color: "var(--color-red-soft)" }}>
+        <Panel tone="red">
+          <p role="alert" className="text-sm text-red-soft">
             There is no paper session called {id}.
           </p>
-        </Card>
+        </Panel>
       )}
       {error && (
         <div className="mb-4" role="alert">
-          <Card tone="red">
-            <p className="text-sm" style={{ color: "var(--color-red-soft)" }}>Could not reach the API: {error}</p>
-          </Card>
+          <Panel tone="red">
+            <p className="text-sm text-red-soft">Could not reach the API: {error}</p>
+          </Panel>
+        </div>
+      )}
+
+      {!detail && !missing && (
+        <div className="flex flex-col gap-3" aria-busy="true" aria-label="Loading the session">
+          <Skeleton className="h-8 w-1/3" />
+          <Skeleton className="h-20" />
+          <Skeleton className="h-40" />
         </div>
       )}
 
       {detail && (
-        <>
-          <div className="mb-1 flex flex-wrap items-center gap-2">
-            <StatusChip status={detail.session.status} />
-            <span className="stk-mono-tight text-xs" style={{ color: "var(--color-fg-muted)" }}>
-              Created {istWhen(detail.session.created_ist)}
-            </span>
-          </div>
-          <h1 className="stk-mono text-2xl font-bold sm:text-3xl" style={{ color: "var(--color-green)" }}>
-            {detail.session.name || detail.session.session_id}
-          </h1>
-          <PauseReasons reasons={detail.session.pause_reasons} />
-
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <Card>
-              <Stat label="Made or lost today" value={signedRupees(detail.session.today_pnl_paise, rupees)} tone={tone(detail.session.today_pnl_paise)} />
-            </Card>
-            <Card>
-              <Stat label="Market data received today" value={detail.session.coverage_today == null ? "—" : pct(detail.session.coverage_today)} />
-            </Card>
-          </div>
-
-          {login?.waiting_for_login ? (
-            <div className="mt-4">
-              <LoginBanner detail={loginDetail} />
-            </div>
-          ) : (
-            loginDetail && (
-              <div className="mt-4">
-                <Card>
-                  <p className="text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                    Next Kite login reminder: {loginDetail}
-                  </p>
-                </Card>
+        <div className="flex flex-col gap-8">
+          <header className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="mb-1 flex flex-wrap items-center gap-3">
+                <StatusChip status={detail.session.status} />
+                <span className="stk-label">Created {istWhen(detail.session.created_ist)}</span>
               </div>
-            )
-          )}
-
-          {detail.session.status !== "STOPPED" && (
-            <div className="mt-4 flex flex-col gap-2">
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <h1 className="text-2xl font-bold text-green">{detail.session.name || detail.session.session_id}</h1>
+              <PauseReasons reasons={detail.session.pause_reasons} />
+            </div>
+            {detail.session.status !== "STOPPED" && (
+              <div className="flex gap-2">
                 {status === "PAUSED" ? (
-                  <button type="button" disabled={sending} onClick={() => control("resume")}
-                    className="stk-mono-tight min-h-11 flex-1 rounded-md border px-4 py-2 disabled:opacity-60" style={buttonStyle}>
+                  <button type="button" disabled={sending} onClick={() => control("resume")} className="stk-btn">
                     Resume
                   </button>
                 ) : (
-                  <button type="button" disabled={sending} onClick={() => control("pause")}
-                    className="stk-mono-tight min-h-11 flex-1 rounded-md border px-4 py-2 disabled:opacity-60" style={buttonStyle}>
+                  <button type="button" disabled={sending} onClick={() => control("pause")} className="stk-btn">
                     Pause
                   </button>
                 )}
-                <button type="button" disabled={sending} onClick={() => setConfirmStop(true)}
-                  className="stk-mono-tight min-h-11 flex-1 rounded-md border px-4 py-2 disabled:opacity-60"
-                  style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)", background: "rgba(255,68,68,0.10)" }}>
+                <button type="button" disabled={sending} onClick={() => setConfirmStop(true)} className="stk-btn" data-tone="danger">
                   Stop for good
                 </button>
               </div>
-              <CommandMessage message={cmd.message} failed={cmd.failed} />
-            </div>
+            )}
+          </header>
+          <CommandMessage message={cmd.message} failed={cmd.failed} />
+
+          {login?.waiting_for_login ? (
+            <LoginBanner detail={loginDetail} />
+          ) : (
+            loginDetail && <p className="stk-label">Next Kite login reminder: {loginDetail}</p>
           )}
-          {detail.session.status === "STOPPED" && <CommandMessage message={cmd.message} failed={cmd.failed} />}
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Panel>
+              <Stat label="Made or lost today" value={signedRupees(detail.session.today_pnl_paise, rupees)} tone={tone(detail.session.today_pnl_paise)} />
+            </Panel>
+            <Panel>
+              <Stat label="Positions held" value={detail.session.open_positions == null ? "—" : String(detail.session.open_positions)} />
+            </Panel>
+            <Panel>
+              <Stat label="Market data received today" value={detail.session.coverage_today == null ? "—" : pct(detail.session.coverage_today)} />
+            </Panel>
+            <Panel>
+              <Stat label="Last replay check" value={detail.session.parity_last ?? "—"} />
+            </Panel>
+          </div>
 
           <Section title="What it holds now">
             {extra.positionsNote ? (
@@ -399,82 +414,49 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
             ) : extra.positions.length === 0 ? (
               <Empty>It holds nothing at the moment.</Empty>
             ) : (
-              <ul className="flex flex-col gap-3">
-                {extra.positions.map((p) => (
-                  <PositionCard
-                    key={`${p.instrument_id}-${p.product ?? ""}`}
-                    p={p}
-                    ltp={p.instrument_token != null ? ticks?.[String(p.instrument_token)]?.ltp ?? null : null}
-                  />
-                ))}
-              </ul>
+              <PositionsTable rows={extra.positions} tickOf={tickOf} />
             )}
           </Section>
 
-          <Section title="Orders it placed (paper)">
-            {extra.orders.length === 0 ? (
-              <Empty>No orders yet today.</Empty>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {extra.orders.map((o, i) => (
-                  <OrderCard key={String(o.order_id ?? i)} o={o} name={name} />
-                ))}
-              </ul>
-            )}
-          </Section>
+          <div className="grid gap-8 lg:grid-cols-2">
+            <Section title="Orders it placed (paper)">
+              {extra.orders.length === 0 ? <Empty>No orders yet today.</Empty> : <OrdersTable rows={extra.orders} name={name} />}
+            </Section>
+            <Section title="Trades that went through">
+              {extra.fills.length === 0 ? <Empty>No trades yet today.</Empty> : <FillsTable rows={extra.fills} name={name} />}
+            </Section>
+          </div>
 
-          <Section title="Trades that went through">
-            {extra.fills.length === 0 ? (
-              <Empty>No trades yet today.</Empty>
-            ) : (
-              <ul className="flex flex-col gap-3">
-                {extra.fills.map((f, i) => (
-                  <FillCard key={String(f.fill_id ?? i)} f={f} name={name} />
-                ))}
-              </ul>
-            )}
-          </Section>
-
-          <Section title="Margin: Kite against our model">
-            <MarginCard rows={extra.margin} />
-          </Section>
-
-          <Section title="Results, all days">
-            <StatsCard s={detail.stats_all} />
-          </Section>
-
-          <Section title="Results, only days with nearly complete data">
-            <p className="mb-2 text-sm" style={{ color: "var(--color-fg-muted)" }}>
-              Counts only days where at least {Number.isNaN(threshold) ? detail.coverage_threshold : pct(threshold)} of
-              the market data arrived.
-              {detail.has_coverage_holes ? " Some days had gaps, so these numbers cover fewer days than the ones above." : ""}
-            </p>
-            <StatsCard s={detail.stats_full_coverage} />
-          </Section>
+          <div className="grid gap-8 lg:grid-cols-2">
+            <Section title="Margin: Kite against our model">
+              <MarginCard rows={extra.margin} />
+            </Section>
+            <Section title="Results">
+              <StatsTable all={detail.stats_all} full={detail.stats_full_coverage} />
+              <p className="stk-label mt-2">
+                The second column counts only days where at least{" "}
+                {Number.isNaN(threshold) ? detail.coverage_threshold : pct(threshold)} of the market data arrived.
+                {detail.has_coverage_holes ? " Some days had gaps, so it covers fewer days than the first." : ""}
+              </p>
+            </Section>
+          </div>
 
           <Section title="What happened, in order">
             {extra.timeline.length === 0 ? (
               <Empty>Nothing recorded yet.</Empty>
             ) : (
-              <ol className="flex flex-col gap-2">
-                {[...extra.timeline].reverse().map((t, i) => {
-                  const d = detailText(t.detail);
-                  return (
-                    <li key={`${t.wall_ns}-${i}`}>
-                      <Card>
-                        <div className="flex flex-wrap items-baseline justify-between gap-2">
-                          <span className="text-sm font-medium">{timelineText(t.kind)}</span>
-                          <span className="text-xs" style={{ color: "var(--color-fg-muted)" }}>{istWhen(t.wall_ist)}</span>
-                        </div>
-                        {d && <p className="mt-1 break-words text-xs" style={{ color: "var(--color-fg-muted)" }}>{d}</p>}
-                      </Card>
-                    </li>
-                  );
-                })}
-              </ol>
+              <Table caption="Session timeline, newest first" head={[{ label: "When (IST)" }, { label: "What" }, { label: "Details" }]}>
+                {[...extra.timeline].reverse().map((t, i) => (
+                  <tr key={`${t.wall_ns}-${i}`}>
+                    <td className="whitespace-nowrap">{istWhen(t.wall_ist)}</td>
+                    <td className="font-medium">{timelineText(t.kind)}</td>
+                    <td className="break-words text-fg-muted">{detailText(t.detail) ?? ""}</td>
+                  </tr>
+                ))}
+              </Table>
             )}
           </Section>
-        </>
+        </div>
       )}
 
       <ConfirmDialog

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commandText, getCommand, pauseReasonText, startKiteLogin, statusText } from "@/lib/trade";
-import { buttonStyle, Card } from "../tests/ui";
+import { Panel } from "./ui";
 
 const WATCH_MS = 1000;
 const WATCH_MAX = 90; // about 90 s of watching, then the owner is told it is still queued
@@ -69,7 +69,7 @@ export function CommandMessage({ message, failed }: { message: string | null; fa
   return (
     <div role="status" aria-live="polite" className="min-h-0">
       {message && (
-        <p className="text-sm" style={{ color: failed ? "var(--color-red-soft)" : "var(--color-fg-muted)" }}>
+        <p className={`text-sm ${failed ? "text-red-soft" : "text-fg-muted"}`}>
           {message}
         </p>
       )}
@@ -92,12 +92,12 @@ export function LoginBanner({ detail }: { detail?: string }) {
     }
   }
   return (
-    <Card tone="amber">
-      <p className="text-sm" style={{ color: "var(--color-amber)" }}>
+    <Panel tone="amber">
+      <p className="text-sm text-amber">
         Paper trading is waiting for you to log in to Kite. Nothing trades until you do.
       </p>
       {detail && (
-        <p className="mt-1 text-xs" style={{ color: "var(--color-fg-muted)" }}>
+        <p className="stk-label mt-1">
           {detail}
         </p>
       )}
@@ -105,17 +105,16 @@ export function LoginBanner({ detail }: { detail?: string }) {
         type="button"
         onClick={go}
         disabled={busy}
-        className="stk-mono-tight mt-3 min-h-11 w-full rounded-md border px-4 py-2 disabled:opacity-60"
-        style={buttonStyle}
+        className="stk-btn mt-3 w-full"
       >
         {busy ? "Opening Kite…" : "Log in to Kite"}
       </button>
       {err && (
-        <p role="alert" className="mt-2 text-sm" style={{ color: "var(--color-red-soft)" }}>
+        <p role="alert" className="mt-2 text-sm text-red-soft">
           {err}
         </p>
       )}
-    </Card>
+    </Panel>
   );
 }
 
@@ -150,10 +149,9 @@ export function ConfirmDialog({
         onCancel();
       }}
       aria-labelledby="confirm-title"
-      className="m-auto w-[calc(100%-2rem)] max-w-md rounded-lg border p-4"
-      style={{ background: "var(--color-bg-soft)", color: "var(--color-fg)", borderColor: "var(--color-red)" }}
+      className="stk-dialog m-auto w-[calc(100%-2rem)] max-w-md rounded-lg border border-red bg-bg-soft p-4 text-fg"
     >
-      <h2 id="confirm-title" className="stk-mono text-lg font-bold" style={{ color: "var(--color-red-soft)" }}>
+      <h2 id="confirm-title" className="text-lg font-bold text-red-soft">
         {title}
       </h2>
       <p className="mt-2 text-sm">{body}</p>
@@ -161,8 +159,8 @@ export function ConfirmDialog({
         <button
           type="button"
           onClick={onConfirm}
-          className="stk-mono-tight min-h-11 flex-1 rounded-md border px-4 py-2 font-bold"
-          style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)", background: "rgba(255,68,68,0.10)" }}
+          className="stk-btn flex-1"
+          data-tone="danger"
         >
           {confirmLabel}
         </button>
@@ -170,8 +168,7 @@ export function ConfirmDialog({
           type="button"
           onClick={onCancel}
           autoFocus
-          className="stk-mono-tight min-h-11 flex-1 rounded-md border px-4 py-2"
-          style={buttonStyle}
+          className="stk-btn flex-1"
         >
           Keep going
         </button>
@@ -181,13 +178,9 @@ export function ConfirmDialog({
 }
 
 export function StatusChip({ status }: { status: string }) {
-  const color =
-    status === "RUNNING" ? "var(--color-green)" : status === "PAUSED" ? "var(--color-amber)" : "var(--color-fg-muted)";
+  const color = status === "RUNNING" ? "text-green" : status === "PAUSED" ? "text-amber" : "text-fg-muted";
   return (
-    <span
-      className="stk-mono-tight inline-flex items-center rounded px-2 py-0.5 text-xs font-bold"
-      style={{ color, border: `1px solid ${color}` }}
-    >
+    <span className={`stk-chip ${color}`}>
       {statusText(status)}
     </span>
   );
@@ -198,7 +191,7 @@ export function PauseReasons({ reasons }: { reasons: string[] }) {
   return (
     <ul className="mt-2 flex flex-col gap-1">
       {reasons.map((r) => (
-        <li key={r} className="text-sm" style={{ color: "var(--color-amber)" }}>
+        <li key={r} className="text-sm text-amber">
           {pauseReasonText(r)}
         </li>
       ))}
