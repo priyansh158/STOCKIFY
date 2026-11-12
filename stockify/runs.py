@@ -89,7 +89,7 @@ def _with_family(cfg: dict) -> dict:
 def _log_unlock(reason: str | None, run_id: str, cfg: dict, job_id: str | None) -> None:
     """Log a holdout unlock (`holdout.enforce` returned a reason): one row per (job, reason), and one per
     standalone run (M6.6)."""
-    if reason:
+    if reason and not any(u["run_id"] == run_id for u in store.holdout_unlock_rows()):   # queue + launch: once
         store.log_holdout_unlock(run_id, cfg["family_id"], reason, job_id=job_id)
 
 
@@ -160,11 +160,18 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         if row is None or row["status"] != "queued":
             raise RunNotQueued(f"run {run_id} is {'unknown' if row is None else row['status']}, not queued")
         cfg = runconfig.load(json.loads(row["config_json"]))
-        holdout.enforce(cfg)       # again: the holdout may have been set since the run was queued; logged by queue
+        try:
+            reason = holdout.enforce(cfg)    # again: the holdout may have been set since the run was queued
+        except holdout.HoldoutLocked as e:
+            store.update_run(run_id, only_if_status="queued", status="failed", finished_ns=timeutil.now_ns(),
+                             error=str(e))   # the plain message stays on the row, not "runner exited 2"
+            raise
+        job_id = row["job_id"]
         if not store.update_run(run_id, only_if_status="queued", status="running", started_ns=timeutil.now_ns(),
                                 impl=impl):
             raise RunNotQueued(f"run {run_id} stopped being queued before it started")
         _claim(run_id)
+        _log_unlock(reason, run_id, cfg, job_id)     # a run queued before the holdout was set; no-op if queue logged
     else:
         loaded = runconfig.load(config)
         reason = holdout.enforce(loaded)      # before any row or folder (M6.6)
@@ -173,14 +180,15 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
 
     try:
         b = bundle_mod.resolve_bundle(cfg)
-        holdout.enforce_bundle(cfg, b)        # the days the bundle really holds, not only the spec's dates
+        # the days the bundle really holds, not only the spec's dates; an unlock found only here is logged too
+        reason = holdout.enforce_bundle(cfg, b) or reason
     except Exception as e:
         if run_id is None:
             run_id = queued_run_id(cfg["name"])
             store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                               "family_id": cfg["family_id"], "role": role, "job_id": job_id,
                               "config_json": text, "impl": impl, "started_ns": timeutil.now_ns()})
-            _log_unlock(reason, run_id, cfg, job_id)
+        _log_unlock(reason, run_id, cfg, job_id)
         raise _fail(run_id, e) from e
 
     if run_id is None:
@@ -188,8 +196,8 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                           "family_id": cfg["family_id"], "role": role, "job_id": job_id,
                           "config_json": text, "impl": impl, "started_ns": timeutil.now_ns()})
-        _log_unlock(reason, run_id, cfg, job_id)
         _claim(run_id)
+    _log_unlock(reason, run_id, cfg, job_id)          # once per run id; a bundle-only unlock is caught here
     folder = paths.run_path(run_id)
     try:
         if impl == "engine":
@@ -270,8 +278,10 @@ def import_run(folder) -> str:  # noqa: ANN001
     run_id = folder.name
     if paths.run_path(run_id).resolve() != folder.resolve():
         raise ValueError(f"{folder} is not a run folder in {paths.runs_dir()}")
+    from stockify.research import holdout
     fields, children = _summarise(folder)
     cfg = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+    reason = holdout.enforce(cfg)        # an imported run is a result like any other: no row without the unlock (M6.6)
     row = store.get_run(run_id)
     if cfg.get("family_id") is None:
         cfg = {**cfg, "family_id": (row or {}).get("family_id")}
@@ -284,6 +294,7 @@ def import_run(folder) -> str:  # noqa: ANN001
             fields["status"] = "done"
         store.update_run(run_id, **fields)
     store.replace_run_rows(run_id, **children)
+    _log_unlock(reason, run_id, cfg, (row or {}).get("job_id"))
     return run_id
 
 

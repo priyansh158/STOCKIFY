@@ -254,7 +254,7 @@ class LaunchTests(BundleTest):
         rid = runs.queue(self.locked_cfg())              # queued while no holdout was set
         with holding("2025-12-30"), self.assertRaises(holdout.HoldoutLocked):
             runs.launch(run_id=rid)
-        self.assertEqual(store.get_run(rid)["status"], "queued")      # untouched
+        self.assertEqual(store.get_run(rid)["status"], "failed")      # not left queued for ever
 
     def test_launch_logs_a_standalone_unlock(self):
         with holding("2025-12-30"), mock.patch("stockify.bundle.resolve_bundle", side_effect=RuntimeError("x")):
@@ -286,6 +286,105 @@ class LaunchTests(BundleTest):
             with mock.patch("stockify.oracle.sod_state.loads_bundle", side_effect=RuntimeError("stop")):
                 with self.assertRaises(RuntimeError):
                     runs.rerun("old-1", unlock_holdout="second look")
+
+
+class ReasonCharsTests(unittest.TestCase):
+    def test_a_reason_needs_three_letters_or_digits(self):
+        zw = chr(0x200B)
+        for bad in (zw * 3, f"a{zw}b", "---", "a b", "!!!???", zw + " " + zw + "ab"):
+            with self.subTest(bad=bad), holding(), self.assertRaises(holdout.HoldoutLocked):
+                holdout.enforce(cfg(to="2026-09-01", unlock_holdout=bad))
+        with holding():
+            self.assertEqual(holdout.enforce(cfg(to="2026-09-01", unlock_holdout="fix")), "fix")
+            self.assertEqual(holdout.enforce(cfg(to="2026-09-01", unlock_holdout="a1 b")), "a1 b")
+
+
+def _folder(run_id: str, cfg: dict):
+    d = paths.run_path(run_id)
+    d.mkdir(parents=True)
+    files = {"run.json": json.dumps(cfg), "manifest.json": json.dumps({"engine": "oracle", "labels": []}),
+             "metrics.json": json.dumps({"sharpe": 1.0}), "orders.csv": "order_id" + "\n", "fills.csv": "fill_id" + "\n",
+             "charges.csv": "row_no,kind,order_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,"
+                            "other,total" + "\n",
+             "equity.csv": "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise" + "\n"
+                           + "2025-12-22,100,100,0,0,0" + "\n"}
+    for name, text in files.items():
+        (d / name).write_text(text, encoding="utf-8")
+    return d
+
+
+class ImportAndLateTests(BundleTest):
+    def setUp(self):
+        super().setUp()
+        support.reset_sqlite_singleton(store)
+        self.addCleanup(support.reset_sqlite_singleton, store)
+
+    def conf(self, **kw):
+        return runconfig.load(run_config(name="imp", strategy=BUY, **kw))     # bars/day 2025-12-22 .. 2025-12-31
+
+    def test_import_of_a_folder_over_the_holdout_is_refused(self):
+        folder = _folder("imp", self.conf())
+        with holding("2025-12-30"), self.assertRaises(holdout.HoldoutLocked) as cm:
+            runs.import_run(folder)
+        self.assertIn("2025-12-30", str(cm.exception))
+        self.assertIsNone(store.get_run("imp"))
+
+    def test_import_with_a_reason_logs_one_unlock_even_twice(self):
+        folder = _folder("imp", self.conf(unlock_holdout="reviewed it"))
+        with holding("2025-12-30"):
+            runs.import_run(folder)
+            runs.import_run(folder)
+        rows = store.holdout_unlock_rows()
+        self.assertEqual([(r["run_id"], r["reason"]) for r in rows], [("imp", "reviewed it")])
+        self.assertEqual(rows[0]["family_id"], store.get_run("imp")["family_id"])
+
+    def test_import_of_a_pre_holdout_folder_is_unaffected(self):
+        folder = _folder("imp", self.conf())
+        with holding("2026-01-01"):
+            self.assertEqual(runs.import_run(folder), "imp")
+        runs.import_run(folder)                                   # and with no holdout at all
+        self.assertEqual(store.holdout_unlock_rows(), [])
+        self.assertEqual(store.get_run("imp")["status"], "done")
+
+    def test_a_bundle_that_reaches_the_holdout_logs_its_unlock(self):
+        """The spec ends before the holdout, the bundle holds a day on it, and the config has a reason."""
+        fake = {"days": [{"date": "2025-12-31"}], "packs": []}
+        with holding("2025-12-30"), mock.patch("stockify.bundle.resolve_bundle", return_value=fake):
+            with mock.patch.object(holdout, "enforce", return_value=None):
+                with self.assertRaises(runs.RunFailed):          # the fake bundle cannot run; the unlock is logged
+                    runs.launch(run_config(strategy=BUY, unlock_holdout="late bundle"), role="trial",
+                                job_id="job-9")
+        rows = store.holdout_unlock_rows()
+        self.assertEqual([(r["reason"], r["job_id"]) for r in rows], [("late bundle", "job-9")])
+
+    def test_enforce_bundle_returns_the_reason_or_raises(self):
+        days = {"days": [{"date": "2025-12-31"}]}
+        with holding("2025-12-30"):
+            self.assertEqual(holdout.enforce_bundle({"unlock_holdout": "late bundle"}, days), "late bundle")
+            with self.assertRaises(holdout.HoldoutLocked):
+                holdout.enforce_bundle({}, days)
+            with self.assertRaises(holdout.HoldoutLocked):
+                holdout.enforce_bundle({"unlock_holdout": "late bundle"}, {"days": []})
+            self.assertIsNone(holdout.enforce_bundle({}, {"days": [{"date": "2025-12-29"}]}))
+
+    def test_a_run_queued_before_the_holdout_logs_its_unlock_at_launch(self):
+        rid = runs.queue(run_config(strategy=BUY, unlock_holdout="queued early"), job_id="job-7")
+        self.assertEqual(store.holdout_unlock_rows(), [])
+        with holding("2025-12-30"), mock.patch("stockify.bundle.resolve_bundle", side_effect=RuntimeError("stop")):
+            with self.assertRaises(runs.RunFailed):
+                runs.launch(run_id=rid)
+        rows = store.holdout_unlock_rows()
+        self.assertEqual([(r["run_id"], r["reason"], r["job_id"]) for r in rows], [(rid, "queued early", "job-7")])
+
+    def test_a_queued_run_that_is_locked_at_launch_is_marked_failed_with_the_plain_message(self):
+        rid = runs.queue(run_config(strategy=BUY))
+        with holding("2025-12-30"), self.assertRaises(holdout.HoldoutLocked):
+            runs.launch(run_id=rid)
+        row = store.get_run(rid)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("2025-12-30", row["error"])
+        self.assertNotIn("Traceback", row["error"])
+
 
 
 def cli_run(*argv):

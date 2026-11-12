@@ -13,7 +13,7 @@ from datetime import date
 
 from stockify import runconfig
 
-MIN_REASON_CHARS = 3
+MIN_REASON_CHARS = 3        # letters or digits
 UNLOCK_HOW = ('add "unlock_holdout": "<why you are looking at the holdout>" to the run config, or pass '
               '--unlock-holdout "<why>" to `python -m stockify run`')
 
@@ -78,7 +78,8 @@ def run_span(cfg: dict) -> tuple[date, date | None] | None:
 
 def _reason(cfg: dict) -> str | None:
     raw = cfg.get("unlock_holdout") if isinstance(cfg, dict) else None
-    if isinstance(raw, str) and len(raw.strip()) >= MIN_REASON_CHARS:
+    # Letters or digits only count (str.isalnum), so zero-width and other invisible characters are not a reason.
+    if isinstance(raw, str) and sum(c.isalnum() for c in raw) >= MIN_REASON_CHARS:
         return raw.strip()
     return None
 
@@ -114,17 +115,21 @@ def enforce(cfg: dict) -> str | None:
     return reason
 
 
-def enforce_bundle(cfg: dict, bundle: dict) -> None:
-    """The days a resolved bundle holds, against the holdout: catches a span the config did not show. Raises
-    HoldoutLocked when a day is on or after `holdout_from` and the config has no real reason, or when the bundle's
-    days cannot be read."""
+def enforce_bundle(cfg: dict, bundle: dict) -> str | None:
+    """The days a resolved bundle holds, against the holdout: catches a span the config did not show. None when no
+    holdout is set or the last day is before it; the reason when a day is on or after `holdout_from` and the config
+    has a real one (the caller logs it); HoldoutLocked otherwise, and when the bundle's days cannot be read."""
     hold = holdout_from()
-    if hold is None or _reason(cfg) is not None:
-        return
+    if hold is None:
+        return None
     try:
         last = max(_iso(d["date"]) for d in bundle["days"])
     except (KeyError, TypeError, ValueError) as e:
         raise HoldoutLocked(f"The holdout starts on {hold.isoformat()}, and the days of this run's data cannot be "
                             f"read ({e}). To run it anyway, {UNLOCK_HOW}.") from e
-    if last >= hold:
-        raise _locked(hold, last, None)
+    if last < hold:
+        return None
+    reason = _reason(cfg)
+    if reason is None:
+        raise _locked(hold, last, cfg.get("unlock_holdout"))
+    return reason
