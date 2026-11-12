@@ -28,6 +28,26 @@ class ConnBudgetTest(unittest.TestCase):
         api.release()
         self.assertEqual(sorted(p.name for p in self.folder.glob("*.json")), [])
 
+    def test_the_recorder_is_never_refused_because_of_the_api_or_a_dev_ticket(self):
+        """M4 (differential review): the recorder has priority; it may use the spare connection."""
+        api = conn_budget.register("api", limit=3)
+        dev = conn_budget.register("dev", limit=3)                 # two non-recorder tickets: all the budget allows
+        with self.assertRaises(conn_budget.BudgetExceeded):
+            conn_budget.register("other", limit=3)                # a third non-recorder one is refused
+        daemon = conn_budget.register("daemon", limit=3)          # the recorder still gets in, on the spare
+        self.assertEqual(sorted(p.name.split("-")[0] for p in self.folder.glob("*.json")), ["api", "daemon", "dev"])
+        with self.assertRaises(conn_budget.BudgetExceeded):       # nothing is left for anything else
+            conn_budget.register("api2", limit=3)
+        for t in (api, dev, daemon):
+            t.release()
+
+    def test_a_dead_api_ticket_does_not_count_against_the_recorder(self):
+        self.folder.mkdir(parents=True, exist_ok=True)
+        (self.folder / "api-424242.json").write_text(json.dumps({"pid": 424242, "created": 1, "role": "api"}),
+                                                     encoding="utf-8")
+        t = conn_budget.register("daemon", limit=3)
+        t.release()
+
     def test_ticket_file_holds_pid_created_and_role(self):
         t = conn_budget.register("daemon", limit=3)
         self.addCleanup(t.release)
@@ -66,8 +86,12 @@ class ConnBudgetTest(unittest.TestCase):
                                                      encoding="utf-8")
             a = conn_budget.register("api", limit=3)
             with self.assertRaises(conn_budget.BudgetExceeded):
-                conn_budget.register("daemon", limit=3)
+                conn_budget.register("other", limit=3)                # the API and a dev run are all a non-recorder gets
+            d = conn_budget.register("daemon", limit=3)                # the recorder has priority: the spare is its
+            with self.assertRaises(conn_budget.BudgetExceeded):
+                conn_budget.register("daemon2", limit=3)               # but three live is Kite's limit
             a.release()
+            d.release()
 
     def test_roles_must_be_safe_segments(self):
         for bad in ("", "../x", "a/b", "con"):
@@ -113,8 +137,12 @@ class CallersTakeTicketsTest(unittest.TestCase):
             _release_ticket(ticker)
             self.assertFalse((self.folder / f"daemon-{os.getpid()}.json").exists())
             self._fill("api", "dev")
+            again = make_live_ticker("key", "tok")                    # the recorder is not refused for them (M4)
+            self.assertTrue((self.folder / f"daemon-{os.getpid()}.json").exists())
+            _release_ticket(again)
             with self.assertRaises(conn_budget.BudgetExceeded):
-                make_live_ticker("key", "tok")
+                self._fill("other")                                   # a third non-recorder ticket is refused
+
 
     def test_api_worker_refuses_a_third_connection(self):
         import kite_client

@@ -456,6 +456,76 @@ class DispatcherTest(pf.PaperDayTest):
         self.assertEqual(store.pending_commands(), [])
         self.assertEqual(self.controls("s1")[-1], {"enabled": False, "reasons": ["owner"]})
 
+    def test_a_store_write_that_fails_after_the_journal_is_retried_and_the_store_catches_up(self):
+        """M-3: the journal says paused, so the store (and the UI) must not keep saying RUNNING."""
+        import sqlite3
+        sd = self.make_day("s1")
+        cmd = store.add_command("s1", "pause", None, 1)
+        disp = self.dispatcher([sd], commands_every_s=1)
+        real = lifecycle.pause
+        calls = []
+
+        def flaky(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise sqlite3.OperationalError("database is locked")
+            return real(*a, **k)
+
+        with mock.patch.object(lifecycle, "pause", side_effect=flaky):
+            disp.put_gap("start", "disconnect", self.t("09:20:00"), None)
+            disp.drain()
+            self.assertEqual([c["cmd_id"] for c in store.pending_commands()], [cmd])       # not marked: still pending
+            self.assertEqual(store.get_session("s1")["pause_reasons"], [])
+            disp.put_gap("end", "disconnect", self.t("09:20:05"), None)                    # a later pass
+            disp.drain()
+        self.assertEqual(store.pending_commands(), [])
+        self.assertEqual(store.get_session("s1")["pause_reasons"], ["owner"])
+        self.assertEqual(self.controls("s1")[-1], {"enabled": False, "reasons": ["owner"]})
+
+    def test_a_store_write_that_keeps_failing_is_given_up_after_a_few_passes(self):
+        import sqlite3
+        sd = self.make_day("s1")
+        store.add_command("s1", "pause", None, 1)
+        disp = self.dispatcher([sd], commands_every_s=1)
+        with mock.patch.object(lifecycle, "pause", side_effect=sqlite3.OperationalError("database is locked")):
+            for i in range(30):
+                disp.put_gap("start" if i % 2 == 0 else "end", "disconnect", self.t("09:20:00") + i * 2_000_000_000, None)
+                disp.drain()
+        self.assertEqual(store.pending_commands(), [])
+        row = store._connect().execute("SELECT result FROM session_commands").fetchone()
+        self.assertTrue(row["result"].startswith("error"))
+
+    def test_a_token_expired_gap_start_the_full_queue_dropped_is_journaled_directly(self):
+        """M-5: like process_stop, the start of a token expiry never depends on room in the queue."""
+        sd = self.make_day("s1")
+        disp = self.dispatcher([sd], replay=False, dispatcher_queue_max=2)
+        frame = kp.build_frame([pkt.full(pf.CE_TOKEN + 4, 12_000, vol=1_000, exch_ts=1)])
+        for i in range(1, 4):
+            disp.put_frame((i, self.t("10:00:00") + i, 1, frame, True))
+        t = self.t("10:00:05")
+        disp.put_gap("start", "token_expired", t, None)                  # the queue is full: dropped
+        self.assertEqual(disp.stats.dropped, 2)
+        disp.drain()
+        starts = lambda: [r for r in decode("s1") if r["kind"] == "GAP" and r["reason"] == "token_expired"
+                          and r["phase"] == 0]
+        self.assertEqual(starts(), [])
+        disp.journal_token_expired_start()
+        disp.drain()
+        self.assertEqual([r["t_event"] >= t for r in starts()], [True])
+        disp.journal_token_expired_start()                                # once
+        self.assertEqual(len(starts()), 1)
+
+    def test_the_queue_full_log_is_written_outside_the_lock(self):
+        """M-6: a blocked log handler must not hold the lock the ticker thread's intake needs."""
+        sd = self.make_day("s1")
+        disp = self.dispatcher([sd], replay=False, dispatcher_queue_max=1)
+        held = []
+        with mock.patch("stockify.daemon.dispatcher.log.error",
+                        side_effect=lambda *a, **k: held.append(disp._lock.locked())):
+            for i in range(1, 5):
+                disp.put_gap("start", "disconnect", self.t("10:00:00") + i, None)
+        self.assertEqual(held, [False])                                  # logged once, with the lock free
+
     def test_frames_without_records_for_a_session_make_no_store_commit(self):
         narrow = self.make_day("s1", self.cfg(universe=["NSE:NIFTY 50"]))
         self.assertNotIn(self.ces[4], narrow.ids)

@@ -58,13 +58,13 @@ class CatchUpOrderTest(JobsBase):
         for job in ("nse_fetch", "margin_files"):
             self.state.mark(job, MON)
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
-        self.assertEqual(due, [("finalise", MON), ("parity", MON), ("daily_summary", MON), ("backup", WED)])
+        self.assertEqual(due, [("finalise", MON), ("compaction", MON), ("parity", MON), ("daily_summary", MON), ("backup", WED)])
         self.assertLess(ist(WED, "08:00"), scheduler.plan(WED).day_bundles_ns)
 
     def test_the_whole_evening_is_ordered_per_day(self):
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
         mon = [j for j, d in due if d == MON]
-        self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "parity", "daily_summary"])
+        self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary"])
         days = [d for j, d in due if j != "backup"]
         self.assertEqual(days, sorted(days))                                    # oldest day first
         self.assertEqual(due[-1][0], "backup")
@@ -76,7 +76,7 @@ class CatchUpOrderTest(JobsBase):
         self.assertIn(("backup", MON), due)                                      # the latest trading day, not the 10th
 
     def test_backup_always_catch_up_after_wake(self):
-        for job in ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary"):
+        for job in ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary"):
             self.state.mark(job, MON)
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "05:44"), self.state), MON), [("backup", MON)])
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "06:00"), self.state), MON), [("backup", WED)])    # the wake time
@@ -84,8 +84,25 @@ class CatchUpOrderTest(JobsBase):
         self.state.mark("backup", WED)
         self.assertNotIn("backup", [j for j, _ in scheduler.missed_jobs(ist(WED, "17:00"), self.state)])
 
+    def test_todays_backup_is_due_only_after_0545(self):
+        for job in ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary"):
+            self.state.mark(job, MON)
+        self.assertNotIn(("backup", WED), scheduler.missed_jobs(ist(WED, "05:44"), self.state))
+        self.assertIn(("backup", WED), scheduler.missed_jobs(ist(WED, "05:45"), self.state))
+
     def test_only_compaction_blocks_sleep(self):
         self.assertEqual(scheduler.BLOCKS_SLEEP, ("compaction",))
+
+    def test_compaction_is_caught_up_for_a_day_the_machine_slept_through_and_waits_for_finalise(self):
+        self.assertIn("compaction", scheduler.CATCH_UP)
+        self.assertEqual(scheduler.DAY_ORDER.index("compaction"), scheduler.DAY_ORDER.index("finalise") + 1)
+        self.assertFalse(scheduler.runnable("compaction", MON, self.state))
+        self.state.mark("finalise", MON)
+        self.assertTrue(scheduler.runnable("compaction", MON, self.state))
+        self.assertIn(("compaction", MON), scheduler.missed_jobs(ist(WED, "08:00"), self.state))
+        self.state.mark("compaction", MON)
+        self.assertNotIn(("compaction", MON), scheduler.missed_jobs(ist(WED, "08:00"), self.state))
+        self.assertNotIn(("compaction", WED), scheduler.missed_jobs(ist(WED, "08:00"), self.state))   # 16:30 has not come
 
     def test_dependent_jobs_wait_for_finalise(self):
         self.assertFalse(scheduler.runnable("parity", MON, self.state))
@@ -236,7 +253,8 @@ class CatchUpWiringTest(JobsBase):
                 mock.patch.object(daemon, "_run_job", fake_job):
             daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
                               token_fresh=lambda: False, send_reminder=lambda s, b: None)
-        self.assertEqual(since(ran, MON)[:4], [("finalise", MON), ("parity", MON), ("daily_summary", MON), ("backup", WED)])
+        self.assertEqual(since(ran, MON)[:5], [("finalise", MON), ("compaction", MON), ("parity", MON),
+                                               ("daily_summary", MON), ("backup", WED)])
 
     def test_a_failing_job_does_not_stop_the_others(self):
         from stockify import daemon
@@ -589,6 +607,35 @@ class OpenSequenceTest(LiveBase):
             daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
                               token_fresh=lambda: False, send_reminder=lambda s, b: None)
         self.assertEqual(ran.count(("finalise", MON)), 2)                        # loop top; the idle pass is throttled
+
+    def test_heavy_catch_up_waits_for_the_close(self):
+        """M-2: while the session is on, the recording process does not replay an earlier day (parity, finalise) or
+        copy the lab (backup); the light jobs still run, and everything runs again at the close."""
+        from stockify import daemon
+        ran = []
+        state = scheduler.State()
+        for job in ("nse_fetch", "margin_files"):
+            state.mark(job, MON)
+
+        def fake_market_day(**kw):
+            kw["on_idle"]()
+            return exitcodes.TOKEN_EXPIRED
+
+        def run_at(hhmm):
+            ran.clear()
+            clock = ManualClock(ist(WED, hhmm))
+            with mock.patch.object(market_day, "run_market_day", fake_market_day),                     mock.patch.object(daemon, "_run_job", lambda job, d, st, now=None: ran.append((job, d))):
+                daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
+                                  token_fresh=lambda: False, send_reminder=lambda s, b: None)
+            return {j for j, _ in ran}
+
+        self.assertFalse(run_at("10:00") & {"finalise", "parity", "backup"})
+        self.assertIn("nse_fetch", run_at("10:00") | {"nse_fetch"})
+        self.assertTrue({"finalise", "backup"} <= run_at("08:40"))
+        self.assertTrue(scheduler.session_in_progress(ist(WED, "10:00")))
+        self.assertFalse(scheduler.session_in_progress(ist(WED, "08:40")))
+        self.assertFalse(scheduler.session_in_progress(ist(WED, "15:45")))
+        self.assertFalse(scheduler.session_in_progress(ist(TUE_HOLIDAY, "10:00")))
 
     def test_a_failing_catch_up_still_starts_the_recorder(self):
         def boom(*a, **kw):

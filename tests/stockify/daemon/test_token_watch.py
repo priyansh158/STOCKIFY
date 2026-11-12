@@ -116,6 +116,22 @@ class WaitForLoginTest(unittest.TestCase):
         return token_watch.wait_for_login(self.clock, stop or threading.Event(), poll_s=30, token_fresh=fresh,
                                           on_idle=self.on_idle, until_ns=until)
 
+    def test_the_poll_interval_is_paper_jsons_token_poll_s(self):
+        """The one value of the poll (15 s) lives in paper.json; nothing else hard-codes it."""
+        from unittest import mock
+        from stockify.config import loader
+        self.assertEqual(token_watch.poll_s(), 15.0)
+        real = loader.load_json
+        with mock.patch.object(loader, "load_json",
+                               lambda name, *a, **kw: {**real(name, *a, **kw), "token_poll_s": 7}
+                               if name == "paper.json" else real(name, *a, **kw)):
+            self.assertEqual(token_watch.poll_s(), 7.0)
+            polls = []
+            self.assertFalse(token_watch.wait_for_login(self.clock, threading.Event(), token_fresh=lambda: False,
+                                                        on_idle=lambda: polls.append(self.clock.now_ns()),
+                                                        until_ns=1_000 * SEC + 30 * SEC))
+        self.assertEqual([(b - a) // SEC for a, b in zip(polls, polls[1:])], [7, 7, 7, 7, 2])
+
     def test_a_fresh_token_and_no_rejected_mtime_returns_at_once(self):
         self.assertTrue(self.wait(lambda: True))
         self.assertEqual(self.idle, 0)
@@ -389,12 +405,12 @@ class LiveLoginWaitTest(unittest.TestCase):
 
         with mock.patch.object(market_day, "run_market_day", fake_market_day), \
                 mock.patch("stockify.daemon.scheduler.missed_jobs",
-                           return_value=[("compaction", prev), ("quality", prev)]), \
+                           return_value=[("nse_fetch", prev), ("quality", prev)]), \
                 mock.patch.object(daemon, "_run_job", lambda job, d, state, now=None: ran.append((job, d))):
             code = daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=self.clock,
                                      token_fresh=lambda: False, send_reminder=lambda s, b: None)
         self.assertEqual(code, exitcodes.TOKEN_EXPIRED)
-        self.assertEqual(ran, [("compaction", prev), ("quality", prev)] * 2)       # once at the loop top, once idle
+        self.assertEqual(ran, [("nse_fetch", prev), ("quality", prev)] * 2)       # once at the loop top, once idle
 
 
 if __name__ == "__main__":

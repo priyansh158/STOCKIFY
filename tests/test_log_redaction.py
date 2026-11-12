@@ -62,5 +62,89 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(log_redaction.redact("access_token=SECRET123tok&x=1"), "access_token=***&x=1")
 
 
+class TracebackRedactionTests(unittest.TestCase):
+    """The differential review's M2: a traceback is formatted after the filters run, so the formatter scrubs it."""
+    SECRET = "SECRET123tok"
+
+    def logger_to(self, stream):
+        from stockify import log as slog
+        previous = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, previous)
+        logger = logging.getLogger("test.stockify.traceback")
+        logger.propagate = False
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(slog.RedactFormatter("%(levelname)s %(message)s"))
+        handler.addFilter(slog.RedactFilter())
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        self.addCleanup(logger.removeHandler, handler)
+        return logger
+
+    def test_log_exception_with_a_token_in_the_exception_is_scrubbed(self):
+        stream = io.StringIO()
+        logger = self.logger_to(stream)
+        try:
+            raise ConnectionError(f"handshake failed for wss://ws.kite.trade/?api_key=K&access_token={self.SECRET}")
+        except ConnectionError:
+            logger.exception("ticker error")
+        out = stream.getvalue()
+        self.assertIn("ticker error", out)
+        self.assertIn("ConnectionError", out)
+        self.assertNotIn(self.SECRET, out)
+        self.assertNotIn("ws.kite.trade", out)
+
+    def test_exc_info_chained_causes_stack_text_and_authorization_are_scrubbed(self):
+        stream = io.StringIO()
+        logger = self.logger_to(stream)
+        key = "apikey" + "1234"
+        try:
+            try:
+                raise ValueError(f"Authorization: token {key}:{self.SECRET} was refused")
+            except ValueError as inner:
+                raise RuntimeError(f'{{"access_token": "{self.SECRET}"}}') from inner
+        except RuntimeError:
+            logger.error("failed", exc_info=True, stack_info=True)
+        out = stream.getvalue()
+        self.assertIn("RuntimeError", out)
+        self.assertNotIn(self.SECRET, out)
+        self.assertNotIn("apikey1234", out)
+
+    def test_setup_puts_the_redacting_formatter_on_every_root_handler(self):
+        from stockify import log as slog
+        handler = logging.StreamHandler(io.StringIO())
+        logging.root.addHandler(handler)
+        self.addCleanup(logging.root.removeHandler, handler)
+        slog.setup()
+        self.assertIsInstance(handler.formatter, slog.RedactFormatter)
+
+    def test_the_log_file_rotates_at_the_configured_size(self):
+        import tempfile
+        from pathlib import Path
+        from stockify import log as slog
+        with tempfile.TemporaryDirectory() as d:
+            handler = slog.file_handler(Path(d) / "x.log", max_bytes=2000, backups=2)
+            try:
+                logger = logging.getLogger("test.stockify.rotate")
+                logger.propagate = False
+                logger.addHandler(handler)
+                logger.setLevel(logging.INFO)
+                previous = logging.root.manager.disable
+                logging.disable(logging.NOTSET)
+                self.addCleanup(logging.disable, previous)
+                for i in range(200):
+                    logger.info("line %d access_token=%s", i, self.SECRET)
+            finally:
+                handler.close()
+            names = sorted(p.name for p in Path(d).iterdir())
+            self.assertEqual(names, ["x.log", "x.log.1", "x.log.2"])
+            self.assertTrue(all(p.stat().st_size <= 2200 for p in Path(d).iterdir()))
+            self.assertNotIn(self.SECRET, "".join((Path(d) / n).read_text(encoding="utf-8") for n in names))
+
+    def test_the_shipped_log_caps_are_read_from_storage_json(self):
+        from stockify import log as slog
+        self.assertEqual(slog.configured_caps(), (20 * 1024 * 1024, 5))
+
+
 if __name__ == "__main__":
     unittest.main()

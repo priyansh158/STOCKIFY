@@ -37,7 +37,11 @@ $WakeFile = Join-Path $LabDir "next_wake.json"
 $WakeTaskName = "STOCKIFY Wake"
 $LogDir = Join-Path $env:LOCALAPPDATA "STOCKIFY\logs"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
-$LogFile = Join-Path $LogDir "stockify-daemon.log"
+# The daemon's own log (stockify-daemon.log) is written, redacted and size-capped, by Python (stockify/log.py). This file
+# holds only the launcher's lines and whatever the process wrote to stdout/stderr outside logging (a crash before
+# logging starts), passed through Remove-Secrets and trimmed to $LauncherLogMaxBytes at each (re)start.
+$LogFile = Join-Path $LogDir "stockify-launcher.log"
+$LauncherLogMaxBytes = 5MB
 
 $env:PYTHONPATH = if ($env:PYTHONPATH) { "$Root;$env:PYTHONPATH" } else { $Root }
 $env:PYTHONUNBUFFERED = "1"
@@ -53,8 +57,22 @@ $ExitAlreadyRunning = 79
 $ExitEngineStuck = 80
 $ExitLockFailed = 81
 
+# The same blanking as stockify.log.redact: URLs (a ticker's carries the access token), Kite authorization headers and
+# token parameters or JSON fields.
+function Remove-Secrets([string]$Text) {
+    $Text = [regex]::Replace($Text, '\b(?:wss?|https?)://\S+', '<url>', 'IgnoreCase')
+    $Text = [regex]::Replace($Text, '\btoken\s+[\w.-]+:[\w.-]+', 'token ***', 'IgnoreCase')
+    return [regex]::Replace($Text, '(["'']?)\b(access_token|api_key|api_secret|request_token|refresh_token|enctoken)\b\1(\s*[:=]\s*)(["'']?)[^&\s''",}]*', '$1$2$1$3$4***', 'IgnoreCase')
+}
+
 function Write-Log([string]$Message) {
     "[$(Get-Date -Format o)] $Message" | Tee-Object -FilePath $LogFile -Append
+}
+
+function Limit-LauncherLog {
+    if ((Test-Path $LogFile) -and ((Get-Item $LogFile).Length -gt $LauncherLogMaxBytes)) {
+        Move-Item -Path $LogFile -Destination "$LogFile.1" -Force
+    }
 }
 
 function Test-HibernateAvailable {
@@ -117,9 +135,10 @@ $delay = $MinDelay
 
 Set-Location $Root
 while ($true) {
+    Limit-LauncherLog
     Write-Log "Starting STOCKIFY daemon"
     $started = Get-Date
-    & $PyExe @DaemonArgs 2>&1 | Tee-Object -FilePath $LogFile -Append
+    & $PyExe @DaemonArgs 2>&1 | ForEach-Object { Remove-Secrets ([string]$_) } | Tee-Object -FilePath $LogFile -Append
     $code = $LASTEXITCODE
     if ($code -eq 0 -or $Once) {
         Write-Log "STOCKIFY daemon exited with code $code"

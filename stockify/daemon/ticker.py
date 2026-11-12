@@ -288,10 +288,14 @@ class RecorderSession:
     # ── shutdown ─────────────────────────────────────────────────────────────
     def end_session(self) -> None:
         """Planned end (after the F&O close): unsubscribe everything, log it."""
-        diff = self.manager.unsubscribe_all()
-        if diff.unsubscribe and self.connected:
-            self.call_in_ticker(self.ticker.unsubscribe, [s.token for s in diff.unsubscribe])
+        self.call_in_ticker(self._unsubscribe_all)             # the manager is changed in the ticker's thread only (M-4)
         self.stop(exitcodes.OK)
+
+    def _unsubscribe_all(self) -> None:
+        with self.sub_lock:
+            diff = self.manager.unsubscribe_all()
+            if diff.unsubscribe and self.connected:
+                self.ticker.unsubscribe([s.token for s in diff.unsubscribe])
 
     def stop(self, code: int) -> None:
         if self.stopped.is_set():

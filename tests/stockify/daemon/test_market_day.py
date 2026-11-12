@@ -278,13 +278,11 @@ class MarketDayTest(pf.PaperDayTest):
         self.assertEqual(self.run_day(stop=stop), exitcodes.OK)
         patcher.stop()
         before = len(decode("s1"))
-        paths.ticks_replay_file(DAY).unlink()
         self.assertEqual(self.run_day(), exitcodes.OK)                                  # same journal, resumed
         self.assertGreater(len(decode("s1")), before)
         jp = paths.journal_file("s1", DAY)
         journal.JournalWriter(jp, fsync_every_mono_ns=1, mono=time.monotonic_ns).close(finalise=True)
         size = jp.stat().st_size
-        paths.ticks_replay_file(DAY).unlink()
         self.assertEqual(self.run_day(), exitcodes.OK)
         self.assertEqual(jp.stat().st_size, size)                                       # a finalised day takes no input
 
@@ -372,8 +370,9 @@ class MarketDayTest(pf.PaperDayTest):
                 self.run_day()
             self.assertFalse(paths.journal_file("s1", DAY).exists())
             self.assertFalse(paths.ticks_replay_file(DAY).exists())       # refused before anything was written
-            self.assertEqual(self.run_day(session_ids=[]), exitcodes.OK)  # the recorder alone is still allowed
-        paths.ticks_replay_file(DAY).unlink()
+            with self.assertRaisesRegex(market_day.ReplayRefused, "replay-sandbox"):   # M-1: nor the recorder alone,
+                self.run_day(session_ids=[])                                           # whose status writes are real too
+            self.assertFalse(paths.daemon_status_file().exists())
         self.assertEqual(self.run_day(), exitcodes.OK)                    # a sandboxed state dir may run sessions
 
     def test_replay_sandbox_flag_redirects_the_state_dir_and_refuses_the_real_one(self):

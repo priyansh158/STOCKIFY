@@ -207,7 +207,9 @@ def _check_notify(doc: dict) -> None:
             raise ConfigError(f"notify.json: events.{name} must be true or false, got {on!r}")
 
 
-STORAGE_KEYS = ("retention_days", "disk_warn_free_gb", "disk_warn_free_fraction", "parquet_zstd_level", "backup")
+STORAGE_KEYS = ("retention_days", "disk_warn_free_gb", "disk_warn_free_fraction", "parquet_zstd_level",
+                "log_max_mb", "log_backups", "backup")
+LOG_BOUNDS = {"log_max_mb": (1, 1000), "log_backups": (0, 100)}      # a log file's size cap and how many rotated files stay
 BACKUP_KEYS = ("target", "include_span")
 
 
@@ -218,6 +220,9 @@ def _check_storage(doc: dict) -> None:
     extra = set(doc) - set(STORAGE_KEYS) - {"schema"}
     if extra:
         raise ConfigError(f"storage.json: unknown keys {sorted(extra)}; known: {list(STORAGE_KEYS)}")
+    for key, (low, high) in LOG_BOUNDS.items():
+        if key in doc and (isinstance(doc[key], bool) or not isinstance(doc[key], int) or not low <= doc[key] <= high):
+            raise ConfigError(f"storage.json: {key} must be a whole number from {low} to {high}, got {doc[key]!r}")
     if "backup" not in doc:
         return
     cfg = doc["backup"]

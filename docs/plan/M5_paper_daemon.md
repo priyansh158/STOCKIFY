@@ -15,11 +15,11 @@ Concepts: C-9, C-10, C-17. Decisions: D-15, D-16, D-20. Contract: `A4_engine_sem
 
 ## M5.1 Daemon composition (M)
 
-File: `stockify/daemon/main.py`.
+Files: `stockify/daemon/__init__.py` (the daemon loop and the scheduler's jobs) and `stockify/daemon/market_day.py` (the market day: recorder, dispatcher and sessions from one ticker).
 
 - [x] One process with an injected `Clock` and ticker (live or replay, M1.6): ticker supervisor → **fan-out** of each raw frame `(frame_no, recv_ns, payload)` to (a) the recorder queue and (b) the session dispatcher queue. Both see identical frames and receive times; that is what makes recorder-based replays comparable to live sessions (C-10).
 - [x] Threads: the ticker library's thread (listener only enqueues), the recorder writer, one engine thread for all sessions (processed sequentially per batch; data rates are low), the scheduler, the health reporter. Queues between them; no shared mutable state.
-- [x] Graceful shutdown on Ctrl+C / Ctrl+Break: stop accepting frames, drain queues, flush journals, write `GAP(process_stop)`.
+- [x] Graceful shutdown on Ctrl+C / Ctrl+Break: stop accepting frames, drain queues, flush journals, and, when the stop is inside market hours, write `GAP(process_stop)` (journaled directly, never through the queue; a stop outside market hours or at the end of the day journals none).
 
 ## M5.2 Sessions and their lifecycle (M)
 
@@ -31,7 +31,7 @@ Tables: `sessions`, `session_days`, `session_timeline` (A1 §4).
 
 ## M5.3 One engine per session-day, journal first (M)
 
-Files: `stockify/daemon/sessions.py`, `stockify/daemon/journal.py`.
+Files: `stockify/daemon/session_day.py`, `stockify/daemon/lifecycle.py`, `stockify/daemon/journal.py`.
 
 - [x] The engine side of the day-to-day state (Task 6, VOL 5.3, ST 5.1): `Engine.eod_state()` / `load_sod_state()` write and apply A1 §6.4 byte for byte as the oracle does; the saved state is untrusted input, so `load` checks all of it first and applies it whole or not at all, on both runners, with the same refusals (one table of hostile states, `tests/stockify/sod_state_hostile.py`). The daemon work below uses them.
 - [x] Per session per IST trading day: resolve a **day bundle** (M2.1) for the session's instruments with `seed` derived as in A4 §4.5 and `sod_state` = the previous day's end-of-day state; save it as `journals/<session_id>/<YYYYMMDD>.bundle.json`; create a fresh `Engine` from it.
@@ -47,7 +47,7 @@ Files: `stockify/daemon/sessions.py`, `stockify/daemon/journal.py`.
 ## M5.5 Market data for sessions (S)
 
 - [x] Sessions pin their instruments in the subscription manager (M1.5) so the recorder's re-centring never unsubscribes something a session needs.
-- [x] Instruments added during the day reach the engine as `REFDATA` records before their first tick; daily price bands arrive the same way.
+- [x] A session's day bundle holds the whole reachable universe, resolved before the open (D-67), so no instrument is added during the day; a contract listed after the bundle is made is unknown to that day's engine. Daily price bands snapshotted live arrive as `price_band` `REFDATA` records through the dispatcher's queue.
 
 ## M5.6 Live margins without breaking determinism (M)
 
@@ -60,13 +60,13 @@ Files: `stockify/daemon/sessions.py`, `stockify/daemon/journal.py`.
 The access token dies at 06:00 IST every day and the official login is a browser flow (K-7). STOCKIFY treats the daily login as a fixed part of operating it, makes missing it visible, and never automates around Zerodha's login.
 
 - [x] Detection: a 403 / `TokenException` from REST or a ticker auth failure ⇒ `GAP(token_expired)` for all instruments, every session `PAUSED(token_expired)`, a banner in the UI ("Log in to Kite").
-- [x] Resume: the daemon watches the token store (poll every 15 s); after a successful login it reconnects, re-subscribes, writes the gap end, and resumes sessions.
+- [x] Resume: the daemon watches the token store (poll every 15 s: `paper.json` `token_poll_s`, the one place it is set); after a successful login it reconnects, re-subscribes, writes the gap end, and resumes sessions.
 - [x] Token-dependent morning jobs retry every 5 minutes until 09:10 IST (`schedule.json`); if the token is still invalid at the refdata time, notify (M5.8).
 - [x] The owner's routine in Seattle (01_facts §5): on any evening before an NSE trading day, log in between **17:30 and 20:00 PDT** (16:30–19:00 PST from 2026-11-01), i.e. after the 06:00 IST expiry and before the 08:30 IST refdata job. A login up to 20:40 PDT (19:40 PST) still works through the retries; the market opens at 20:45 PDT (19:45 PST). On NSE holidays there is nothing to do. Show this on the session page and in the reminder text.
 
 ## M5.8 Notifications (S)
 
-- [x] `stockify/config/notify.json` with one channel (🛑 owner picks: ntfy topic, Telegram bot, or email) and per-event switches: login needed, session error, parity failure, recorder stall, disk low, daily summary (P&L, coverage, parity per session). Default: off, log only. Secrets for the channel live outside the repo. (Built, RW 5.1-5.2: email only; the channel and its secret are owner-only, Task 25 step 6.)
+- [x] `stockify/config/notify.json` with one channel (email only: owner, 2026-11-12, D-82, replacing the ntfy / Telegram / email choice) and per-event switches: login needed, session error, parity failure, recorder stall, disk low, daily summary (P&L, coverage, parity per session). Default: off, log only. Secrets for the channel live outside the repo. (Built, RW 5.1-5.2: email only; the channel and its secret are owner-only, Task 25 step 6.)
 
 ## M5.9 Scheduler (S)
 
@@ -80,14 +80,15 @@ Extends the M1.5 scheduler; all times from `schedule.json` (IST), skipped on hol
 | 09:00 pre-open; 09:15 continuous (from `sessions.json`) | 19:30; 19:45 |
 | 15:40 F&O close; 15:45 unsubscribe | 02:10; 02:15 next day |
 | 16:30 compaction (M1.7) | 03:00 |
+| 17:20 NSE margin files (`margin_files`: SPAN + ELM; retried to 22:00; holds sleep until archived or 22:00) | 03:50 |
 | 19:30 day finalisation (M5.3; cut off at the next trading day's 08:30), then 19:45 nightly parity (M5.10), 19:50 daily summary; NSE files (M1.3) 19:30–23:00 | 06:00; 06:15; 06:20; 06:00–09:30 |
 
 D-32 note: the laptop hibernates after the close and the day's compaction and wakes at 06:00 IST on the next trading day; none of the jobs above except `compaction` keeps it awake, so what it slept through runs on wake, in the order below.
 
-- [x] **Order**: per trading day, oldest first: `nse_fetch`, `margin_files`, `finalise`, `parity`, `daily_summary`; then `backup`. `parity` and the summary wait for `finalise` of their day. A failing job is logged and retried at its `retry_every_min`; it never stops another job, the recorder or the daemon. Two schedulers (or the scheduler and the daemon) never run one session-day's finalise at once: it holds a per-day OS-lock claim, a second caller gets `busy`.
+- [x] **Order**: per trading day, oldest first: `nse_fetch`, `margin_files`, `finalise`, `compaction`, `parity`, `daily_summary`; then `backup`. While the session is on (subscribe to unsubscribe time) the recording process holds `finalise`, `parity` and `backup` for earlier days until the close (D-1's finalise before the open is `before_open`). `parity` and the summary wait for `finalise` of their day. A failing job is logged and retried at its `retry_every_min`; it never stops another job, the recorder or the daemon. Two schedulers (or the scheduler and the daemon) never run one session-day's finalise at once: it holds a per-day OS-lock claim, a second caller gets `busy`.
 - [x] **Stale refdata / blocked start**: if refdata fails for a reason other than the login by 09:10, the day bundle uses D-1's refdata and is labelled `refdata_stale`. A session whose previous trading day is not finalised stays ARMED with the timeline row `blocked_on_finalise`. A login after the open starts the session with a `GAP(token_expired)` intended from 09:15; it is journaled at `max(09:15, the journal's last t)` (D-68), and the timeline row (`gap`, `late_login`) gives that journaled t. Before the sessions open only the refdata and D-1's finalise run (unthrottled, each guarded); the rest of the catch-up runs on a thread once the recorder is up. A blocked session is tried again every minute: once D-1 is finalised the run ends and the daemon's next pass opens it. Skipped parity is tried 8 times a day, then one `parity_gave_up` timeline row; a backup with copy errors is tried 3 times a day; a day on which every session failed is summarised as that.
 
-- [x] **Catch-up**: on start, the scheduler runs every missed non-market job for past dates (compaction, NSE fetch, finalisation, parity) in date order. A machine that slept through the morning jobs therefore catches up when it wakes; only market hours require it to be awake.
+- [x] **Catch-up**: on start, the scheduler runs every missed non-market job for past dates (NSE fetch, margin files, finalisation, compaction, parity, summary) in date order; compaction of a day the machine slept through runs after that day's finalise and keeps D-78's rules (a verified archive is never replaced, and the only complete copy of a day's packets is never deleted). A machine that slept through the morning jobs therefore catches up when it wakes; only market hours require it to be awake.
 
 ## M5.10 Nightly parity (M)
 

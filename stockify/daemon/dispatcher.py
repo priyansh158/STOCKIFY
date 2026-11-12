@@ -68,6 +68,12 @@ _PHASE = {"start": 0, "end": 1}
 _CLOCK_RANK = packs.RANK[packs.CLOCK]
 _GAP_RANK = packs.RANK[packs.GAP_K]
 _REASON_DEFAULT = "owner"
+_RETRY = "retry:"
+COMMAND_RETRIES = 10                    # passes a command whose store write failed after its journal record is tried
+
+
+class StoreWriteFailed(RuntimeError):
+    """A command's journal record exists but its store write failed: the command is tried again (M-3)."""
 
 
 @dataclass
@@ -109,6 +115,7 @@ class Dispatcher:
         self._stamp = 0
         self._next_poll = 0
         self._queued_cmds: set[int] = set()
+        self._retries: dict[int, int] = {}
         self._by_id = {s.session_id: s for s in self.sessions}
         self.on_book = None                         # (SessionDay, frozenset[int]) on the engine thread, when a book changes
         self.on_failed = None                       # (session_id) once, when a session's day fails
@@ -126,6 +133,7 @@ class Dispatcher:
         # nothing by this, and the journal's last CLOCK stays the restart's boundary (LCB 5.2, Task 18 review).
         self._last_clock = 0
         self._skip: dict[str, int] = {}              # session -> recv_ns of its last dispatched frame (replay restarts)
+        self._token_expired_t: int | None = None    # stamp of the process-level token_expired start, first seen
         self.closed = False                          # set once the engine is dead or has no session: nothing more is queued
         self.attach(sessions)
 
@@ -173,6 +181,8 @@ class Dispatcher:
 
     def put_gap(self, phase: str, reason: str, t: int, iid: int | None) -> None:
         """A RecorderSession gap tap."""
+        if phase == "start" and reason == "token_expired" and iid is None and self._token_expired_t is None:
+            self._token_expired_t = t               # remembered here, so a full queue cannot lose it (M-5)
         self._offer((GAP, phase, reason, t, iid), t)
 
     def put_inject(self, t: int, session_id: str | None, rank: int, record: bytes) -> bool:
@@ -193,11 +203,12 @@ class Dispatcher:
             return False
 
     def _dropped(self, stamp: int, item: tuple | None = None) -> None:
+        first_drop = False
         with self._lock:
             self.stats.dropped += 1
             if "dispatcher_queue_full" not in self.stats.alarms:
                 self.stats.alarms.append("dispatcher_queue_full")
-                log.error("dispatcher queue full: item dropped; the loss is journaled as a stall gap")
+                first_drop = True
             if self._overflow is None:
                 self._overflow = [stamp, stamp, 1, []]
             else:
@@ -206,6 +217,8 @@ class Dispatcher:
                 self._overflow[2] += 1
             if item is not None and item[0] == GAP and item[1] == "end":
                 self._overflow[3].append((item[2], item[4]))
+        if first_drop:                  # logged after the lock is released: a blocked log handler must not stall intake
+            log.error("dispatcher queue full: item dropped; the loss is journaled as a stall gap")
 
     # ── engine thread ────────────────────────────────────────────────────────
     def run(self, stop: threading.Event) -> None:
@@ -515,6 +528,17 @@ class Dispatcher:
         self.stats.frames += 1
         self._stage(recv_ns, per, (frame_no, recv_ns) if frame_no else None)
 
+    def journal_token_expired_start(self) -> None:
+        """The scope-all `GAP(token_expired)` start of a token expiry, journaled directly on the calling thread, never
+        through the queue (M-5), when the queue did not carry it. For the shutdown, after the engine thread has stopped
+        and `drain()` has run; a start the queue did carry is left alone."""
+        t = self._token_expired_t
+        if t is None or ("token_expired", None) in self._open_gaps:
+            return
+        self._stamp = t
+        self._gap("start", "token_expired", t, None)
+        self._flush(force_marks=True)
+
     def pause_for_token_expiry(self, t: int) -> list[str]:
         """Kite rejected the token (LCB 5.2): every session gets the `token_expired` pause reason, journal first
         (`strategy_control`, D-68), then the store (`lifecycle.pause`, one transaction). On the calling thread, for the
@@ -638,6 +662,18 @@ class Dispatcher:
         except Exception as e:  # noqa: BLE001
             log.exception("command %s (%s) failed", row["cmd_id"], row["command"])
             result = f"error: {e!r}"
+        if result.startswith(_RETRY):
+            n = self._retries[row["cmd_id"]] = self._retries.get(row["cmd_id"], 0) + 1
+            if n < COMMAND_RETRIES:
+                # The journal already says so; the store (and the UI) must catch up: the command stays pending and is
+                # offered again at the next poll (M-3).
+                log.warning("command %s (%s): the store write failed after the journal record (try %d): %s",
+                            row["cmd_id"], row["command"], n, result)
+                self._queued_cmds.discard(row["cmd_id"])
+                self._next_poll = 0
+                return
+            result = "error: " + result[len(_RETRY):].strip()
+        self._retries.pop(row["cmd_id"], None)
         store.mark_command(row["cmd_id"], t, result)
         self._queued_cmds.discard(row["cmd_id"])
 
@@ -652,12 +688,17 @@ class Dispatcher:
             if sd is None:
                 return f"error: no such session {row['session_id']!r} in this daemon"
             targets = [sd]
-        notes = []
+        notes, retry = [], False
         for sd in targets:
             try:
                 self._apply_one(sd, name, args, row["cmd_id"], t)
+            except StoreWriteFailed as e:
+                retry = True
+                notes.append(f"{sd.session_id}: {e}")
             except Exception as e:  # noqa: BLE001 — one session's refusal never blocks the others
                 notes.append(f"{sd.session_id}: {e}")
+        if retry:
+            return _RETRY + " " + "; ".join(notes)
         return "ok" if not notes else "error: " + "; ".join(notes)
 
     def _apply_one(self, sd: SessionDay, name: str, args: dict, cmd_id: int, t: int) -> None:
@@ -686,14 +727,19 @@ class Dispatcher:
         else:
             reasons = sorted(held | {"stopped"})
         self._control(sd, reasons, t)                     # the journal record exists before the store changes
-        if name in ("pause", "stop_all"):
-            stored = lifecycle.pause(sid, "stop_all" if name == "stop_all" else reason, wall_ns=t, engine_ns=t)
-        elif name == "resume":
-            stored = lifecycle.resume(sid, reason, wall_ns=t, engine_ns=t)
-        else:
-            lifecycle.stop(sid, wall_ns=t)
-            self._timeline(sid, "stop_requested", {"cmd_id": cmd_id}, t)
-            return
+        try:
+            if name in ("pause", "stop_all"):
+                stored = lifecycle.pause(sid, "stop_all" if name == "stop_all" else reason, wall_ns=t, engine_ns=t)
+            elif name == "resume":
+                stored = lifecycle.resume(sid, reason, wall_ns=t, engine_ns=t)
+            else:
+                lifecycle.stop(sid, wall_ns=t)
+                self._timeline(sid, "stop_requested", {"cmd_id": cmd_id}, t)
+                return
+        except lifecycle.LifecycleError:
+            raise                                         # a refusal is final: the command is marked
+        except Exception as e:  # noqa: BLE001 — the store, not the rules: the journal is ahead, so try again
+            raise StoreWriteFailed(repr(e)) from e
         if stored != reasons:
             log.warning("session %s: journaled reasons %s, stored %s (another writer changed them)", sid, reasons, stored)
 

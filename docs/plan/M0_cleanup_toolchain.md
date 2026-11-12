@@ -91,7 +91,7 @@ protocol, invariants (00_overview.md §2) and STOP gates.
 
 ## Layout
 - server/        FastAPI (auth, search, portfolio, /api/tests, /api/trade, /api/data)
-- web/           Next.js UI (mobile-first; types mirrored in web/src/lib/types.ts)
+- web/           Next.js UI (desktop only, D-83; types mirrored in web/src/lib/types.ts)
 - stockify/        Python: data layer, daemon, runners, oracle, configs (stockify/config/)
 - engine/        C++20 core (stocksim_core), pybind module stockify._engine, stocksim_run CLI
 - geo_monitor/   standalone side process (unchanged)

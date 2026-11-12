@@ -114,6 +114,32 @@ class SessionTest(unittest.TestCase):
                       if instruments.get(s.instrument_id)["kind"] == "CE")
 
 
+class EndSessionThreadTests(SessionTest):
+    def test_end_session_unsubscribes_on_the_ticker_thread_under_the_subscription_lock(self):
+        """M-4: the manager is only ever changed in the ticker's thread, in the ticker's order."""
+        source = LandingDB(DAY)
+        record_source(source)
+        source.close()
+        clock = ReplayClock(t("09:14:59"))
+        ticker = ReplayTicker(LandingDB(DAY, readonly=True), clock, faults=[])
+        target = LandingDB(DAY, paths.ticks_replay_file(DAY))
+        self.addCleanup(target.close)
+        rec = Recorder(target, lambda tok: None, clock)
+        manager = SubscriptionManager(DAY, UNIVERSE, clock, log_rows=target.log_subscriptions)
+        jobs = []
+        session = RecorderSession(ticker, rec, manager, clock, call_in_ticker=lambda fn, *a: jobs.append((fn, a)))
+        session.start()
+        manager.build({})
+        before = dict(manager.current)
+        session.end_session()
+        self.assertTrue(session.stopped.is_set())
+        self.assertEqual(manager.current, before)                      # nothing touched on the calling thread
+        self.assertEqual(len(jobs), 1)
+        fn, args = jobs[0]
+        fn(*args)                                                       # the ticker thread runs it
+        self.assertEqual(manager.current, {})
+
+
 class StallRaceTests(SessionTest):
     def test_a_stop_from_the_ticker_thread_during_the_stall_check_is_harmless(self):
         """LCB 5.2: a 403 stops the session on the ticker thread (`stop()` clears the stall gaps) while the main

@@ -124,7 +124,7 @@ Server: `server/routers/tests.py`; DTOs in `server/schemas.py`, mirrored in `web
 
 - [x] `GET /api/strategies` (registered C++ strategies and discovered Python strategies with their parameter schemas, for the form). `POST /api/tests` validates and launches `python -m stockify run` as a subprocess (queue; at most `cpu_count − 1` concurrent runs); `GET /api/tests`, `GET /api/tests/{id}` (+ `/orders`, `/fills`, `/equity`, `/charges`, `/logs`), `POST /api/tests/{id}/cancel`. Declare fixed routes before `/{id}` routes (A2 §6).
 - [x] `/tests`: run cards (status, strategy, range, headline metrics, **labels**: approximate fills, flat margin, unverified charges, adjusted basis) and a "New test" form (strategy, parameters, symbols or chain selector, range, fill model, price basis, capital, seed).
-- [x] `/tests/[id]`: metrics, responsive equity curve, drawdown, fills list, cost breakdown, manifest (build id, hashes). Mobile-first: single column, tap targets ≥ 44 px, readable at 390 px width; ₹ via `Intl.NumberFormat("en-IN")`.
+- [x] `/tests/[id]`: metrics, responsive equity curve, drawdown, fills list, cost breakdown, manifest (build id, hashes). Desktop only (D-83): readable down to about 1024 px, wide tables are fine; ₹ via `Intl.NumberFormat("en-IN")`.
 
 ## M3.15 Strategy how-to (S)
 
@@ -147,4 +147,4 @@ cd web; npm run lint; npm run build
 
 ## Definition of done
 
-All goldens and the differential fuzz pass on both implementations; determinism holds; a Python strategy runs unchanged on both; `/tests` works end to end on a phone-sized viewport; benchmark numbers recorded.
+All goldens and the differential fuzz pass on both implementations; determinism holds; a Python strategy runs unchanged on both; `/tests` works end to end in a desktop browser; benchmark numbers recorded.

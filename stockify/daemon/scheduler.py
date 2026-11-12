@@ -44,10 +44,11 @@ from stockify.data import calendar
 SEGMENT = "FO"
 CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
-CATCH_UP = ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary", "backup")
-DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary")   # one day's jobs, in dependency order
+CATCH_UP = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "backup")
+DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary")   # one day's jobs, in order
 DEFAULT_RETRY_MIN = {"backup": 15}                  # a job given as a plain time retries at this gap
-DEPENDS = {"parity": "finalise", "daily_summary": "finalise"}
+DEPENDS = {"compaction": "finalise", "parity": "finalise", "daily_summary": "finalise"}
+HELD_DURING_SESSION = ("finalise", "parity", "backup")   # an engine replay or a lab copy: not beside the live recorder (M-2)
 HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files",)   # fetched the same evening (CAM 4.4), not the next morning
 
 
@@ -169,7 +170,7 @@ def window_end_ns(job: str, day: date, cfg: dict | None = None) -> int:
 
 def _due_ns(job: str, p: DayPlan) -> int:
     return {"nse_fetch": p.nse_fetch_ns, "margin_files": p.margin_files_ns, "finalise": p.finalise_ns,
-            "parity": p.parity_ns, "daily_summary": p.daily_summary_ns, "backup": p.backup_ns}[job]
+            "compaction": p.compaction_ns, "parity": p.parity_ns, "daily_summary": p.daily_summary_ns, "backup": p.backup_ns}[job]
 
 
 def runnable(job: str, day: date, state: State) -> bool:
@@ -178,9 +179,19 @@ def runnable(job: str, day: date, state: State) -> bool:
     return needs is None or state.done(needs, day)
 
 
+def session_in_progress(now_ns: int, cfg: dict | None = None) -> bool:
+    """True from the subscribe time to the unsubscribe time of a trading day: the recorder is running, and the
+    catch-up holds `HELD_DURING_SESSION` until the close (D-1's finalise before the open is the daemon's `before_open`)."""
+    day = timeutil.ns_to_ist(now_ns).date()
+    if not calendar.is_trading_day(SEGMENT, day):
+        return False
+    p = plan(day, cfg)
+    return p.subscribe_ns <= now_ns < p.unsubscribe_ns
+
+
 def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tuple[str, date]]:
     """Catch-up jobs whose start passed on a recent trading day and never completed: oldest day first, each day's in
-    `DAY_ORDER` (fetch, margin files, finalise, parity, summary), then the backup. The backup is one job for the
+    `DAY_ORDER` (fetch, margin files, finalise, compaction, parity, summary), then the backup. The backup is one job for the
     latest trading day whose 05:45 has passed (it copies whatever changed, so earlier days add nothing)."""
     out = []
     today = timeutil.ns_to_ist(now_ns).date()

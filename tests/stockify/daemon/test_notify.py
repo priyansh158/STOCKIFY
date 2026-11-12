@@ -63,6 +63,12 @@ class SendTests(NotifyTestBase):
     def test_the_shipped_channel_is_email(self):
         self.assertEqual(loader.load_json("notify.json")["channel"], "email")
 
+    def test_every_shipped_switch_is_off_so_nothing_is_sent_until_the_owner_turns_it_on(self):
+        """M5.8: "Default: off, log only"; A1 7.10 says the same."""
+        doc = loader.load_json("notify.json")
+        self.assertEqual(set(doc["events"].values()), {False})
+        self.assertEqual(sorted(doc["events"]), sorted(loader.NOTIFY_EVENTS))
+
     def test_default_is_log_only(self):
         self.configured(channel=None)
         sender = Recorder()

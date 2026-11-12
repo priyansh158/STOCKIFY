@@ -143,8 +143,10 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
-    """Jobs whose milestone is not built yet are logged, not faked. `now_ns` is the daemon clock's time (default:
-    the wall clock): the retry windows are judged against it."""
+    """Run one scheduler job for `day` (compaction, quality, nse_fetch, margin_files, prune, finalise, parity,
+    daily_summary, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
+    tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
+    windows are judged against it."""
     now_ns = timeutil.now_ns() if now_ns is None else now_ns
     if job == "compaction":
         from stockify.data import compact
@@ -419,7 +421,10 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
         """The scheduler's missed jobs, each at most once per its retry interval. Also what the wait for a Kite login
         runs on every poll (LCB 5.2): a missing login never holds up the earlier days' work."""
         now = clock.now_ns()
+        in_session = scheduler.session_in_progress(now)
         for job, d in scheduler.missed_jobs(now, state):
+            if in_session and job in scheduler.HELD_DURING_SESSION:
+                continue                                     # not beside the live recorder: after the close (M-2)
             if not scheduler.runnable(job, d, state):
                 continue                                     # parity and the summary wait for finalise
             last = tried.get((job, d))

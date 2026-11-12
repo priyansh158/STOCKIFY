@@ -95,6 +95,18 @@ class LoaderRuleTests(unittest.TestCase):
         with self.assertRaises(loader.ConfigError):
             loader.load_json("storage.json", self.dir)
 
+    def test_log_caps_in_storage_json_are_bounded(self):
+        good = json.loads((loader.CONFIG_DIR / "storage.json").read_text(encoding="utf-8"))
+        self.assertEqual((good["log_max_mb"], good["log_backups"]), (20, 5))
+        for key, bad in (("log_max_mb", 0), ("log_max_mb", 1001), ("log_max_mb", True), ("log_max_mb", "20"),
+                         ("log_backups", -1), ("log_backups", 101), ("log_backups", 1.5)):
+            with self.subTest(key=key, bad=bad):
+                (self.dir / "storage.json").write_text(json.dumps({**good, key: bad}), encoding="utf-8")
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("storage.json", self.dir)
+        (self.dir / "storage.json").write_text(json.dumps({**good, "log_backups": 0}), encoding="utf-8")
+        self.assertEqual(loader.load_json("storage.json", self.dir)["log_backups"], 0)
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")

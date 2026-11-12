@@ -27,7 +27,6 @@ import kite_client
 from stockify import paths
 
 log = logging.getLogger("stockify.daemon.token_watch")
-POLL_S = 30.0
 _FORBIDDEN = ("token", "secret", "key", "password", "bearer", "auth", "credential")
 _ALLOWED = ("rejected_token_mtime_ns",)     # the mtime of the rejected token file: an int or None, checked below
 _OPAQUE = re.compile(r"^[A-Za-z0-9_\-.=+/]{32,}$")     # one long run with no spaces: what a token or a secret looks like
@@ -111,7 +110,13 @@ def login_accepted() -> None:
     write_status(waiting_for_login=False, rejected_token_mtime_ns=None, sessions_paused=[])
 
 
-def wait_for_login(clock, stop: threading.Event, *, poll_s: float = POLL_S,  # noqa: ANN001
+def poll_s() -> float:
+    """How often the wait for a login looks again: paper.json `token_poll_s` (15 s, D-65), the only place it is set."""
+    from stockify.config import loader
+    return float(loader.load_json("paper.json")["token_poll_s"])
+
+
+def wait_for_login(clock, stop: threading.Event, *, poll_s: float | None = None,  # noqa: ANN001
                    token_fresh: Callable[[], bool], on_idle: Callable[[], None], until_ns: int | None) -> bool:
     """Wait until `login_ok(token_fresh)`, polling every `poll_s`; `on_idle` runs on every poll that finds none (the
     scheduler's catch-up jobs, the evening's work). True on a login; False when `stop` is set or `until_ns` passes."""
@@ -119,7 +124,8 @@ def wait_for_login(clock, stop: threading.Event, *, poll_s: float = POLL_S,  # n
         return True
     begin_wait(clock.now_ns())
     log.warning("waiting for a Kite login newer than the last rejected token (log in at /portfolio)")
-    step = max(1, int(poll_s * 1_000_000_000))
+    every = globals()["poll_s"]() if poll_s is None else poll_s
+    step = max(1, int(every * 1_000_000_000))
     while True:
         try:
             on_idle()
@@ -135,5 +141,5 @@ def wait_for_login(clock, stop: threading.Event, *, poll_s: float = POLL_S,  # n
             return True
 
 
-__all__ = ["POLL_S", "begin_wait", "login_accepted", "login_ok", "read_status", "token_mtime_ns", "wait_for_login",
+__all__ = ["begin_wait", "login_accepted", "login_ok", "read_status", "token_mtime_ns", "poll_s", "wait_for_login",
            "write_status"]

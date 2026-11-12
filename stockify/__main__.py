@@ -1082,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
         s.set_defaults(func=None, milestone=milestone)
 
     args = p.parse_args(argv)
-    log.setup(args.verbose)
+    log.setup(args.verbose, file="stockify-daemon.log" if args.command == "daemon" else None)
     if args.func is None:
         print(f"stockify {args.command}: not implemented yet (planned for {args.milestone})",
               file=sys.stderr)

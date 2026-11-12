@@ -2,11 +2,11 @@
   "schema": "stockify.notify/1",
   "channel": "email",
   "events": {
-    "login_needed": true,
-    "session_error": true,
-    "parity_failure": true,
-    "recorder_stall": true,
-    "disk_low": true,
-    "daily_summary": true
+    "login_needed": false,
+    "session_error": false,
+    "parity_failure": false,
+    "recorder_stall": false,
+    "disk_low": false,
+    "daily_summary": false
   }
 }

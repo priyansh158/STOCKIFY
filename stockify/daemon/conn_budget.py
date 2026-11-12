@@ -1,9 +1,9 @@
 """The KiteTicker connection budget (M5.14; K-1, D-20; LCB 5.1).
 
 Kite allows `kite_limits.json` → `ws_max_connections` (3) websocket connections per API key. Normal operation uses
-two: the API's (UI prices, role `api`) and the daemon's (role `daemon`); one stays spare. A process that opens a
+two: the API's (UI prices, role `api`) and the daemon's (role `daemon`); one stays spare, and only the daemon may use it: any other role is refused once `limit - 1` tickets are live, so the recorder is never refused because of the API or a dev ticket. A process that opens a
 live ticker first takes a ticket, `$LAB/ticker_connections/<role>-<pid>.json` = `{pid, created, role}`.
-`register` refuses (BudgetExceeded) when the live tickets already number `limit - 1` or more. A ticket whose
+`register` refuses (BudgetExceeded) when the live tickets already number `limit - 1` or more (`limit` for the daemon). A ticket whose
 process has gone (`proc.is_alive(pid, created)` is false, or the file is unreadable) is removed first, so a killed
 process never holds the budget. Development runs use `--ticker replay:...`, which takes no ticket.
 """
@@ -104,10 +104,15 @@ def register(role: str, *, limit: int) -> Ticket:
             else:
                 log.info("removing the ticket of a ticker that is gone: %s", path.name)
                 path.unlink(missing_ok=True)
-        if len(live) >= limit - 1:
+        # The recorder has priority (differential review M4): every other role stops one short of the limit, so the
+        # recorder's ticket always fits, on the spare when the API and a dev run hold two.
+        room = limit if role == "daemon" else limit - 1
+        if len(live) >= room:
             raise BudgetExceeded(f"{len(live)} live KiteTicker connection(s) already ({', '.join(live)}) of "
                                  f"{limit}: refusing a {role} connection so one stays spare (M5.14); "
                                  "use --ticker replay:... for development")
+        if role == "daemon" and len(live) >= limit - 1:
+            log.warning("the recorder takes the spare KiteTicker connection (%s live)", ", ".join(live))
         tmp = own.with_suffix(".tmp")
         tmp.write_text(json.dumps({"pid": pid, "created": proc.creation_time(pid), "role": role}),
                        encoding="utf-8")

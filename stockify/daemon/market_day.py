@@ -165,14 +165,16 @@ def real_state_dir() -> Path:
 
 
 def check_replay_sandbox() -> None:
-    """A replay of a recorded day writes paper sessions (journals, store rows, timelines) as if the day were today.
-    Against the real lab that would put a past day into the owner's real sessions, so it is refused unless the
-    state folder is somewhere else (tests, or `--replay-sandbox DIR`)."""
+    """A replay of a recorded day writes paper sessions (journals, store rows, timelines) as if the day were today, and
+    even with no sessions it writes `recorder_status` rows and `daemon_status.json`, stamped with the replayed times
+    (a real run reads them). Against the real lab that is refused unless the state folder is somewhere else (tests,
+    or `--replay-sandbox DIR`)."""
     import stockify_paths
     here = stockify_paths.state_dir().resolve()
     if any(here == d.resolve() for d in real_state_dirs()):
-        raise ReplayRefused("a replay will not run paper sessions in the real lab's store: give --replay-sandbox "
-                            "<dir> (an empty directory elsewhere), or run the recorder alone with --sessions none")
+        raise ReplayRefused("a replay will not run in the real lab's store (sessions, status rows and the daemon "
+                            "status file would carry replayed times): give --replay-sandbox <dir> (an empty "
+                            "directory elsewhere)")
 
 
 def choose_sessions(session_ids: list[str] | None) -> list[dict]:
@@ -480,13 +482,13 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                    stop: threading.Event | None = None, power=None,  # noqa: ANN001
                    session_ids: list[str] | None = None,
                    token_fresh: Callable[[], bool] | None = None, clock=None,  # noqa: ANN001
-                   on_idle: Callable[[], None] | None = None, login_poll_s: float = token_watch.POLL_S,
+                   on_idle: Callable[[], None] | None = None, login_poll_s: float | None = None,
                    before_open: Callable[[date], None] | None = None) -> int:
     """Record one IST trading day and run the chosen paper sessions on it (`session_ids`: None = every armed,
     running or paused session, [] = none, which is the recorder alone). Returns an exit code from `exitcodes`.
 
     A live run with no usable Kite login waits in the process (`token_watch.wait_for_login`, polling every
-    `login_poll_s`, running `on_idle` each time) until the unsubscribe time; a login that never comes ends it with
+    `login_poll_s` (default: paper.json `token_poll_s`), running `on_idle` each time) until the unsubscribe time; a login that never comes ends it with
     TOKEN_EXPIRED. A usable login is a fresh token that is not the file Kite last rejected. `clock` is for a live
     run's tests. `faults` need the replay ticker: with the live one they are refused (`LiveFaultsRefused`).
 
@@ -517,8 +519,7 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
 
     if replay:
         from stockify.daemon.replay_ticker import open_replay, parse_spec
-        if session_ids != []:
-            check_replay_sandbox()
+        check_replay_sandbox()                  # sessions or not: a replay also writes status rows and daemon_status.json
         day, _ = parse_spec(ticker_spec)
         if token_fresh is not None and token_watch.read_status().get("waiting_for_login"):
             if not token_watch.login_ok(token_fresh):
@@ -868,6 +869,7 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
         # paused for it, journal first, then the store (LCB 5.2). No process_stop: the gap already says why.
         if session.exit_code == exitcodes.TOKEN_EXPIRED and sessions and dispatcher is not None:
             try:
+                dispatcher.journal_token_expired_start()          # the gap start never depends on room in the queue
                 paused = dispatcher.pause_for_token_expiry(clock.now_ns())
             except Exception:  # noqa: BLE001
                 log.exception("pausing the sessions for the token expiry failed")
