@@ -94,7 +94,7 @@ def run(config, *, run_id: str | None = None) -> RunResult:  # noqa: ANN001
     cfg = runconfig.load(config)
     reason = holdout.enforce(cfg)                       # the locked holdout (M6.6): before any pack is built
     b = bundle_mod.resolve_bundle(cfg)
-    holdout.enforce_bundle(cfg, b)
+    reason = holdout.enforce_bundle(cfg, b) or reason      # a bundle that reaches it needs the reason too
     if run_id is None:
         digest = hashlib.sha256(bundle_mod.dumps(b).encode()).hexdigest()[:12]
         run_id = f"{cfg['name']}-{digest}"

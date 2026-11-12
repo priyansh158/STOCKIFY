@@ -287,6 +287,31 @@ class LaunchTests(BundleTest):
                 with self.assertRaises(RuntimeError):
                     runs.rerun("old-1", unlock_holdout="second look")
 
+    def test_a_rerun_whose_bundle_reaches_the_holdout_logs_one_unlock(self):
+        src = paths.run_path("old-2")
+        src.mkdir(parents=True)
+        for name, text in (("bundle.json", "{}"), ("manifest.json", json.dumps({"engine": "oracle"})),
+                           ("run.json", json.dumps(self.locked_cfg()))):
+            (src / name).write_text(text, encoding="utf-8")
+        fake = {"days": [{"date": "2025-12-31"}], "packs": []}
+        with holding("2025-12-30"), mock.patch("stockify.oracle.sod_state.loads_bundle", return_value=fake):
+            with mock.patch.object(holdout, "enforce", return_value=None):      # the config ends before the line
+                with self.assertRaises(runs.RunFailed):                         # the fake bundle cannot run
+                    runs.rerun("old-2", unlock_holdout="second look")
+        rows = store.holdout_unlock_rows()
+        self.assertEqual([r["reason"] for r in rows], ["second look"])
+        self.assertTrue(rows[0]["run_id"].startswith("old-2-rerun"))
+
+    def test_an_oracle_run_whose_bundle_reaches_the_holdout_logs_one_unlock(self):
+        from stockify import oracle
+        fake = {"days": [{"date": "2025-12-31"}], "packs": []}
+        with holding("2025-12-30"), mock.patch("stockify.bundle.resolve_bundle", return_value=fake):
+            with mock.patch.object(holdout, "enforce", return_value=None):
+                with mock.patch.object(oracle, "run_bundle", side_effect=RuntimeError("stop")):
+                    with self.assertRaises(RuntimeError):
+                        oracle.run(self.locked_cfg(unlock_holdout="late bundle"))
+        self.assertEqual([r["reason"] for r in store.holdout_unlock_rows()], ["late bundle"])
+
 
 class ReasonCharsTests(unittest.TestCase):
     def test_a_reason_needs_three_letters_or_digits(self):

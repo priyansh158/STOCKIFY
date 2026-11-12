@@ -326,7 +326,7 @@ def rerun(run_id: str, *, unlock_holdout: str | None = None) -> tuple[str, bool]
         bundle = sod_state.loads_bundle(bundle_text)      # its sod_state is checked like a state text (depth, ints)
     except sod_state.StateError as e:
         raise RunFailed(run_id, str(e)) from e
-    holdout.enforce_bundle(cfg, bundle)                   # the archived bundle's own days
+    reason = holdout.enforce_bundle(cfg, bundle) or reason    # the archived bundle's own days; logged below
     pack_paths = [paths.lab_dir() / p["path"] for p in bundle["packs"]]
     missing = [str(p) for p in pack_paths if not p.exists()]
     if missing:
