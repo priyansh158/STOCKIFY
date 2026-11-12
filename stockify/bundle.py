@@ -302,6 +302,13 @@ def _file_sha(path: Path) -> str:
     return h.hexdigest()
 
 
+def dropped_frames_labels(pack_rows: list[dict]) -> list[str]:
+    """`data:dropped_frames=<n>` when a pack's day lost frames to the recorder's full queue: the run is labelled, and
+    nothing is filled in (I-7)."""
+    frames = sum(p.get("recorder_gaps", {}).get("frames", 0) for p in pack_rows)
+    return [f"data:dropped_frames={frames}"] if frames else []
+
+
 def resolve_packs(cfg: dict) -> list[dict]:
     from stockify.data import packs
     out = []
@@ -321,6 +328,8 @@ def resolve_packs(cfg: dict) -> list[dict]:
         row = {"sha256": sha, "path": f"packs/{sha}.evt", "price_basis": m["price_basis"], "spec": m["spec"]}
         if m.get("gaps", {}).get("count"):          # only a pack with gaps says so: other bundles stay as they were
             row["gaps"] = m["gaps"]
+        if m.get("recorder_gaps"):                  # frames the recorder dropped on a full queue (RM 5.3)
+            row["recorder_gaps"] = m["recorder_gaps"]
         out.append(row)
     bases = {p["price_basis"] for p in out}
     if len(bases) > 1:
@@ -685,6 +694,7 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
     gap_days = {d for p in pack_rows for d in p.get("gaps", {}).get("days", {})}
     if gap_days:                                 # CAM 5.3: instruments with no data on a day; nothing is filled in (I-7)
         labels.append(f"data:gaps={len(gap_days)}")
+    labels.extend(dropped_frames_labels(pack_rows))
     if cfg["fill_model"]["kind"] == "snapshot_ltp":
         labels.append("fill:approximate")
     unverified = _charge_rows_unverified(charges, instruments_rows)

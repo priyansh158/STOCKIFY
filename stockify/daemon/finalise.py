@@ -127,9 +127,14 @@ def _split(body: bytes) -> list[bytes]:
 def replay_into(engine, journal_path: Path, batch_records: int = 2000) -> int:  # noqa: ANN001
     """Push a journal's whole records (never a torn tail) to `engine`, `batch_records` at a time; returns how many.
     The journal is only read."""
+    _, body, _ = journal.read(Path(journal_path))
+    return push_records(engine, body, batch_records)
+
+
+def push_records(engine, body: bytes, batch_records: int = 2000) -> int:  # noqa: ANN001
+    """Push whole records (a journal's body, or a pack's after its header) to `engine`; returns how many."""
     if batch_records < 1:
         raise ValueError("batch_records must be at least 1")
-    _, body, _ = journal.read(Path(journal_path))
     records = _split(body)
     for i in range(0, len(records), batch_records):
         engine.push(b"".join(records[i:i + batch_records]))

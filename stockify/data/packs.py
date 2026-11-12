@@ -331,6 +331,8 @@ class _Build:
     first_day: dict = field(default_factory=dict)
     counter: int = 0
     gaps: dict = field(default_factory=dict)         # IST day -> instrument ids with no event that day (M-4)
+    dropped: list = field(default_factory=list)      # the recorder's `queue_full` spans (RM 5.3); not in the evt bytes
+    immutable: bool = False                          # read a landing file as `mode=ro&immutable=1` (nothing writes it)
 
     def note_gaps(self, day: date | str, wanted: set[int], seen: set[int]) -> None:
         """Record the instruments a day asked for and got no event for. Nothing is made up for them (I-7)."""
@@ -341,6 +343,23 @@ class _Build:
     def gaps_manifest(self) -> dict:
         days = dict(sorted(self.gaps.items()))
         return {"count": sum(len(v) for v in days.values()), "days": days}
+
+    def note_dropped(self, day: date, tick_day) -> None:  # noqa: ANN001
+        """The frames the recorder's queue refused on `day`: the pack has no record for them (the format has no code),
+        so the manifest names them, and a run over the pack is labelled (`data:dropped_frames`). A landing file from
+        before migration 0002 has no frame columns, so they are read with `.get`."""
+        for g in tick_day.gaps():
+            if g["reason"] in RECORDER_ONLY_GAP_REASONS:
+                self.dropped.append({"day": day.isoformat(), "reason": g["reason"], "start_ns": g["start_ns"],
+                                     "end_ns": g["end_ns"], "first_frame_no": g.get("first_frame_no"),
+                                     "last_frame_no": g.get("last_frame_no"), "frames": g.get("frames")})
+
+    def recorder_gaps_manifest(self) -> dict | None:
+        """None when nothing was dropped, so a manifest without drops has no such key and is as it always was."""
+        if not self.dropped:
+            return None
+        spans = sorted(self.dropped, key=lambda s: (s["day"], s["start_ns"] or 0, s["first_frame_no"] or 0))
+        return {"frames": sum(s["frames"] or 0 for s in spans), "spans": spans}
 
     def add(self, t: int, rank: int, iid: int, rec: bytes, src_seq: int | None = None) -> None:
         if src_seq is None:
@@ -467,7 +486,7 @@ def _gap_events(b: _Build, tick_day, ids: set[int]) -> None:  # noqa: ANN001
 def _ticks_day(b: _Build, day: date):  # noqa: ANN202
     """(sorted key/bytes iterator, t_min, t_max) for one recorded day."""
     from stockify.data import ticks
-    tick_day = ticks.open_day(day)
+    tick_day = ticks.open_day(day, immutable=b.immutable)
     if tick_day is None:
         if b.spec.get("skip_missing_days"):
             return None
@@ -515,6 +534,7 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
         t_hi = t if t_hi is None else max(t_hi, t)
         out.append(((t, 4, p["seq"], p["instrument_id"]), rec))
     b.note_gaps(day, ids, seen_ids)
+    b.note_dropped(day, tick_day)
     b.events = []
     _refdata_events(b, ids, day, learned)
     _settle_events(b, ids, day)
@@ -695,8 +715,9 @@ def clean_stale_tmp(max_age_s: int = STALE_AFTER_S) -> list[str]:
     return removed
 
 
-def build(spec: dict) -> str:
-    """Write the pack and its manifest; return the pack's SHA-256."""
+def build(spec: dict, *, immutable: bool = False) -> str:
+    """Write the pack and its manifest; return the pack's SHA-256. `immutable` reads a landing file as
+    `mode=ro&immutable=1` (for a file nothing is writing); it is no part of the spec and changes nothing in the pack."""
     try:
         clean_stale_tmp()
     except OSError:
@@ -704,7 +725,7 @@ def build(spec: dict) -> str:
     spec = _normalise(spec)
     start, end = date.fromisoformat(spec["from"]), date.fromisoformat(spec["to"])
     basis = "adjusted" if spec["dataset"] == "bars" else "raw"
-    b = _Build(spec, basis)
+    b = _Build(spec, basis, immutable=immutable)
     flags = FLAG_CLOCK if int(spec.get("clock_cadence_ms", 0)) > 0 else 0
     folder = paths.packs_dir()
     tmp = folder / f".building-{os.getpid()}-{secrets.token_hex(6)}.evt"   # unique per builder, threads too
@@ -755,6 +776,8 @@ def build(spec: dict) -> str:
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
                 "gaps": b.gaps_manifest(), "volume_unit": "units",
                 "bytes": _refused_retry(lambda p: p.stat().st_size, target)}
+    if b.recorder_gaps_manifest() is not None:
+        manifest["recorder_gaps"] = b.recorder_gaps_manifest()
     _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest
 
@@ -812,7 +835,8 @@ def _publish(tmp: Path, target: Path, digest: str) -> None:
 _WALL_CLOCK_FIELDS = frozenset({"created_ns", "built_ns", "duration_ms", "pid", "host"})
 # Provenance: where the records were read from (landing or archive, P-05). The same pack can be rebuilt from
 # another source (after retention moves a day to the archive); the manifest then follows its latest build.
-_PROVENANCE_FIELDS = frozenset({"sources"})
+# `recorder_gaps` is provenance too: the same evt bytes come from a landing file that lost frames or from one that did not.
+_PROVENANCE_FIELDS = frozenset({"sources", "recorder_gaps"})
 
 
 def _same_manifest(existing: str, ours: str, ignore: frozenset[str] = _WALL_CLOCK_FIELDS) -> bool | None:

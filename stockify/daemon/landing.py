@@ -24,11 +24,14 @@ _INSERT = (f"INSERT INTO packets ({', '.join(PACKET_COLUMNS)}) "
 
 
 class LandingDB:
-    def __init__(self, day: date, path: Path | None = None, *, readonly: bool = False):
+    def __init__(self, day: date, path: Path | None = None, *, readonly: bool = False, immutable: bool = False):
+        """`immutable` (a read-only open of a file nothing is writing, as the calendar audit does, D-75) makes and
+        touches no `-wal` or `-shm` beside the file; it reads the main file alone."""
         self.day = day
         self.path = path or paths.ticks_landing_file(day)
         if readonly:
-            self.conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True,
+            mode = "mode=ro&immutable=1" if immutable else "mode=ro"
+            self.conn = sqlite3.connect(f"file:{self.path.as_posix()}?{mode}", uri=True,
                                         check_same_thread=False, isolation_level=None)
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -624,6 +624,45 @@ def _cmd_parity_journal(args) -> int:
     return 0
 
 
+def _cmd_parity_recorder(args) -> int:
+    """RD 5.4: re-run a finalised session-day on the recorder's data and report how far it drifts from the live
+    day (reads only; never pauses a session). Exit 0: reported, whatever the drift; 2: bad arguments or an unknown
+    session; 3: nothing checked (not finalised, not recorded, or the landing file is busy); 4: could not run."""
+    from datetime import date
+    from stockify import parity, store
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD; got {args.date!r}", file=sys.stderr)
+        return 2
+    if store.get_session(args.session) is None:
+        print(f"no such session: {args.session!r}", file=sys.stderr)
+        return 2
+    try:
+        result = parity.recorder_parity(args.session, day)
+    except Exception as e:  # noqa: BLE001 — a locked database or an engine that is not built is not a difference
+        print(f"parity: could not run: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 4
+    if result.outcome == "skipped":
+        print(f"skipped: {result.summary['reason']}", file=sys.stderr)
+        return 3
+    s = result.summary
+    print(f"recorder parity {args.session} {args.date}: fills {s['fills_live']} live, {s['fills_recorder']} recorder, "
+          f"{s['fills_matched']} matched; NAV differs by {s['pnl_diff_paise']} paise (recorder less live)")
+    first = s["first_divergence"]
+    if first is not None:
+        print(f"first divergence at {s['first_divergence_ns']} ns, fill #{first['index']}: live "
+              f"{json.dumps(first['live'], sort_keys=True)} / recorder {json.dumps(first['recorder'], sort_keys=True)}")
+    if s["explained_by"]:
+        known = s["known_differences"]
+        print(f"explained by: {', '.join(s['explained_by'])} (queue_full frames {known['queue_full']['frames']}, "
+              f"journaled margin answers {known['journal_only']['margin_requirement']}, "
+              f"strategy pauses {known['journal_only']['strategy_control']})")
+    elif first is not None or s["pnl_diff_paise"]:
+        print("unexplained: no dropped frames and no journal-only record to account for it")
+    return 0
+
+
 def _cmd_compare_strategies(args) -> int:
     from stockify import runs
     from stockify.tools import compare_strategies as cs
@@ -881,6 +920,12 @@ def main(argv: list[str] | None = None) -> int:
     pj.add_argument("--session", required=True, help="session id")
     pj.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
     pj.set_defaults(func=_cmd_parity_journal)
+    pr = pasub.add_parser("recorder", help="re-run a finalised session-day on the recorder's data and report the drift "
+                                           "from the live day (reads only, never pauses; exit 0 reported, 3 nothing "
+                                           "checked, 4 could not run)")
+    pr.add_argument("--session", required=True, help="session id")
+    pr.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
+    pr.set_defaults(func=_cmd_parity_recorder)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)

@@ -228,3 +228,182 @@ def _record(result: ParityResult) -> ParityResult:
         store.add_timeline(sid, "parity", detail, wall_ns=now, engine_ns=None)
     store.put_parity_result(sid, d, KIND, "fail", result.summary, created_ns=now)      # last: a rerun still pauses
     return result
+
+
+# ── Recorder parity (RD 5.4; M5.10 report) ───────────────────────────────────────────────────────────────────────
+#
+#     recorder_parity("orb", day)     # -> ParityResult(kind="recorder", outcome="pass" | "skipped", summary=...)
+#
+# The finalised day is run again on a pack built from what the recorder kept (landing, or the archive once compacted),
+# over the ids of the day's own bundle with a 1 s CLOCK: the same day bundle (its `sod_state` applied by the engine's
+# constructor), the same strategy, a fresh engine. Its fills and NAV are set against the stored live ones. How far a
+# backtest over recorded data drifts from the live session is the answer, not a verdict: this report NEVER fails and
+# NEVER pauses a session, and what it stores is a `pass` with the numbers.
+#
+# Differences it can already explain are named so that they are not mistaken for bugs: frames the recorder dropped on
+# a full queue (`queue_full` gap rows, which no pack can carry), and what only the journal holds (a journaled Kite
+# margin answer, a strategy pause). `unexplained` is a difference with none of these to blame.
+#
+# It only reads the recorder's files: an archive is never written after compaction, and a landing file is opened
+# `mode=ro&immutable=1` and only when its `-wal` is empty; a landing file still being written is "busy" and skipped
+# (D-75, as the calendar audit). Skipped (nothing stored): an unknown session, a day not finalised, a day with no
+# recording or a busy landing file, or a run that could not be made (no pack, a bundle the engine refuses).
+
+RECORDER_KIND = "recorder"
+CLOCK_MS = 1000                                  # the live day's CLOCK cadence (paper.json clock_every_s)
+_FILL_KEY = ("t_ns", "instrument_id", "side", "qty", "price_paise")
+_NO_JOURNAL_ONLY = {"margin_requirement": 0, "strategy_control": 0}
+
+
+def _open_ticks(day: date):  # noqa: ANN202
+    """The day's recorded ticks (archive first), or None; a landing file is opened immutable."""
+    from stockify.data import ticks
+    return ticks.open_day(day, immutable=True)
+
+
+def _queue_full(gaps: list[dict]) -> dict:
+    """The `queue_full` gap rows as spans, and how many frames they name. A landing file from before migration 0002
+    has no frame columns: those are read with `.get`, and a span that names no frames adds none."""
+    spans = [{"start_ns": g.get("start_ns"), "end_ns": g.get("end_ns"), "first_frame_no": g.get("first_frame_no"),
+              "last_frame_no": g.get("last_frame_no"), "frames": g.get("frames")}
+             for g in gaps if g.get("reason") == "queue_full"]
+    spans.sort(key=lambda s: (s["start_ns"] or 0, s["first_frame_no"] or 0))
+    return {"spans": spans, "frames": sum(s["frames"] or 0 for s in spans)}
+
+
+def _journal_only(jpath: Path) -> dict:
+    """What the journal holds that no pack can: journaled margin answers, and strategy pauses (the opening `enabled`
+    record is not a difference)."""
+    from stockify.data import packs
+    counts = dict(_NO_JOURNAL_ONLY)
+    _, body, _ = journal.read(jpath)
+    off = 0
+    while off < len(body):
+        rec, off = packs.decode(body, off)
+        if rec["kind"] != "REFDATA":
+            continue
+        if rec["subtype"] == "margin_requirement":
+            counts["margin_requirement"] += 1
+        elif rec["subtype"] == "strategy_control" and not rec["payload"].get("enabled", True):
+            counts["strategy_control"] += 1
+    return counts
+
+
+def _fills(rows) -> list[dict]:  # noqa: ANN001
+    """Fill rows in time order, normalised the way the stores compare them."""
+    return sorted((_norm(r) for r in rows), key=lambda r: (r["t_ns"], r["fill_id"]))
+
+
+def _first_fill_divergence(live: list[dict], twin: list[dict]) -> dict | None:
+    for i in range(max(len(live), len(twin))):
+        a = live[i] if i < len(live) else None
+        b = twin[i] if i < len(twin) else None
+        if a is None or b is None or [a[k] for k in _FILL_KEY] != [b[k] for k in _FILL_KEY]:
+            return {"index": i, "live": a, "recorder": b}
+    return None
+
+
+def _recorder_run(session_id: str, day: date, sha: str) -> tuple[list[dict], int]:
+    """(fills, NAV) of a fresh engine run over the pack. Writes only a temp folder."""
+    from stockify.data import packs
+    d = day.isoformat()
+    engine = finalise.fresh_engine(session_id, day)
+    try:
+        finalise.push_records(engine, packs.read_bytes(packs.pack_path(sha))[packs.HEADER.size:])
+        engine.finish()
+        with tempfile.TemporaryDirectory(prefix="stockify-parity-") as tmp:
+            engine.write_artifacts(tmp)
+            outputs = engine.drain_outputs()
+            equity = [r for r in _csv(Path(tmp), "equity.csv") if r["trade_date"] == d]
+    finally:
+        engine = None
+    if len(equity) != 1:
+        raise finalise.FinaliseError(f"the engine wrote {len(equity)} equity rows for {d}, not one")
+    return _fills(outputs.get("fills", ())), int(equity[0]["nav_paise"])
+
+
+def _matched(live: list[dict], twin: list[dict]) -> int:
+    """How many live fills have an equal fill (time, instrument, side, quantity, price) on the other side, each used once."""
+    left: dict[tuple, int] = {}
+    for r in twin:
+        k = tuple(r[f] for f in _FILL_KEY)
+        left[k] = left.get(k, 0) + 1
+    n = 0
+    for r in live:
+        k = tuple(r[f] for f in _FILL_KEY)
+        if left.get(k):
+            left[k] -= 1
+            n += 1
+    return n
+
+
+def recorder_parity(session_id: str, day: date) -> ParityResult:
+    """Run the finalised day again on the recorder's data and report the drift (see the section note above)."""
+    from stockify.data import packs, ticks
+
+    def skipped(why: str) -> ParityResult:
+        return ParityResult(session_id, day, RECORDER_KIND, "skipped", {"reason": why})
+
+    d = day.isoformat()
+    if store.get_session(session_id) is None:
+        return skipped(f"no such session: {session_id!r}")
+    row = store.get_session_day(session_id, d)
+    if row is None or row["status"] != "finalised":
+        state = "no such day" if row is None else (row["status"] or "open")
+        return skipped(f"{d} is not finalised ({state})")
+    if not ticks.has_day(day):
+        return skipped(f"{d} was not recorded: no landing file and no archive")
+    busy = ticks.landing_busy(day)
+    if busy:
+        return skipped(busy)
+    jpath = paths.journal_file(session_id, day)
+    if not paths.day_bundle_file(session_id, day).exists():
+        return skipped(f"{session_id} has no bundle for {d}")
+    try:
+        ids = sorted(finalise._bundle_ids(session_id, day))
+        tick_day = _open_ticks(day)
+        if tick_day is None:
+            return skipped(f"{d} was not recorded: no landing file and no archive")
+        try:
+            queue_full = _queue_full(tick_day.gaps())
+        finally:
+            tick_day.close()
+        sha = packs.build({"dataset": "ticks", "from": d, "to": d, "instruments": [{"ids": ids}],
+                           "clock_cadence_ms": CLOCK_MS}, immutable=True)
+        twin_fills, twin_nav = _recorder_run(session_id, day, sha)
+        journal_only = _journal_only(jpath) if jpath.exists() else dict(_NO_JOURNAL_ONLY)
+    except (packs.PackError, finalise.FinaliseError, journal.JournalError, SessionDayError, *_run_error()) as e:
+        return skipped(f"the recorder's run could not be made: {type(e).__name__}: {e}")
+    busy = ticks.landing_busy(day)                  # an immutable read takes no lock: a writer may have started under it
+    if busy:
+        return skipped(busy)
+
+    live_fills = _fills(store.session_day_rows(session_id, d)["fills"].values())
+    first = _first_fill_divergence(live_fills, twin_fills)
+    pnl_diff = twin_nav - store.session_day_end(session_id, d)["equity"]["nav_paise"]
+    explained_by = [name for name, n in (("queue_full", len(queue_full["spans"])),
+                                         ("margin_requirement", journal_only["margin_requirement"]),
+                                         ("strategy_control", journal_only["strategy_control"])) if n]
+    summary = {"day": d, "fills_live": len(live_fills), "fills_recorder": len(twin_fills),
+               "fills_matched": _matched(live_fills, twin_fills),
+               "pnl_diff_paise": pnl_diff,                         # the recorder run's NAV less the live NAV
+               "first_divergence_ns": None if first is None else min(
+                   r["t_ns"] for r in (first["live"], first["recorder"]) if r is not None),
+               "first_divergence": first,
+               "known_differences": {"queue_full": queue_full, "journal_only": journal_only},
+               "explained_by": explained_by,
+               "unexplained": bool((first is not None or pnl_diff != 0) and not explained_by),
+               "pack": sha}
+    return _record_report(ParityResult(session_id, day, RECORDER_KIND, "pass", summary))
+
+
+def _record_report(result: ParityResult) -> ParityResult:
+    sid, d, s = result.session_id, result.day.isoformat(), result.summary
+    now = timeutil.now_ns()
+    log.info("recorder parity %s %s: fills %s live, %s recorder, %s matched; NAV diff %s paise%s", sid, d,
+             s["fills_live"], s["fills_recorder"], s["fills_matched"], s["pnl_diff_paise"],
+             " (unexplained)" if s["unexplained"] else "")
+    detail = {"day": d, "kind": RECORDER_KIND, "outcome": "pass", **{k: v for k, v in s.items() if k != "day"}}
+    store.add_timeline(sid, "parity", detail, wall_ns=now, engine_ns=None)
+    store.put_parity_result(sid, d, RECORDER_KIND, "pass", s, created_ns=now)
+    return result
