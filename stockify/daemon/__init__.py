@@ -161,6 +161,19 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         state.mark(job, day)
 
 
+def _daily_summary(day: date, state) -> None:  # noqa: ANN001
+    """Tell the owner what the day's sessions did, once, when at least one has finalised (finalising waits for NSE's
+    settlement files, so this can be a later pass). A failure here is logged and never stops the daemon."""
+    if state.done("daily_summary", day):
+        return
+    from stockify.daemon import notify
+    try:
+        if notify.send_daily_summary(day):
+            state.mark("daily_summary", day)
+    except Exception:  # noqa: BLE001
+        log.exception("the daily summary failed")
+
+
 def _kite_token_fresh() -> bool:
     import kite_client
     return kite_client.is_authenticated()
@@ -220,6 +233,7 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
             for job in ("compaction", "quality", "prune"):
                 if not state.done(job, today):
                     _run_job(job, today, state)
+            _daily_summary(today, state)
         else:
             day = scheduler.session_day(now)
             p = scheduler.plan(day)

@@ -5,7 +5,7 @@ each trading day the daemon emails the owner at the times in
 `schedule.json` → `login_reminders_ist` (06:05 and 08:00 IST; 16:35 and 18:30
 in Seattle) while the token is still stale. Each reminder is sent at most once
 per trade date (scheduler state). Email uses the geo monitor's SMTP settings;
-without them the reminder is only logged.
+without them the reminder is only logged. It goes through `stockify.daemon.notify` (RW 5.1).
 """
 from __future__ import annotations
 
@@ -45,16 +45,10 @@ def message(day: date, cfg: dict) -> tuple[str, str]:
 
 
 def send_default(subject: str, body: str) -> str | None:
-    from geo_monitor import email_notify
-    if not email_notify.email_configured():
-        log.warning("login reminder (email not configured): %s", subject)
-        return "email not configured"
-    try:
-        email_notify.send_email(subject, body)
-        return None
-    except Exception as e:
-        log.error("login reminder email failed: %s", e)
-        return str(e)
+    """Through the notifier: the `login_needed` switch and channel apply. With no channel chosen yet the reminder still
+    goes by email when the geo monitor's SMTP settings exist (`legacy_email`): it must not go quiet."""
+    from stockify.daemon import notify
+    return notify.send("login_needed", subject, body, legacy_email=True)
 
 
 def wait_with_reminders(clock, stop, until_ns: int, day: date, state, cfg: dict, *,  # noqa: ANN001

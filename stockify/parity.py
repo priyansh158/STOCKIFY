@@ -37,7 +37,7 @@ from datetime import date
 from pathlib import Path
 
 from stockify import paths, store, timeutil
-from stockify.daemon import finalise, journal, lifecycle
+from stockify.daemon import finalise, journal, lifecycle, notify
 from stockify.daemon.session_day import SessionDayError
 
 log = logging.getLogger("stockify.parity")
@@ -227,6 +227,10 @@ def _record(result: ParityResult) -> ParityResult:
         detail = {"day": d, "kind": KIND, "outcome": "fail", "pause": how,
                   **{k: v for k, v in result.summary.items() if k != "day"}}
         store.add_timeline(sid, "parity", detail, wall_ns=now, engine_ns=None)
+        notify.session_event("parity_failure", f"Session {sid}: the {d} results do not match a replay of the journal",
+                             {"session": sid, "day": d, "first_difference": result.difference_line,
+                              "state": "the session is paused (parity_failure); nothing was repaired"},
+                             key=f"parity:{sid}:{d}:{digest}")
     store.put_parity_result(sid, d, KIND, "fail", result.summary, created_ns=now)      # last: a rerun still pauses
     return result
 

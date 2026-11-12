@@ -413,6 +413,11 @@ class Dispatcher:
             self.stats.alarms.append(alarm)
         if first:
             self._timeline(sid, "session_failed", {"error": repr(e)}, t)
+            from stockify.daemon import notify              # only enqueues: this runs on the engine's thread
+            notify.session_event("session_error", f"Session {sid} failed for the day",
+                                 {"session": sid, "error_type": type(e).__name__,
+                                  "what_to_do": "replay the day from its journal to recover; the log has the detail"},
+                                 key=f"session_failed:{sid}:{t}")
             if self.on_failed is not None:
                 try:
                     self.on_failed(sid)                # its pins are released: a failed day needs no market data

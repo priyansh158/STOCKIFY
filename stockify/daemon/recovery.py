@@ -55,7 +55,7 @@ from datetime import date
 from pathlib import Path
 
 from stockify import paths, store
-from stockify.daemon import journal, lifecycle
+from stockify.daemon import journal, lifecycle, notify
 from stockify.daemon.clock import Clock, WallClock
 from stockify.daemon.session_day import SessionDay, SessionDayError
 from stockify.data import packs
@@ -267,6 +267,9 @@ def _record(sd: SessionDay, result: RecoveryResult, diff: _Diff, now: int) -> No
         _timeline(sid, "recovered", summary, now)
         _timeline(sid, "determinism_mismatch", {"session_id": sid, "day": d, "digest": digest, "repair": REPAIR,
                                                 **diff.mismatch}, now)
+        notify.session_event("parity_failure", f"Session {sid}: the {d} stored rows disagree with the journal",
+                             {"session": sid, "day": d, "first_difference": result.mismatch, "to_repair": REPAIR},
+                             key=f"determinism:{sid}:{d}:{digest}")
     session = store.get_session(sid)
     if session["status"] == "STOPPED":
         return                                       # a stopped session cannot be paused; the timeline has it

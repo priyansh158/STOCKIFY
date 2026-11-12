@@ -186,6 +186,27 @@ def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
     return value
 
 
+NOTIFY_CHANNELS = (None, "email", "ntfy", "telegram")
+NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary")
+
+
+def _check_notify(doc: dict) -> None:
+    """notify.json (stockify.notify/1): `channel` is null or one of NOTIFY_CHANNELS, `events` has exactly the
+    NOTIFY_EVENTS keys, each true or false. The old `channels` list is refused (it is an unknown key)."""
+    extra = set(doc) - {"schema", "channel", "events"}
+    if extra:
+        raise ConfigError(f"notify.json: unknown keys {sorted(extra)}")
+    if "channel" not in doc or doc["channel"] not in NOTIFY_CHANNELS:
+        raise ConfigError(f"notify.json: channel must be null or one of {list(NOTIFY_CHANNELS[1:])}, "
+                          f"got {doc.get('channel')!r}")
+    events = doc.get("events")
+    if not isinstance(events, dict) or set(events) != set(NOTIFY_EVENTS):
+        raise ConfigError(f"notify.json: events must be an object with exactly {list(NOTIFY_EVENTS)}")
+    for name, on in events.items():
+        if not isinstance(on, bool):
+            raise ConfigError(f"notify.json: events.{name} must be true or false, got {on!r}")
+
+
 def _check_paper(doc: dict) -> None:
     """paper.json (stockify.paper/1): every key present, whole numbers within PAPER_BOUNDS, and
     `coverage_threshold` a plain decimal string (digits and one optional dot: no sign, spaces or exponent) in (0, 1]."""
@@ -236,6 +257,8 @@ def load_json(name: str, config_dir: Path | None = None) -> dict:
         _check_mis_margin(doc)
     if name == "paper.json":
         _check_paper(doc)
+    if name == "notify.json":
+        _check_notify(doc)
     return doc
 
 

@@ -37,7 +37,7 @@ from pathlib import Path
 
 from stockify import paths, store, timeutil
 from stockify.config import loader
-from stockify.daemon import coverage as coverage_mod, journal, lifecycle
+from stockify.daemon import coverage as coverage_mod, journal, lifecycle, notify
 from stockify.daemon.session_day import SessionDay, SessionDayError, session_engine
 from stockify.data import packs
 from stockify.oracle import sod_state
@@ -180,6 +180,20 @@ def _missing_settles(session_id: str, day: date, jpath: Path) -> tuple[list[tupl
         if (parsed["instrument_id"], parsed["subtype"]) not in have:
             missing.append((t, rank, rec))
     return missing, n + len(missing)
+
+
+def notify_timeline(session_id: str, d: str, timeline: list) -> None:
+    """Tell the owner about a finalised day's coverage rows (`coverage_low`, `coverage_unavailable`): advisory, so
+    the notifier's failure is its own and the day is already stored. Posted once per session, day and kind."""
+    for kind, detail in timeline:
+        if kind == COVERAGE_LOW:
+            title = f"Session {session_id}: {d} was only partly recorded"
+        elif kind == COVERAGE_UNAVAILABLE:
+            title = f"Session {session_id}: how much of {d} was recorded could not be worked out"
+        else:
+            continue
+        notify.session_event("session_error", title, {"session": session_id, "day": d, **detail},
+                             key=f"{kind}:{session_id}:{d}")
 
 
 def _coverage(session_id: str, day: date, jpath: Path) -> coverage_mod.Coverage | str:
@@ -339,6 +353,7 @@ def _finalise(session_id: str, day: date, *, live: SessionDay | None) -> Finalis
         lifecycle.arm(session_id, wall_ns=now)
     store.upsert_session_day(session_id, d, status="finalised", finalised_ns=now)
     log.info("session %s: %s finalised (%d settlement records)", session_id, d, total)
+    notify_timeline(session_id, d, timeline)
     return FinaliseResult(session_id, day, "finalised", labels, total)
 
 

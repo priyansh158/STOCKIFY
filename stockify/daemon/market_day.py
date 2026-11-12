@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Callable
 
 from stockify import paths, store, timeutil
-from stockify.daemon import exitcodes, journal, lifecycle, token_watch
+from stockify.daemon import exitcodes, journal, lifecycle, notify as notifier, token_watch
 from stockify.daemon.engine_log import LogPump
 
 log = logging.getLogger("stockify.daemon.market_day")
@@ -193,9 +193,12 @@ def _direct(fn: Callable, *args) -> None:
     fn(*args)
 
 
-def _log_notify(event: str, detail: dict) -> None:
-    """Stands in for the owner's notification (Task 25 replaces it): the log is the only channel until then."""
+def notify_cap(event: str, detail: dict) -> None:
+    """Tell the owner (through the notifier, off this thread) that a session was refused: the log says so as well."""
     log.error("NOTIFY %s: %s", event, detail)
+    notifier.session_event("session_error", f"Session {detail.get('session_id')} did not start: too many subscriptions",
+                         {**detail, "what_to_do": "trim the session's universe or the recorder's, then restart"},
+                         key=f"{event}:{detail.get('session_id')}:{detail.get('total')}")
 
 
 class SessionPins:
@@ -212,7 +215,7 @@ class SessionPins:
         self.cap = int(cap)
         self.call_in_ticker = call_in_ticker
         self.apply = apply
-        self.notify = notify or _log_notify
+        self.notify = notify or notify_cap
         self.live = False
         self.refused: dict[str, dict] = {}
         self._base: dict[str, frozenset[int]] = {}

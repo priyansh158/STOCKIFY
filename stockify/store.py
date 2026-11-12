@@ -882,6 +882,14 @@ def session_day_end(session_id: str, trade_date: str) -> dict:
     return {"positions": positions, "equity": dict(row) if row else None}
 
 
+def previous_equity(session_id: str, trade_date: str) -> dict | None:
+    """The session's equity row of its latest day before `trade_date` ({trade_date, nav_paise, cash_paise,
+    margin_paise}), or None."""
+    row = _one("SELECT trade_date, nav_paise, cash_paise, margin_paise FROM session_equity WHERE session_id = ? "
+               "AND trade_date < ? ORDER BY trade_date DESC LIMIT 1", (session_id, trade_date))
+    return dict(row) if row else None
+
+
 def session_rows(session_id: str, table: str, *, trade_date: str | None = None, offset: int = 0,
                  limit: int = 500) -> list[dict]:
     """A paper session's stored rows in key order (orders | order_events | fills | charges), optionally of one day,

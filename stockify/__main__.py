@@ -742,6 +742,18 @@ def _cmd_tools_fuzz(args) -> int:
     return fuzz.main(fuzz.parse_seeds(args.seeds), args.shrink, args.save)
 
 
+def _cmd_notify_test(args) -> int:
+    """Send one test message through the channel chosen in notify.json (secrets come from the environment). Exit 0:
+    sent; 1: not sent (the reason is printed; a secret never is)."""
+    from stockify.daemon import notify
+    error = notify.send_test()
+    if error is not None:
+        print(f"notify test: not sent: {error}", file=sys.stderr)
+        return 1
+    print("notify test: sent")
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -791,6 +803,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("config", help="validate stockify/config/").set_defaults(func=_cmd_config)
     sub.add_parser("engine", help="print the engine build info").set_defaults(func=_cmd_engine)
+
+    nt = sub.add_parser("notify", help="notifications (M5.8)")
+    ntsub = nt.add_subparsers(dest="notify_command", required=True)
+    ntsub.add_parser("test", help="send one test message through the channel in notify.json").set_defaults(
+        func=_cmd_notify_test)
 
     r = sub.add_parser("refdata", help="reference data (instruments with history)")
     rsub = r.add_subparsers(dest="refdata_command", required=True)

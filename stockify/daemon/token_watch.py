@@ -99,6 +99,11 @@ def begin_wait(now_ns: int) -> None:
     """Say the daemon is waiting for a login (keeps the first `since_ns`)."""
     if not read_status().get("waiting_for_login"):
         write_status(waiting_for_login=True, since_ns=now_ns)
+        from stockify.daemon import notify               # one message per wait: the status flag is the "still open"
+        notify.post("login_needed", "[STOCKIFY] Kite login needed: the recorder is waiting",
+                    "Kite rejected the login token, so the paper sessions are paused and nothing is recorded.\n\n"
+                    "Log in at http://127.0.0.1:3000/portfolio (Login to Kite); the sessions resume by themselves."
+                    "\n\n- STOCKIFY daemon\n", key=f"token_expired:{now_ns}")
 
 
 def login_accepted() -> None:
