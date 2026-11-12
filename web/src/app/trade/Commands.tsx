@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commandText, getCommand, pauseReasonText, startKiteLogin, statusText } from "@/lib/trade";
-import { Panel } from "./ui";
+import { Chip, Panel } from "@/components/ui";
 
 const WATCH_MS = 1000;
 const WATCH_MAX = 90; // about 90 s of watching, then the owner is told it is still queued
@@ -67,12 +67,8 @@ export function useCommandWatch(onSettled?: () => void) {
 /** A live status line for the outcome of a command (announced to screen readers). */
 export function CommandMessage({ message, failed }: { message: string | null; failed: boolean }) {
   return (
-    <div role="status" aria-live="polite" className="min-h-0">
-      {message && (
-        <p className={`text-sm ${failed ? "text-red-soft" : "text-fg-muted"}`}>
-          {message}
-        </p>
-      )}
+    <div role="status" aria-live="polite">
+      {message && <p className={failed ? "stk-down" : "stk-muted"}>{message}</p>}
     </div>
   );
 }
@@ -93,27 +89,20 @@ export function LoginBanner({ detail }: { detail?: string }) {
   }
   return (
     <Panel tone="amber">
-      <p className="text-sm text-amber">
-        Paper trading is waiting for you to log in to Kite. Nothing trades until you do.
-      </p>
-      {detail && (
-        <p className="stk-label mt-1">
-          {detail}
-        </p>
-      )}
-      <button
-        type="button"
-        onClick={go}
-        disabled={busy}
-        className="stk-btn mt-3 w-full"
-      >
-        {busy ? "Opening Kite…" : "Log in to Kite"}
-      </button>
-      {err && (
-        <p role="alert" className="mt-2 text-sm text-red-soft">
-          {err}
-        </p>
-      )}
+      <div className="stk-stack-s">
+        <p>Paper trading is waiting for you to log in to Kite. Nothing trades until you do.</p>
+        {detail && <p className="stk-label">{detail}</p>}
+        <div>
+          <button type="button" onClick={go} disabled={busy} className="stk-btn" data-tone="primary">
+            {busy ? "Opening Kite…" : "Log in to Kite"}
+          </button>
+        </div>
+        {err && (
+          <p role="alert" className="stk-down">
+            {err}
+          </p>
+        )}
+      </div>
     </Panel>
   );
 }
@@ -149,28 +138,18 @@ export function ConfirmDialog({
         onCancel();
       }}
       aria-labelledby="confirm-title"
-      className="stk-dialog m-auto w-[calc(100%-2rem)] max-w-md rounded-lg border border-red bg-bg-soft p-4 text-fg"
+      className="stk-dialog"
     >
-      <h2 id="confirm-title" className="text-lg font-bold text-red-soft">
+      <h2 id="confirm-title" className="stk-down">
         {title}
       </h2>
-      <p className="mt-2 text-sm">{body}</p>
-      <div className="mt-4 flex flex-col gap-2 sm:flex-row-reverse">
-        <button
-          type="button"
-          onClick={onConfirm}
-          className="stk-btn flex-1"
-          data-tone="danger"
-        >
-          {confirmLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          autoFocus
-          className="stk-btn flex-1"
-        >
+      <p className="stk-gap-s">{body}</p>
+      <div className="stk-dialog-actions">
+        <button type="button" onClick={onCancel} autoFocus className="stk-btn">
           Keep going
+        </button>
+        <button type="button" onClick={onConfirm} className="stk-btn" data-tone="danger">
+          {confirmLabel}
         </button>
       </div>
     </dialog>
@@ -178,24 +157,19 @@ export function ConfirmDialog({
 }
 
 export function StatusChip({ status }: { status: string }) {
-  const color = status === "RUNNING" ? "text-green" : status === "PAUSED" ? "text-amber" : "text-fg-muted";
-  return (
-    <span className={`stk-chip ${color}`}>
-      {statusText(status)}
-    </span>
-  );
+  const tone = status === "RUNNING" ? "up" : status === "PAUSED" ? "warn" : undefined;
+  return <Chip tone={tone}>{statusText(status)}</Chip>;
 }
 
 export function PauseReasons({ reasons }: { reasons: string[] }) {
   if (reasons.length === 0) return null;
   return (
-    <ul className="mt-2 flex flex-col gap-1">
+    <ul className="stk-reasons">
       {reasons.map((r) => (
-        <li key={r} className="text-sm text-amber">
+        <li key={r} className="stk-warn">
           {pauseReasonText(r)}
         </li>
       ))}
     </ul>
   );
 }
-

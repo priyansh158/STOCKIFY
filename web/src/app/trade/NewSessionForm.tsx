@@ -7,19 +7,9 @@ import { parseRupeesToPaise } from "@/lib/format";
 import { coerceParam, validateParams } from "@/lib/params";
 import { createSession } from "@/lib/trade";
 import type { Strategy, StrategyParam } from "@/lib/types";
-import { Panel } from "./ui";
+import { Field, Panel } from "@/components/ui";
 
 const inputClass = "stk-field";
-
-function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-sm text-fg">{label}</span>
-      {children}
-      {help && <span className="stk-label">{help}</span>}
-    </label>
-  );
-}
 
 function defaultText(p: StrategyParam): string | boolean {
   if (p.type === "bool") return Boolean(p.default);
@@ -88,77 +78,83 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="stk-btn">
-        New session
-      </button>
+      <div>
+        <button type="button" onClick={() => setOpen(true)} className="stk-btn" data-tone="primary">
+          New session
+        </button>
+      </div>
     );
   }
 
   return (
     <Panel>
-      <form onSubmit={submit} className="grid items-start gap-4 md:grid-cols-2" noValidate aria-label="New paper session" aria-describedby={problems.length ? "new-session-problems" : undefined}>
-        <div className="flex items-center justify-between md:col-span-2">
-          <h2 className="font-semibold text-green-soft">New session</h2>
+      <form onSubmit={submit} className="stk-stack-s" noValidate aria-label="New paper session" aria-describedby={problems.length ? "new-session-problems" : undefined}>
+        <div className="stk-row-between">
+          <h2>New session</h2>
           <button type="button" onClick={() => setOpen(false)} className="stk-btn" data-tone="quiet">
             Close
           </button>
         </div>
 
-        <Field label="Strategy" help={strategy?.doc}>
-          <select className={inputClass} value={chosen} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
-            {strategies.map((s) => (
-              <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
-                {s.name}{s.kind === "cpp" ? " (C++)" : ""}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <div className="stk-form">
+          <Field label="Strategy" help={strategy?.doc}>
+            <select className={inputClass} value={chosen} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
+              {strategies.map((s) => (
+                <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
+                  {s.name}{s.kind === "cpp" ? " (C++)" : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
 
-        {(strategy?.params ?? []).map((p) => {
-          const v = values[p.name] ?? defaultText(p);
-          const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
-          if (p.type === "bool") {
+          {(strategy?.params ?? []).map((p) => {
+            const v = values[p.name] ?? defaultText(p);
+            const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
+            if (p.type === "bool") {
+              return (
+                <label key={p.name} className="stk-checkrow">
+                  <input type="checkbox" className="stk-check" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
+                    onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
+                  <span>{label}<span className="stk-label stk-block">{p.help}</span></span>
+                </label>
+              );
+            }
             return (
-              <label key={p.name} className="flex items-center gap-3">
-                <input type="checkbox" className="h-5 w-5" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
-                  onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
-                <span className="text-sm">{label}<span className="stk-label block">{p.help}</span></span>
-              </label>
+              <Field key={p.name} label={label} help={p.help}>
+                <input className={inputClass} value={String(v)} aria-invalid={bad.has(p.name)}
+                  inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
+                  placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
+                  onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
+              </Field>
             );
-          }
-          return (
-            <Field key={p.name} label={label} help={p.help}>
-              <input className={inputClass} value={String(v)} aria-invalid={bad.has(p.name)}
-                inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
-                placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
-                onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
-            </Field>
-          );
-        })}
+          })}
 
-        <Field label="Name (optional)" help="A short name to tell sessions apart.">
-          <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Symbols to follow" help="Comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
-          <input className={inputClass} value={symbols} aria-invalid={bad.has("symbols")} onChange={(e) => setSymbols(e.target.value)} />
-        </Field>
-        <Field label="Starting money (₹)" help="Pretend money. Nothing real is used.">
-          <input className={inputClass} inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
-        </Field>
-        <label className="flex items-center gap-3 md:col-span-2">
-          <input type="checkbox" className="h-5 w-5" checked={allowUnverified} onChange={(e) => setAllowUnverified(e.target.checked)} />
-          <span className="text-sm">Allow charge rates not yet checked against the broker (the result is labelled)</span>
-        </label>
+          <Field label="Name (optional)" help="A short name to tell sessions apart.">
+            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Symbols to follow" help="Comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
+            <input className={inputClass} value={symbols} aria-invalid={bad.has("symbols")} onChange={(e) => setSymbols(e.target.value)} />
+          </Field>
+          <Field label="Starting money (₹)" help="Pretend money. Nothing real is used.">
+            <input className={inputClass} data-fig inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
+          </Field>
+          <label className="stk-checkrow stk-form-wide">
+            <input type="checkbox" className="stk-check" checked={allowUnverified} onChange={(e) => setAllowUnverified(e.target.checked)} />
+            <span>Allow charge rates not yet checked against the broker (the result is labelled)</span>
+          </label>
+        </div>
 
         {problems.length > 0 && (
-          <ul id="new-session-problems" role="alert" className="rounded-md border border-red px-3 py-2 text-sm text-red-soft md:col-span-2">
+          <ul id="new-session-problems" role="alert" className="stk-problems">
             {problems.map((p) => <li key={p}>{p}</li>)}
           </ul>
         )}
 
-        <button type="submit" disabled={busy} className="stk-btn md:col-span-2 md:w-fit">
-          {busy ? "Creating…" : "Create session"}
-        </button>
+        <div>
+          <button type="submit" disabled={busy} className="stk-btn" data-tone="primary">
+            {busy ? "Creating…" : "Create session"}
+          </button>
+        </div>
       </form>
     </Panel>
   );

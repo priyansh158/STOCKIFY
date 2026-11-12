@@ -11,7 +11,9 @@ import type {
   SessionCreatedDTO,
   SessionDetailDTO,
   SessionDTO,
+  SessionFillDTO,
   SessionMarginDTO,
+  SessionOrderDTO,
   SessionPositionDTO,
   SessionTimelineDTO,
   TradeLoginDTO,
@@ -20,13 +22,10 @@ import type {
 const FIXTURES = process.env.NEXT_PUBLIC_STOCKIFY_FIXTURES === "1";
 const sid = (id: string) => encodeURIComponent(id);
 
-/** One stored order or fill row, as the engine produced it. Only the keys the page reads are named; all may be missing. */
-export type Row = Record<string, unknown>;
-
 const FIXTURE_SESSIONS: SessionDTO[] = [
   {
     session_id: "paper-20261111-a1b2c3", name: "orb_nifty", status: "RUNNING", pause_reasons: [],
-    today_pnl_paise: 125_050, open_positions: 2, coverage_today: 0.998, parity_last: "match", labels: [],
+    today_pnl_paise: 125_050, open_positions: 2, coverage_today: 0.998, parity_last: "pass", labels: [],
     created_ist: "2026-11-09T09:00:00+05:30",
   },
   {
@@ -48,12 +47,12 @@ export function getPositions(id: string): Promise<SessionPositionDTO[]> {
   return api<SessionPositionDTO[]>(`/api/trade/sessions/${sid(id)}/positions`);
 }
 
-export function getOrders(id: string, limit = 200): Promise<Row[]> {
-  return api<Row[]>(`/api/trade/sessions/${sid(id)}/orders?limit=${limit}`);
+export function getOrders(id: string, limit = 200): Promise<SessionOrderDTO[]> {
+  return api<SessionOrderDTO[]>(`/api/trade/sessions/${sid(id)}/orders?limit=${limit}`);
 }
 
-export function getFills(id: string, limit = 200): Promise<Row[]> {
-  return api<Row[]>(`/api/trade/sessions/${sid(id)}/fills?limit=${limit}`);
+export function getFills(id: string, limit = 200): Promise<SessionFillDTO[]> {
+  return api<SessionFillDTO[]>(`/api/trade/sessions/${sid(id)}/fills?limit=${limit}`);
 }
 
 export function getTimeline(id: string, limit = 200): Promise<SessionTimelineDTO[]> {
@@ -125,12 +124,36 @@ export function pauseReasonText(reason: string): string {
   return PAUSE_TEXT[reason] ?? reason;
 }
 
+/** The result of the check that replays a finished day and compares it with what the session stored, in plain words. */
+export function parityText(parity: string | null | undefined): string {
+  if (parity === "pass") return "Passed: the replay matched what the session did";
+  if (parity === "fail") return "Failed: the replay did not match, so the session was paused";
+  if (!parity) return "Not run yet";
+  return parity;
+}
+
 /** A command's outcome for the owner. */
 export function commandText(c: CommandStatusDTO): string {
   const what = c.command === "stop_all" ? "Stop all" : c.command.charAt(0).toUpperCase() + c.command.slice(1);
   if (c.status === "applied") return `${what} took effect.`;
   if (c.status === "failed") return `${what} did not work${c.error ? `: ${c.error}` : "."}`;
   return `${what} is queued. It takes effect when the background service picks it up.`;
+}
+
+/** An order's status in plain words; an unknown one is shown unchanged. */
+const ORDER_STATUS_TEXT: Record<string, string> = {
+  PENDING: "Waiting",
+  OPEN: "Open",
+  TRIGGER_PENDING: "Waiting for its trigger price",
+  COMPLETE: "Filled",
+  CANCELLED: "Cancelled",
+  REJECTED: "Rejected",
+  SLICED: "Split into smaller orders",
+};
+
+export function orderStatusText(status: string | null | undefined): string {
+  if (!status) return "Unknown";
+  return ORDER_STATUS_TEXT[status] ?? status;
 }
 
 /** What a timeline entry says, in plain words; an unknown kind is shown with underscores as spaces. */
@@ -154,14 +177,6 @@ export function timelineText(kind: string): string {
   if (t) return t;
   const s = kind.replace(/_/g, " ");
   return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-export function num(v: unknown): number | null {
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
-export function str(v: unknown): string | null {
-  return typeof v === "string" && v ? v : null;
 }
 
 /** Signed rupees for a gain or loss: "+₹1,250.50", "-₹300.00", or "—" when unknown. */

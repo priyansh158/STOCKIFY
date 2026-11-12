@@ -1,25 +1,18 @@
 /** Small presentational pieces shared by /tests and /tests/[id]. */
-import type { ReactNode } from "react";
+import { Chip } from "@/components/ui";
 import type { TestRun, TestStatus } from "@/lib/types";
 
-const STATUS: Record<TestStatus, { text: string; fg: string; border: string; bg: string }> = {
-  queued: { text: "Waiting", fg: "var(--color-fg-muted)", border: "rgba(0,255,65,0.25)", bg: "rgba(255,255,255,0.03)" },
-  running: { text: "Running", fg: "var(--color-blue)", border: "var(--color-blue)", bg: "rgba(79,176,255,0.08)" },
-  done: { text: "Finished", fg: "var(--color-green)", border: "var(--color-green)", bg: "rgba(0,255,65,0.06)" },
-  failed: { text: "Failed", fg: "var(--color-red-soft)", border: "var(--color-red)", bg: "rgba(255,68,68,0.10)" },
-  cancelled: { text: "Cancelled", fg: "var(--color-amber)", border: "var(--color-amber)", bg: "rgba(255,170,64,0.08)" },
+const STATUS: Record<TestStatus, { text: string; tone?: "up" | "down" | "warn" | "info" }> = {
+  queued: { text: "Waiting" },
+  running: { text: "Running", tone: "info" },
+  done: { text: "Finished", tone: "up" },
+  failed: { text: "Failed", tone: "down" },
+  cancelled: { text: "Cancelled", tone: "warn" },
 };
 
 export function StatusChip({ status }: { status: TestStatus }) {
   const s = STATUS[status];
-  return (
-    <span
-      className="stk-mono-tight inline-flex items-center rounded px-2 py-0.5 text-xs font-bold"
-      style={{ color: s.fg, border: `1px solid ${s.border}`, background: s.bg }}
-    >
-      {s.text}
-    </span>
-  );
+  return <Chip tone={s.tone}>{s.text}</Chip>;
 }
 
 /** The margin staircase steps (A1 6.3 margin_daily.csv `step`), in plain words. An unknown code is shown as-is. */
@@ -146,48 +139,15 @@ export function LabelChips({ run }: { run: Pick<TestRun, "labels" | "price_basis
   if (run.price_basis === "adjusted") items.push({ text: "adjusted prices", warn: true });
   if (items.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="stk-chips">
       {items.map((l) => (
-        <span
-          key={l.text}
-          className="rounded px-2 py-0.5 text-xs"
-          style={{
-            color: l.warn ? "var(--color-amber)" : "var(--color-fg-muted)",
-            border: `1px solid ${l.warn ? "rgba(255,170,64,0.45)" : "rgba(0,255,65,0.20)"}`,
-          }}
-        >
+        <Chip key={l.text} tone={l.warn ? "warn" : undefined}>
           {l.text}
-        </span>
+        </Chip>
       ))}
     </div>
   );
 }
-
-export function Card({ children, tone }: { children: ReactNode; tone?: "red" | "amber" }) {
-  const border = tone === "red" ? "var(--color-red)" : tone === "amber" ? "var(--color-amber)" : "rgba(0,255,65,0.20)";
-  const bg = tone === "red" ? "rgba(255,68,68,0.06)" : tone === "amber" ? "rgba(255,170,64,0.06)" : "rgba(0,255,65,0.03)";
-  return (
-    <section className="rounded-lg border px-4 py-3" style={{ borderColor: border, background: bg }}>
-      {children}
-    </section>
-  );
-}
-
-export function Stat({ label, value, tone }: { label: string; value: string; tone?: "up" | "down" }) {
-  const color = tone === "up" ? "var(--color-green)" : tone === "down" ? "var(--color-red-soft)" : "var(--color-fg)";
-  return (
-    <div>
-      <div className="text-xs" style={{ color: "var(--color-fg-muted)" }}>{label}</div>
-      <div className="stk-mono text-base font-semibold" style={{ color }}>{value}</div>
-    </div>
-  );
-}
-
-export const buttonStyle = {
-  borderColor: "rgba(0,255,65,0.35)",
-  color: "var(--color-green-soft)",
-  background: "rgba(0,255,65,0.06)",
-} as const;
 
 /** "sma_cross · 2024-01-01 to 2026-09-30", leaving out whatever the run does not say. */
 export function runSummary(run: Pick<TestRun, "strategy_ref" | "start_date" | "end_date">, from?: string | null,
@@ -195,7 +155,7 @@ export function runSummary(run: Pick<TestRun, "strategy_ref" | "start_date" | "e
   const a = run.start_date ?? from;
   const b = run.end_date ?? to;
   const parts = [run.strategy_ref ? strategyName(run.strategy_ref) : null, a && b ? `${a} to ${b}` : null];
-  return parts.filter(Boolean).join(" · ");
+  return parts.filter(Boolean).join(", ");
 }
 
 /** The strategy's short name from its ref ("pkg.sma_cross:SmaCross" → "sma_cross"). */

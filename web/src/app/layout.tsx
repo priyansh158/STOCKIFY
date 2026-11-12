@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Inter } from "next/font/google";
+import { AppNav } from "@/components/AppNav";
 import "./globals.css";
 
 const inter = Inter({
@@ -27,11 +28,14 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
+      className={`${inter.variable} ${jetbrainsMono.variable}`}
     >
-      <body className="min-h-full">
-        <div className="stk-grid" aria-hidden />
-        <main className="relative z-10 min-h-screen">{children}</main>
+      <body>
+        <AppNav />
+        <main className="stk-main">{children}</main>
+        <footer className="stk-foot">
+          <p>Simulation only: STOCKIFY never places real orders. Not investment advice.</p>
+        </footer>
       </body>
     </html>
   );

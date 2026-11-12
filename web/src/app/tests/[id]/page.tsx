@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useState } from "react";
+import { Fragment, use, useCallback, useEffect, useState } from "react";
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
 import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
-import { buttonStyle, Card, LabelChips, Stat, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
+import { Empty, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
+import { LabelChips, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
 const POLL_MS = 2000;
@@ -123,72 +124,74 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   const fillCount = detail?.fill_count ?? extra.fills.length;
   const summaryLine = run
     ? [runSummary(run, extra.equity[0]?.trade_date, extra.equity[extra.equity.length - 1]?.trade_date),
-      run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(" · ")
+      run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(", ")
     : "";
   const costTotal = run?.costs_total_paise ?? Object.values(costTotals).reduce((a, b) => a + b, 0);
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-      <Link href="/tests" className="stk-mono-tight mb-6 flex min-h-11 items-center" style={{ color: "var(--color-fg-muted)" }}>
-        ← All tests
+    <div className="stk-page">
+      <Link href="/tests" className="stk-crumb">
+        All tests
       </Link>
 
       {error && (
-        <div className="mb-4">
-          <Card tone="red"><p className="text-sm" style={{ color: "var(--color-red-soft)" }}>{error}</p></Card>
+        <div role="alert" className="stk-gap-s">
+          <Panel tone="red">
+            <p>{error}</p>
+          </Panel>
         </div>
       )}
       {!run ? (
-        !error && <p style={{ color: "var(--color-fg-muted)" }}>Loading…</p>
+        !error && (
+          <div className="stk-stack-s" aria-busy="true" aria-label="Loading the test">
+            <Skeleton size="title" />
+            <Skeleton size="m" />
+            <Skeleton size="l" />
+          </div>
+        )
       ) : (
-        <div className="flex flex-col gap-4">
-          <div>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <StatusChip status={run.status} />
-              <span className="stk-mono-tight text-xs" style={{ color: "var(--color-fg-muted)" }}>{run.impl ?? ""}</span>
+        <div className="stk-stack">
+          <div className="stk-head">
+            <div>
+              <div className="stk-row">
+                <StatusChip status={run.status} />
+                {run.impl && <span className="stk-label">{run.impl}</span>}
+              </div>
+              <h1 className="stk-gap-s stk-break">{run.name ?? run.run_id}</h1>
+              {summaryLine && <p className="stk-lede">{summaryLine}</p>}
             </div>
-            <h1 className="stk-mono break-words text-xl font-bold sm:text-2xl" style={{ color: "var(--color-green)" }}>
-              {run.name ?? run.run_id}
-            </h1>
-            {summaryLine && (
-              <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>{summaryLine}</p>
-            )}
-            <div className="mt-2"><LabelChips run={run} /></div>
+            <LabelChips run={run} />
           </div>
 
           {(run.status === "queued" || run.status === "running") && (
-            <Card>
-              <p className="mb-3 text-sm" style={{ color: "var(--color-fg)" }}>
-                {run.status === "queued" ? "Waiting for a free slot…" : "Running… this page updates by itself."}
-              </p>
-              <button type="button" onClick={cancel} disabled={cancelling}
-                className="stk-mono-tight min-h-11 w-full rounded-md border px-4 py-2"
-                style={{ ...buttonStyle, color: "var(--color-amber)", borderColor: "var(--color-amber)" }}>
-                {cancelling ? "Cancelling…" : "Cancel test"}
-              </button>
-            </Card>
+            <Panel>
+              <div className="stk-row-between">
+                <p role="status">{run.status === "queued" ? "Waiting for a free slot…" : "Running… this page updates by itself."}</p>
+                <button type="button" onClick={cancel} disabled={cancelling} className="stk-btn" data-tone="warn">
+                  {cancelling ? "Cancelling…" : "Cancel test"}
+                </button>
+              </div>
+            </Panel>
           )}
 
           {run.status === "failed" && (
-            <Card tone="red">
-              <h2 className="stk-mono-tight mb-2" style={{ color: "var(--color-red-soft)" }}>What went wrong</h2>
-              <p className="stk-mono break-words text-sm" style={{ color: "var(--color-red-soft)" }}>{run.error ?? "no message"}</p>
-            </Card>
+            <Panel tone="red">
+              <h2>What went wrong</h2>
+              <p className="stk-mono stk-break">{run.error ?? "no message"}</p>
+            </Panel>
           )}
 
           {extra.logs && (extra.logs.events_log.length > 0 || extra.logs.runner_log.length > 0) && (
-            <Card>
-              <h2 className="stk-mono-tight mb-2" style={{ color: "var(--color-fg-muted)" }}>Last lines of the log</h2>
-              <pre className="stk-mono max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs" style={{ color: "var(--color-fg)" }}>
-                {[...extra.logs.runner_log, ...extra.logs.events_log].join("\n")}
-              </pre>
-            </Card>
+            <Panel>
+              <h2>Last lines of the log</h2>
+              <pre className="stk-pre">{[...extra.logs.runner_log, ...extra.logs.events_log].join("\n")}</pre>
+            </Panel>
           )}
 
           {run.status === "done" && (
             <>
-              <Card>
-                <div className="grid grid-cols-2 gap-3">
+              <Panel>
+                <StatGrid>
                   <Stat label="Started with" value={rupeesWhole(run.nav_start_paise)} />
                   <Stat label="Ended with" value={rupeesWhole(run.nav_end_paise)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
                   <Stat label="Gain or loss" value={pct(g, true)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
@@ -198,64 +201,75 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   <Stat label="Trades" value={String(run.trades ?? 0)} />
                   <Stat label="Trades that made money" value={pct(num(m.win_rate))} />
                   <Stat label="Costs paid" value={rupees(run.costs_total_paise)} />
-                </div>
-              </Card>
+                </StatGrid>
+              </Panel>
 
-              <Card>
-                <h2 className="stk-mono-tight mb-3" style={{ color: "var(--color-fg-muted)" }}>Money over time</h2>
+              <Panel>
+                <h2>Money over time</h2>
                 <EquityChart rows={extra.equity} start={run.nav_start_paise} />
-              </Card>
+              </Panel>
 
-              <Card>
-                <h2 className="stk-mono-tight mb-3" style={{ color: "var(--color-fg-muted)" }}>
-                  Fills ({fillCount.toLocaleString("en-IN")})
-                </h2>
-                {extra.fills.length === 0 ? (
-                  <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>No orders filled.</p>
-                ) : (
-                  <ul className="flex flex-col gap-2">
-                    {extra.fills.map((f) => (
-                      <li key={f.fill_id} className="rounded-md border px-3 py-2" style={{ borderColor: "rgba(0,255,65,0.15)" }}>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="stk-mono text-sm font-semibold"
-                            style={{ color: f.side === "BUY" ? "var(--color-green)" : "var(--color-red-soft)" }}>
-                            {f.side === "BUY" ? "Bought" : "Sold"} {f.qty.toLocaleString("en-IN")}
-                          </span>
-                          <span className="stk-mono text-sm">{rupees(f.price_paise)}</span>
-                        </div>
-                        <div className="text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                          {f.tradingsymbol ?? `instrument ${f.instrument_id}`} · {f.t_ist.slice(0, 16).replace("T", " ")} IST · order {f.order_id}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {extra.fills.length < fillCount && (
-                  <button type="button" onClick={moreFills} disabled={loadingMore}
-                    className="stk-mono-tight mt-3 min-h-11 w-full rounded-md border px-4 py-2" style={buttonStyle}>
-                    {loadingMore ? "Loading…" : `Show more (${extra.fills.length.toLocaleString("en-IN")} of ${fillCount.toLocaleString("en-IN")} shown)`}
-                  </button>
-                )}
-              </Card>
+              <div className="stk-cols-split">
+                <section className="stk-section">
+                  <h2>Fills ({fillCount.toLocaleString("en-IN")})</h2>
+                  {extra.fills.length === 0 ? (
+                    <Empty>No orders filled.</Empty>
+                  ) : (
+                    <Table
+                      caption="Orders that filled"
+                      head={[
+                        { label: "Time (IST)" },
+                        { label: "Trade" },
+                        { label: "Price", num: true },
+                        { label: "Order", num: true },
+                      ]}
+                    >
+                      {extra.fills.map((f) => (
+                        <tr key={f.fill_id}>
+                          <td className="stk-label">{f.t_ist.slice(0, 16).replace("T", " ")}</td>
+                          <td className={f.side === "BUY" ? "stk-up" : "stk-down"} data-wrap>
+                            {f.side === "BUY" ? "Bought" : "Sold"} {f.qty.toLocaleString("en-IN")} {f.tradingsymbol ?? `instrument ${f.instrument_id}`}
+                          </td>
+                          <td className="num">{rupees(f.price_paise)}</td>
+                          <td className="num">{f.order_id}</td>
+                        </tr>
+                      ))}
+                    </Table>
+                  )}
+                  {extra.fills.length < fillCount && (
+                    <div className="stk-gap-s">
+                      <button type="button" onClick={moreFills} disabled={loadingMore} className="stk-btn">
+                        {loadingMore ? "Loading…" : `Show more (${extra.fills.length.toLocaleString("en-IN")} of ${fillCount.toLocaleString("en-IN")} shown)`}
+                      </button>
+                    </div>
+                  )}
+                </section>
 
-              <Card>
-                <h2 className="stk-mono-tight mb-3" style={{ color: "var(--color-fg-muted)" }}>Where the costs went</h2>
-                {costTotal === 0 ? (
-                  <p className="text-sm" style={{ color: "var(--color-fg-muted)" }}>No costs were charged in this test.</p>
-                ) : (
-                <ul className="flex flex-col gap-1 text-sm">
-                  {Object.entries(costTotals).filter(([, v]) => v !== 0).map(([k, v]) => (
-                    <li key={k} className="flex justify-between gap-3"><span>{COST_NAMES[k] ?? k.replace(/_/g, " ")}</span><span className="stk-mono">{rupees(v)}</span></li>
-                  ))}
-                  <li className="mt-1 flex justify-between border-t pt-1 font-semibold" style={{ borderColor: "rgba(0,255,65,0.15)" }}>
-                    <span>Total</span><span className="stk-mono">{rupees(costTotal)}</span>
-                  </li>
-                  <li className="text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                    Each part is rounded to the paisa; the total is exact, so the parts can differ from it by a few paise.
-                  </li>
-                </ul>
-                )}
-              </Card>
+                <Panel>
+                  <h2>Where the costs went</h2>
+                  {costTotal === 0 ? (
+                    <p className="stk-muted">No costs were charged in this test.</p>
+                  ) : (
+                    <div className="stk-stack-s">
+                      <dl className="stk-kv">
+                        {Object.entries(costTotals).filter(([, v]) => v !== 0).map(([k, v]) => (
+                          <Fragment key={k}>
+                            <dt>{COST_NAMES[k] ?? k.replace(/_/g, " ")}</dt>
+                            <dd>{rupees(v)}</dd>
+                          </Fragment>
+                        ))}
+                        <div className="stk-kv-total">
+                          <span>Total</span>
+                          <span className="stk-mono">{rupees(costTotal)}</span>
+                        </div>
+                      </dl>
+                      <p className="stk-fine">
+                        Each part is rounded to the paisa; the total is exact, so the parts can differ from it by a few paise.
+                      </p>
+                    </div>
+                  )}
+                </Panel>
+              </div>
 
               <MarginByDay rows={extra.margin} equity={extra.equity} />
               <GreeksAtDayEnd rows={extra.greeks} />
@@ -265,29 +279,26 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
           )}
 
           {detail?.manifest && (
-            <Card>
-              <h2 className="stk-mono-tight mb-2" style={{ color: "var(--color-fg-muted)" }}>For reproducing this run</h2>
-              <dl className="stk-mono grid grid-cols-1 gap-1 text-xs" style={{ color: "var(--color-fg)" }}>
+            <Panel>
+              <h2>For reproducing this run</h2>
+              <dl className="stk-kv stk-mono">
                 {Object.entries(detail.manifest)
                   .filter(([k]) => ["engine_build_id", "bundle_sha256", "packs", "duration_ms", "python", "os"].includes(k))
                   .map(([k, v]) => (
-                    <div key={k} className="break-all">
-                      <dt className="inline" style={{ color: "var(--color-fg-muted)" }}>{k}: </dt>
-                      <dd className="inline">{Array.isArray(v) ? v.join(", ") : String(v)}</dd>
-                    </div>
+                    <Fragment key={k}>
+                      <dt>{k}</dt>
+                      <dd className="stk-break">{Array.isArray(v) ? v.join(", ") : String(v)}</dd>
+                    </Fragment>
                   ))}
               </dl>
-              <p className="mt-2 break-all text-xs" style={{ color: "var(--color-fg-muted)" }}>run id {run.run_id}</p>
-            </Card>
+              <p className="stk-fine stk-break stk-gap-s">Run id {run.run_id}</p>
+            </Panel>
           )}
         </div>
       )}
     </div>
   );
 }
-
-const muted = { color: "var(--color-fg-muted)" };
-const rowBorder = { borderColor: "rgba(0,255,65,0.15)" };
 
 /** What the `scan` amount is for a row: the whole SPAN requirement (B1/B2), the flat requirement (B5), else the scan risk. */
 function scanLabel(step?: string): string {
@@ -303,59 +314,75 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
   const held = equity.filter((e) => (e.margin_paise ?? 0) > 0);
   if (days.length === 0 && held.length === 0) return null;
   return (
-    <Card>
-      <h2 className="stk-mono-tight mb-3" style={muted}>Margin by day</h2>
+    <section className="stk-section">
+      <h2>Margin by day</h2>
       {days.length === 0 ? (
-        <>
-          <p className="mb-2 text-sm" style={muted}>
+        <div className="stk-stack-s">
+          <p className="stk-lede">
             This test used the flat margin: a set percentage of each position&apos;s value. Margin held at the end of
             each day:
           </p>
-          <ul className="flex flex-col gap-1 text-sm">
+          <Table caption="Margin held at the end of each day" head={[{ label: "Day" }, { label: "Margin held", num: true }]}>
             {held.slice(-30).map((e) => (
-              <li key={e.trade_date} className="flex justify-between gap-3">
-                <span>{e.trade_date}</span><span className="stk-mono">{rupees(e.margin_paise)}</span>
-              </li>
+              <tr key={e.trade_date}>
+                <td>{e.trade_date}</td>
+                <td className="num">{rupees(e.margin_paise)}</td>
+              </tr>
             ))}
-          </ul>
-          {held.length > 30 && <p className="mt-1 text-xs" style={muted}>The last 30 days with margin held are shown.</p>}
-        </>
+          </Table>
+          {held.length > 30 && <p className="stk-fine">The last 30 days with margin held are shown.</p>}
+        </div>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <Table
+          caption="Margin held each day, by underlying"
+          head={[
+            { label: "Day" },
+            { label: "Underlying" },
+            { label: "How it was priced" },
+            { label: "Main amount", num: true },
+            { label: "Short-option minimum", num: true },
+            { label: "Extreme-loss margin", num: true },
+            { label: "Expiry-day and other add-ons", num: true },
+            { label: "Total", num: true },
+          ]}
+        >
           {days.map((d) => {
             const today = rows.filter((r) => r.trade_date === d);
             const total = today.reduce((a, r) => a + r.total_paise, 0);
             return (
-              <li key={d} className="rounded-md border px-3 py-2" style={rowBorder}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="stk-mono text-sm font-semibold">{d}</span>
-                  <span className="stk-mono text-sm">{rupees(total)}</span>
-                </div>
+              <Fragment key={d}>
                 {today.map((r) => (
-                  <dl key={r.underlying_id} className="mt-1 grid grid-cols-2 gap-x-3 text-xs" style={muted}>
-                    <dt className="col-span-2" style={{ color: "var(--color-fg)" }}>
-                      {r.underlying ?? `underlying ${r.underlying_id}`}
-                    </dt>
-                    {marginStep(r.step) && (
-                      <dd className="col-span-2 mb-1" title={marginStep(r.step)!.detail}>
-                        {marginStep(r.step)!.text}
-                        {r.step && marginStep(r.step)!.text !== r.step && (
-                          <span className="sr-only"> ({marginStep(r.step)!.detail})</span>
-                        )}
-                      </dd>
-                    )}
-                    <dt>{scanLabel(r.step)}</dt><dd className="stk-mono text-right">{rupees(r.scan_paise)}</dd>
-                    <dt>Short-option minimum</dt><dd className="stk-mono text-right">{rupees(r.somc_paise)}</dd>
-                    <dt>Extreme-loss margin</dt><dd className="stk-mono text-right">{rupees(r.elm_paise)}</dd>
-                    <dt>Expiry-day and other add-ons</dt><dd className="stk-mono text-right">{rupees(r.addons_paise)}</dd>
-                  </dl>
+                  <tr key={`${d}-${r.underlying_id}`}>
+                    <td>{d}</td>
+                    <td>{r.underlying ?? `underlying ${r.underlying_id}`}</td>
+                    <td data-wrap title={marginStep(r.step)?.detail}>
+                      {marginStep(r.step)?.text ?? "—"}
+                      {r.step && marginStep(r.step)!.text !== r.step && (
+                        <span className="sr-only"> ({marginStep(r.step)!.detail})</span>
+                      )}
+                    </td>
+                    <td className="num">
+                      {rupees(r.scan_paise)}
+                      <div className="stk-label">{scanLabel(r.step)}</div>
+                    </td>
+                    <td className="num">{rupees(r.somc_paise)}</td>
+                    <td className="num">{rupees(r.elm_paise)}</td>
+                    <td className="num">{rupees(r.addons_paise)}</td>
+                    <td className="num">{rupees(r.total_paise)}</td>
+                  </tr>
                 ))}
-              </li>
+                {today.length > 1 && (
+                  <tr className="sub">
+                    <td colSpan={7}>Total for {d}</td>
+                    <td className="num">{rupees(total)}</td>
+                  </tr>
+                )}
+              </Fragment>
             );
           })}
-        </ul>
+        </Table>
       )}
-    </Card>
+    </section>
   );
 }
 
@@ -389,22 +416,20 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
   const today = rows.filter((r) => r.trade_date === day);
   const unders = Array.from(new Set(today.map((r) => r.underlying ?? "")));
   return (
-    <Card>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="stk-mono-tight" style={muted}>Greeks at day end</h2>
+    <section className="stk-section">
+      <div className="stk-row-between">
+        <h2>Greeks at day end</h2>
         {days.length > 1 && (
-          <select aria-label="Day" value={day} onChange={(e) => setPicked(e.target.value)}
-                  className="stk-mono rounded-md border px-2 text-sm"
-                  style={{ ...rowBorder, minHeight: 44, background: "transparent", color: "var(--color-fg)" }}>
+          <select aria-label="Day" value={day} onChange={(e) => setPicked(e.target.value)} className="stk-field" data-fit data-fig>
             {days.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         )}
       </div>
-      <p className="mb-2 text-xs" style={muted}>
+      <p className="stk-fine stk-gap-s">
         Delta: units of the underlying the positions behave like. Gamma: how much delta changes per ₹1 move. Vega: ₹
         gained or lost per volatility point. Theta: ₹ gained or lost per day from time passing. Positive means long.
       </p>
-      <ul className="flex flex-col gap-2">
+      <div className="stk-stack stk-gap-top">
         {unders.map((u) => {
           const legs = today.filter((r) => (r.underlying ?? "") === u);
           const priced = legs.filter((r) => r.delta_units != null);
@@ -412,57 +437,72 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
           const missing = legs.length - priced.length;
           const spot = legs.find((r) => r.underlying_paise != null)?.underlying_paise ?? null;
           return (
-            <li key={u} className="rounded-md border px-3 py-2" style={rowBorder}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold">{u || "Unknown underlying"}</span>
-                {spot != null && <span className="stk-mono text-xs" style={muted}>at {rupees(spot)}</span>}
+            <Panel key={u}>
+              <div className="stk-stack-s">
+                <div className="stk-row-between">
+                  <h3>{u || "Unknown underlying"}</h3>
+                  {spot != null && <span className="stk-label">At {rupees(spot)}</span>}
+                </div>
+                <StatGrid>
+                  <Stat size="s" label="Delta" value={`${signed(sum((r) => r.delta_units), 1)} units`} />
+                  {spot != null && (
+                    <Stat size="s" label="Delta in ₹" value={signedRupees(sum((r) => r.delta_units) * spot / 100)} />
+                  )}
+                  <Stat size="s" label="Gamma, per ₹1" value={signed(sum((r) => r.gamma_units_per_rupee), 4)} />
+                  <Stat size="s" label="Vega, per point" value={signedRupees(sum((r) => r.vega_rupees_per_point))} />
+                  <Stat size="s" label="Theta, per day" value={signedRupees(sum((r) => r.theta_rupees_per_day))} />
+                </StatGrid>
+                {missing > 0 && (
+                  <p className="stk-warn">
+                    {missing === 1 ? "One position is" : `${missing} positions are`} left out of these totals: no volatility could be found (see the notes in the table).
+                  </p>
+                )}
+                <Table
+                  caption={`Positions in ${u || "the unknown underlying"}`}
+                  head={[
+                    { label: "Position" },
+                    { label: "Mark", num: true },
+                    { label: "Implied volatility", num: true },
+                    { label: "Delta (units)", num: true },
+                    { label: "Vega (₹ per point)", num: true },
+                    { label: "Theta (₹ per day)", num: true },
+                  ]}
+                >
+                  {legs.map((r) => {
+                    const name = `${r.qty > 0 ? "Long" : "Short"} ${Math.abs(r.qty).toLocaleString("en-IN")} ${r.tradingsymbol ?? `instrument ${r.instrument_id}`}`;
+                    const note = r.kind === "FUT"
+                      ? null
+                      : r.iv_reason
+                        ? `No Greeks: ${IV_REASONS[r.iv_reason] ?? r.iv_reason}.`
+                        : null;
+                    return (
+                      <Fragment key={r.instrument_id}>
+                        <tr>
+                          <td data-wrap>{name}</td>
+                          <td className="num">{rupees(r.mark_paise)}</td>
+                          <td className="num">{r.kind === "FUT" || r.iv_reason ? "—" : pct(r.iv ?? 0)}</td>
+                          <td className="num">{r.delta_units == null ? "—" : signed(r.delta_units, 1)}</td>
+                          <td className="num">{r.kind === "FUT" || r.iv_reason ? "—" : signedRupees(r.vega_rupees_per_point ?? 0)}</td>
+                          <td className="num">{r.kind === "FUT" || r.iv_reason ? "—" : signedRupees(r.theta_rupees_per_day ?? 0)}</td>
+                        </tr>
+                        {(note || (r.expiry_close_estimated && r.kind !== "FUT")) && (
+                          <tr>
+                            <td colSpan={6} className="stk-label" data-wrap>
+                              {note && <span className="stk-warn">{note} </span>}
+                              {r.expiry_close_estimated && r.kind !== "FUT" && "Expiry after the test ends: its closing time is estimated."}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </Table>
               </div>
-              <dl className="mt-1 grid grid-cols-2 gap-x-3 text-xs">
-                <dt style={muted}>Delta</dt><dd className="stk-mono text-right">{signed(sum((r) => r.delta_units), 1)} units</dd>
-                {spot != null && (<>
-                  <dt style={muted}>Delta in ₹</dt>
-                  <dd className="stk-mono text-right">{signedRupees(sum((r) => r.delta_units) * spot / 100)}</dd>
-                </>)}
-                <dt style={muted}>Gamma, per ₹1</dt><dd className="stk-mono text-right">{signed(sum((r) => r.gamma_units_per_rupee), 4)}</dd>
-                <dt style={muted}>Vega, per point</dt><dd className="stk-mono text-right">{signedRupees(sum((r) => r.vega_rupees_per_point))}</dd>
-                <dt style={muted}>Theta, per day</dt><dd className="stk-mono text-right">{signedRupees(sum((r) => r.theta_rupees_per_day))}</dd>
-              </dl>
-              {missing > 0 && (
-                <p className="mt-1 text-xs" style={{ color: "var(--color-amber)" }}>
-                  {missing === 1 ? "One position is" : `${missing} positions are`} left out of these totals: no volatility could be found (below).
-                </p>
-              )}
-              <ul className="mt-2 flex flex-col gap-1">
-                {legs.map((r) => (
-                  <li key={r.instrument_id} className="border-t pt-1 text-xs" style={rowBorder}>
-                    <div className="flex justify-between gap-2">
-                      <span className="break-all">
-                        {r.qty > 0 ? "Long" : "Short"} {Math.abs(r.qty).toLocaleString("en-IN")} {r.tradingsymbol ?? `instrument ${r.instrument_id}`}
-                      </span>
-                      <span className="stk-mono">{rupees(r.mark_paise)}</span>
-                    </div>
-                    {r.kind === "FUT" ? (
-                      <div style={muted}>Future: delta {signed(r.delta_units ?? 0, 1)} units</div>
-                    ) : r.iv_reason ? (
-                      <div style={{ color: "var(--color-amber)" }}>
-                        No Greeks: {IV_REASONS[r.iv_reason] ?? r.iv_reason}.
-                      </div>
-                    ) : (
-                      <div className="stk-mono" style={muted}>
-                        IV {pct(r.iv ?? 0)} · Δ {signed(r.delta_units ?? 0, 1)} · vega {signedRupees(r.vega_rupees_per_point ?? 0)} · θ {signedRupees(r.theta_rupees_per_day ?? 0)}/day
-                      </div>
-                    )}
-                    {r.expiry_close_estimated && r.kind !== "FUT" && (
-                      <div style={muted}>Expiry after the test ends: its closing time is estimated.</div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </li>
+            </Panel>
           );
         })}
-      </ul>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -470,29 +510,37 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
 function Settlements({ rows }: { rows: TestSettlement[] }) {
   if (rows.length === 0) return null;
   return (
-    <Card>
-      <h2 className="stk-mono-tight mb-3" style={muted}>Expiry settlements</h2>
-      <ul className="flex flex-col gap-2">
+    <section className="stk-section">
+      <h2>Expiry settlements</h2>
+      <Table
+        caption="Expiry settlements"
+        head={[
+          { label: "Day" },
+          { label: "What happened" },
+          { label: "Price", num: true },
+          { label: "Price source" },
+          { label: "Charges", num: true },
+        ]}
+      >
         {rows.map((s, i) => {
           const name = s.tradingsymbol ?? `instrument ${s.instrument_id}`;
           const what = s.kind === "cash"
             ? `${name} settled in cash`
             : `${s.side === "BUY" ? "Took" : "Gave"} delivery of ${(s.qty ?? 0).toLocaleString("en-IN")} ${name}`;
           return (
-            <li key={`${s.t_ns}-${s.instrument_id}-${i}`} className="rounded-md border px-3 py-2" style={rowBorder}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold">{what}</span>
-                <span className="stk-mono text-sm">{rupees(s.price_paise)}</span>
-              </div>
-              <div className="text-xs" style={s.source === "fallback" ? { color: "var(--color-amber)" } : muted}>
-                {s.trade_date} · {s.source === "fallback" ? "estimated price (NSE had published none)" : "NSE's settlement price"}
-                {s.charges_paise ? ` · charges ${rupees(s.charges_paise)}` : ""}
-              </div>
-            </li>
+            <tr key={`${s.t_ns}-${s.instrument_id}-${i}`}>
+              <td>{s.trade_date}</td>
+              <td data-wrap>{what}</td>
+              <td className="num">{rupees(s.price_paise)}</td>
+              <td className={s.source === "fallback" ? "stk-warn" : "stk-label"} data-wrap>
+                {s.source === "fallback" ? "Estimated price (NSE had published none)" : "NSE's settlement price"}
+              </td>
+              <td className="num">{s.charges_paise ? rupees(s.charges_paise) : "—"}</td>
+            </tr>
           );
         })}
-      </ul>
-    </Card>
+      </Table>
+    </section>
   );
 }
 
@@ -500,11 +548,11 @@ function Settlements({ rows }: { rows: TestSettlement[] }) {
 function LabelMeanings({ labels }: { labels: string[] }) {
   if (labels.length === 0) return null;
   return (
-    <Card>
-      <h2 className="stk-mono-tight mb-2" style={muted}>What the labels mean</h2>
-      <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+    <Panel>
+      <h2>What the labels mean</h2>
+      <ul className="stk-bullets">
         {labels.map((l) => <li key={l}>{labelMeaning(l)}</li>)}
       </ul>
-    </Card>
+    </Panel>
   );
 }

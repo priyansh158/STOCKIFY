@@ -1,16 +1,10 @@
 "use client";
 
 import { useMemo } from "react";
+import { rupeesFloat } from "@/lib/format";
 import { useTicks } from "@/lib/useTicks";
 import type { Holding } from "@/lib/types";
-
-function fmtInr(n: number): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(n);
-}
+import { Chip, Empty, Table } from "@/components/ui";
 
 function fmtPct(p: number): string {
   if (!Number.isFinite(p)) return "—";
@@ -39,107 +33,45 @@ export function HoldingsList({ initial }: Props) {
   const ticks = useTicks(tokens);
 
   if (initial.length === 0) {
-    return (
-      <div
-        className="stk-mono-tight rounded-lg border px-6 py-12 text-center"
-        style={{
-          borderColor: "rgba(0,255,65,0.20)",
-          color: "var(--color-fg-muted)",
-        }}
-      >
-        No holdings.
-      </div>
-    );
+    return <Empty>No holdings.</Empty>;
   }
 
   return (
-    <ul className="flex flex-col gap-3">
+    <Table
+      caption="Holdings"
+      head={[
+        { label: "Symbol" },
+        { label: "Exchange" },
+        { label: "Shares", num: true },
+        { label: "Average price", num: true },
+        { label: "Last price", num: true },
+        { label: "Price source" },
+        { label: "Profit or loss", num: true },
+        { label: "Change", num: true },
+      ]}
+    >
       {initial.map((h) => {
-        const live =
-          h.instrument_token && ticks?.[String(h.instrument_token)];
+        const live = h.instrument_token && ticks?.[String(h.instrument_token)];
         const ltp = live ? live.ltp : h.last_price;
         const currentValue = ltp * h.quantity;
         const invested = h.average_price * h.quantity;
         const pnl = currentValue - invested;
         const pnlPct = invested ? (pnl / invested) * 100 : 0;
-        const pnlTone =
-          pnl >= 0 ? "var(--color-green)" : "var(--color-red-soft)";
+        const toneClass = pnl >= 0 ? "stk-up" : "stk-down";
 
         return (
-          <li key={`${h.exchange}-${h.symbol}`}>
-            <div
-              className="rounded-lg border p-4"
-              style={{
-                borderColor: "rgba(0,255,65,0.20)",
-                background: "rgba(255,255,255,0.025)",
-              }}
-            >
-              <div className="flex items-baseline justify-between gap-3">
-                <span
-                  className="stk-mono"
-                  style={{
-                    color: "var(--color-green)",
-                    fontSize: "1.05rem",
-                  }}
-                >
-                  {h.symbol}
-                </span>
-                <span
-                  className="stk-mono-tight"
-                  style={{ color: "var(--color-fg-muted)" }}
-                >
-                  {h.exchange} · {h.quantity} sh
-                  {live && (
-                    <span
-                      className="ml-2"
-                      style={{ color: "var(--color-green)" }}
-                      title="live tick"
-                    >
-                      ●
-                    </span>
-                  )}
-                </span>
-              </div>
-              <div className="mt-2 grid grid-cols-3 gap-3 text-sm">
-                <div>
-                  <div
-                    className="stk-mono-tight text-xs"
-                    style={{ color: "var(--color-fg-muted)" }}
-                  >
-                    avg
-                  </div>
-                  <div style={{ color: "var(--color-fg)" }}>
-                    ₹{h.average_price.toFixed(2)}
-                  </div>
-                </div>
-                <div>
-                  <div
-                    className="stk-mono-tight text-xs"
-                    style={{ color: "var(--color-fg-muted)" }}
-                  >
-                    LTP
-                  </div>
-                  <div style={{ color: "var(--color-fg)" }}>
-                    ₹{ltp.toFixed(2)}
-                  </div>
-                </div>
-                <div>
-                  <div
-                    className="stk-mono-tight text-xs"
-                    style={{ color: "var(--color-fg-muted)" }}
-                  >
-                    P&amp;L
-                  </div>
-                  <div style={{ color: pnlTone }}>
-                    {fmtInr(pnl)}{" "}
-                    <span className="text-xs">{fmtPct(pnlPct)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </li>
+          <tr key={`${h.exchange}-${h.symbol}`}>
+            <td className="stk-mono">{h.symbol}</td>
+            <td>{h.exchange}</td>
+            <td className="num">{h.quantity.toLocaleString("en-IN")}</td>
+            <td className="num">{rupeesFloat(h.average_price)}</td>
+            <td className="num">{rupeesFloat(ltp)}</td>
+            <td>{live ? <Chip tone="up">Live</Chip> : <span className="stk-label">Last snapshot</span>}</td>
+            <td className={`num ${toneClass}`}>{rupeesFloat(pnl, true)}</td>
+            <td className={`num ${toneClass}`}>{fmtPct(pnlPct)}</td>
+          </tr>
         );
       })}
-    </ul>
+    </Table>
   );
 }

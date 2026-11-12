@@ -54,3 +54,9 @@ export function parseRupeesToPaise(text: string): number | null {
   const [whole, frac = ""] = t.split(".");
   return Number(whole) * 100 + Number((frac + "00").slice(0, 2));
 }
+
+/** Rupees as a plain number (Kite's holdings arrive in rupees, not paise): 1234.5 → "₹1,234.50". */
+export function rupeesFloat(n: number | null | undefined, whole = false): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  return (whole ? INR_WHOLE : INR).format(n);
+}

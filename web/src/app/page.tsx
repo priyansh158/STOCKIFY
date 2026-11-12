@@ -3,56 +3,44 @@ import { Logo } from "@/components/Logo";
 import { SearchBox } from "@/components/SearchBox";
 
 const NAV = [
-  { href: "/portfolio", label: "💼 Portfolio" },
-  { href: "/alerts", label: "Geo alerts" },
-  { href: "/tests", label: "Strategy tests" },
-  { href: "/trade", label: "Paper trading" },
+  { href: "/portfolio", label: "Portfolio", note: "Your Zerodha holdings, read-only." },
+  { href: "/alerts", label: "Geo alerts", note: "From the always-on monitor." },
+  { href: "/tests", label: "Strategy tests", note: "Backtests on recorded and downloaded NSE data, with real costs." },
+  { href: "/trade", label: "Paper trading", note: "Strategies trade live prices with pretend money." },
 ];
 
 export default function Home() {
   return (
-    <div className="mx-auto max-w-2xl px-4 py-10 sm:py-16">
-      <Logo />
-      <p
-        className="stk-mono-tight mt-3"
-        style={{ color: "var(--color-fg-muted)" }}
-      >
-        NSE simulation lab
-      </p>
+    <div className="stk-page">
+      <div className="stk-head">
+        <div>
+          <Logo />
+          <p className="stk-lede">
+            NSE simulation lab. Record Kite market data, backtest equity and F&amp;O strategies with realistic costs,
+            fills and margin, and paper-trade them live with no real orders. Data coverage pages arrive with a later
+            milestone.
+          </p>
+        </div>
+      </div>
 
-      <p className="mt-6 leading-relaxed" style={{ color: "var(--color-fg)" }}>
-        Record Kite market data, backtest equity and F&amp;O strategies with
-        realistic costs, fills and margin, and paper-trade them live with no
-        real orders. Data coverage pages arrive with a later milestone.
-      </p>
+      <div className="stk-cols-split">
+        <section aria-label="Instrument search">
+          <SearchBox />
+        </section>
 
-      <section className="mt-10">
-        <SearchBox />
-      </section>
-
-      <nav className="mt-10 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        {NAV.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className="stk-mono-tight flex min-h-11 items-center justify-center rounded-md border px-4 py-2 text-sm"
-            style={{
-              borderColor: "rgba(0,255,65,0.25)",
-              color: "var(--color-green-soft)",
-              background: "rgba(0,255,65,0.04)",
-            }}
-          >
-            {item.label}
-          </Link>
-        ))}
-      </nav>
-
-      <footer
-        className="mt-16 text-xs"
-        style={{ color: "var(--color-fg-muted)" }}
-      >
-        Simulation only: STOCKIFY never places real orders. Not investment advice.
-      </footer>
+        <nav aria-label="Where to go">
+          <ul className="stk-dests">
+            {NAV.map((item) => (
+              <li key={item.href}>
+                <Link href={item.href}>
+                  <strong>{item.label}</strong>
+                  <span>{item.note}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </div>
     </div>
   );
 }

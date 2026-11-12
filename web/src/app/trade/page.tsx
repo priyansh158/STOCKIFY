@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { istWhen, pct, rupees } from "@/lib/format";
 import { listStrategies } from "@/lib/tests";
-import { getKiteStatus, listSessions, signedRupees, stopAll, tone } from "@/lib/trade";
+import { getKiteStatus, listSessions, parityText, signedRupees, stopAll, tone } from "@/lib/trade";
 import type { SessionDTO, Strategy } from "@/lib/types";
-import { Empty, Panel, Skeleton, Table } from "./ui";
+import { Empty, PageHead, Panel, Skeleton, Table, toneClass } from "./ui";
 import { CommandMessage, ConfirmDialog, LoginBanner, PauseReasons, StatusChip, useCommandWatch } from "./Commands";
 import NewSessionForm from "./NewSessionForm";
 
@@ -17,22 +17,18 @@ const MAX_BACKOFF_MS = 30_000;
 function SessionRow({ s }: { s: SessionDTO }) {
   return (
     <tr>
-      <td>
-        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} className="font-medium text-green-soft underline-offset-2 hover:underline">
-          {s.name || s.session_id}
-        </Link>
+      <td data-wrap>
+        <Link href={`/trade/${encodeURIComponent(s.session_id)}`}>{s.name || s.session_id}</Link>
         <div className="stk-label">{istWhen(s.created_ist)}</div>
       </td>
-      <td>
+      <td data-wrap>
         <StatusChip status={s.status} />
         <PauseReasons reasons={s.pause_reasons} />
       </td>
-      <td className={`num stk-mono ${tone(s.today_pnl_paise) === "up" ? "text-green" : tone(s.today_pnl_paise) === "down" ? "text-red-soft" : ""}`}>
-        {signedRupees(s.today_pnl_paise, rupees)}
-      </td>
+      <td className={`num ${toneClass(tone(s.today_pnl_paise)) ?? ""}`}>{signedRupees(s.today_pnl_paise, rupees)}</td>
       <td className="num">{s.open_positions === null || s.open_positions === undefined ? "—" : s.open_positions}</td>
       <td className="num">{s.coverage_today === null || s.coverage_today === undefined ? "—" : pct(s.coverage_today)}</td>
-      <td>{s.parity_last ?? "—"}</td>
+      <td data-wrap>{parityText(s.parity_last)}</td>
     </tr>
   );
 }
@@ -100,74 +96,62 @@ export default function TradePage() {
   }, [watch, fail]);
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 pb-28 sm:py-10">
-      <div className="mb-6 flex items-center justify-between">
-        <Link href="/" className="stk-btn" data-tone="quiet" >
-          Home
-        </Link>
-        <div className="stk-label" aria-live="polite">
-          {anyRunning ? "Live, updating" : "Updating slowly"}
-        </div>
+    <div className="stk-page" data-bar>
+      <PageHead
+        title="Paper trading"
+        lede="Strategies trade live prices with pretend money. Simulation only: no real orders are ever sent."
+        actions={
+          <span className="stk-label" aria-live="polite">
+            {anyRunning ? "Live, updating" : "Updating slowly"}
+          </span>
+        }
+      />
+
+      <div className="stk-stack">
+        {waiting && <LoginBanner />}
+
+        {error && (
+          <div role="alert">
+            <Panel tone="red">
+              <p>Could not reach the API: {error}</p>
+            </Panel>
+          </div>
+        )}
+
+        <NewSessionForm strategies={strategies} />
+
+        <section className="stk-section">
+          <h2>Sessions</h2>
+          {sessions === null ? (
+            <div className="stk-stack-s" aria-busy="true" aria-label="Loading sessions">
+              <Skeleton size="s" />
+              <Skeleton size="m" />
+              <Skeleton size="m" />
+            </div>
+          ) : sessions.length === 0 ? (
+            <Empty>No paper sessions yet. Create one above.</Empty>
+          ) : (
+            <Table
+              caption="Paper sessions"
+              head={[
+                { label: "Session" },
+                { label: "Status" },
+                { label: "Made or lost today", num: true },
+                { label: "Positions held", num: true },
+                { label: "Market data received", num: true },
+                { label: "Last replay check" },
+              ]}
+            >
+              {sessions.map((s) => (
+                <SessionRow key={s.session_id} s={s} />
+              ))}
+            </Table>
+          )}
+        </section>
       </div>
 
-      <h1 className="mb-2 text-2xl font-bold text-green sm:text-3xl">
-        Paper trading
-      </h1>
-      <p className="mb-6 text-sm text-fg-muted">
-        Strategies trade live prices with pretend money. Simulation only: no real orders are ever sent.
-      </p>
-
-      {waiting && (
-        <div className="mb-4">
-          <LoginBanner />
-        </div>
-      )}
-
-      {error && (
-        <div className="mb-4" role="alert">
-          <Panel tone="red">
-            <p className="text-sm text-red-soft">
-              Could not reach the API: {error}
-            </p>
-          </Panel>
-        </div>
-      )}
-
-      <NewSessionForm strategies={strategies} />
-
-      <h2 className="mb-3 mt-8 text-sm font-semibold text-fg-muted">
-        Sessions
-      </h2>
-      {sessions === null ? (
-        <div className="flex flex-col gap-3" aria-busy="true" aria-label="Loading sessions">
-          <Skeleton className="h-10" />
-          <Skeleton className="h-16" />
-          <Skeleton className="h-16" />
-        </div>
-      ) : sessions.length === 0 ? (
-        <Empty>No paper sessions yet. Create one above.</Empty>
-      ) : (
-        <Table
-          caption="Paper sessions"
-          head={[
-            { label: "Session" },
-            { label: "Status" },
-            { label: "Made or lost today", num: true },
-            { label: "Positions held", num: true },
-            { label: "Market data received", num: true },
-            { label: "Last replay check" },
-          ]}
-        >
-          {sessions.map((s) => (
-            <SessionRow key={s.session_id} s={s} />
-          ))}
-        </Table>
-      )}
-
-      <div
-        className="fixed inset-x-0 bottom-0 z-20 border-t border-red bg-bg-soft px-4 py-3"
-      >
-        <div className="mx-auto flex max-w-6xl items-center justify-end gap-4">
+      <div className="stk-bar">
+        <div className="stk-bar-in">
           <CommandMessage message={cmd.message} failed={cmd.failed} />
           <button
             type="button"
