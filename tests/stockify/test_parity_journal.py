@@ -18,7 +18,11 @@ from tests.stockify.daemon.test_finalise import DAY2, SHIFT, shifted
 from tests.stockify.daemon.test_session_day import pack_records
 
 from stockify import __main__ as cli, engine, paths, parity, store
-from stockify.daemon import finalise, journal, lifecycle, session_day
+from stockify.config import loader
+from stockify.daemon import finalise, journal, lifecycle, recovery, session_day
+from stockify.daemon.clock import ManualClock
+from stockify.daemon.dispatcher import Dispatcher
+from stockify.daemon.encoder import FrameEncoder
 from stockify.data import packs, refdata
 
 SID = "p1"
@@ -236,13 +240,68 @@ class ParityJournalTest(_Base):
         finally:
             claim.release()
 
+    # -- fix round 1 -----------------------------------------------------------------------------------------------
+
+    def test_a_tampered_eod_state_fails_parity(self):
+        """It seeds the next day, so it is compared byte for byte."""
+        self.finalised_day()
+        self.tamper("UPDATE session_days SET eod_state_json = eod_state_json || ' ' WHERE session_id = ?", SID)
+        res = parity.journal_parity(SID, pf.DAY)
+        first = res.summary["first_difference"]
+        self.assertEqual((res.outcome, first["table"]), ("fail", "eod_state"))
+        self.assertEqual(store.get_session(SID)["pause_reasons"], ["parity_failure"])
+
+    def test_a_repeat_of_the_same_mismatch_is_one_still_open_row(self):
+        enable_logging(self)
+        self.finalised_day()
+        self.tamper("UPDATE session_days SET eod_state_json = eod_state_json || ' ' WHERE session_id = ?", SID)
+        with self.assertLogs("stockify.parity", "ERROR"):
+            parity.journal_parity(SID, pf.DAY)
+        with self.assertNoLogs("stockify.parity", "ERROR"):
+            again = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(again.outcome, "fail")
+        kinds = [r["kind"] for r in store.timeline(SID)]
+        self.assertEqual((kinds.count("parity"), kinds.count("parity_still_open")), (1, 1))
+        self.assertEqual(store.get_session(SID)["pause_reasons"], ["parity_failure"])
+        self.tamper_row("session_fills", "fill_id", "price_paise", 1)                # a different mismatch
+        with self.assertLogs("stockify.parity", "ERROR"):
+            other = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(other.summary["first_difference"]["table"], "fills")
+        kinds = [r["kind"] for r in store.timeline(SID)]
+        self.assertEqual((kinds.count("parity"), kinds.count("parity_still_open")), (2, 1))
+
+    def test_cli_exit_codes_not_finalised_and_unexpected_error(self):
+        store.create_session(SID, "s", self.cfg(), 1)
+        argv = ["parity", "journal", "--session", SID, "--date", pf.EXPIRY]
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(argv), 3)
+        self.assertIn("not finalised", err.getvalue())
+        err = io.StringIO()
+        with mock.patch.object(parity, "journal_parity", side_effect=sqlite3.OperationalError("database is locked")):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(cli.main(argv), 4)
+        self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
+        self.assertIn("database is locked", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_an_unloadable_engine_does_not_mask_the_days_own_error(self):
+        self.finalised_day()
+        with mock.patch.object(engine, "load", side_effect=ImportError("not built")), \
+                mock.patch.object(finalise, "fresh_engine", side_effect=finalise.FinaliseError("real")):
+            res = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(res.outcome, "fail")
+        self.assertIn("real", res.summary["error"])
+
 
 class ParityTwoDayTest(_Base):
+    fut_full = True
+
     def test_day2_parity_passes(self):
         """SOD from day 1: the day's bundle carries it."""
         act = [{"on_event": 60, "place": {"instrument": self.fut, "side": "BUY", "qty": 65, "product": "NRML",
                                           "type": "MARKET"}}]
-        cfg = self.session_cfg(strategy={"kind": "script", "actions": act},
+        cfg = self.session_cfg(strategy={"kind": "script", "actions": act}, capital_paise=100_000_000,
                                universe=["NSE:NIFTY 50", "NFO:NIFTY26NOVFUT"])
         store.create_session(SID, "s", cfg, 1)
         lifecycle.arm(SID, wall_ns=2)
@@ -266,12 +325,103 @@ class ParityTwoDayTest(_Base):
             sd.close()
             self.assertEqual(finalise.finalise_day(SID, day, files_complete=True, cutoff_passed=False).status,
                              "finalised")
-        self.assertIn("sod_state", json.loads(paths.day_bundle_file(SID, DAY2).read_text("utf-8")))
+        sod = json.loads(paths.day_bundle_file(SID, DAY2).read_text("utf-8"))["sod_state"]
+        self.assertTrue(sod["ledger"]["positions"], "a real position was carried into day two")
         for day in (pf.DAY, DAY2):
             with self.subTest(day=day):
                 res = parity.journal_parity(SID, day)
                 self.assertEqual((res.outcome, res.summary["first_difference"]), ("pass", None))
                 self.assertEqual(store.get_session_day(SID, day.isoformat())["parity"], "pass")
+        self.assertGreaterEqual(parity.journal_parity(SID, pf.DAY).summary["rows"]["positions"], 1)
+        row = store._one("SELECT row_json FROM session_positions_eod WHERE session_id = ? AND trade_date = ?",
+                         (SID, pf.EXPIRY))
+        data = json.loads(row["row_json"])
+        data["qty"] = str(int(data["qty"]) + 1)
+        self.tamper("UPDATE session_positions_eod SET row_json = ? WHERE session_id = ? AND trade_date = ?",
+                    json.dumps(data, sort_keys=True), SID, pf.EXPIRY)
+        res = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual((res.outcome, res.summary["first_difference"]["table"]), ("fail", "positions"))
+
+
+class ParityPauseTest(_Base):
+    """Where the parity pause goes: the store alone when no later day is open, the command queue (journal first)
+    when one is."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg2 = self.session_cfg(strategy={"kind": "script", "actions": []},
+                                     universe=["NSE:NIFTY 50", "NFO:NIFTY26NOVFUT"])
+        store.create_session(SID, "s", self.cfg2, 1)
+        lifecycle.arm(SID, wall_ns=2)
+        lifecycle.start_continuous(SID, wall_ns=3, engine_ns=3)
+        clock = packs.RANK[packs.CLOCK]
+        day1 = [r for r in self.records
+                if packs.decode(r[2], 0)[0]["instrument_id"] in (self.idx, self.fut) or r[1] == clock]
+        with refdata.transaction() as conn:
+            conn.execute("INSERT INTO fo_eod (trade_date, instrument_id, settle_paise) VALUES (?, ?, 2411000)",
+                         (DAY2.isoformat(), self.fut))
+        sd = session_day.SessionDay(SID, pf.DAY, self.cfg2, mono=lambda: next(self.ticks))
+        self.addCleanup(sd.close)
+        sd.open(None, [], self.t("09:14:00"))
+        sd.feed(day1, None)
+        sd.close()
+        self.assertEqual(finalise.finalise_day(SID, pf.DAY, files_complete=True, cutoff_passed=False).status,
+                         "finalised")
+        self.tamper("UPDATE session_days SET eod_state_json = eod_state_json || ' ' WHERE session_id = ?", SID)
+
+    def tamper(self, sql, *args):
+        conn = store._connect()
+        with store._lock:
+            conn.execute(sql, args)
+            conn.commit()
+
+    def open_day2(self, reasons=()):
+        sd = session_day.SessionDay(SID, DAY2, self.cfg2, mono=lambda: next(self.ticks))
+        self.addCleanup(sd.close)
+        sd.open(finalise.next_sod_state(SID, DAY2), list(reasons), self.t("09:14:00") + SHIFT)
+        return sd
+
+    def controls(self, day):
+        _, body, _ = journal.read(paths.journal_file(SID, day))
+        out, off = [], 0
+        while off < len(body):
+            rec, off = packs.decode(body, off)
+            if rec["kind"] == "REFDATA" and rec["subtype"] == "strategy_control":
+                out.append(rec["payload"])
+        return out
+
+    def test_the_next_day_opens_paused(self):
+        self.assertEqual(parity.journal_parity(SID, pf.DAY).outcome, "fail")
+        self.assertEqual(store.get_session(SID)["pause_reasons"], ["parity_failure"])
+        self.assertEqual(store.pending_commands(), [])                      # no later day: the store carries it
+        lifecycle.start_continuous(SID, wall_ns=9, engine_ns=9)
+        self.assertEqual(store.get_session(SID)["status"], "PAUSED")
+        sd = self.open_day2(store.get_session(SID)["pause_reasons"])
+        sd.close()
+        self.assertIn("parity_failure", json.dumps(self.controls(DAY2)))
+
+    def test_a_later_open_day_is_paused_through_the_journal_and_a_restart_keeps_it(self):
+        lifecycle.start_continuous(SID, wall_ns=9, engine_ns=9)
+        sd2 = self.open_day2()
+        res = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(res.outcome, "fail")
+        self.assertEqual(store.get_session(SID)["pause_reasons"], [], "not a store-only pause")
+        cmds = store.pending_commands()
+        self.assertEqual([(c["command"], c["args"]) for c in cmds], [("pause", {"reason": "parity_failure"})])
+        parity.journal_parity(SID, pf.DAY)                                   # a repeat queues nothing more
+        self.assertEqual(len(store.pending_commands()), 1)
+        t = self.t("09:30:00") + SHIFT
+        disp = Dispatcher([sd2], FrameEncoder({}), clock=ManualClock(t), cfg=dict(loader.load_json("paper.json")),
+                          replay=True)
+        disp.apply_pending(t)
+        self.assertEqual(store.pending_commands(), [])
+        self.assertIn("parity_failure", json.dumps(self.controls(DAY2)[-1]))
+        self.assertEqual(store.get_session(SID)["pause_reasons"], ["parity_failure"])
+        sd2.close()
+        sd3, _ = recovery.recover(SID, DAY2, clock=ManualClock(self.t("09:40:00") + SHIFT))
+        self.addCleanup(sd3.close)
+        got = store.get_session(SID)
+        self.assertEqual((got["status"], got["pause_reasons"]), ("PAUSED", ["parity_failure"]))
 
 
 if __name__ == "__main__":

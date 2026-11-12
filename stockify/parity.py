@@ -5,7 +5,7 @@ what the store holds.
 
 A fresh engine is built on the day's own saved bundle (its `sod_state` included), fed the day's journal, finished, and
 its artifacts and drained outputs are compared with the stored orders, order events, fills, charges, end-of-day
-positions and equity row, table by table and key by key, in that order. Every row must be identical, a row on one
+positions, equity row and end-of-day state (`eod_state`, which seeds the next day), table by table and key by key, in that order. Every row must be identical, a row on one
 side only is a difference, and the first difference is named. Parity is stricter than recovery on purpose: recovery
 repairs a store that is behind or ahead of the journal, parity repairs nothing.
 
@@ -13,6 +13,9 @@ repairs a store that is behind or ahead of the journal, parity repairs nothing.
     fail       the session is paused with `parity_failure` (a STOPPED one cannot be), the timeline row names the
                first difference, `log.error` says so, and the result is stored LAST, so a crash before it leaves a
                rerun that still pauses. The store is left as found: it is the evidence. This is a bug (E-01).
+               A later day whose journal is open gets the pause through the owner command queue (the dispatcher
+               journals `strategy_control` first); otherwise the store carries it and the next day opens with it.
+               The same mismatch found again (by digest) writes one `parity_still_open` row and no new alarm.
     skipped    the day is not finalised (or the session is unknown): nothing is written, a later run decides.
 
 A finalised day whose journal or bundle cannot be read, or that the engine refuses, is a `fail` too: the gate did
@@ -24,6 +27,7 @@ takes the daemon's lock or the day's finalise claim: a day whose status says `fi
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import tempfile
@@ -38,7 +42,7 @@ from stockify.daemon.session_day import SessionDayError
 log = logging.getLogger("stockify.parity")
 
 KIND = "journal"
-TABLES = ("orders", "order_events", "fills", "charges", "positions", "equity")     # the order of the comparison
+TABLES = ("orders", "order_events", "fills", "charges", "positions", "equity", "eod_state")   # the order of the comparison
 _ALL = 2 ** 31
 
 
@@ -84,7 +88,8 @@ def _stored(session_id: str, day: date) -> dict[str, dict]:
     rows = store.session_day_rows(session_id, d)                    # keyed by the tables' own keys
     end = store.session_day_end(session_id, d)
     rows["order_events"] = {n: {**r, "event_no": n} for n, r in rows["order_events"].items()}
-    return {**rows, "positions": {n: r for n, r in enumerate(end["positions"], 1)}, "equity": {d: end["equity"]}}
+    return {**rows, "positions": {n: r for n, r in enumerate(end["positions"], 1)}, "equity": {d: end["equity"]},
+            "eod_state": {d: store.get_session_day(session_id, d)["eod_state_json"]}}
 
 
 def _regenerated(session_id: str, day: date) -> tuple[dict[str, dict], int]:
@@ -95,6 +100,7 @@ def _regenerated(session_id: str, day: date) -> tuple[dict[str, dict], int]:
     try:
         records = finalise.replay_into(engine, jpath)
         engine.finish()
+        eod_state = engine.eod_state()
         with tempfile.TemporaryDirectory(prefix="stockify-parity-") as tmp:
             engine.write_artifacts(tmp)
             outputs = engine.drain_outputs()
@@ -112,12 +118,18 @@ def _regenerated(session_id: str, day: date) -> tuple[dict[str, dict], int]:
         "positions": {n: r for n, r in enumerate(positions, 1)},
         "equity": {d: {"nav_paise": int(rows[0]["nav_paise"]), "cash_paise": int(rows[0]["cash_paise"]),
                        "margin_paise": int(rows[0]["margin_blocked_paise"])}},
+        "eod_state": {d: eod_state},
     }, records
 
 
-def _run_error() -> type[BaseException]:
-    from stockify import engine
-    return engine.load().RunError
+def _run_error() -> tuple[type[BaseException], ...]:
+    """The engine's RunError, resolved before any `except` needs it; an engine that cannot be loaded gives () so the
+    day's own error is the one reported (fresh_engine raises the load error itself)."""
+    try:
+        from stockify import engine
+        return (engine.load().RunError,)
+    except Exception:  # noqa: BLE001
+        return ()
 
 
 def journal_parity(session_id: str, day: date) -> ParityResult:
@@ -133,13 +145,14 @@ def journal_parity(session_id: str, day: date) -> ParityResult:
 
     jpath = paths.journal_file(session_id, day)
     summary: dict = {"day": d}
+    run_error = _run_error()
     try:
         if not jpath.exists() or not paths.day_bundle_file(session_id, day).exists():
             raise finalise.FinaliseError(f"{session_id} has no journal and bundle for {d}, though the day is finalised")
         if not journal.is_finalised(jpath):
             raise finalise.FinaliseError(f"the journal of {d} is not finalised, though the day is")
         twin, records = _regenerated(session_id, day)
-    except (finalise.FinaliseError, journal.JournalError, SessionDayError, _run_error()) as e:
+    except (finalise.FinaliseError, journal.JournalError, SessionDayError, *run_error) as e:
         summary.update(error=f"{type(e).__name__}: {e}", first_difference=None)
         return _record(ParityResult(session_id, day, KIND, "fail", summary))
     stored = _stored(session_id, day)
@@ -151,21 +164,67 @@ def journal_parity(session_id: str, day: date) -> ParityResult:
     return _record(ParityResult(session_id, day, KIND, "fail" if first else "pass", summary))
 
 
+def _digest(result: ParityResult) -> str:
+    what = result.summary.get("first_difference") or {"error": result.summary.get("error")}
+    return hashlib.sha256(json.dumps(what, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _later_day_open(session_id: str, day: str) -> bool:
+    """Whether a day after `day` has a journal that is still open (a running or crashed day, not a finalised one)."""
+    for row in store.later_session_days(session_id, day):
+        if row["status"] == "finalised":
+            continue
+        jpath = paths.journal_file(session_id, date.fromisoformat(row["trade_date"]))
+        try:
+            if jpath.exists() and not journal.is_finalised(jpath):
+                return True
+        except journal.JournalError:
+            continue
+    return False
+
+
+def _pause(sid: str, day: str, now: int) -> str:
+    """Pause the session with `parity_failure`; returns how. A stopped session cannot be paused ("stopped"). When a
+    later day's journal is open the pause is queued as an owner command, so the dispatcher journals the
+    `strategy_control` first (the running engine sees it and a restart keeps it); otherwise the store carries it
+    and the next day opens with it."""
+    session = store.get_session(sid)
+    if session["status"] == "STOPPED":
+        return "stopped"
+    if not _later_day_open(sid, day):
+        lifecycle.pause(sid, "parity_failure", wall_ns=now)
+        return "stored"
+    queued = any(c["session_id"] == sid and c["command"] == "pause"
+                 and (c["args"] or {}).get("reason") == "parity_failure" for c in store.pending_commands())
+    if "parity_failure" not in session["pause_reasons"] and not queued:
+        store.add_command(sid, "pause", {"reason": "parity_failure"}, now)
+    return "queued"
+
+
 def _record(result: ParityResult) -> ParityResult:
     sid, d, now = result.session_id, result.day.isoformat(), timeutil.now_ns()
-    detail = {"day": d, "kind": KIND, "outcome": result.outcome,
-              **{k: v for k, v in result.summary.items() if k != "day"}}
     if result.outcome == "pass":
+        detail = {"day": d, "kind": KIND, "outcome": "pass", **{k: v for k, v in result.summary.items() if k != "day"}}
         log.info("parity %s %s: pass (%s records, %s)", sid, d, result.summary["records"],
                  ", ".join(f"{t} {n}" for t, n in result.summary["rows"].items()))
         store.add_timeline(sid, "parity", detail, wall_ns=now, engine_ns=None)
         store.put_parity_result(sid, d, KIND, "pass", result.summary, created_ns=now)
         return result
-    log.error("parity FAILED for session %s on %s: %s. The stored rows disagree with a replay of the journal (E-01): "
-              "this is a bug. Nothing was repaired; the stored rows are the evidence.", sid, d,
-              result.difference_line)
-    if store.get_session(sid)["status"] != "STOPPED":              # a stopped session cannot be paused; the rows say so
-        lifecycle.pause(sid, "parity_failure", wall_ns=now)
-    store.add_timeline(sid, "parity", detail, wall_ns=now, engine_ns=None)
+    digest = result.summary["digest"] = _digest(result)
+    known = any(r["kind"] == "parity" and (r["detail"] or {}).get("outcome") == "fail"
+                and (r["detail"] or {}).get("day") == d and (r["detail"] or {}).get("digest") == digest
+                for r in store.timeline(sid, limit=1_000_000))
+    how = _pause(sid, d, now)
+    if known:                                       # the same mismatch as an earlier run: one short row, no new alarm
+        log.warning("parity still failing for session %s on %s (%s): %s", sid, d, digest[:12], result.difference_line)
+        store.add_timeline(sid, "parity_still_open", {"day": d, "digest": digest, "pause": how}, wall_ns=now,
+                           engine_ns=None)
+    else:
+        log.error("parity FAILED for session %s on %s: %s. The stored rows disagree with a replay of the journal "
+                  "(E-01): this is a bug. Nothing was repaired; the stored rows are the evidence.", sid, d,
+                  result.difference_line)
+        detail = {"day": d, "kind": KIND, "outcome": "fail", "pause": how,
+                  **{k: v for k, v in result.summary.items() if k != "day"}}
+        store.add_timeline(sid, "parity", detail, wall_ns=now, engine_ns=None)
     store.put_parity_result(sid, d, KIND, "fail", result.summary, created_ns=now)      # last: a rerun still pauses
     return result

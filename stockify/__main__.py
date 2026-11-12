@@ -597,7 +597,8 @@ def _cmd_margin_live_report(args) -> int:
 
 def _cmd_parity_journal(args) -> int:
     """RD 5.1: replay a finalised session-day's journal and compare it with the store (reads only). Exit 0: identical;
-    1: a difference (one `differs:` line); 2: bad arguments or an unknown session; 3: not finalised, nothing checked."""
+    1: a difference (one `differs:` line); 2: bad arguments or an unknown session; 3: not finalised, nothing checked; 4: could not run (a locked
+    database, an engine that is not built)."""
     from datetime import date
     from stockify import parity, store
     try:
@@ -608,7 +609,11 @@ def _cmd_parity_journal(args) -> int:
     if store.get_session(args.session) is None:
         print(f"no such session: {args.session!r}", file=sys.stderr)
         return 2
-    result = parity.journal_parity(args.session, day)
+    try:
+        result = parity.journal_parity(args.session, day)
+    except Exception as e:  # noqa: BLE001 — a locked database or an engine that is not built is not a difference
+        print(f"parity: could not run: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 4
     if result.outcome == "skipped":
         print(f"skipped: {result.summary['reason']}", file=sys.stderr)
         return 3
@@ -872,7 +877,7 @@ def main(argv: list[str] | None = None) -> int:
     pa = sub.add_parser("parity", help="nightly parity gates (M5.10)")
     pasub = pa.add_subparsers(dest="parity_command", required=True)
     pj = pasub.add_parser("journal", help="replay a finalised session-day's journal and compare it with the store "
-                                          "(reads only; exit 0 identical, 1 a difference, 3 not finalised)")
+                                          "(reads only; exit 0 identical, 1 a difference, 3 not finalised, 4 could not run)")
     pj.add_argument("--session", required=True, help="session id")
     pj.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
     pj.set_defaults(func=_cmd_parity_journal)

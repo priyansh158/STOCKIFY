@@ -509,6 +509,12 @@ def get_session_day(session_id: str, trade_date: str) -> dict | None:
     return dict(row) if row else None
 
 
+def later_session_days(session_id: str, trade_date: str) -> list[dict]:
+    """The session's day rows after `trade_date`, oldest first."""
+    return [dict(r) for r in _all("SELECT * FROM session_days WHERE session_id = ? AND trade_date > ? "
+                                  "ORDER BY trade_date", (session_id, trade_date))]
+
+
 def put_parity_result(session_id: str, trade_date: str, kind: str, outcome: str, summary: dict, *,
                       created_ns: int) -> None:
     """Record a parity result (kind `journal` | `recorder`; outcome `pass` | `fail`) in ONE transaction: the
