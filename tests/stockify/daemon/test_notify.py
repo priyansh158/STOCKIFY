@@ -60,8 +60,11 @@ class NotifyTestBase(unittest.TestCase):
 
 
 class SendTests(NotifyTestBase):
+    def test_the_shipped_channel_is_email(self):
+        self.assertEqual(loader.load_json("notify.json")["channel"], "email")
+
     def test_default_is_log_only(self):
-        self.assertIsNone(loader.load_json("notify.json")["channel"])           # the shipped file
+        self.configured(channel=None)
         sender = Recorder()
         with self.assertLogs("stockify.daemon.notify", "INFO") as cm:
             self.assertIsNone(notify.send("parity_failure", "subj", "body", sender=sender))
@@ -101,54 +104,10 @@ class SendTests(NotifyTestBase):
         notify.send("parity_failure", "s", "b", sender=good, key="k")
         self.assertEqual(len(good.calls), 1)
 
-    def test_ntfy_posts_without_logging_topic(self):
-        self.configured(channel="ntfy")
-        seen = {}
-
-        def post(url, data, headers):
-            seen.update(url=url, data=data, headers=headers)
-
-        with support.isolated_env({"STOCKIFY_NTFY_TOPIC": SECRET_TOPIC}), \
-                mock.patch.object(notify, "_http_post", post), \
-                self.assertLogs("stockify.daemon.notify", "DEBUG") as cm:
-            self.assertIsNone(notify.send("login_needed", "Kite login", "please log in"))
-        self.assertTrue(seen["url"].startswith("https://"))
-        self.assertTrue(seen["url"].endswith(SECRET_TOPIC))
-        self.assertEqual(seen["data"], b"please log in")
-        self.assertNotIn(SECRET_TOPIC, "\n".join(cm.output))
-        # a transport error that quotes the URL must not leak it either
-        with support.isolated_env({"STOCKIFY_NTFY_TOPIC": SECRET_TOPIC}), \
-                mock.patch.object(notify, "_http_post", side_effect=OSError(f"cannot reach {seen['url']}")), \
-                self.assertLogs("stockify.daemon.notify", "DEBUG") as cm:
-            error = notify.send("login_needed", "Kite login", "please log in")
-        self.assertNotIn(SECRET_TOPIC, f"{error}\n" + "\n".join(cm.output))
-
-    def test_telegram_posts_without_logging_token(self):
-        self.configured(channel="telegram")
-        seen = {}
-        env = {"STOCKIFY_TELEGRAM_TOKEN": SECRET_TOKEN, "STOCKIFY_TELEGRAM_CHAT": "4242"}
-        with support.isolated_env(env), \
-                mock.patch.object(notify, "_http_post", lambda url, data, headers: seen.update(url=url, data=data)), \
-                self.assertLogs("stockify.daemon.notify", "DEBUG") as cm:
-            self.assertIsNone(notify.send("disk_low", "disk", "low"))
-        self.assertIn(SECRET_TOKEN, seen["url"])
-        self.assertEqual(json.loads(seen["data"])["chat_id"], "4242")
-        self.assertNotIn(SECRET_TOKEN, "\n".join(cm.output))
-
-    def test_a_missing_secret_is_an_error_not_a_crash(self):
-        self.configured(channel="ntfy")
-        with support.isolated_env({}), self.assertLogs("stockify.daemon.notify", "ERROR"):
-            self.assertIsNotNone(notify.send("disk_low", "s", "b"))
-
     def test_real_delivery_is_blocked_under_test(self):
         self.configured(channel="email")
         with self.assertLogs("stockify.daemon.notify", "ERROR"):
             self.assertIsNotNone(notify.send("disk_low", "s", "b"))              # the default sender refuses
-
-    def test_the_login_reminder_still_emails_while_the_channel_is_unset(self):
-        sender = Recorder()
-        self.assertIsNone(notify.send("login_needed", "s", "b", sender=sender, legacy_email=True))
-        self.assertEqual([c[0] for c in sender.calls], ["email"])
 
     def test_unknown_event_is_refused(self):
         self.assertIsNotNone(notify.send("nonsense", "s", "b", sender=Recorder()))
@@ -192,11 +151,11 @@ class OwnerCheckTests(NotifyTestBase):
             return cli.main(["notify", "test"]), err.getvalue()
 
     def test_notify_test_sends_one_message_whatever_the_switches_say(self):
-        self.configured(channel="ntfy", **{e: False for e in loader.NOTIFY_EVENTS})
+        self.configured(channel="email", **{e: False for e in loader.NOTIFY_EVENTS})
         sender = Recorder()
         with mock.patch.object(notify, "_default_sender", sender):
             code, _ = self.run_cli()
-        self.assertEqual((code, [c[0] for c in sender.calls]), (0, ["ntfy"]))
+        self.assertEqual((code, [c[0] for c in sender.calls]), (0, ["email"]))
 
     def test_notify_test_without_a_channel_says_so(self):
         self.configured(channel=None)
@@ -205,7 +164,7 @@ class OwnerCheckTests(NotifyTestBase):
         self.assertIn("no channel", err)
 
     def test_notify_test_failure_names_the_class_only(self):
-        self.configured(channel="telegram")
+        self.configured(channel="email")
         with mock.patch.object(notify, "_default_sender", Recorder(fail=OSError(SECRET_TOKEN))),                 self.assertLogs("stockify.daemon.notify", "ERROR") as cm:
             code, err = self.run_cli()
         self.assertEqual(code, 1)
@@ -226,9 +185,11 @@ class LoaderTests(unittest.TestCase):
             self.load({"schema": "stockify.notify/1", "channels": [], "events": {}})
 
     def test_the_new_shape_and_its_rules(self):
-        self.assertEqual(self.load(settings("ntfy"))["channel"], "ntfy")
-        with self.assertRaises(loader.ConfigError):
-            self.load(settings("sms"))
+        self.assertEqual(self.load(settings("email"))["channel"], "email")
+        self.assertIsNone(self.load(settings(None))["channel"])
+        for gone in ("ntfy", "telegram", "sms"):                      # email only (owner, 2026-11-11)
+            with self.assertRaises(loader.ConfigError):
+                self.load(settings(gone))
         bad = settings()
         bad["events"]["disk_low"] = "yes"
         with self.assertRaises(loader.ConfigError):
@@ -299,16 +260,14 @@ class DailySummaryJobTests(SandboxedDBTest):
         from stockify.daemon import scheduler
         store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
         state = scheduler.State()
-        with mock.patch.object(notify, "send_daily_summary", return_value=False) as send:
+        with mock.patch.object(notify, "post_daily_summary", return_value=False) as post:
             daemon._daily_summary(DAY, state)                         # nothing finalised yet: tried again later
             self.assertFalse(state.done("daily_summary", DAY))
-            send.return_value = True
-            daemon._daily_summary(DAY, state)
-            daemon._daily_summary(DAY, state)
-        self.assertEqual(send.call_count, 2)
-        self.assertTrue(state.done("daily_summary", DAY))
+            self.assertFalse(state.done("daily_summary_try1", DAY))   # a not-ready day is not a try
+        post.assert_not_called()                                      # nothing is ready: nothing is posted
         enable_logging(self)
-        with mock.patch.object(notify, "send_daily_summary", side_effect=RuntimeError("boom")),                 self.assertLogs("stockify.daemon", "ERROR"):
+        with mock.patch.object(notify, "summary_ready", side_effect=RuntimeError("boom")), \
+                self.assertLogs("stockify.daemon", "ERROR"):
             daemon._daily_summary(date(2026, 11, 18), state)
 
 
@@ -371,6 +330,168 @@ class CallSiteTests(SandboxedDBTest):
         token_watch.begin_wait(5)
         token_watch.begin_wait(6)                                               # already waiting: no second mail
         self.assertEqual([c.args[0] for c in post.call_args_list], ["login_needed"])
+
+
+class EmailOnlyTests(NotifyTestBase):
+    def unconfigured(self):
+        self.configured(channel="email")
+        for p in (mock.patch.object(notify, "_blocked", return_value=False),
+                  mock.patch("geo_monitor.email_notify.email_configured", return_value=False)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_unconfigured_smtp_is_reported_once_per_process_and_never_raises(self):
+        self.unconfigured()
+        with self.assertLogs("stockify.daemon.notify", "INFO") as cm:
+            first = notify.send("disk_low", "s", "b")
+            second = notify.send("parity_failure", "s", "b")
+        self.assertEqual((first, second), ("email not configured", "email not configured"))
+        warned = [line for line in cm.output if "NotConfigured" in line]
+        self.assertEqual(len(warned), 1)
+        self.assertTrue(issubclass(notify.NotConfigured, RuntimeError))
+
+    def test_a_long_body_is_cut_for_email(self):
+        sender = Recorder()
+        self.configured(channel="email")
+        notify.send("disk_low", "s", "x" * 100_000, sender=sender)
+        sent = sender.calls[0][2]
+        self.assertLessEqual(len(sent), notify.MAX_BODY_CHARS)
+        self.assertIn("see the log", sent)
+        self.assertEqual(notify.fit("short"), "short")
+
+    def test_there_is_no_other_channel_in_the_code(self):
+        self.assertFalse(hasattr(notify, "_http_post"))
+        self.assertEqual(loader.NOTIFY_CHANNELS, (None, "email"))
+
+
+class FixRoundTests(SandboxedDBTest):
+    """Review of 6b06fa7: the summary is retried, posted and complete; email only."""
+    db_modules = (store,)
+
+    def setUp(self):
+        super().setUp()
+        enable_logging(self)
+        notify.reset()
+        self.addCleanup(notify.reset)
+
+    def configured(self, **kw):
+        p = mock.patch.object(notify, "settings", return_value=settings(**kw))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def day_end(self, sid, day, nav, finalised=True):
+        store.save_session_day_end(sid, day, orders=[], positions=[],
+                                   equity={"nav_paise": nav, "cash_paise": nav, "margin_paise": 0},
+                                   eod_state_json="{}", labels=[])
+        store.upsert_session_day(sid, day, status="finalised" if finalised else "open", coverage=1.0,
+                                 parity="pass")
+
+    # I-1: success only when the send succeeded; retries are capped
+    def test_send_daily_summary_is_true_only_if_the_send_worked(self):
+        store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
+        self.day_end("orb", DAY.isoformat(), 10_000_000)
+        self.configured(channel="email")
+        self.assertFalse(notify.send_daily_summary(DAY, sender=Recorder(fail=OSError())))
+        good = Recorder()
+        self.assertTrue(notify.send_daily_summary(DAY, sender=good))            # a failed send was not remembered
+        self.assertEqual(len(good.calls), 1)
+
+    def drive(self, state, passes, outcome):
+        """Run the daemon's summary step `passes` times, each time letting the worker finish with `outcome`."""
+        from stockify import daemon
+        for _ in range(passes):
+            daemon._daily_summary(DAY, state)
+            self.assertTrue(notify.flush(5))
+
+    def test_a_failing_channel_is_retried_at_most_five_times_then_given_up_once(self):
+        from stockify.daemon import scheduler
+        store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
+        self.day_end("orb", DAY.isoformat(), 10_000_000)
+        self.configured(channel="email")
+        bad = Recorder(fail=OSError())
+        state = scheduler.State()
+        with mock.patch.object(notify, "_default_sender", bad), self.assertLogs("stockify.daemon", "ERROR") as cm:
+            self.drive(state, 9, None)
+        self.assertEqual(len(bad.calls), 5)
+        self.assertEqual(sum("giving up" in line for line in cm.output), 1)
+        self.assertTrue(state.done("daily_summary", DAY))                       # finished: no sixth try, no repeat
+
+    def test_a_retry_that_works_marks_the_day_done(self):
+        from stockify.daemon import scheduler
+        store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
+        self.day_end("orb", DAY.isoformat(), 10_000_000)
+        self.configured(channel="email")
+        state = scheduler.State()
+        calls = []
+
+        def flaky(channel, subject, body):
+            calls.append(1)
+            if len(calls) < 3:
+                raise OSError()
+
+        with mock.patch.object(notify, "_default_sender", flaky), self.assertLogs("stockify.daemon", "ERROR"):
+            self.drive(state, 6, None)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(state.done("daily_summary", DAY))
+
+    # I-2: the loop never waits for the sender
+    def test_a_hung_sender_does_not_stall_the_daemon_loop(self):
+        from stockify import daemon
+        from stockify.daemon import scheduler
+        store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
+        self.day_end("orb", DAY.isoformat(), 10_000_000)
+        self.configured(channel="email")
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        state = scheduler.State()
+        with mock.patch.object(notify, "_default_sender", lambda c, s, b: gate.wait(5)):
+            started = time.monotonic()
+            daemon._daily_summary(DAY, state)
+            daemon._daily_summary(DAY, state)                                   # one send in flight: not a second
+            self.assertLess(time.monotonic() - started, 1.0)
+            gate.set()
+            self.assertTrue(notify.flush(5))
+        daemon._daily_summary(DAY, state)                                       # collects the result
+        self.assertTrue(state.done("daily_summary", DAY))
+
+    # I-3
+    def test_the_summary_waits_for_every_session_and_includes_all(self):
+        store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
+        store.create_session("fade", "Fade", {"capital_paise": 5_000_000}, 2)
+        self.day_end("orb", DAY.isoformat(), 10_100_000)
+        self.day_end("fade", DAY.isoformat(), 5_000_000, finalised=False)       # still finalising
+        self.assertFalse(notify.summary_ready(DAY))
+        self.day_end("fade", DAY.isoformat(), 5_050_000)
+        self.assertTrue(notify.summary_ready(DAY))
+        _, body = notify.daily_summary(DAY)
+        self.assertIn("ORB", body)
+        self.assertIn("Fade", body)
+
+    def test_a_session_whose_day_failed_does_not_hold_the_summary_back(self):
+        store.create_session("orb", "ORB", {"capital_paise": 10_000_000}, 1)
+        store.create_session("bad", "Bad", {"capital_paise": 5_000_000}, 2)
+        self.day_end("orb", DAY.isoformat(), 10_100_000)
+        store.upsert_session_day("bad", DAY.isoformat(), status="open")
+        from stockify import timeutil
+        store.add_timeline("bad", "session_failed", {"error": "x"}, wall_ns=timeutil.ist_ns(DAY, "11:00"),
+                           engine_ns=None)
+        self.assertTrue(notify.summary_ready(DAY))
+        _, body = notify.daily_summary(DAY)
+        self.assertIn("Bad", body)
+        self.assertIn("did not finish", body)
+
+    # M-3
+    def test_an_unconfigured_email_says_so_by_name(self):
+        self.configured(channel="email")
+        with mock.patch.dict("sys.modules", {}), mock.patch.object(notify, "_blocked", return_value=False), \
+                mock.patch("geo_monitor.email_notify.email_configured", return_value=False), \
+                self.assertLogs("stockify.daemon.notify", "WARNING") as cm:
+            error = notify.send("disk_low", "s", "b")
+        self.assertEqual(error, "email not configured")
+        self.assertIn("email not configured", "".join(cm.output))
+        self.assertTrue(issubclass(notify.NotConfigured, RuntimeError))
+
+    # (a)
 
 
 if __name__ == "__main__":

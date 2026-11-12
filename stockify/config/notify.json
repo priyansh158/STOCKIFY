@@ -1,6 +1,6 @@
 {
   "schema": "stockify.notify/1",
-  "channel": null,
+  "channel": "email",
   "events": {
     "login_needed": true,
     "session_error": true,

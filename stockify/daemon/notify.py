@@ -4,11 +4,14 @@
     notify.post(...)                                                    # the same, from any thread: it only enqueues
     notify.daily_summary(day)                                           # -> (subject, body), or None; store only
 
-`stockify/config/notify.json` names one channel (`null`, `email`, `ntfy`, `telegram`) and a switch per event. With no
-channel, or the event switched off, a notification is only logged: the default. Secrets come from the environment
-(`STOCKIFY_NTFY_TOPIC`, `STOCKIFY_TELEGRAM_TOKEN`, `STOCKIFY_TELEGRAM_CHAT`; email reuses the geo monitor's SMTP
-settings through `geo_monitor.email_notify`) and are never logged: a failure logs the error's class only, because a
-transport error often quotes the URL, and the URL holds the topic or the bot token.
+`stockify/config/notify.json` names the channel (`email`, or `null` for log only) and a switch per event. With no
+channel, or the event switched off, a notification is only logged. Email goes through the geo monitor's SMTP sender
+(`geo_monitor.email_notify`; its settings come from the environment). Nothing is logged but an error's class: a
+transport error can quote a host or an address. SMTP not set up is `NotConfigured`: logged once per process, and the
+notification is skipped. The owner asked for email only (2026-11-11): there is no other channel.
+
+`_blocked()` refuses real delivery whenever `tests.support` is in `sys.modules` (every unit test, and any dev tool
+that imports it into a production process: it fails closed).
 
 A notifier failure never reaches the caller. The engine thread and the recorder's ticker thread call `post`, which
 only puts the message on a bounded queue for a daemon thread. `key` makes a message once-only for the process: a
@@ -19,24 +22,21 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import os
 import queue
 import sys
 import threading
-import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable
 
-from stockify import store
+from stockify import store, timeutil
 from stockify.config import loader
 
 log = logging.getLogger("stockify.daemon.notify")
 
 EVENTS = loader.NOTIFY_EVENTS
 QUEUE_MAX = 100
-HTTP_TIMEOUT_S = 10
-NTFY_SERVER = "https://ntfy.sh"
-TELEGRAM_SERVER = "https://api.telegram.org"
+MAX_BODY_CHARS = 20_000                           # a sane cap for one email; the log has the rest
+CUT_NOTE = "... (cut: see the log)"
 Sender = Callable[[str, str, str], None]          # (channel, subject, body); raises on failure
 
 _lock = threading.Lock()
@@ -45,6 +45,11 @@ _queue: queue.Queue = queue.Queue()
 _worker: threading.Thread | None = None
 _pending = 0
 _idle = threading.Condition(_lock)
+_not_configured_noted = False
+
+
+class NotConfigured(RuntimeError):
+    """The channel cannot be used: SMTP is not set up. Its text is a fixed sentence, safe to log."""
 
 
 def settings() -> dict:
@@ -58,23 +63,11 @@ def _blocked() -> bool:
     return "tests.support" in sys.modules
 
 
-def _env(name: str) -> str:
-    value = (os.environ.get(name) or "").strip()
-    if not value:
-        raise RuntimeError(f"{name} is not set")
-    return value
-
-
-def _http_post(url: str, data: bytes, headers: dict) -> None:
-    if _blocked():
-        raise RuntimeError("real delivery is blocked under test")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")   # https only: the bases are fixed
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:  # noqa: S310
-        resp.read(1024)
-
-
-def _ascii(text: str) -> str:
-    return text.encode("ascii", "replace").decode("ascii")
+def fit(body: str) -> str:
+    """`body` cut to MAX_BODY_CHARS (with a note) so one huge row cannot make the mail fail."""
+    if len(body) <= MAX_BODY_CHARS:
+        return body
+    return body[:MAX_BODY_CHARS - len(CUT_NOTE)] + CUT_NOTE
 
 
 def _send_email(subject: str, body: str) -> None:
@@ -82,48 +75,35 @@ def _send_email(subject: str, body: str) -> None:
         raise RuntimeError("real delivery is blocked under test")
     from geo_monitor import email_notify
     if not email_notify.email_configured():
-        raise RuntimeError("email is not configured")
-    email_notify.send_email(subject, body)
+        raise NotConfigured("email not configured")
+    email_notify.send_email(subject, fit(body))
 
 
 def _default_sender(channel: str, subject: str, body: str) -> None:
-    if channel == "email":
-        _send_email(subject, body)
-    elif channel == "ntfy":
-        _http_post(f"{NTFY_SERVER}/{_env('STOCKIFY_NTFY_TOPIC')}", body.encode("utf-8"),
-                   {"Title": _ascii(subject), "Content-Type": "text/plain; charset=utf-8"})
-    elif channel == "telegram":
-        token, chat = _env("STOCKIFY_TELEGRAM_TOKEN"), _env("STOCKIFY_TELEGRAM_CHAT")
-        text = json.dumps({"chat_id": chat, "text": f"{subject}\n\n{body}"}).encode("utf-8")
-        _http_post(f"{TELEGRAM_SERVER}/bot{token}/sendMessage", text, {"Content-Type": "application/json"})
-    else:
+    if channel != "email":
         raise RuntimeError(f"unknown channel {channel!r}")
+    _send_email(subject, body)
 
 
 # ── sending ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def send(event: str, subject: str, body: str, *, sender: Sender | None = None, key: str | None = None,
-         legacy_email: bool = False) -> str | None:
+def send(event: str, subject: str, body: str, *, sender: Sender | None = None, key: str | None = None) -> str | None:
     """Tell the owner. None when it was sent or only logged (no channel, event off, or `key` already sent); else
-    why it was not, as the error's class name (never its text: that can hold a secret). Never raises.
-
-    `legacy_email` is for the login reminder, which has always gone by email and must not go quiet because no
-    channel is chosen yet: with no channel and the event on, it uses email."""
+    why it was not, as the error's class name (never its text: that can hold a secret); "email not configured" when
+    SMTP is not set up. Never raises."""
     try:
-        return _send(event, subject, body, sender, key, legacy_email)
+        return _send(event, subject, body, sender, key)
     except Exception as e:  # noqa: BLE001 — a notifier failure never blocks the daemon
         log.error("notification %s failed: %s", event, type(e).__name__)
         return type(e).__name__
 
 
-def _send(event, subject, body, sender, key, legacy_email):  # noqa: ANN001, ANN202
+def _send(event, subject, body, sender, key):  # noqa: ANN001, ANN202
     if event not in EVENTS:
         log.error("unknown notification event %r (subject: %s)", event, subject)
         return "unknown event"
     cfg = settings()
     channel = cfg["channel"]
-    if channel is None and legacy_email and cfg["events"][event]:
-        channel = "email"
     if channel is None or not cfg["events"][event]:
         log.info("NOTIFY %s (log only): %s", event, subject)
         return None
@@ -133,7 +113,10 @@ def _send(event, subject, body, sender, key, legacy_email):  # noqa: ANN001, ANN
                 log.info("NOTIFY %s: already sent for %s", event, key)
                 return None
     try:
-        (sender or _default_sender)(channel, subject, body)
+        (sender or _default_sender)(channel, subject, fit(body))
+    except NotConfigured as e:
+        _note_not_configured(event, e)
+        return str(e)
     except Exception as e:  # noqa: BLE001
         log.error("notification %s by %s failed: %s", event, channel, type(e).__name__)
         return type(e).__name__
@@ -142,6 +125,15 @@ def _send(event, subject, body, sender, key, legacy_email):  # noqa: ANN001, ANN
             _seen.add((event, key))
     log.info("NOTIFY %s sent by %s: %s", event, channel, subject)
     return None
+
+
+def _note_not_configured(event: str, e: NotConfigured) -> None:
+    global _not_configured_noted
+    with _lock:
+        first, _not_configured_noted = not _not_configured_noted, True
+    if first:
+        log.warning("notifications are not sent: %s (NotConfigured); set the SMTP variables the geo monitor uses. "
+                    "Seen on %s; reported once per process", e, event)
 
 
 def send_test(*, sender: Sender | None = None) -> str | None:
@@ -164,7 +156,9 @@ def _run() -> None:
     while True:
         item = _queue.get()
         try:
-            send(item["event"], item["subject"], item["body"], key=item["key"])
+            result = send(item["event"], item["subject"], item["body"], key=item["key"])
+            if item.get("on_done") is not None:
+                item["on_done"](result)
         except BaseException:  # noqa: BLE001 — the worker outlives any one message
             log.error("notification worker error")
         finally:
@@ -173,9 +167,10 @@ def _run() -> None:
                 _idle.notify_all()
 
 
-def post(event: str, subject: str, body: str, *, key: str | None = None) -> bool:
+def post(event: str, subject: str, body: str, *, key: str | None = None, on_done: Callable | None = None) -> bool:
     """`send` from any thread (the engine's, the ticker's): it only enqueues; a daemon thread delivers. False when
-    the queue is full (the message is dropped and logged). Never raises, never blocks."""
+    the queue is full (the message is dropped and logged). Never raises, never blocks. `on_done(error)` runs on the
+    delivery thread with `send`'s result (None: sent or only logged)."""
     global _worker, _pending
     try:
         with _idle:
@@ -186,7 +181,7 @@ def post(event: str, subject: str, body: str, *, key: str | None = None) -> bool
             if _worker is None or not _worker.is_alive():
                 _worker = threading.Thread(target=_run, name="stockify-notify", daemon=True)
                 _worker.start()
-        _queue.put({"event": event, "subject": subject, "body": body, "key": key})
+        _queue.put({"event": event, "subject": subject, "body": body, "key": key, "on_done": on_done})
         return True
     except Exception as e:  # noqa: BLE001
         log.error("notification %s could not be queued: %s", event, type(e).__name__)
@@ -202,8 +197,10 @@ def flush(timeout: float = 10.0) -> bool:
 def reset() -> None:
     """Forget what was sent (tests, and a new daemon pass)."""
     flush(5)
+    global _not_configured_noted
     with _lock:
         _seen.clear()
+        _not_configured_noted = False
 
 
 atexit.register(flush, 5.0)
@@ -235,11 +232,37 @@ def _symbol(instrument_id: int) -> str:
         return f"instrument {instrument_id}"
 
 
+def _failed(sid: str, day: str) -> bool:
+    """The session has a `session_failed` row from that IST day."""
+    d = date.fromisoformat(day)
+    lo, hi = timeutil.ist_ns(d, "00:00"), timeutil.ist_ns(d + timedelta(days=1), "00:00")
+    return any(r["kind"] == "session_failed" and lo <= (r["wall_ns"] or 0) < hi
+               for r in store.timeline(sid, limit=1_000_000))
+
+
+def summary_ready(day: date) -> bool:
+    """Every session that opened `day` has finalised it or failed it, and at least one finalised: the summary then
+    names them all."""
+    d = day.isoformat()
+    finalised = waiting = 0
+    for s in store.list_sessions():
+        row = store.get_session_day(s["session_id"], d)
+        if row is None:
+            continue
+        if row.get("status") == "finalised":
+            finalised += 1
+        elif not _failed(s["session_id"], d):
+            waiting += 1
+    return finalised > 0 and waiting == 0
+
+
 def _session_lines(session: dict, day: str) -> list[str] | None:
     sid = session["session_id"]
     end = store.session_day_end(sid, day)
     equity = end["equity"]
     if equity is None:
+        if _failed(sid, day):
+            return [f"{session.get('name') or sid}: did not finish the day (the session failed); there is no result."]
         return None
     row = store.get_session_day(sid, day) or {}
     before = store.previous_equity(sid, day)
@@ -283,16 +306,30 @@ def daily_summary(day: date) -> tuple[str, str] | None:
 
 
 def send_daily_summary(day: date, *, sender: Sender | None = None) -> bool:
-    """Send `day`'s summary once. False when there is nothing to tell yet (a day not finalised)."""
+    """Send `day`'s summary now (the CLI and tests; the daemon uses `post_daily_summary`). True only when it was
+    sent or only logged: False when it is not ready or the send failed (it may be tried again)."""
     try:
+        if not summary_ready(day):
+            return False
         summary = daily_summary(day)
     except Exception as e:  # noqa: BLE001
         log.error("daily summary for %s failed: %s", day, type(e).__name__)
         return False
     if summary is None:
         return False
-    send("daily_summary", *summary, sender=sender, key=day.isoformat())
-    return True
+    return send("daily_summary", *summary, sender=sender, key=day.isoformat()) is None
+
+
+def post_daily_summary(day: date, on_done: Callable[[str | None], None]) -> bool:
+    """The daemon's way: build the summary (store reads) and `post` it; `on_done(error)` hears the outcome on the
+    delivery thread. False when it is not ready or could not be queued."""
+    try:
+        if not summary_ready(day) or (summary := daily_summary(day)) is None:
+            return False
+    except Exception as e:  # noqa: BLE001
+        log.error("daily summary for %s failed: %s", day, type(e).__name__)
+        return False
+    return post("daily_summary", *summary, key=day.isoformat(), on_done=on_done)
 
 
 # ── messages for the places that notify ──────────────────────────────────────────────────────────────────────────
@@ -303,5 +340,5 @@ def session_event(event: str, title: str, detail: dict, *, key: str | None = Non
     return post(event, f"[STOCKIFY] {title}", f"{title}\n\n" + "\n".join(lines) + "\n\n- STOCKIFY daemon\n", key=key)
 
 
-__all__ = ["EVENTS", "daily_summary", "flush", "post", "reset", "rupees", "send", "send_daily_summary",
-           "send_test", "session_event", "settings"]
+__all__ = ["EVENTS", "daily_summary", "fit", "flush", "NotConfigured", "post", "post_daily_summary", "reset", "rupees", "send", "send_daily_summary",
+           "send_test", "session_event", "settings", "summary_ready"]

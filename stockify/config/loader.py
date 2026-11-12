@@ -186,7 +186,7 @@ def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
     return value
 
 
-NOTIFY_CHANNELS = (None, "email", "ntfy", "telegram")
+NOTIFY_CHANNELS = (None, "email")                  # email only (owner, 2026-11-11)
 NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary")
 
 

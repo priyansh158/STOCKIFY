@@ -45,10 +45,9 @@ def message(day: date, cfg: dict) -> tuple[str, str]:
 
 
 def send_default(subject: str, body: str) -> str | None:
-    """Through the notifier: the `login_needed` switch and channel apply. With no channel chosen yet the reminder still
-    goes by email when the geo monitor's SMTP settings exist (`legacy_email`): it must not go quiet."""
+    """Through the notifier: the `login_needed` switch and the email channel apply."""
     from stockify.daemon import notify
-    return notify.send("login_needed", subject, body, legacy_email=True)
+    return notify.send("login_needed", subject, body)
 
 
 def wait_with_reminders(clock, stop, until_ns: int, day: date, state, cfg: dict, *,  # noqa: ANN001

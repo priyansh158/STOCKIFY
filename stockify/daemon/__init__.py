@@ -161,15 +161,38 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         state.mark(job, day)
 
 
+SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up
+_summary_flight: dict[date, list] = {}               # day -> [] while a send is in flight, then [its error or None]
+
+
 def _daily_summary(day: date, state) -> None:  # noqa: ANN001
-    """Tell the owner what the day's sessions did, once, when at least one has finalised (finalising waits for NSE's
-    settlement files, so this can be a later pass). A failure here is logged and never stops the daemon."""
+    """Tell the owner what the day's sessions did, once every session has finalised (or failed): finalising waits for
+    NSE's settlement files, so this can be a later pass. The send is posted to the notifier's thread (this loop never
+    waits for a mail server); a pass collects its outcome. A failed send is tried again on a later pass, at most
+    SUMMARY_TRIES times a day, then logged once and given up. Nothing here stops the daemon."""
     if state.done("daily_summary", day):
         return
     from stockify.daemon import notify
     try:
-        if notify.send_daily_summary(day):
+        outcome = _summary_flight.get(day)
+        if outcome is not None:
+            if not outcome:
+                return                                    # still being sent
+            del _summary_flight[day]
+            if outcome[0] is None:
+                state.mark("daily_summary", day)
+                return
+        tries = sum(state.done(f"daily_summary_try{n}", day) for n in range(1, SUMMARY_TRIES + 1))
+        if tries >= SUMMARY_TRIES:
+            log.error("the daily summary for %s was not sent after %d tries: giving up", day, tries)
             state.mark("daily_summary", day)
+            return
+        if not notify.summary_ready(day):
+            return
+        flight: list = []
+        if notify.post_daily_summary(day, flight.append):
+            _summary_flight[day] = flight
+            state.mark(f"daily_summary_try{tries + 1}", day)
     except Exception:  # noqa: BLE001
         log.exception("the daily summary failed")
 
