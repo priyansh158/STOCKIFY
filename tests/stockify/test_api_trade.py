@@ -226,6 +226,135 @@ class ReadTests(TradeBase):
         self.assertNotIn("lab", m.text)
 
 
+class RoundTwoTests(TradeBase):
+    """WP 5.2: bounds, deduplicated commands, command status, scrubbed rows, clean errors."""
+
+    def post(self, **body):
+        return self.client.post("/api/trade/sessions", json=body)
+
+    def test_body_over_64_kib_is_413(self):
+        r = self.client.post("/api/trade/sessions", content=json.dumps({"config": CFG, "pad": "x" * 70_000}),
+                             headers={"Content-Type": "application/json"})
+        self.assertEqual(r.status_code, 413)
+        self.assertIn("64 KiB", r.json()["detail"])
+        self.assertEqual(store.list_sessions(), [])
+
+    def test_universe_over_500_is_422(self):
+        big = copy.deepcopy(CFG)
+        big["universe"] = [f"NSE:S{n}" for n in range(501)]
+        r = self.post(config=big)
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("500", r.json()["detail"][0])
+        self.assertEqual(store.list_sessions(), [])
+
+    def test_fifty_live_sessions_is_the_cap(self):
+        for n in range(49):
+            self.make(f"s{n}")
+        self.make("old", status="STOPPED", reasons=["stopped"])      # a stopped session is not live
+        self.assertEqual(self.post(config=CFG).status_code, 201)
+        r = self.post(config=CFG)
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("50", r.json()["detail"][0])
+        self.assertEqual(len(store.list_sessions()), 51)
+
+    def test_double_pause_returns_one_cmd_id(self):
+        sid = self.make(status="RUNNING")
+        a = self.client.post(f"/api/trade/sessions/{sid}/pause").json()["cmd_id"]
+        b = self.client.post(f"/api/trade/sessions/{sid}/pause").json()["cmd_id"]
+        self.assertEqual(a, b)
+        c = self.client.post(f"/api/trade/sessions/{sid}/resume").json()["cmd_id"]
+        self.assertNotEqual(a, c)
+        x = self.client.post("/api/trade/stop-all").json()["cmd_id"]
+        self.assertEqual(x, self.client.post("/api/trade/stop-all").json()["cmd_id"])
+        self.assertEqual(len(store.pending_commands()), 3)
+        store.mark_command(a, 9, "ok")                                # once applied, a new pause is a new command
+        self.assertNotEqual(self.client.post(f"/api/trade/sessions/{sid}/pause").json()["cmd_id"], a)
+
+    def test_command_status(self):
+        sid = self.make(status="RUNNING")
+        a = self.client.post(f"/api/trade/sessions/{sid}/pause").json()["cmd_id"]
+        j = self.client.get(f"/api/trade/commands/{a}").json()
+        self.assertEqual((j["status"], j["command"], j["session_id"], j["applied_ns"], j["error"]),
+                         ("pending", "pause", sid, None, None))
+        store.mark_command(a, 5_000_000_000, "ok")
+        j = self.client.get(f"/api/trade/commands/{a}").json()
+        self.assertEqual((j["status"], j["applied_ns"], j["error"]), ("applied", 5_000_000_000, None))
+        self.assertTrue(j["created_ist"] and j["applied_ist"])
+        b = self.client.post(f"/api/trade/sessions/{sid}/stop").json()["cmd_id"]
+        store.mark_command(b, 6, r"error: s1: failed at C:\Users\priya\x.sqlite")
+        j = self.client.get(f"/api/trade/commands/{b}").json()
+        self.assertEqual(j["status"], "failed")
+        self.assertNotIn("priya", j["error"])
+        self.assertEqual(self.client.get("/api/trade/commands/9999").status_code, 404)
+
+    def test_orders_and_fills_are_scrubbed(self):
+        self.make("a")
+        store.upsert_session_day("a", DAY)
+        store.apply_session_outputs("a", DAY, {
+            "orders": [{"order_id": 1, "instrument_id": 7, "side": "BUY", "product": "NRML", "qty": 65,
+                        "status": "OPEN", "tag": r"C:\Users\priya\secret.txt"}],
+            "fills": [{"fill_id": 1, "order_id": 1, "t_ns": 5, "instrument_id": 7, "side": "BUY", "qty": 65,
+                       "price_paise": 100, "evidence": r"D:\lab\x"}]}, first_event_no=1, last_frame=None)
+        for part in ("orders", "fills"):
+            r = self.client.get(f"/api/trade/sessions/a/{part}")
+            self.assertEqual(r.status_code, 200)
+            self.assertNotIn("priya", r.text)
+            self.assertNotIn("lab", r.text)
+
+    def test_malformed_rows_are_a_clean_error_not_a_500(self):
+        self.make("a")
+        store.upsert_session_day("a", DAY)
+        store.apply_session_outputs("a", DAY, {"fills": [{"fill_id": 1, "order_id": 1}]}, first_event_no=1,
+                                    last_frame=None)
+        r = self.client.get("/api/trade/sessions/a/positions")
+        self.assertIn(r.status_code, (200, 409))
+        if r.status_code == 409:
+            self.assertIsInstance(r.json()["detail"], str)
+        self.assertEqual(self.client.get("/api/trade/sessions").status_code, 200)
+        self.assertEqual(self.client.get("/api/trade/sessions/a").status_code, 200)
+
+    def test_date_with_trailing_newline_is_422(self):
+        self.make("a")
+        r = self.client.get("/api/trade/sessions/a/positions", params={"trade_date": "2026-11-17\n"})
+        self.assertEqual(r.status_code, 422)
+
+    def test_id_and_body_edges(self):
+        self.assertEqual(self.post(session_id="a" * 128, config=CFG).status_code, 201)
+        self.assertEqual(self.post(session_id="a" * 129, config=CFG).status_code, 422)
+        self.assertEqual(self.post(session_id="CON", config=CFG).status_code, 422)
+        self.assertEqual(self.post(config=CFG, extra="x").status_code, 422)
+        cpp = copy.deepcopy(CFG)
+        cpp["strategy"] = {"kind": "cpp", "ref": "not_in_the_catalogue", "params": {}}
+        self.assertEqual(self.post(config=cpp).status_code, 422)
+        self.assertEqual(len(store.list_sessions()), 1)
+
+    def test_stop_all_fans_out_to_every_live_session(self):
+        from stockify.daemon.dispatcher import Dispatcher
+        for sid, st, rs in (("a", "RUNNING", []), ("b", "PAUSED", ["owner"]), ("c", "STOPPED", ["stopped"])):
+            self.make(sid, status=st, reasons=rs)
+
+        class Day:
+            resumed = False
+            last_clock = 0
+
+            def __init__(self, sid):
+                self.session_id = sid
+
+            def control(self, enabled, reasons, t):
+                pass
+
+        cfg = {"clock_every_s": 1, "commands_every_s": 1, "dispatch": {"batch_max_items": 10, "batch_max_ms": 10},
+               "dispatcher_queue_max": 100}
+        d = Dispatcher([Day(x) for x in "abc"], None, clock=None, cfg=cfg, replay=False)
+        cmd = self.client.post("/api/trade/stop-all").json()["cmd_id"]
+        (row,) = [c for c in store.pending_commands() if c["cmd_id"] == cmd]
+        result = d._apply(1, row)
+        self.assertEqual(store.get_session("a")["pause_reasons"], ["stop_all"])
+        self.assertEqual(store.get_session("b")["pause_reasons"], ["owner", "stop_all"])
+        self.assertEqual(store.get_session("c")["status"], "STOPPED")
+        self.assertTrue(result.startswith("error") and "c:" in result)      # the stopped one is skipped, noted
+
+
 class LoginTests(TradeBase):
     def test_login_window_follows_owner_tz(self):
         monday = timeutil.ist_ns(date(2026, 11, 16), "05:00")       # before that morning's login window

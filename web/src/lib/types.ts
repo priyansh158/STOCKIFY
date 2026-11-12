@@ -288,6 +288,18 @@ export interface SessionCommandDTO {
   cmd_id: number;
 }
 
+export interface CommandStatusDTO {
+  cmd_id: number;
+  session_id?: string | null;
+  command: string;
+  status: "pending" | "applied" | "failed";
+  created_ns: number;
+  created_ist: string;
+  applied_ns?: number | null;
+  applied_ist?: string | null;
+  error?: string | null;
+}
+
 export interface SessionPositionDTO {
   trade_date: string;
   instrument_id: number;

@@ -307,6 +307,19 @@ class SessionCommandDTO(BaseModel):
     cmd_id: int
 
 
+class CommandStatusDTO(BaseModel):
+    """A queued owner command. A pending command has no expiry: it is applied when the daemon next runs."""
+    cmd_id: int
+    session_id: str | None = None
+    command: str
+    status: Literal["pending", "applied", "failed"]
+    created_ns: int
+    created_ist: str
+    applied_ns: int | None = None
+    applied_ist: str | None = None
+    error: str | None = None
+
+
 class SessionPositionDTO(BaseModel):
     trade_date: str
     instrument_id: int

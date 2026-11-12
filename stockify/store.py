@@ -593,6 +593,17 @@ def pending_commands() -> list[dict]:
     return out
 
 
+def get_command(cmd_id: int) -> dict | None:
+    """One command row (`args` parsed), pending or marked, or None."""
+    row = _one("SELECT * FROM session_commands WHERE cmd_id = ?", (int(cmd_id),))
+    if row is None:
+        return None
+    d = dict(row)
+    raw = d.pop("args_json")
+    d["args"] = None if raw is None else json.loads(raw)
+    return d
+
+
 def mark_command(cmd_id: int, applied_ns: int, result: str) -> None:
     conn = _connect()
     with _lock:

@@ -18,15 +18,18 @@ import sqlite3
 from fractions import Fraction
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from server.schemas import (SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionMarginDTO,
+from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionMarginDTO,
                             SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
 
 router = APIRouter(tags=["trade"])
 
-_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+MAX_BODY_BYTES = 64 * 1024
+MAX_UNIVERSE = 500
+MAX_LIVE_SESSIONS = 50
 _PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)[^\s'\"<>|]*")
 _PAGE = 5000
 
@@ -72,7 +75,7 @@ def _session_or_404(session_id: str) -> dict:
 
 
 def _check_date(trade_date: str | None) -> None:
-    if trade_date is not None and not _DATE.match(trade_date):
+    if trade_date is not None and not _DATE.fullmatch(trade_date):
         raise HTTPException(status_code=422, detail=["trade_date must look like 2026-11-17"])
 
 
@@ -83,10 +86,24 @@ def _threshold() -> str:
 
 # ── creating a session ───────────────────────────────────────────────────────
 
+async def _body_cap(request: Request) -> None:
+    """Refuse a request body over 64 KiB (by its declared length, then by what was actually read)."""
+    declared = request.headers.get("content-length")
+    too_big = declared is not None and declared.isdigit() and int(declared) > MAX_BODY_BYTES
+    if too_big or len(await request.body()) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="the request body is over 64 KiB")
+
+
 @router.post("/api/trade/sessions", response_model=SessionCreatedDTO, status_code=201)
-def create_session(body: CreateSessionBody) -> SessionCreatedDTO:
+def create_session(body: CreateSessionBody, _size: None = Depends(_body_cap)) -> SessionCreatedDTO:
     from stockify import sessionconfig, store, timeutil
     from stockify.strategies import _catalogue
+    universe = body.config.get("universe")
+    if isinstance(universe, list) and len(universe) > MAX_UNIVERSE:
+        raise HTTPException(status_code=422, detail=[f"universe: at most {MAX_UNIVERSE} instruments"])
+    if sum(s["status"] != "STOPPED" for s in store.list_sessions()) >= MAX_LIVE_SESSIONS:
+        raise HTTPException(status_code=422, detail=[f"at most {MAX_LIVE_SESSIONS} sessions that are not STOPPED; "
+                                                     "stop one first"])
     try:
         cfg = sessionconfig.validate(body.config)
     except sessionconfig.SessionConfigError as e:
@@ -101,8 +118,8 @@ def create_session(body: CreateSessionBody) -> SessionCreatedDTO:
     if problems:
         raise HTTPException(status_code=422, detail=[f"strategy.params.{p}" for p in problems])
     name = cfg.get("name")
-    if not isinstance(name, str) or not name.strip() or len(name) > 120:
-        raise HTTPException(status_code=422, detail=["name: required, at most 120 characters"])
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=422, detail=["name: required"])
     now = timeutil.now_ns()
     if body.session_id is not None:
         candidates = [body.session_id]
@@ -186,8 +203,12 @@ def _positions(session_id: str, day: str) -> list[SessionPositionDTO]:
     if end["equity"] is not None:
         rows, source = end["positions"], "eod"
     else:
-        rows, source = _derived(session_id, day), "fills"
-    rows = [r for r in rows if _int(r.get("qty")) and _int(r.get("instrument_id")) is not None]
+        try:
+            rows, source = _derived(session_id, day), "fills"
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            raise HTTPException(status_code=409, detail=f"the stored orders or fills of {day} are malformed: "
+                                                        "replay the day")
+    rows = [r for r in rows if isinstance(r, dict) and _int(r.get("qty")) and _int(r.get("instrument_id")) is not None]
     tokens, symbols = _tokens_symbols(day, {int(r["instrument_id"]) for r in rows})
     out = [SessionPositionDTO(trade_date=day, instrument_id=int(r["instrument_id"]),
                               instrument_token=tokens.get(int(r["instrument_id"])),
@@ -239,6 +260,13 @@ def _is_full(day: dict | None, threshold: Fraction) -> bool:
     return False
 
 
+def _open_positions(session_id: str, day: str) -> int | None:
+    try:
+        return len(_positions(session_id, day))
+    except HTTPException:                   # malformed stored rows: no count, never a failed list
+        return None
+
+
 def _session_dto(session: dict) -> SessionDTO:
     import json
     from stockify import store
@@ -255,7 +283,7 @@ def _session_dto(session: dict) -> SessionDTO:
         labels = []
     return SessionDTO(session_id=sid, name=session["name"] or "", status=session["status"],
                       pause_reasons=session["pause_reasons"], today_pnl_paise=pnl,
-                      open_positions=len(_positions(sid, latest["trade_date"])) if latest else None,
+                      open_positions=_open_positions(sid, latest["trade_date"]) if latest else None,
                       coverage_today=latest.get("coverage") if latest else None, parity_last=parity,
                       labels=[str(x) for x in labels], created_ist=_ist(session["created_ns"]) or "")
 
@@ -299,8 +327,22 @@ def login() -> TradeLoginDTO:
 @router.post("/api/trade/stop-all", response_model=SessionCommandDTO, status_code=202)
 def stop_all() -> SessionCommandDTO:
     """The kill switch: queue `stop_all`; the daemon pauses every session (reason `stop_all`) journal first."""
-    from stockify import store, timeutil
-    return SessionCommandDTO(cmd_id=store.add_command(None, "stop_all", None, timeutil.now_ns()))
+    return _queue(None, "stop_all")
+
+
+@router.get("/api/trade/commands/{cmd_id}", response_model=CommandStatusDTO)
+def command_status(cmd_id: int) -> CommandStatusDTO:
+    """pending (not yet applied), applied, or failed (with the daemon's error text)."""
+    from stockify import store
+    row = store.get_command(cmd_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no command {cmd_id}")
+    result = row.get("result") or ""
+    status = "pending" if row["applied_ns"] is None else ("failed" if result.startswith("error") else "applied")
+    return CommandStatusDTO(cmd_id=row["cmd_id"], session_id=row["session_id"], command=row["command"],
+                            status=status, created_ns=row["created_ns"], created_ist=_ist(row["created_ns"]) or "",
+                            applied_ns=row["applied_ns"], applied_ist=_ist(row["applied_ns"]),
+                            error=_scrub(result) if status == "failed" else None)
 
 
 @router.get("/api/trade/sessions/{session_id}", response_model=SessionDetailDTO)
@@ -328,7 +370,7 @@ def _rows(session_id: str, table: str, trade_date: str | None, offset: int, limi
     from stockify import store
     _session_or_404(session_id)
     day = _day_or_latest(session_id, trade_date)
-    return store.session_rows(session_id, table, trade_date=day, offset=offset, limit=limit) if day else []
+    return _scrub(store.session_rows(session_id, table, trade_date=day, offset=offset, limit=limit)) if day else []
 
 
 @router.get("/api/trade/sessions/{session_id}/orders", response_model=list[dict[str, Any]])
@@ -376,6 +418,16 @@ def _control(session_id: str, verb: str) -> SessionCommandDTO:
     session = _session_or_404(session_id)
     if session["status"] == "STOPPED":
         raise HTTPException(status_code=409, detail=f"session {session_id!r} is STOPPED")
+    return _queue(session_id, verb)
+
+
+def _queue(session_id: str | None, verb: str) -> SessionCommandDTO:
+    """Queue a command, or return the cmd_id of an identical one (same session, kind and args) that is still
+    pending. A pending command has no expiry: it is applied whenever the daemon next runs."""
+    from stockify import store, timeutil
+    for row in store.pending_commands():
+        if (row["session_id"], row["command"], row["args"]) == (session_id, verb, None):
+            return SessionCommandDTO(cmd_id=row["cmd_id"])
     try:
         return SessionCommandDTO(cmd_id=store.add_command(session_id, verb, None, timeutil.now_ns()))
     except KeyError:
