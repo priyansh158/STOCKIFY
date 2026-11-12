@@ -185,6 +185,44 @@ class FinaliseTest(pf.PaperDayTest):
         ts = [r["t_event"] for r in recs]
         self.assertEqual(ts, sorted(ts))
 
+    # -- coverage (LW 5.1) --------------------------------------------------------------------------------------
+
+    def stored_coverage(self):
+        row = store.get_session_day(SID, pf.EXPIRY)
+        return row["coverage"], json.loads(row["coverage_json"])
+
+    def coverage_flags(self):
+        return [r for r in store.timeline(SID, limit=100) if r["kind"] == "coverage_low"]
+
+    def test_finalising_stores_the_days_coverage(self):
+        self.traded_day().close()
+        self.fin()
+        value, doc = self.stored_coverage()
+        self.assertEqual(value, 1.0)
+        self.assertEqual((doc["fraction"], doc["below_threshold"], doc["gaps"]), ("1/1", False, []))
+        self.assertGreater(doc["continuous_s"], 0)
+        self.assertEqual(self.coverage_flags(), [])
+
+    def test_a_day_with_a_long_gap_is_flagged_and_not_paused(self):
+        sd = self.traded_day()
+        rank = packs.RANK[packs.GAP_K]
+        a, b = self.t("10:00:00"), self.t("11:00:00")
+        sd.feed([(a, rank, packs.enc_gap(0, a, 0, "disconnect")), (b, rank, packs.enc_gap(0, b, 1, "disconnect"))],
+                None)
+        sd.close()
+        self.fin()
+        value, doc = self.stored_coverage()
+        self.assertLess(value, 0.98)
+        self.assertTrue(doc["below_threshold"])
+        self.assertEqual([(g["reason"], g["counted_s"]) for g in doc["gaps"]], [("disconnect", 3600)])
+        low = self.coverage_flags()
+        self.assertEqual(len(low), 1)
+        self.assertEqual(low[0]["detail"]["fraction"], doc["fraction"])
+        self.assertEqual(store.get_session(SID)["status"], "ARMED")
+        self.assertEqual(store.pending_commands(), [])
+        self.fin()                                                              # a re-run adds no second flag
+        self.assertEqual(len(self.coverage_flags()), 1)
+
     def test_next_day_refuses_unfinalised_previous_day(self):
         self.assertIsNone(finalise.next_sod_state(SID, pf.DAY))               # no earlier day at all
         self.traded_day().close()
