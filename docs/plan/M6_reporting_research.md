@@ -56,7 +56,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.9 Regime breakdown (S)
 
-- [ ] Performance by month, weekday, expiry day vs other days (from the calendar), India VIX bucket (recorded `INDIA VIX`, else bhavcopy index closes), and opening-gap size.
+- [x] (done, `stockify/research/regimes.py`, cached beside the bootstrap in `runs/<id>/research.json` under its own key; shown on the run page in Tasks 30-34) Performance by month, weekday, expiry day vs other days (from the calendar), India VIX bucket (recorded `INDIA VIX`, else bhavcopy index closes), and opening-gap size.
 
 ## M6.10 Parameter sweeps (M)
 

@@ -8,15 +8,19 @@ Fixed phrases other code and tests rely on: "best of N tries" and "after allowin
 interval_sentence accepts `label` (the brief's signature) but does not show it, so the sentence can sit beside a
 table row that already names the statistic. Its unit "%" takes fractions (0.021 prints as 2.1%).
 
-Later tasks add only their own builder: regime_sentence (Task 10), fragile_sentence (Task 16),
+Later tasks add only their own builder: fragile_sentence (Task 16),
 wf_sentence (Task 22), pbo_sentence (Task 23). Their meanings are already in KEYS.
 """
 from __future__ import annotations
 
 import math
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING
 
 from stockify.research import registry
+
+if TYPE_CHECKING:
+    from stockify.research.regimes import Bucket
 
 RUPEE = "₹"
 TOO_FEW_DAYS = "too few days to say"
@@ -49,8 +53,8 @@ _MEANINGS: dict[str, str] = {
     "regime_month": "Results split by calendar month, to show whether the profit comes from only a few months.",
     "regime_weekday": "Results split by day of the week, to show whether the profit sits on one or two days.",
     "regime_expiry": "Results on expiry days compared with all other days.",
-    "regime_vix": "Results split by how jumpy the market was that day (low, middle or high India VIX).",
-    "regime_gap": "Results split by how far the market opened from the previous close (gap down, small, gap up).",
+    "regime_vix": "Results split into four bands of the day before's India VIX (calm to jumpy), plus a no-data group.",
+    "regime_gap": "Results split into five bands of how far the market opened from the previous close, plus no data.",
     # sensitivity
     "fragile": "Fragile means a small rise in costs or slightly worse fills turns the profit into a loss.",
     "cost_scale": "Re-runs with every trading cost multiplied (say 2x) to see whether the profit survives.",
@@ -215,3 +219,25 @@ def interval_sentence(label: str, interval, unit: str, *, ci: float = 0.90) -> s
         return TOO_FEW_DAYS
     return (f"between {_with_unit(lo, unit)} and {_with_unit(hi, unit)} "
             f"in {_ci_phrase(ci)} re-draws of your own days")
+
+
+REGIME_CAVEAT = ("These splits only describe this run's own days. A group can look better or worse by chance alone, "
+                 "most of all a small one.")
+_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def regime_sentence(bucket: "Bucket") -> str:
+    """One line about one bucket of the regime split. It only describes what this run's days did: it never says a
+    bucket is better or worse than the others, and a bucket with fewer days than the configured minimum says so
+    instead of quoting a share."""
+    label = bucket.label
+    head = label + "s" if label in _WEEKDAYS else label[:1].upper() + label[1:]
+    n = bucket.days
+    if n <= 0 or bucket.mean_pnl_paise is None:
+        return f"{head}: no days"
+    days = f"{n} day" + ("" if n == 1 else "s")
+    value = bucket.mean_pnl_paise / 100
+    average = ("+" if value > 0 else "") + rupees(value)
+    if bucket.thin or bucket.up_share is None:
+        return f"{head}: only {days}, take with care (average {average} a day)"
+    return f"{head}: {days}, average {average} a day, up on {_percent_text(bucket.up_share)} of them"

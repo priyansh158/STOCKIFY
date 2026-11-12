@@ -238,5 +238,31 @@ class SweepTests(unittest.TestCase):
                 self.assertTrue(s.startswith(f"between {lo_text} and {hi_text} in "), s)
 
 
+class RegimeSentenceSweepTests(unittest.TestCase):
+    """The banned-token sweep over regime_sentence: any bucket, any size, never jargon or a stray code name."""
+
+    def test_regime_sentences_are_plain_for_random_buckets(self):
+        from stockify.research import regimes
+        rng = random.Random(10)
+        labels = ["Monday", "Friday", "2026-01", "expiry day", "other days", "VIX below 13", "VIX 13–16",
+                  "VIX 20 or more", "gap down more than 0.5%", "flat (within 0.1%)", "gap up 0.5% or more", "no data"]
+        for _ in range(500):
+            days = rng.choice([0, 1, 2, 9, 10, 41, 400])
+            pnl = rng.randint(-10**9, 10**9)
+            up = rng.randint(0, days)
+            b = regimes.Bucket(rng.choice(labels), days, pnl, None if days == 0 else round(pnl / days), up,
+                               None if days == 0 else up / days, days < 10)
+            s = plain.regime_sentence(b)
+            self.assertNotIn("\n", s, b)
+            self.assertLessEqual(len(s), 120, s)
+            self.assertEqual(_bad_tokens(s), [], s)
+            self.assertNotIn("significan", s)
+            self.assertNotIn("better", s)
+            if 0 < days < 10:
+                self.assertIn("take with care", s)
+            else:
+                self.assertNotIn("take with care", s)
+
+
 if __name__ == "__main__":
     unittest.main()

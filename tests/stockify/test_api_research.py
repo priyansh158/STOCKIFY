@@ -11,6 +11,7 @@ import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
 import stockify.store as store
+from stockify.data import refdata
 from stockify.research import report
 from tests.stockify.research.fixtures import make_run
 
@@ -25,7 +26,7 @@ def noisy(seed: int, n: int = 30, drift: float = 0.0005) -> list[float]:
 
 @support.requires_fastapi
 class ResearchApiTests(SandboxedDBTest):
-    db_modules = (store,)
+    db_modules = (store, refdata)
 
     def setUp(self):
         super().setUp()
@@ -51,7 +52,14 @@ class ResearchApiTests(SandboxedDBTest):
         self.assertEqual(list(j["bootstrap"]), ["n_days", "mean_block", "resamples", "ci", "enough_days", "sharpe",
                                                 "mean_daily_return", "max_drawdown"])
         self.assertEqual(list(j["bootstrap"]["sharpe"]), ["point", "lo", "hi"])
-        self.assertIsNone(j["regimes"])
+        reg = j["regimes"]
+        self.assertEqual(list(reg), ["month", "weekday", "expiry", "vix", "gap", "vix_source", "notes"])
+        self.assertEqual(list(reg["month"][0]), ["label", "days", "pnl_paise", "mean_pnl_paise", "up_days",
+                                                 "up_share", "thin"])
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            self.assertEqual(sum(b["days"] for b in reg[dim]), 30, dim)
+        self.assertEqual([b["label"] for b in reg["vix"]], ["no data"])
+        self.assertIn("regimes_caveat", j["plain"])
         self.assertIn("dsr", j["plain"])
 
     def test_run_research_404(self):

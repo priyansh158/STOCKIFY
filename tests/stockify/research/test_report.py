@@ -16,6 +16,7 @@ from tests.support import SandboxedDBTest
 import stockify.store as store
 from stockify import __main__ as cli
 from stockify import paths
+from stockify.data import refdata
 from stockify.research import bootstrap, plain, registry, report, stats
 from tests.stockify.research.fixtures import make_run
 
@@ -42,7 +43,7 @@ def finite_json(obj) -> str:
 
 
 class ReportTest(SandboxedDBTest):
-    db_modules = (store,)
+    db_modules = (store, refdata)
 
     def sql(self, text: str, args: tuple = ()) -> None:
         with store._lock:
@@ -208,7 +209,7 @@ class CacheTests(ReportTest):
         self.assertEqual(m.call_count, 1)
         self.assertEqual(first, second)
         data = json.loads(self.cache_path().read_text(encoding="utf-8"))
-        self.assertEqual(set(data), {"key", "bootstrap"})        # only the bootstrap is cached
+        self.assertEqual(set(data), {"key", "bootstrap", "regimes"})   # the bootstrap and the regimes, keyed apart
 
     def test_family_changes_do_not_touch_the_cache(self):
         with self.counted() as m:

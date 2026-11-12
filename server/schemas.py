@@ -439,6 +439,28 @@ class BootstrapDTO(BaseModel):
     max_drawdown: IntervalDTO
 
 
+class RegimeBucketDTO(BaseModel):
+    """One group of days: P&L in paise (`mean_pnl_paise` rounded half away from zero), `thin` when it has too few
+    days to read much into."""
+    label: str
+    days: int
+    pnl_paise: int
+    mean_pnl_paise: int | None = None
+    up_days: int
+    up_share: float | None = None
+    thin: bool
+
+
+class RegimeReportDTO(BaseModel):
+    month: list[RegimeBucketDTO]
+    weekday: list[RegimeBucketDTO]
+    expiry: list[RegimeBucketDTO]
+    vix: list[RegimeBucketDTO]
+    gap: list[RegimeBucketDTO]
+    vix_source: dict[str, str]
+    notes: list[str]
+
+
 class RunResearchDTO(BaseModel):
     run_id: str
     family_id: str | None = None
@@ -451,7 +473,7 @@ class RunResearchDTO(BaseModel):
     picked_name: str | None = None
     dsr: DsrDTO | None = None
     bootstrap: BootstrapDTO | None = None
-    regimes: dict[str, Any] | None = None
+    regimes: RegimeReportDTO | None = None
     holdout_unlocks: int
     plain: dict[str, str]
 

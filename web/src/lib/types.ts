@@ -413,6 +413,26 @@ export interface BootstrapDTO {
   max_drawdown: IntervalDTO;
 }
 
+export interface RegimeBucketDTO {
+  label: string;
+  days: number;
+  pnl_paise: number;
+  mean_pnl_paise: number | null;
+  up_days: number;
+  up_share: number | null;
+  thin: boolean;
+}
+
+export interface RegimeReportDTO {
+  month: RegimeBucketDTO[];
+  weekday: RegimeBucketDTO[];
+  expiry: RegimeBucketDTO[];
+  vix: RegimeBucketDTO[];
+  gap: RegimeBucketDTO[];
+  vix_source: Record<string, string>;
+  notes: string[];
+}
+
 export interface RunResearchDTO {
   run_id: string;
   family_id: string | null;
@@ -425,7 +445,7 @@ export interface RunResearchDTO {
   picked_name: string | null;
   dsr: DsrDTO | null;
   bootstrap: BootstrapDTO | null;
-  regimes: Record<string, unknown> | null;
+  regimes: RegimeReportDTO | null;
   holdout_unlocks: number;
   plain: Record<string, string>;
 }

@@ -6,8 +6,9 @@
 
 Everything is read from the database (never a run folder), so a pruned folder changes nothing. Rank, N, V, the
 deflated Sharpe and the sentences are recomputed on every call (they change whenever a trial joins the family).
-Only the bootstrap, which is slow and depends on this run alone, is cached in `runs/<id>/research.json`, keyed by
-a hash of everything it was computed from; a missing, unreadable or odd file is simply a cache miss.
+The bootstrap (slow, depends on this run alone) and the regime split (reads refdata) are cached in
+`runs/<id>/research.json`, each under its own key, a hash of everything it was computed from; a missing,
+unreadable or odd file is simply a cache miss.
 
 Units: money is int paise; the Sharpe in `DsrResult` is per day (the page shows it annualised); the bootstrap mean
 return is a per-day fraction and the drawdown a fraction of the peak.
@@ -17,12 +18,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal
 
 from stockify import paths, store
-from stockify.research import bootstrap, fileio, plain, registry, settings, stats
+from stockify.research import bootstrap, fileio, plain, regimes, registry, settings, stats
 from stockify.research.bootstrap import BootstrapResult, Interval
 from stockify.research.stats import DsrResult
 
@@ -45,7 +47,7 @@ class RunResearch:
     picked_name: str | None
     dsr: DsrResult | None
     bootstrap: BootstrapResult | None
-    regimes: dict | None
+    regimes: regimes.RegimeReport | None
     holdout_unlocks: int
     plain: dict[str, str]
 
@@ -199,14 +201,48 @@ def _read_cache(path, key: str) -> BootstrapResult | None:
         return None
 
 
-def _write_cache(path, key: str, result: BootstrapResult) -> None:
+def _load(path) -> dict:
+    """The cache file as a dict; {} when it is missing, unreadable or not an object (a miss for every entry)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, RecursionError):
+        return {}
+
+
+def _save(path, data: dict) -> None:
     try:
         if not path.parent.is_dir():                       # a pruned or never-made folder: no cache, no error
             return
-        text = json.dumps({"key": key, "bootstrap": asdict(result)}, sort_keys=True, allow_nan=False)
-        fileio.atomic_write_text(path, text)
+        fileio.atomic_write_text(path, json.dumps(data, sort_keys=True, allow_nan=False))
     except (OSError, ValueError):
         pass
+
+
+def _write_cache(path, key: str, result: BootstrapResult) -> None:
+    """Replace the bootstrap entry ({"key", "bootstrap"} at the top, as since Task 8), keeping the regimes entry."""
+    data = {"key": key, "bootstrap": asdict(result)}
+    kept = _load(path).get("regimes")
+    if isinstance(kept, dict):
+        data["regimes"] = kept
+    _save(path, data)
+
+
+def _read_regimes(path, key: str) -> regimes.RegimeReport | None:
+    try:
+        entry = _load(path).get("regimes")
+        if not isinstance(entry, dict) or set(entry) != {"key", "value"} or entry["key"] != key:
+            return None
+        return regimes.from_dict(entry["value"])
+    except (ValueError, TypeError, KeyError, RecursionError):
+        return None
+
+
+def _write_regimes(path, key: str, rep: regimes.RegimeReport) -> None:
+    """Replace the regimes entry, keeping whatever the file holds for the bootstrap (stale or not: it has its own key)."""
+    data = {k: v for k, v in _load(path).items() if k in ("key", "bootstrap")}
+    data["regimes"] = {"key": key, "value": regimes.to_dict(rep)}
+    _save(path, data)
 
 
 def _cache_path(run_id: str):
@@ -236,6 +272,26 @@ def _bootstrap(run_id: str, row: dict, dates, navs, use_cache: bool, rf_rows: li
     if path is not None:
         _write_cache(path, key, result)
     return result
+
+
+def _regimes(run_id: str, dates, navs, capital: int, use_cache: bool) -> regimes.RegimeReport | None:
+    """The regime split, cached under its own key (NAV series, settings, refdata digest, code version): a late
+    bhavcopy recomputes only this, never the bootstrap. A refdata that cannot be read leaves it out."""
+    if not navs:
+        return None
+    try:
+        path = _cache_path(run_id) if use_cache else None
+        key = regimes.cache_key(list(dates), list(navs), capital)
+        if path is not None:
+            hit = _read_regimes(path, key)
+            if hit is not None:
+                return hit
+        rep = regimes.build(list(dates), list(navs), capital)
+        if path is not None:
+            _write_regimes(path, key, rep)
+        return rep
+    except (sqlite3.Error, OSError):
+        return None
 
 
 # ── the run report ────────────────────────────────────────────────────────────────────────────
@@ -292,10 +348,13 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
         texts["bootstrap_mean_return"] = plain.interval_sentence("Mean daily return", boot.mean_daily_return, "%",
                                                                  ci=boot.ci)
         texts["bootstrap_max_drawdown"] = plain.interval_sentence("Max drawdown", boot.max_drawdown, "%", ci=boot.ci)
+    reg = _regimes(run_id, dates, navs, capital, use_cache)
+    if reg is not None:
+        texts["regimes_caveat"] = plain.REGIME_CAVEAT
     return RunResearch(run_id=run_id, family_id=family_id, role=role, objective=objective, n_trials=n,
                        rank=rank, is_best=rank == 1, picked_run_id=picked.run_id if picked else None,
                        picked_name=picked.name if picked else None, dsr=res if is_try and not flat else None,
-                       bootstrap=boot, regimes=None, holdout_unlocks=_unlock_count(family_id), plain=texts)
+                       bootstrap=boot, regimes=reg, holdout_unlocks=_unlock_count(family_id), plain=texts)
 
 
 # ── the family report ─────────────────────────────────────────────────────────────────────────
