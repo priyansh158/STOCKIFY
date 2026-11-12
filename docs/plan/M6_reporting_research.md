@@ -52,7 +52,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.8 Bootstrap confidence intervals (S)
 
-- [ ] Stationary block bootstrap of daily returns (mean block length configurable, seeded): 90% intervals for Sharpe, mean daily return and max drawdown, on every run report.
+- [x] (bootstrap intervals done, `stockify/research/bootstrap.py`; the run-page display is Task 8) Stationary block bootstrap of daily returns (mean block length configurable, seeded): 90% intervals for Sharpe, mean daily return and max drawdown, on every run report.
 
 ## M6.9 Regime breakdown (S)
 

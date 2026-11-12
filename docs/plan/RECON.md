@@ -1180,6 +1180,8 @@ live day: Wed 2026-11-11 IST. Record each day here:
 
 **Web baseline** (run in the worktree after the suite ended). `npm run lint`: exit 0, no findings. `npm run build`: exit 1, `TurbopackInternalError: Symlink [project]/node_modules is invalid, it points out of the filesystem root` (the worktree's `web/node_modules` is a link to the main checkout's, which Turbopack refuses; an environment limit of the worktree, not a code failure). Recorded, not fixed; web tasks that need a build must run it from the main checkout's `web/` or with a real install, and Task 1 does not decide which.
 
+**Bootstrap timing (Task 6).** `bootstrap_ci` with `resamples = 2000`, `n = 1500`, `mean_block = 10` takes about 2.3 s on this machine (pure Python, measured around the call, not stored in any result), so the run report caches its intervals (Task 8).
+
 ### The mismatch table, verified at BASE
 
 Every row was checked in the code at BASE; rows 4, 10, 12 (partly), 13 and 15 are decisions or design choices, not claims about the code (nothing to falsify beyond the facts cited). No row is false.
