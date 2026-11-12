@@ -94,6 +94,30 @@ class PinTests(ts.SubscriptionTest):
         self.assertEqual(len(calls), 1)                         # through call_in_ticker, once
         self.assertEqual([s.instrument_id for d in applied for s in d.subscribe], [far])
 
+    def test_pins_made_while_the_sessions_open_go_to_a_connected_ticker_at_go_live(self):
+        """I-3: the ticker is already up when a live run's sessions open: each pin counts at once (the cap sees it) and
+        the diffs go to the ticker, in order, as one job when the sessions are open."""
+        m = self.manager()
+        self.pinned_strike(m)
+        iid = next(r["instrument_id"] for r in instruments.option_chain("NIFTY", ts.WEEKLY, ts.DAY)
+                   if r["strike_paise"] == 2_400_000 and r["kind"] == "CE")      # outside the chain's window
+        calls, applied = [], []
+
+        def call(fn, *args):
+            calls.append(fn.__name__)
+            fn(*args)
+
+        pins = market_day.SessionPins(m, cap=3000, call_in_ticker=call, apply=applied.append)
+        pins.defer = []
+        self.assertTrue(pins.admit(FakeSession("s1", {iid})))
+        self.assertEqual((calls, applied), ([], []))
+        self.assertIn("session:s1", m.pins)
+        pins.go_live()
+        self.assertEqual(calls, ["apply_all"])
+        self.assertEqual([s.instrument_id for d in applied for s in d.subscribe], [iid])
+        self.assertTrue(pins.live)
+        self.assertIsNone(pins.defer)
+
 
 class FakeTicker:
     """What Kite holds: subscribe and unsubscribe, nothing else."""

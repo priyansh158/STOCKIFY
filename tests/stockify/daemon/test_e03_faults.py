@@ -103,7 +103,11 @@ class E03FaultsTest(E02KillTest):
         cov = self.coverage("k")
         self.assertEqual(cov, self.coverage("twin"))
         continuous = cov["continuous_s"]
-        self.assertEqual(Fraction(cov["fraction"]), Fraction(continuous - 150, continuous))
+        # the faults cost exactly 150 s; the recording is shorter than the bundle's continuous phase, and the rest is
+        # time the session saw nothing (I-2), which the journal's own gaps do not show
+        journaled = [g for g in cov["gaps"] if g["reason"] != "unseen"]
+        self.assertEqual(sum(g["counted_s"] for g in journaled), 150)
+        self.assertLessEqual(Fraction(cov["fraction"]), Fraction(continuous - 150, continuous))
         parity = self.cli("k", "parity", "journal", "--session", "s1", "--date", DAY.isoformat())
         self.assertEqual(parity.returncode, 0, parity.stdout + parity.stderr)
         self.assertTrue(parity.stdout.startswith("identical"), parity.stdout)

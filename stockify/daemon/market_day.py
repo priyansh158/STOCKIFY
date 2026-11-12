@@ -12,7 +12,11 @@ from the same frames:
 
 Recorded tick data is irreplaceable, so a session can never cost the recording: a session that cannot open is
 logged, timelined `session_failed` and skipped; a session whose day fails later is isolated by the dispatcher; a
-dead engine thread is logged and the recorder carries on.
+dead engine thread is noticed by the main loop (every session failed, the owner told, no more dispatch) and the
+recorder carries on; a corrupt `sessions` row or a bad paper.json skips the session layer and says so. A live run
+starts the recorder and the ticker first and opens (and recovers) the sessions on the engine thread after them;
+frames queue in the dispatcher's bounded queue meanwhile, an overflow becoming a GAP as ever. A replay opens its
+sessions first, as it needs their marks.
 
 Shutdown (a stop request: Ctrl+C or Ctrl+Break, or the end of the day), in this order:
 
@@ -218,6 +222,7 @@ class SessionPins:
         self.apply = apply
         self.notify = notify or notify_cap
         self.live = False
+        self.defer: list | None = None                  # diffs of pins made before `live`, for a ticker that is already connected
         self.refused: dict[str, dict] = {}
         self._base: dict[str, frozenset[int]] = {}
         self._book: dict[str, frozenset[int]] = {}
@@ -264,6 +269,21 @@ class SessionPins:
             diff = self.manager.set_pin(ids, self.owner(sid))
             if apply and self.apply is not None and not diff.empty():
                 self.apply(diff)
+            elif not apply and self.defer is not None and not diff.empty():
+                self.defer.append(diff)
+
+    def go_live(self) -> None:
+        """The ticker thread owns every pin change from here. Pins made while the sessions were opening (with the
+        ticker already connected, I-3) were applied to the manager at once, so the cap check saw each one; their diffs
+        go to the ticker now, in order, as one job."""
+        diffs, self.defer = self.defer, None
+        self.live = True
+        if diffs and self.apply is not None:
+            def apply_all() -> None:
+                with self.lock:
+                    for diff in diffs:
+                        self.apply(diff)
+            self.call_in_ticker(apply_all)
 
 
 def band_sink(dispatcher, sessions: list):  # noqa: ANN001
@@ -584,9 +604,25 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         except Exception:  # noqa: BLE001
             log.exception("the work before the open failed; the open goes on")
     blocked: list[str] = []
-    sessions = (open_sessions(choose_sessions(session_ids), day, clock, pump, pins, clear_token_expired=True,
-                              refdata_stale=bool(stale), blocked=blocked)
-                if pump is not None else [])
+    rows: list[dict] = []
+    paper_cfg = None
+    if pump is not None:                        # a corrupt row or a bad paper.json costs the sessions, never the recording
+        try:
+            paper_cfg = loader.load_json("paper.json")
+            rows = choose_sessions(session_ids)
+        except Exception as e:  # noqa: BLE001
+            rows = []
+            log.exception("the session layer is skipped, the recording goes on: %r", e)
+            notifier.session_event("session_error", "The paper sessions did not start: the recorder runs alone",
+                                   {"error_type": type(e).__name__,
+                                    "what_to_do": "fix the sessions table or paper.json, then restart the daemon; "
+                                                  "the log has the detail"},
+                                   key=f"session_layer:{day.isoformat()}:{type(e).__name__}")
+    # A live run opens its sessions on the engine thread, after the recorder and the ticker are up (I-3): a restart
+    # that replays long journals never leaves the recording off. A replay opens them first, as it needs their marks.
+    late = bool(rows) and not replay
+    sessions: list = [] if late else (open_sessions(rows, day, clock, pump, pins, clear_token_expired=True,
+                                                    refdata_stale=bool(stale), blocked=blocked) if rows else [])
     if replay:                                  # a restarted replay goes on after what the old process dispatched
         ticker.resume_after = process_mark([sd for sd in sessions if sd.resumed]) if sessions and all(
             sd.resumed for sd in sessions) else None
@@ -597,35 +633,54 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     dispatcher = engine_thread = poller = None
     engine_stop = threading.Event()
     engine_failed: list[str] = []
-    if sessions:
-        dispatcher = Dispatcher(sessions, FrameEncoder(tokens), clock=clock, cfg=loader.load_json("paper.json"),
-                                replay=replay)
+    if sessions or late:
+        dispatcher = Dispatcher(sessions, FrameEncoder(tokens), clock=clock, cfg=paper_cfg, replay=replay)
         recorder.add_tap(dispatcher)
         session.gap_taps.append(dispatcher.put_gap)
         dispatcher.on_book = pins.book_changed
         dispatcher.on_failed = pins.release
-        try:                                    # a restart's gaps and the owner's pending commands, before any push
-            outage_from = None
-            if late_login:                      # the login came after the open: the frames since it are lost (CDM 5.1)
-                opens = [ph.start_ns for ph in calendar.phases("FO_FUT", day) if ph.phase == "CONTINUOUS"]
-                outage_from = opens[0] if opens else None
-            dispatcher.start(clock.now_ns(), outage_from=outage_from)
-        except Exception:  # noqa: BLE001 — the recording goes on; the commands stay pending in the store
-            log.exception("applying a restart's gaps and pending commands failed")
-        pins.live = True                        # from here the ticker thread owns every pin change
+        outage_from = None
+        if late_login:                          # the login came after the open: the frames since it are lost (CDM 5.1)
+            opens = [ph.start_ns for ph in calendar.phases("FO_FUT", day) if ph.phase == "CONTINUOUS"]
+            outage_from = opens[0] if opens else None
+        if not replay:                          # IWB 5.1: Kite's answers are in a replayed journal already
+            poller = _margin_poller(dispatcher, session, clock)
+            dispatcher.margin_poller = poller
+            pins.defer = []
+
+        def start_dispatcher(t: int) -> None:
+            try:                                # a restart's gaps and the owner's pending commands, before any push
+                dispatcher.start(t, outage_from=outage_from)
+            except Exception:  # noqa: BLE001 — the recording goes on; the commands stay pending in the store
+                log.exception("applying a restart's gaps and pending commands failed")
 
         def engine_main() -> None:
             try:
+                if late:
+                    opened = open_sessions(rows, day, clock, pump, pins, clear_token_expired=True,
+                                           refdata_stale=bool(stale), blocked=blocked)
+                    sessions.extend(opened)
+                    if not opened:              # nothing to run: the recorder carries on alone
+                        dispatcher.closed = True
+                        pins.go_live()
+                        return
+                    dispatcher.attach(opened)
+                    oldest = dispatcher.oldest_stamp()      # frames queued while the sessions opened come after
+                    now = clock.now_ns()
+                    start_dispatcher(now if oldest is None else min(now, oldest))
+                    pins.go_live()
+                    if poller is not None:
+                        poller.start()
                 dispatcher.run(engine_stop)
             except BaseException as e:  # noqa: BLE001 — the recording goes on without it
                 engine_failed.append(repr(e))
                 log.critical("the engine thread died: %r; the recording continues, the sessions do not", e,
                              exc_info=True)
 
+        if not late:
+            start_dispatcher(clock.now_ns())
+            pins.go_live()                      # from here the ticker thread owns every pin change
         engine_thread = threading.Thread(target=engine_main, name="engine", daemon=True)
-        if not replay:                          # IWB 5.1: Kite's answers are in a replayed journal already
-            poller = _margin_poller(dispatcher, session, clock)
-            dispatcher.margin_poller = poller
 
     if replay:
         from stockify.daemon import replay_ticker
@@ -651,11 +706,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
 
     recorder.start()
     session.start()
-    if engine_thread is not None:
-        engine_thread.start()
-    if poller is not None:
-        poller.start()
     ticker.connect(threaded=True)
+    if engine_thread is not None:               # after the ticker: a live run's sessions open (and recover) from here
+        engine_thread.start()
     log.info("recording %s: %d instruments, landing %s; %d paper session(s)", day, len(manager.current), landing.path,
              len(sessions))
     est = daemon.estimate_bytes_per_day(day, manager)
@@ -674,7 +727,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     restart = threading.Event()                  # a blocked session can start now: end the run, the daemon starts it again
     idle_stop = threading.Event()
     idle_thread = None
-    if not replay and (on_idle is not None or blocked):
+    engine_dead = False
+    if not replay and (on_idle is not None or rows):
         idle_thread = threading.Thread(
             target=_idle_passes, name="idle", daemon=True,
             args=(idle_stop, day, blocked, before_open, on_idle, restart))
@@ -691,6 +745,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                         recorder.stats.alarms.append("on_battery")
                     log.warning("running on battery during the session: recording continues until the battery "
                                 "runs out (Windows then hibernates; the stop is recorded as a gap)")
+            if engine_failed and not engine_dead:
+                engine_dead = True
+                _engine_died(dispatcher, engine_thread, engine_failed, clock)
             if replay and ticker.finished.is_set():
                 break
             if restart.is_set():
@@ -718,6 +775,21 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         finally:
             restore_signals()
     return exitcodes.ENGINE_STUCK if stuck else session.exit_code
+
+
+def _engine_died(dispatcher, engine_thread, engine_failed: list[str], clock) -> None:  # noqa: ANN001
+    """The engine thread is dead (I-4), seen once from the main loop: say so, fail every session's day (a timeline
+    row, the owner told, pins released), and stop accepting dispatch. The recorder keeps running; the journals hold
+    what was dispatched, and a finalise replays them."""
+    log.critical("the engine thread is dead (%s): the sessions have stopped, the recorder carries on", engine_failed[0])
+    engine_thread.join(5.0)
+    if engine_thread.is_alive() or dispatcher is None:
+        return
+    failed = dispatcher.engine_died(engine_failed[0], clock.now_ns())
+    if not failed:                              # it died before any session was attached: nothing else says so
+        notifier.session_event("session_error", "The paper sessions stopped: the engine thread died",
+                               {"error": engine_failed[0], "what_to_do": "restart the daemon; the log has the detail"},
+                               key="engine_thread_died")
 
 
 POLLER_JOIN_S = 5.0                             # a request in flight is abandoned after this; the thread is a daemon
@@ -785,7 +857,7 @@ def _shutdown(*, ticker, replay: bool, session, recorder, landing, clock, day: d
             log.error("the engine thread did not stop within %.0f s: not draining beside it, journals left "
                       "unfinalised (the next start resumes them by replay)", ENGINE_JOIN_S)
     if not stuck:
-        if dispatcher is not None:
+        if dispatcher is not None and not engine_failed:       # a dead engine is not asked to process the queue again
             try:
                 dispatcher.drain()
             except Exception:  # noqa: BLE001 — the journals are closed and synced below regardless

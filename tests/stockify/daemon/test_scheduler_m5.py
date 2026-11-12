@@ -428,6 +428,87 @@ class LateLoginTest(LiveBase):
         self.assertGreater(gaps[0]["t_event"], timeutil.ist_ns(pf.DAY, "09:15:00"))
 
 
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class RecorderFirstTest(LiveBase):
+    """I-3, I-4 and the differential review's M1: a session can never cost the recording."""
+
+    def events_of(self, *names):
+        return [e for e in self.events if e in names]
+
+    def test_a_long_session_replay_does_not_delay_the_recorder_start(self):
+        from stockify.daemon import recorder as recorder_mod, recovery
+        from stockify.daemon import journal
+        from stockify.data import packs
+        self.assertEqual(self.run_live(), exitcodes.OK)                         # day one's journal exists now
+        t = timeutil.ist_ns(pf.DAY, "09:15:00")
+        w = journal.JournalWriter(paths.journal_file("s1", pf.DAY), fsync_every_mono_ns=10 ** 9, mono=lambda: 0)
+        w.append([(t, packs.RANK[packs.CLOCK], packs.enc_clock(t))])                # so a restart has a journal to replay
+        w.close(finalise=False)
+        self.events.clear()
+        real_recover, real_start = recovery.recover, recorder_mod.Recorder.start
+
+        def slow_recover(*a, **kw):
+            self.events.append("recover")
+            return real_recover(*a, **kw)
+
+        def start(rec):
+            self.events.append("recorder.start")
+            return real_start(rec)
+
+        with mock.patch.object(recovery, "recover", slow_recover),                 mock.patch.object(recorder_mod.Recorder, "start", start):
+            self.assertEqual(self.run_live(), exitcodes.OK)
+        order = self.events_of("recorder.start", "ticker.connect", "recover")
+        self.assertEqual(order, ["recorder.start", "ticker.connect", "recover"])
+        self.assertEqual(store.get_session("s1")["status"], "RUNNING")
+
+    def run_until(self, seconds, **kw):
+        stop = threading.Event()
+        timer = threading.Timer(seconds, stop.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        self.stop_at_poller = False
+        return self.run_live(stop=stop, **kw)
+
+    def test_a_dead_engine_is_noticed_once_and_the_recorder_carries_on(self):
+        from stockify.daemon import dispatcher as dispatcher_mod
+        told = []
+        with mock.patch.object(dispatcher_mod.Dispatcher, "run", side_effect=RuntimeError("engine boom")),                 mock.patch("stockify.daemon.notify.session_event", lambda *a, **kw: told.append((a, kw))):
+            self.assertEqual(self.run_until(2.5), exitcodes.OK)
+        self.assertIn("ticker.connect", self.events)
+        rows = [r for r in store.timeline("s1") if r["kind"] == "session_failed"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("engine boom", rows[0]["detail"]["error"])
+        self.assertEqual([a[0] for a, _ in told], ["session_error"])               # told once, however long it ran
+        status = json.loads(paths.daemon_status_file().read_text(encoding="utf-8"))
+        self.assertIn("engine_thread_died", status["alarms"])
+        self.assertTrue(status["sessions"]["s1"]["failed"])
+
+    def test_a_corrupt_session_row_does_not_stop_the_recorder(self):
+        import sqlite3
+        conn = store._connect()
+        conn.execute("UPDATE sessions SET config_json = '{not json' WHERE session_id = 's1'")
+        conn.commit()
+        told = []
+        with mock.patch("stockify.daemon.notify.session_event", lambda *a, **kw: told.append(a)):
+            self.assertEqual(self.run_until(1.5), exitcodes.OK)
+        self.assertIn("ticker.connect", self.events)
+        self.assertEqual([a[0] for a in told], ["session_error"])
+
+    def test_a_bad_paper_json_does_not_stop_the_recorder(self):
+        real = loader.load_json
+
+        def load(name, *a, **kw):
+            if name == "paper.json":
+                raise loader.ConfigError("paper.json: clock_every_s is missing")
+            return real(name, *a, **kw)
+
+        told = []
+        with mock.patch.object(loader, "load_json", load),                 mock.patch("stockify.daemon.notify.session_event", lambda *a, **kw: told.append(a)):
+            self.assertEqual(self.run_until(1.5), exitcodes.OK)
+        self.assertIn("ticker.connect", self.events)
+        self.assertEqual([a[0] for a in told], ["session_error"])
+
+
 PREV = "2026-11-16"                                                              # the trading day before pf.DAY
 
 

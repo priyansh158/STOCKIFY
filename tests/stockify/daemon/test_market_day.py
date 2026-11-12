@@ -428,7 +428,7 @@ class FakeLiveTicker:
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class MarginPollerWiringTest(pf.PaperDayTest):
-    """IWB 5.2: the live run starts the margin poller after the engine thread and before the ticker connects, stops
+    """IWB 5.2: the live run starts the margin poller once the sessions are open (after the ticker connects: I-3), stops
     it right after the ticker, never builds one in a replay, and a 403 seen twice is one token expiry."""
 
     def setUp(self):
@@ -484,7 +484,7 @@ class MarginPollerWiringTest(pf.PaperDayTest):
         [(poller, dispatcher)] = built
         self.assertIs(dispatcher.margin_poller, poller)
         self.assertEqual([e for e in self.events if e.startswith(("poller", "ticker"))],
-                         ["poller.start", "ticker.connect", "ticker.close", "poller.stop"])
+                         ["ticker.connect", "poller.start", "ticker.close", "poller.stop"])
 
     def test_a_replay_never_builds_a_poller(self):
         called = []

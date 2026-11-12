@@ -124,13 +124,45 @@ class Dispatcher:
         # A restart, live or replay, repeats no CLOCK record: a boundary at or below the journal's last CLOCK is not
         # written again. CLOCK is a periodic marker, never data, so a live restart that shares the last boundary loses
         # nothing by this, and the journal's last CLOCK stays the restart's boundary (LCB 5.2, Task 18 review).
-        self._last_clock = max([sd.last_clock for sd in sessions if sd.resumed] or [0])
+        self._last_clock = 0
         self._skip: dict[str, int] = {}              # session -> recv_ns of its last dispatched frame (replay restarts)
-        if replay:
+        self.closed = False                          # set once the engine is dead or has no session: nothing more is queued
+        self.attach(sessions)
+
+    def attach(self, sessions: list[SessionDay]) -> None:
+        """Set the sessions this dispatcher feeds. The constructor does it; a live run that opens its sessions on the
+        engine thread, after the recording has started (I-3), does it once they are open and before `start`."""
+        self.sessions = list(sessions)
+        self._by_id = {s.session_id: s for s in self.sessions}
+        self._last_clock = max([sd.last_clock for sd in sessions if sd.resumed] or [0])
+        self._skip = {}
+        if self.replay:
             for sd in sessions:
                 mark = store.session_last_frame(sd.session_id, sd.trade_date) if sd.resumed else None
                 if mark is not None:
                     self._skip[sd.session_id] = mark[1]
+
+    def oldest_stamp(self) -> int | None:
+        """The stamp of the oldest queued item (a frame that arrived while the sessions were opening), or None."""
+        with self.queue.mutex:
+            if not self.queue.queue:
+                return None
+            item = self.queue.queue[0]
+        return {FRAME: lambda: item[1][1], GAP: lambda: item[3], INJECT: lambda: item[1],
+                COMMAND: lambda: item[1]}[item[0]]()
+
+    def engine_died(self, error: str, t: int) -> list[str]:
+        """The engine thread is dead (I-4): nothing more is accepted, and every session whose day is still going is
+        failed (a `session_failed` timeline row, the owner told, its pins released). The journals hold what was
+        dispatched, so a finalise replays them (C-1). Call from the main thread only once the engine thread has ended.
+        Returns the sessions it failed."""
+        self.closed = True
+        failed = []
+        for sd in self.sessions:
+            if sd.session_id not in self.stats.failed:
+                self._fail(sd.session_id, RuntimeError(f"the engine thread died: {error}"), t)
+                failed.append(sd.session_id)
+        return failed
 
     # ── producers (any thread): cheap, never block ───────────────────────────
     def put_frame(self, item: tuple) -> None:
@@ -151,6 +183,8 @@ class Dispatcher:
         return self._offer((INJECT, t, session_id, rank, record), t)
 
     def _offer(self, item: tuple, stamp: int) -> bool:
+        if self.closed:                  # the engine is dead or there is no session: the recorder carries on alone
+            return False
         try:
             self.queue.put_nowait(item)
             return True
