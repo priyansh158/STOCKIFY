@@ -44,7 +44,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.6 Locked holdout (S)
 
-- [x] (done, `stockify/research/holdout.py`, D-88; the owner still has to choose `holdout_from`, shipped `null`) `stockify/config/research.json` → `holdout_from` (a date chosen by the owner, e.g. the last three months). Runs whose data overlaps the holdout need `--unlock-holdout "<reason>"`; each unlock is logged in `holdout_unlocks` and counted on the family's report.
+- [x] (done, `stockify/research/holdout.py`, D-88; the owner chose `holdout_from` = 2026-08-01 on 2026-11-12, D-89) `stockify/config/research.json` → `holdout_from` (a date chosen by the owner, e.g. the last three months). Runs whose data overlaps the holdout need `--unlock-holdout "<reason>"`; each unlock is logged in `holdout_unlocks` and counted on the family's report.
 
 ## M6.7 Sensitivity suite (S)
 

@@ -1223,7 +1223,7 @@ RCB recon · AM registry and config · IL statistics · IR bootstrap and regimes
 | M6.3 `/data` | Tasks 27, 28, 32 | OWNER: re-run `data report --date D` for each recorded day so the new coverage metrics exist (derived rows only); LIVE: "full coverage history" needs the recorded days to exist |
 | M6.4 registry, DSR | Tasks 3, 4, 5, 7, 8, 9, 30, 33, 34 | OWNER: run `research families --backfill` once on the real lab (updates only NULL `family_id` rows; `--dry-run` first) and name families if wanted |
 | M6.5 walk-forward | Tasks 20, 21, 22, 36 | LIVE: the demo needs about 330 calendar days of cached RELIANCE minute bars (train 120d + a few 30d tests), fetched with `bars fetch` (Kite login) |
-| M6.6 holdout | Task 11 (done, D-88) | 🛑 PENDING the owner's choice: `holdout_from` (shipped `null`, so nothing is locked yet; the plan suggests the last three months). Until it is set the guard is built and tested but inactive. |
+| M6.6 holdout | Task 11 (done, D-88); owner's date set (D-89) | CLEARED 2026-11-12: `holdout_from = 2026-08-01` (owner: "last 3 month holdout looks good"), shipped in `research.json`. The tests run with the holdout off (`tests/support`). The `examples/runs/` walkthrough configs on recorded November 2026 data now need `--unlock-holdout`. |
 | M6.7 sensitivity | Tasks 13, 14, 15, 16 | demo on the best real run, after the sweep; OWNER: the engine is rebuilt (`.\run.ps1 -BuildEngine`) for Task 14 |
 | M6.8, M6.9 | Tasks 6, 10 | VIX source: if reading the recorded `INDIA VIX` is too slow, Task 10 falls back to bhavcopy and records a D-row (owner reviews) |
 | M6.10 sweeps | Tasks 12, 17, 18, 19, 35 | the demo sweep needs the same minute bars as M6.5 |

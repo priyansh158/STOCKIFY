@@ -338,7 +338,11 @@ class RealSubprocessTests(SandboxedDBTest):
     def test_the_runner_subprocess(self):
         from server.services.test_queue import TestQueue, subprocess_launcher
         q = TestQueue(launcher=subprocess_launcher, cap=1)
-        run_id = runs.queue(EXAMPLE)
+        # the subprocess does not load tests.support, so it sees the shipped holdout (D-89): stay clear of it
+        before_holdout = json.loads(json.dumps(EXAMPLE))
+        for pack in before_holdout["data"]["packs"]:
+            pack["spec"]["to"] = "2026-07-31"
+        run_id = runs.queue(before_holdout)
         q.submit(run_id)
         q.join(120)
         row = store.get_run(run_id)

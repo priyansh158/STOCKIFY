@@ -40,8 +40,21 @@ class ResearchConfigTests(unittest.TestCase):
     def test_shipped_research_json_validates(self):
         doc = load(SHIPPED)
         self.assertEqual(doc["schema"], "stockify.research/1")
-        self.assertIsNone(doc["holdout_from"])
+        self.assertEqual(doc["holdout_from"], "2026-08-01")   # the owner's choice, D-89
         self.assertEqual(research.settings()["pbo"], {"slices": 16, "min_trials": 2})
+
+    def test_shipped_holdout_date_is_the_owners_and_passes_the_strict_loader(self):
+        self.assertEqual(SHIPPED["holdout_from"], "2026-08-01")                      # the file on disk
+        self.assertEqual(loader.load_json("research.json")["holdout_from"], "2026-08-01")   # the strict loader, real file
+        self.assertEqual(load(SHIPPED)["holdout_from"], "2026-08-01")
+
+    def test_the_test_sandbox_has_no_holdout_unless_a_test_asks(self):
+        from stockify.research import holdout
+        self.assertIsNone(research.settings()["holdout_from"])
+        self.assertIsNone(holdout.holdout_from())
+        with support.holdout_on("2026-08-01"):
+            self.assertEqual(str(holdout.holdout_from()), "2026-08-01")
+        self.assertIsNone(holdout.holdout_from())
 
     def test_holdout_from_must_be_an_iso_date_or_null(self):
         self.assertEqual(load(changed("holdout_from", value="2026-08-01"))["holdout_from"], "2026-08-01")
