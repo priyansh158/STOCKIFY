@@ -68,7 +68,7 @@ class DsrSentenceTests(unittest.TestCase):
         s = plain.dsr_sentence(12, 1, 0.85)
         self.assertIn("best of 12 tries", s)
         self.assertIn("after allowing for luck", s)
-        self.assertIn("85% confident the edge is real", s)
+        self.assertIn("85% chance the edge beats luck", s)
         self.assertIn("steadiness of returns (Sharpe)", s)
 
     def test_dsr_sentence_names_the_objective_and_the_picked_run_for_a_runner_up(self):
@@ -102,9 +102,30 @@ class DsrSentenceTests(unittest.TestCase):
         self.assertIn("12th best of 500 tries", plain.dsr_sentence(500, 12, 0.5))
 
     def test_percent_rounds_to_whole_numbers(self):
-        self.assertIn("85% confident", plain.dsr_sentence(5, 1, 0.8499))
-        self.assertIn("0% confident", plain.dsr_sentence(5, 1, 0.0))
-        self.assertIn("100% confident", plain.dsr_sentence(5, 1, 1.0))
+        self.assertIn("85% chance", plain.dsr_sentence(5, 1, 0.8499))
+        self.assertIn(": 0% chance", plain.dsr_sentence(5, 1, 0.0))
+        self.assertIn(": 100% chance", plain.dsr_sentence(5, 1, 1.0))
+
+    def test_a_near_certain_value_is_not_rounded_to_100_or_0(self):
+        self.assertIn("99.9% chance", plain.dsr_sentence(5, 1, 0.9994))
+        self.assertIn("0.1% chance", plain.dsr_sentence(5, 1, 0.0006))
+        self.assertIn("99.9% confident", plain.psr_sentence(0.9994))
+
+    def test_non_finite_values_say_too_few_days_and_near_misses_are_clamped(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.assertIn("too few days to say", plain.dsr_sentence(12, 1, bad))
+            self.assertEqual(plain.psr_sentence(bad), "too few days to say")
+        self.assertIn(": 100% chance", plain.dsr_sentence(12, 1, 1.0000001))
+        self.assertIn(": 0% chance", plain.dsr_sentence(12, 1, -1e-9))
+        self.assertIn("100% confident", plain.psr_sentence(1.0000001))
+
+    def test_another_ranking_measure_says_the_allowance_is_on_its_sharpe(self):
+        s = plain.dsr_sentence(12, 1, 0.85, objective="net_pnl")
+        self.assertEqual(s, "best of 12 tries by profit after costs, after allowing for luck on its Sharpe: "
+                            "85% chance the edge beats luck")
+        self.assertNotIn("on its Sharpe", plain.dsr_sentence(12, 1, 0.85, objective="sharpe"))
+        longest = plain.dsr_sentence(500, 1, 1.0, objective="sortino")
+        self.assertLessEqual(len(longest), 160, longest)
 
     def test_bad_rank_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -127,7 +148,7 @@ class PsrSentenceTests(unittest.TestCase):
 class IntervalSentenceTests(unittest.TestCase):
     def test_interval_sentence_with_and_without_bounds(self):
         s = plain.interval_sentence("Sharpe", bootstrap.Interval(1.0, 0.4, 1.9), "")
-        self.assertEqual(s, "between 0.4 and 1.9 in 9 of 10 re-shuffles of your own days")
+        self.assertEqual(s, "between 0.4 and 1.9 in 9 of 10 re-draws of your own days")
         for iv in (bootstrap.Interval(None, None, None), bootstrap.Interval(1.0, None, 2.0),
                    bootstrap.Interval(1.0, 0.1, None)):
             self.assertEqual(plain.interval_sentence("Sharpe", iv, ""), "too few days to say")
@@ -139,11 +160,31 @@ class IntervalSentenceTests(unittest.TestCase):
         p = plain.interval_sentence("Max drawdown", bootstrap.Interval(0.05, 0.021, 0.134), "%")
         self.assertIn("between 2.1% and 13.4% in", p)
 
+    def test_ci_never_prints_100_or_0_percent(self):
+        iv = bootstrap.Interval(1.0, 0.4, 1.9)
+        self.assertIn("in 99.9% of re-draws", plain.interval_sentence("x", iv, "", ci=0.999))
+        self.assertIn("in 0.1% of re-draws", plain.interval_sentence("x", iv, "", ci=0.001))
+        self.assertIn("in 99.95% of re-draws", plain.interval_sentence("x", iv, "", ci=0.9995))
+        with self.assertRaises(ValueError):
+            plain.interval_sentence("x", iv, "", ci=1.0)
+
+    def test_rupees_round_before_grouping(self):
+        self.assertEqual(plain.rupees(999.996), f"{RUPEE}1,000")
+        self.assertEqual(plain.rupees(-999.996), f"-{RUPEE}1,000")
+        self.assertEqual(plain.rupees(999.994), f"{RUPEE}999.99")
+        self.assertEqual(plain.rupees(1000.4), f"{RUPEE}1,000")
+        self.assertEqual(plain.rupees(99999.5), f"{RUPEE}1,00,000")
+        self.assertEqual(plain.rupees(-0.001), f"{RUPEE}0")
+
+    def test_sharpe_meaning_does_not_say_higher_is_steadier(self):
+        self.assertNotIn("steadier", plain.meaning("sharpe"))
+        self.assertIn("more return for the swing taken", plain.meaning("sharpe"))
+
     def test_ci_keyword_changes_the_wording(self):
         iv = bootstrap.Interval(1.0, 0.4, 1.9)
-        self.assertIn("in 19 of 20 re-shuffles", plain.interval_sentence("x", iv, "", ci=0.95))
-        self.assertIn("in 8 of 10 re-shuffles", plain.interval_sentence("x", iv, "", ci=0.80))
-        self.assertIn("in 99% of re-shuffles", plain.interval_sentence("x", iv, "", ci=0.99))
+        self.assertIn("in 19 of 20 re-draws", plain.interval_sentence("x", iv, "", ci=0.95))
+        self.assertIn("in 8 of 10 re-draws", plain.interval_sentence("x", iv, "", ci=0.80))
+        self.assertIn("in 99% of re-draws", plain.interval_sentence("x", iv, "", ci=0.99))
 
     def test_rounding_and_no_negative_zero(self):
         s = plain.interval_sentence("x", bootstrap.Interval(0.0, -0.001, 0.004), "")
@@ -178,12 +219,23 @@ class SweepTests(unittest.TestCase):
             self.assertEqual(plain_best, rank == 1 and n > 1 and not flat, tag)
             if rank > 1 and not flat:
                 self.assertIn(f"best of {n} tries", s, tag)
+            if rank == 1 and n > 1 and not flat and dsr is not None:
+                shown = float(re.search(r": ([0-9.]+)% chance", s).group(1))
+                self.assertLessEqual(abs(shown - dsr * 100), 0.5, tag)
+                if 0.005 < dsr < 0.995:
+                    self.assertEqual(shown, float(round(dsr * 100)), tag)
         for _ in range(500):
             iv = bootstrap.Interval(*[rng.choice([None, rng.uniform(-1e7, 1e7)]) for _ in range(3)])
-            s = plain.interval_sentence("x", iv, rng.choice(["", "%", RUPEE]))
+            unit = rng.choice(["", "%", RUPEE])
+            s = plain.interval_sentence("x", iv, unit)
             self.assertNotIn("\n", s)
             self.assertLessEqual(len(s), 160, s)
             self.assertEqual(_bad_tokens(s), [], s)
+            if iv.lo is None or iv.hi is None:
+                self.assertEqual(s, "too few days to say")
+            else:
+                lo_text, hi_text = plain._with_unit(iv.lo, unit), plain._with_unit(iv.hi, unit)
+                self.assertTrue(s.startswith(f"between {lo_text} and {hi_text} in "), s)
 
 
 if __name__ == "__main__":
