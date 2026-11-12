@@ -16,6 +16,7 @@ import math
 from dataclasses import dataclass
 from statistics import NormalDist
 
+from stockify import numerics
 from stockify.config import loader
 from stockify.oracle import metrics
 
@@ -56,7 +57,15 @@ def moments(x: list[float]) -> Moments:
 
 
 def risk_free_rows() -> list[dict]:
-    return loader.load_json("pricing.json")["risk_free"]
+    """The dated risk-free rows as `metrics.rate_on` reads them: each decimal-string `rate` gets its exact
+    `rate_ppb` (what `bundle._ppb_fields` adds for the engine), so a report sees the rate a run was judged by."""
+    rows = []
+    for r in loader.load_json("pricing.json")["risk_free"]:
+        r = dict(r)
+        if isinstance(r.get("rate"), str):
+            r["rate_ppb"] = numerics.to_ppb(r["rate"])
+        rows.append(r)
+    return rows
 
 
 def returns_from_nav(capital: int, navs: list[int]) -> list[float]:

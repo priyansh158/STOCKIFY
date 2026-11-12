@@ -95,6 +95,13 @@ class SharpeTests(unittest.TestCase):
         self.assertIsNotNone(m["sharpe"])
         self.assertAlmostEqual(stats.annualised(stats.sharpe_per_period(x)), m["sharpe"], delta=1e-12)
 
+    def test_the_configured_risk_free_rows_carry_rate_ppb(self):
+        rows = stats.risk_free_rows()
+        self.assertTrue(rows)
+        self.assertTrue(all(isinstance(r["rate_ppb"], int) for r in rows))
+        x = stats.excess_returns(["2026-01-05"], [0.01], rows)      # used to raise KeyError: 'rate_ppb'
+        self.assertLess(x[0], 0.01)
+
     def test_sharpe_matches_metrics_json(self):
         self._check_against_metrics([])
         self._check_against_metrics([{"effective_from": "2025-01-01", "rate_ppb": 70_000_000}])

@@ -538,6 +538,45 @@ def _print_console(text: str) -> None:
     print(text)
 
 
+def _cmd_research_families(args) -> int:
+    """M6.4: the trial families (a table), with `--name` to name one and `--backfill` to give old runs a family."""
+    from stockify import store
+    from stockify.research import registry, report
+    if args.dry_run and not args.backfill:
+        print("--dry-run only goes with --backfill", file=sys.stderr)
+        return 2
+    if args.name:
+        family_id, description = args.name
+        if store.get_family(family_id) is None:
+            print(f"no such family: {family_id!r} (`research families` lists them)", file=sys.stderr)
+            return 1
+        store.name_family(family_id, description)
+    if args.backfill:
+        n = registry.backfill(dry_run=args.dry_run)
+        print(f"would give {n} run(s) a family (dry run, nothing written)" if args.dry_run
+              else f"gave {n} run(s) a family")
+    fams = report.list_families()
+    if not fams:
+        print("no families yet")
+        return 0
+    _print_console(report.families_table(fams))
+    return 0
+
+
+def _cmd_research_show(args) -> int:
+    """M6.4/M6.8: the lines the pages show for a run or a family, in plain words."""
+    from stockify import store
+    from stockify.research import report
+    if store.get_run(args.target) is not None:
+        _print_console(report.run_text(report.run_research(args.target)))
+        return 0
+    if store.get_family(args.target) is not None:
+        _print_console(report.family_text(report.family_report(args.target)))
+        return 0
+    print(f"{args.target!r} is neither a run id nor a family id", file=sys.stderr)
+    return 2
+
+
 def _cmd_margin_check(args) -> int:
     """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
     from datetime import date
@@ -994,6 +1033,18 @@ def main(argv: list[str] | None = None) -> int:
     lr.add_argument("--from", dest="start", help="first IST trade date, YYYY-MM-DD (default: all)")
     lr.add_argument("--to", dest="end", help="last IST trade date, YYYY-MM-DD (default: all)")
     lr.set_defaults(func=_cmd_margin_live_report)
+
+    rs = sub.add_parser("research", help="honest-backtest reports: trial families, deflated Sharpe, bootstrap (M6)")
+    rssub = rs.add_subparsers(dest="research_command", required=True)
+    rf_ = rssub.add_parser("families", help="list the trial families (exit 0; 1 unknown family for --name; 2 bad arguments)")
+    rf_.add_argument("--name", nargs=2, metavar=("FAMILY_ID", "DESCRIPTION"), help="name a family")
+    rf_.add_argument("--backfill", action="store_true",
+                     help="give every run without a family its default one (writes to the lab database)")
+    rf_.add_argument("--dry-run", action="store_true", help="with --backfill: count what would change, write nothing")
+    rf_.set_defaults(func=_cmd_research_families)
+    rw = rssub.add_parser("show", help="print the research lines of a run or a family, in plain words")
+    rw.add_argument("target", help="a run id or a family id")
+    rw.set_defaults(func=_cmd_research_show)
 
     se = sub.add_parser("session", help="paper session maintenance")
     sesub = se.add_subparsers(dest="session_command", required=True)
