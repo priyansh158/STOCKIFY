@@ -1176,9 +1176,9 @@ live day: Wed 2026-11-11 IST. Record each day here:
 
 **Toolchain (venv, Python 3.12.10).** numpy 2.5.4, pandas 2.3.3, PyYAML 6.0.3, matplotlib 3.11.2 import. `scipy`, `statsmodels` and `hypothesis` raise `ModuleNotFoundError` (expected: M6 statistics are stdlib + numpy). `requirements.txt` has `PyYAML>=6.0` (line 29), numpy (25), pandas (26), matplotlib (28).
 
-**Baseline suite:** <filled by controller>
+**Baseline suite:** Baseline suite at 7368e7f (engine_build_id 92b9ac8ff8fd): 2304 tests, 2300 passed, 4 tracked defects (expected failures), exit 0, 1774 s (slower than the usual 4–10 min because other work ran alongside).
 
-**Web baseline.** `npm run lint` and `npm run build` not run in Task 1: the controller's full suite was still running (two heavy jobs at once are avoided). <filled by controller>.
+**Web baseline** (run in the worktree after the suite ended). `npm run lint`: exit 0, no findings. `npm run build`: exit 1, `TurbopackInternalError: Symlink [project]/node_modules is invalid, it points out of the filesystem root` (the worktree's `web/node_modules` is a link to the main checkout's, which Turbopack refuses; an environment limit of the worktree, not a code failure). Recorded, not fixed; web tasks that need a build must run it from the main checkout's `web/` or with a real install, and Task 1 does not decide which.
 
 ### The mismatch table, verified at BASE
 
