@@ -6,6 +6,8 @@
 
 Concepts: C-4, C-14, C-16, C-17.
 
+> **M6.0 recon (2026-11-12, RCB 6.1)**: done at BASE `7368e7f`; the findings are in `RECON.md` ("2026-11-12 — M6.0 recon"). The spec differs from the code in 17 places (the plan's mismatch table); the five M6 commands are stubs, `trial_families`, `runs.family_id` and `holdout_unlocks` already exist but nothing fills them, and the real lab has 7 runs, one recorded tick day and one day of RELIANCE minute bars.
+
 ---
 
 ## M6.1 Compare runs (S)
