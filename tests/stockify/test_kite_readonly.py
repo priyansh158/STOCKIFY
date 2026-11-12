@@ -572,7 +572,7 @@ class SourceScanTest(unittest.TestCase):
     OWN_API_LINES = {"server/routers/tests.py": {'@router.get("/api/tests/{run_id}/orders", '
                                                  'response_model=list[dict[str, Any]])'},
                      "server/routers/trade.py": {'@router.get("/api/trade/sessions/{session_id}/orders", '
-                                                 'response_model=list[dict[str, Any]])'},
+                                                 'response_model=list[SessionOrderDTO])'},
                      "stockify/strategy.py": {'BANNED_ATTR_NAMES = {"importlib", "sys", "modules", "kite_client", '
                                               '"kiteconnect", "os", "subprocess", "socket",'}}
 
