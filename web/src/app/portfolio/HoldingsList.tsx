@@ -47,7 +47,7 @@ export function HoldingsList({ initial }: Props) {
         { label: "Last price", num: true },
         { label: "Price source" },
         { label: "Profit or loss", num: true },
-        { label: "Change", num: true },
+        { label: "Change (%)", num: true },
       ]}
     >
       {initial.map((h) => {

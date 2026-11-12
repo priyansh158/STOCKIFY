@@ -12,8 +12,7 @@ const MIN_CHARS = 2;
  *
  * - Min 2 chars before hitting /api/search
  * - 250ms debounce
- * - Enter or click on a suggestion → show that instrument's details below
- *   (no navigation until the /tests page exists in milestone M3)
+ * - Enter or click on a suggestion shows that instrument's details below
  */
 export function SearchBox() {
   const [query, setQuery] = useState("");
@@ -163,8 +162,8 @@ export function SearchBox() {
           </div>
           <p>{selected.name}</p>
           <p className="stk-fine stk-mono">
-            {selected.instrument_token ? `token ${selected.instrument_token}, ` : ""}
-            source {selected.source}
+            {selected.instrument_token ? `Kite id ${selected.instrument_token}, ` : ""}
+            from {selected.source}
             {selected.sector ? `, ${selected.sector}` : ""}
           </p>
         </section>

@@ -31,8 +31,11 @@ export default function RootLayout({
       className={`${inter.variable} ${jetbrainsMono.variable}`}
     >
       <body>
+        <a href="#main" className="stk-skip">
+          Skip to the page
+        </a>
         <AppNav />
-        <main className="stk-main">{children}</main>
+        <main id="main" tabIndex={-1} className="stk-main">{children}</main>
         <footer className="stk-foot">
           <p>Simulation only: STOCKIFY never places real orders. Not investment advice.</p>
         </footer>

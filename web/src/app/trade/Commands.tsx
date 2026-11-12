@@ -14,6 +14,7 @@ const WATCH_MAX = 90; // about 90 s of watching, then the owner is told it is st
 export function useCommandWatch(onSettled?: () => void) {
   const [message, setMessage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [pending, setPending] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const alive = useRef(true);
 
@@ -29,6 +30,7 @@ export function useCommandWatch(onSettled?: () => void) {
     (cmdId: number) => {
       clearTimeout(timer.current);
       setFailed(false);
+      setPending(true);
       setMessage("Sent. Waiting for the background service to pick it up…");
       let tries = 0;
       const tick = async () => {
@@ -39,6 +41,7 @@ export function useCommandWatch(onSettled?: () => void) {
           if (!alive.current) return;
           setMessage(commandText(c));
           if (c.status !== "pending") {
+            setPending(false);
             setFailed(c.status === "failed");
             onSettled?.();
             return;
@@ -48,7 +51,10 @@ export function useCommandWatch(onSettled?: () => void) {
           setMessage("Sent, but the answer could not be read. It may still apply.");
         }
         if (tries < WATCH_MAX) timer.current = setTimeout(tick, WATCH_MS);
-        else setMessage("Still queued. It takes effect when the background service next runs.");
+        else {
+          setPending(false);
+          setMessage("Still queued. It takes effect when the background service next runs.");
+        }
       };
       timer.current = setTimeout(tick, 400);
     },
@@ -57,18 +63,24 @@ export function useCommandWatch(onSettled?: () => void) {
 
   const fail = useCallback((text: string) => {
     clearTimeout(timer.current);
+    setPending(false);
     setFailed(true);
     setMessage(text);
   }, []);
 
-  return { message, failed, watch, fail };
+  return { message, failed, pending, watch, fail };
 }
 
 /** A live status line for the outcome of a command (announced to screen readers). */
-export function CommandMessage({ message, failed }: { message: string | null; failed: boolean }) {
+export function CommandMessage({ message, failed, pending }: { message: string | null; failed: boolean; pending?: boolean }) {
   return (
     <div role="status" aria-live="polite">
-      {message && <p className={failed ? "stk-down" : "stk-muted"}>{message}</p>}
+      {message && (
+        <p className="stk-row">
+          {pending && <Chip tone="info">Waiting</Chip>}
+          <span className={failed ? "stk-down" : pending ? undefined : "stk-muted"}>{message}</span>
+        </p>
+      )}
     </div>
   );
 }

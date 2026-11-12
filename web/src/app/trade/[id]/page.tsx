@@ -13,6 +13,7 @@ import {
   getSession,
   getTimeline,
   orderStatusText,
+  PARITY_HELP,
   parityText,
   sendControl,
   signedRupees,
@@ -31,7 +32,7 @@ import type {
   TradeLoginDTO,
 } from "@/lib/types";
 import { useTicks } from "@/lib/useTicks";
-import { Empty, Panel, Skeleton, Stat, StatGrid, Table, toneClass } from "../ui";
+import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table, toneClass } from "../ui";
 import { CommandMessage, ConfirmDialog, LoginBanner, PauseReasons, StatusChip, useCommandWatch } from "../Commands";
 
 const FAST_MS = 2000; // while RUNNING
@@ -335,11 +336,11 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       )}
 
       {!detail && !missing && (
-        <div className="stk-stack-s" aria-busy="true" aria-label="Loading the session">
+        <Loading label="Loading the session">
           <Skeleton size="title" />
           <Skeleton size="m" />
           <Skeleton size="l" />
-        </div>
+        </Loading>
       )}
 
       {detail && (
@@ -359,21 +360,21 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
             {detail.session.status !== "STOPPED" && (
               <div className="stk-head-actions">
                 {status === "PAUSED" ? (
-                  <button type="button" disabled={sending} onClick={() => control("resume")} className="stk-btn" data-tone="primary">
+                  <button type="button" disabled={sending || cmd.pending} onClick={() => control("resume")} className="stk-btn" data-tone="primary">
                     Resume
                   </button>
                 ) : (
-                  <button type="button" disabled={sending} onClick={() => control("pause")} className="stk-btn">
+                  <button type="button" disabled={sending || cmd.pending} onClick={() => control("pause")} className="stk-btn">
                     Pause
                   </button>
                 )}
-                <button type="button" disabled={sending} onClick={() => setConfirmStop(true)} className="stk-btn" data-tone="danger">
+                <button type="button" disabled={sending || cmd.pending} onClick={() => setConfirmStop(true)} className="stk-btn" data-tone="danger">
                   Stop for good
                 </button>
               </div>
             )}
           </div>
-          <CommandMessage message={cmd.message} failed={cmd.failed} />
+          <CommandMessage message={cmd.message} failed={cmd.failed} pending={cmd.pending} />
 
           {login?.waiting_for_login ? (
             <LoginBanner detail={loginDetail} />
@@ -386,8 +387,9 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
               <Stat label="Made or lost today" value={signedRupees(detail.session.today_pnl_paise, rupees)} tone={tone(detail.session.today_pnl_paise)} />
               <Stat label="Positions held" value={detail.session.open_positions == null ? "—" : String(detail.session.open_positions)} />
               <Stat label="Market data received today" value={detail.session.coverage_today == null ? "—" : pct(detail.session.coverage_today)} />
-              <Stat size="s" label="Last replay check" value={parityText(detail.session.parity_last)} />
+              <Stat size="s" plain label="Last replay check" value={parityText(detail.session.parity_last)} />
             </StatGrid>
+            <p className="stk-fine stk-gap-s">Last replay check: {PARITY_HELP}</p>
           </Panel>
 
           <Section title="What it holds now">

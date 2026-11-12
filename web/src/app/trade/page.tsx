@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { istWhen, pct, rupees } from "@/lib/format";
 import { listStrategies } from "@/lib/tests";
-import { getKiteStatus, listSessions, parityText, signedRupees, stopAll, tone } from "@/lib/trade";
+import { getKiteStatus, listSessions, PARITY_HELP, parityText, signedRupees, stopAll, tone } from "@/lib/trade";
 import type { SessionDTO, Strategy } from "@/lib/types";
-import { Empty, PageHead, Panel, Skeleton, Table, toneClass } from "./ui";
+import { Empty, Loading, PageHead, Panel, Skeleton, Table, toneClass } from "./ui";
 import { CommandMessage, ConfirmDialog, LoginBanner, PauseReasons, StatusChip, useCommandWatch } from "./Commands";
 import NewSessionForm from "./NewSessionForm";
 
@@ -99,10 +99,10 @@ export default function TradePage() {
     <div className="stk-page" data-bar>
       <PageHead
         title="Paper trading"
-        lede="Strategies trade live prices with pretend money. Simulation only: no real orders are ever sent."
+        lede="Strategies trade live prices with pretend money."
         actions={
           <span className="stk-label" aria-live="polite">
-            {anyRunning ? "Live, updating" : "Updating slowly"}
+            {error ? "Not updating" : anyRunning ? "Live, updating" : ""}
           </span>
         }
       />
@@ -122,12 +122,13 @@ export default function TradePage() {
 
         <section className="stk-section">
           <h2>Sessions</h2>
+          <CommandMessage message={cmd.message} failed={cmd.failed} pending={cmd.pending} />
           {sessions === null ? (
-            <div className="stk-stack-s" aria-busy="true" aria-label="Loading sessions">
+            <Loading label="Loading sessions">
               <Skeleton size="s" />
               <Skeleton size="m" />
               <Skeleton size="m" />
-            </div>
+            </Loading>
           ) : sessions.length === 0 ? (
             <Empty>No paper sessions yet. Create one above.</Empty>
           ) : (
@@ -147,16 +148,16 @@ export default function TradePage() {
               ))}
             </Table>
           )}
+          {sessions !== null && sessions.length > 0 && <p className="stk-fine stk-gap-s">Last replay check: {PARITY_HELP}</p>}
         </section>
       </div>
 
       <div className="stk-bar">
         <div className="stk-bar-in">
-          <CommandMessage message={cmd.message} failed={cmd.failed} />
           <button
             type="button"
             onClick={() => setConfirm(true)}
-            disabled={!anyLive || sending}
+            disabled={!anyLive || sending || cmd.pending}
             className="stk-btn"
             data-tone="danger"
           >

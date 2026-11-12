@@ -4,7 +4,7 @@ import { SearchBox } from "@/components/SearchBox";
 
 const NAV = [
   { href: "/portfolio", label: "Portfolio", note: "Your Zerodha holdings, read-only." },
-  { href: "/alerts", label: "Geo alerts", note: "From the always-on monitor." },
+  { href: "/alerts", label: "Geo alerts", note: "World events that could disrupt Indian stocks, found by the background news monitor." },
   { href: "/tests", label: "Strategy tests", note: "Backtests on recorded and downloaded NSE data, with real costs." },
   { href: "/trade", label: "Paper trading", note: "Strategies trade live prices with pretend money." },
 ];
@@ -16,9 +16,7 @@ export default function Home() {
         <div>
           <Logo />
           <p className="stk-lede">
-            NSE simulation lab. Record Kite market data, backtest equity and F&amp;O strategies with realistic costs,
-            fills and margin, and paper-trade them live with no real orders. Data coverage pages arrive with a later
-            milestone.
+            A practice lab for NSE trading. Test strategies on past prices, then paper-trade them live with pretend money.
           </p>
         </div>
       </div>

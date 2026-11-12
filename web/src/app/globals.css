@@ -240,8 +240,10 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-lg); }
 .stk-pre { margin: 0; max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-outlier); font-size: var(--text-sm); }
 
-@media (max-width: 60rem) {
+@media (max-width: 74rem) {
   .stk-cols-2, .stk-cols-split { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 60rem) {
   .stk-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -262,3 +264,8 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-table th:last-child, .stk-table td:last-child { padding-right: var(--space-md); }
 .stk-table .stk-chip { white-space: normal; }
 .stk-gap-xs { margin-top: var(--space-xs); }
+
+.stk-skip { position: absolute; left: var(--space-sm); top: var(--space-sm); z-index: var(--z-modal); padding: var(--space-xs) var(--space-md); border-radius: var(--radius-control); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-sm); font-weight: 600; transform: translateY(-200%); }
+.stk-skip:focus-visible { transform: none; }
+.stk-main:focus { outline: none; }
+.stk-stat[data-plain] dd { font-family: var(--font-body); font-size: var(--text-lg); }

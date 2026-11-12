@@ -51,7 +51,7 @@ export default async function TestsPage({ searchParams }: { searchParams: Promis
     <div className="stk-page">
       <PageHead
         title="Strategy tests"
-        lede="Backtests on recorded and downloaded NSE data, with real costs. Simulation only: no real orders."
+        lede="Backtests on recorded and downloaded NSE data, with real costs."
       />
 
       <div className="stk-stack">

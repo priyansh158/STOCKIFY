@@ -1,19 +1,9 @@
 import { api } from "@/lib/api";
+import { istWhenEpoch } from "@/lib/format";
 import type { GeoAlert } from "@/lib/types";
 import { Chip, PageHead, Panel, Table } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
-
-function formatWhen(unixSeconds: number): string {
-  if (!unixSeconds) return "—";
-  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 function severityTone(severity: string): "down" | "warn" | undefined {
   const s = severity.toUpperCase();
@@ -28,16 +18,24 @@ function severityWord(severity: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-async function fetchAlerts(): Promise<GeoAlert[]> {
+/** What an alert is about: the monitor writes macro, holding or both. Anything else is shown as written. */
+function scopeWords(scope: string): string {
+  if (scope === "macro") return "The whole market";
+  if (scope === "holding") return "Your holdings";
+  if (scope === "both") return "The market and your holdings";
+  return scope;
+}
+
+async function fetchAlerts(): Promise<{ items: GeoAlert[]; failed: boolean }> {
   try {
-    return await api<GeoAlert[]>("/api/alerts?limit=100&min_severity=MEDIUM");
+    return { items: await api<GeoAlert[]>("/api/alerts?limit=100&min_severity=MEDIUM"), failed: false };
   } catch {
-    return [];
+    return { items: [], failed: true };
   }
 }
 
 export default async function AlertsPage() {
-  const items = await fetchAlerts();
+  const { items, failed } = await fetchAlerts();
 
   return (
     <div className="stk-page">
@@ -45,13 +43,18 @@ export default async function AlertsPage() {
         title="Geo alerts"
         lede={
           <>
-            From the always-on monitor (<code>python -m geo_monitor</code>). Email fires on High and Critical alerts.
+            The always-on monitor (<code>python -m geo_monitor</code>) reads Google News for world events that could
+            disrupt Indian stocks. It emails you High and Critical alerts.
             {items.length > 0 && ` ${items.length} shown.`}
           </>
         }
       />
 
-      {items.length === 0 ? (
+      {failed ? (
+        <Panel tone="red">
+          <p role="alert">Could not reach the STOCKIFY API, so the alerts cannot be shown. Check that the app is running, then reload this page.</p>
+        </Panel>
+      ) : items.length === 0 ? (
         <Panel>
           <p className="stk-empty">
             No alerts yet.
@@ -64,20 +67,20 @@ export default async function AlertsPage() {
           caption="Geo alerts, newest first"
           head={[
             { label: "Severity" },
-            { label: "When" },
+            { label: "When (IST)" },
             { label: "Alert" },
             { label: "Tickers affected" },
-            { label: "Source" },
+            { label: "News source" },
           ]}
         >
           {items.map((item) => (
             <tr key={item.id}>
               <td>
                 <Chip tone={severityTone(item.severity)}>{severityWord(item.severity)}</Chip>
-                <div className="stk-label">Score {item.disruption_score}</div>
+                <div className="stk-label">Disruption score {item.disruption_score} of 100</div>
               </td>
               <td className="stk-label" data-wrap>
-                {formatWhen(item.created_at)}
+                {istWhenEpoch(item.created_at)}
                 {item.emailed_at ? <div>Emailed</div> : null}
               </td>
               <td data-wrap>
@@ -98,7 +101,7 @@ export default async function AlertsPage() {
               </td>
               <td className="stk-label" data-wrap>
                 {item.source || "—"}
-                {item.scope ? <div>{item.scope}</div> : null}
+                {item.scope ? <div>About: {scopeWords(item.scope)}</div> : null}
               </td>
             </tr>
           ))}

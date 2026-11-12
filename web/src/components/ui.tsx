@@ -26,9 +26,9 @@ export function PageHead({ title, lede, actions }: { title: ReactNode; lede?: Re
 }
 
 /** A figure with its label. Put several inside a StatGrid. */
-export function Stat({ label, value, tone, size }: { label: string; value: string; tone?: Tone; size?: "s" }) {
+export function Stat({ label, value, tone, size, plain }: { label: string; value: string; tone?: Tone; size?: "s"; plain?: boolean }) {
   return (
-    <div className="stk-stat" data-size={size}>
+    <div className="stk-stat" data-size={size} data-plain={plain ? "" : undefined}>
       <dt>{label}</dt>
       <dd className={tone === "up" ? "stk-up" : tone === "down" ? "stk-down" : undefined}>{value}</dd>
     </div>
@@ -40,6 +40,15 @@ export function StatGrid({ children, cols }: { children: ReactNode; cols?: 2 }) 
     <dl className="stk-stat-grid" data-cols={cols}>
       {children}
     </dl>
+  );
+}
+
+/** The loading placeholder for a region: announced as one status, the blocks themselves are hidden from screen readers. */
+export function Loading({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="stk-stack-s" role="status" aria-busy="true" aria-label={label}>
+      {children}
+    </div>
   );
 }
 
@@ -67,7 +76,7 @@ export function Table({
   children: ReactNode;
 }) {
   return (
-    <div className="stk-table-wrap">
+    <div className="stk-table-wrap" tabIndex={0} role="region" aria-label={caption}>
       <table className="stk-table">
         <caption className="sr-only">{caption}</caption>
         <thead>

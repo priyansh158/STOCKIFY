@@ -60,3 +60,13 @@ export function rupeesFloat(n: number | null | undefined, whole = false): string
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   return (whole ? INR_WHOLE : INR).format(n);
 }
+
+/** Unix seconds as "6 Nov 2026, 10:15 IST", whatever zone the browser or server is in. */
+export function istWhenEpoch(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds) return "—";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date(unixSeconds * 1000));
+  const p = (t: string) => parts.find((x) => x.type === t)?.value ?? "";
+  return `${p("day")} ${p("month")} ${p("year")}, ${p("hour")}:${p("minute")} IST`;
+}

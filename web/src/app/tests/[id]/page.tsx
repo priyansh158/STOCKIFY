@@ -6,7 +6,7 @@ import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
 import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
-import { Empty, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
+import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
 import { LabelChips, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 
@@ -143,11 +143,11 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
       )}
       {!run ? (
         !error && (
-          <div className="stk-stack-s" aria-busy="true" aria-label="Loading the test">
+          <Loading label="Loading the test">
             <Skeleton size="title" />
             <Skeleton size="m" />
             <Skeleton size="l" />
-          </div>
+          </Loading>
         )
       ) : (
         <div className="stk-stack">
@@ -457,6 +457,7 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
                     {missing === 1 ? "One position is" : `${missing} positions are`} left out of these totals: no volatility could be found (see the notes in the table).
                   </p>
                 )}
+                <p className="stk-fine">Delta, vega and theta are explained in the note at the top of this section.</p>
                 <Table
                   caption={`Positions in ${u || "the unknown underlying"}`}
                   head={[

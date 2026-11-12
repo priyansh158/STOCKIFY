@@ -124,13 +124,18 @@ export function pauseReasonText(reason: string): string {
   return PAUSE_TEXT[reason] ?? reason;
 }
 
-/** The result of the check that replays a finished day and compares it with what the session stored, in plain words. */
+/** The result of the replay check, in two or three words. */
 export function parityText(parity: string | null | undefined): string {
-  if (parity === "pass") return "Passed: the replay matched what the session did";
-  if (parity === "fail") return "Failed: the replay did not match, so the session was paused";
+  if (parity === "pass") return "Matched";
+  if (parity === "fail") return "Did not match";
   if (!parity) return "Not run yet";
   return parity;
 }
+
+/** What the replay check is, once per page. A mismatch pauses the session (parity.py `_pause`). */
+export const PARITY_HELP =
+  "After a day ends, STOCKIFY plays that day again from the recorded prices and compares it with what the session did. " +
+  "If they do not match, the session is paused.";
 
 /** A command's outcome for the owner. */
 export function commandText(c: CommandStatusDTO): string {
