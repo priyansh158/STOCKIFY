@@ -28,6 +28,7 @@ from stockify.research.stats import DsrResult
 
 CODE_VERSION = "1"        # bump when the bootstrap or the way its inputs are built changes: it invalidates the cache
 CACHE_NAME = "research.json"
+_NO_SERIES = "no usable equity series (no days, or no starting capital), so no Sharpe to judge"
 _NOT_A_TRY = "a variant, check or re-run, not a try, so it is not counted among the tries"
 
 
@@ -107,16 +108,22 @@ def _int_or_none(v) -> int | None:
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
 
-def _series(dates, navs, capital: int) -> tuple[list[float], list[float]]:
-    """(r, x): the plain and the excess daily returns of a NAV series."""
+def _usable(navs, capital: int) -> bool:
+    """A NAV series can be turned into returns only with a positive starting capital."""
+    return bool(navs) and capital > 0
+
+
+def _series(dates, navs, capital: int, rf_rows: list[dict]) -> tuple[list[float], list[float]]:
+    """(r, x): the plain and the excess daily returns of a NAV series; two empty lists when there is no usable
+    series (no rows, or a capital that is missing or not positive)."""
+    if not _usable(navs, capital):
+        return [], []
     r = stats.returns_from_nav(capital, list(navs))
-    return r, stats.excess_returns(list(dates), r, stats.risk_free_rows())
+    return r, stats.excess_returns(list(dates), r, rf_rows)
 
 
-def _trial_sharpe(t: registry.TrialRun) -> float | None:
-    if not t.navs:
-        return None
-    _, x = _series(t.dates, t.navs, t.capital_paise)
+def _trial_sharpe(t: registry.TrialRun, rf_rows: list[dict]) -> float | None:
+    _, x = _series(t.dates, t.navs, t.capital_paise, rf_rows)
     return stats.sharpe_per_period(x)
 
 
@@ -209,17 +216,17 @@ def _cache_path(run_id: str):
         return None
 
 
-def _bootstrap(run_id: str, row: dict, dates, navs, use_cache: bool) -> BootstrapResult | None:
-    if not navs:
-        return None
+def _bootstrap(run_id: str, row: dict, dates, navs, use_cache: bool, rf_rows: list[dict]) -> BootstrapResult | None:
     cfg = _config(row)
     capital = _int_or_none(cfg.get("capital_paise")) or 0
+    if not _usable(navs, capital):
+        return None
     seed = _int_or_none(cfg.get("seed")) or 0
-    r, x = _series(dates, navs, capital)
+    r, x = _series(dates, navs, capital, rf_rows)
     last = date.fromisoformat(dates[-1])
     s = _settings()
     path = _cache_path(run_id) if use_cache else None
-    key = _cache_key(r, list(dates), stats.risk_free_rows(), s, seed, last)
+    key = _cache_key(r, list(dates), rf_rows, s, seed, last)
     if path is not None:
         hit = _read_cache(path, key)
         if hit is not None:
@@ -256,14 +263,18 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     picked = registry.best_trial(family_id) if family_id else None
     is_try = any(t.run_id == run_id for t in tries)
 
+    rf_rows = stats.risk_free_rows()
+    usable = _usable(navs, capital)
     res, flat = None, True
-    if navs:
-        _, x = _series(dates, navs, capital)
+    if usable:
+        _, x = _series(dates, navs, capital, rf_rows)
         flat = stats.sharpe_per_period(x) is None
-        res = stats.deflated_sharpe(x, [_trial_sharpe(t) for t in tries], max(n, 1))
+        res = stats.deflated_sharpe(x, [_trial_sharpe(t, rf_rows) for t in tries], max(n, 1))
 
     texts: dict[str, str] = {}
-    if flat:
+    if not usable:
+        texts["dsr"] = texts["psr"] = _NO_SERIES
+    elif flat:
         texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True)
         texts["psr"] = texts["dsr"]
     else:
@@ -275,7 +286,7 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
             texts["dsr"] = plain.dsr_sentence(n, rank, res.dsr if res else None, objective=objective,
                                               picked_name=picked.name if picked else None)
         texts["psr"] = plain.psr_sentence(res.psr if res else None)
-    boot = _bootstrap(run_id, row, dates, navs, use_cache)
+    boot = _bootstrap(run_id, row, dates, navs, use_cache, rf_rows)
     if boot is not None:
         texts["bootstrap_sharpe"] = plain.interval_sentence("Sharpe", boot.sharpe, "", ci=boot.ci)
         texts["bootstrap_mean_return"] = plain.interval_sentence("Mean daily return", boot.mean_daily_return, "%",
@@ -289,23 +300,26 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
 
 # ── the family report ─────────────────────────────────────────────────────────────────────────
 
-def _row(row: dict, objective: str) -> TrialRow:
+def _row(row: dict, objective: str, rf_rows: list[dict]) -> TrialRow:
     series = store.run_nav_series(row["run_id"])
-    sharpe = None
-    if series:
-        capital = _int_or_none(_config(row).get("capital_paise")) or 0
-        _, x = _series([d for d, _ in series], [v for _, v in series], capital)
-        sharpe = stats.sharpe_per_period(x)
+    capital = _int_or_none(_config(row).get("capital_paise")) or 0
+    _, x = _series([d for d, _ in series], [v for _, v in series], capital, rf_rows)
     return TrialRow(run_id=row["run_id"], name=row.get("name"), role=row.get("role") or "trial",
                     status=row.get("status") or "", objective_value=registry.objective_value(row, objective),
-                    sharpe_per_period=sharpe, net_pnl_paise=_net_pnl(row), days=len(series), job_id=row.get("job_id"))
+                    sharpe_per_period=stats.sharpe_per_period(x), net_pnl_paise=_net_pnl(row), days=len(series),
+                    job_id=row.get("job_id"))
 
 
-def _best_dsr(tries: list[registry.TrialRun], best: registry.TrialRun | None) -> DsrResult | None:
-    if best is None or not best.navs:
-        return None
-    _, x = _series(best.dates, best.navs, best.capital_paise)
-    return stats.deflated_sharpe(x, [_trial_sharpe(t) for t in tries], len(tries))
+def _family_stats(tries: list[registry.TrialRun], best: registry.TrialRun | None,
+                  rf_rows: list[dict]) -> tuple[float, DsrResult | None]:
+    """(V, the best trial's DSR). V comes from every trial's own Sharpe, whether or not the best trial has one;
+    the DSR is None only when the best trial itself has no Sharpe."""
+    srs = [_trial_sharpe(t, rf_rows) for t in tries]
+    v = stats.sharpe_variance(srs)
+    if best is None:
+        return v, None
+    _, x = _series(best.dates, best.navs, best.capital_paise, rf_rows)
+    return v, stats.deflated_sharpe(x, srs, len(tries))
 
 
 def _family_sessions(family_id: str, sessions: list[dict]) -> list[dict]:
@@ -317,34 +331,35 @@ def family_report(family_id: str) -> FamilyReport:
     fam = store.get_family(family_id)
     if fam is None:
         raise ValueError(f"no such family: {family_id!r}")
+    rf_rows = stats.risk_free_rows()
     objective = registry.family_objective(family_id)
     tries = registry.trials(family_id)
     best = registry.best_trial(family_id)
-    dsr = _best_dsr(tries, best)
+    var, dsr = _family_stats(tries, best, rf_rows)
     counted = {t.run_id for t in tries}
     rows = store.family_runs(family_id, roles=None, status=None)
     texts: dict[str, str] = {}
     if best is not None:
-        flat = best.navs and _trial_sharpe(best) is None
         texts["dsr"] = plain.dsr_sentence(len(tries), 1, dsr.dsr if dsr else None, objective=objective,
-                                          flat=bool(flat))
+                                          flat=dsr is None)
     return FamilyReport(family_id=family_id, description=fam.get("description"), objective=objective,
                         named=bool(fam.get("named")), n_trials=len(tries),
-                        var_sharpe=dsr.var_sharpe if dsr else None, best_run_id=best.run_id if best else None,
-                        best=dsr, trials=[_row(r, objective) for r in rows if r["run_id"] in counted],
-                        others=[_row(r, objective) for r in rows if r["run_id"] not in counted],
+                        var_sharpe=var if tries else None, best_run_id=best.run_id if best else None,
+                        best=dsr, trials=[_row(r, objective, rf_rows) for r in rows if r["run_id"] in counted],
+                        others=[_row(r, objective, rf_rows) for r in rows if r["run_id"] not in counted],
                         sessions=_family_sessions(family_id, store.list_sessions()),
                         holdout_unlocks=store.holdout_unlock_rows(family_id), plain=texts)
 
 
 def list_families() -> list[FamilySummary]:
     sessions = store.list_sessions()
+    rf_rows = stats.risk_free_rows()
     out = []
     for fam in store.list_families():
         fid = fam["family_id"]
         tries = registry.trials(fid)
         best = registry.best_trial(fid)
-        dsr = _best_dsr(tries, best)
+        _, dsr = _family_stats(tries, best, rf_rows)
         out.append(FamilySummary(
             family_id=fid, description=fam.get("description"), named=bool(fam.get("named")),
             objective=registry.family_objective(fid), n_trials=len(tries),

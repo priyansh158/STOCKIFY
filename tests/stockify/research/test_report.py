@@ -124,6 +124,53 @@ class RunResearchTests(ReportTest):
         self.assertIn("no Sharpe", res.plain["dsr"])
         finite_json(res)
 
+    def test_v_stands_on_its_own_when_the_best_trial_is_flat(self):
+        fam = "f/flatbest/net_pnl"
+        registry.ensure_family(fam, "net_pnl")
+        make_run("flat", fam, daily_returns=[0.0] * 30, name="flat")          # pnl 0 beats the losers
+        for i in range(3):
+            make_run(f"L{i}", fam, daily_returns=noisy(i, drift=-0.004), name=f"loser{i}")
+        rep = report.family_report(fam)
+        self.assertEqual(rep.best_run_id, "flat")
+        self.assertIsNone(rep.best)
+        self.assertEqual(rep.n_trials, 4)
+        srs = []
+        for t in registry.trials(fam):
+            if t.run_id != "flat":
+                r = stats.returns_from_nav(t.capital_paise, list(t.navs))
+                srs.append(stats.sharpe_per_period(stats.excess_returns(list(t.dates), r, stats.risk_free_rows())))
+        mean = sum(srs) / 3
+        v = sum((x - mean) ** 2 for x in srs) / 2
+        self.assertGreater(v, 0)
+        self.assertAlmostEqual(rep.var_sharpe, v, places=15)
+        self.assertIn("no Sharpe", rep.plain["dsr"])
+        self.assertEqual(report.list_families()[0].best_dsr, None)
+
+    def test_a_run_without_capital_never_breaks_its_family(self):
+        family_of(3)
+        self.sql("UPDATE runs SET config_json = ? WHERE run_id = 'r00'", (json.dumps({"seed": 1}),))
+        self.sql("UPDATE runs SET config_json = ? WHERE run_id = 'r01'", (json.dumps({"capital_paise": 0}),))
+        res = report.run_research("r00", use_cache=False)
+        self.assertIsNone(res.bootstrap)
+        self.assertIsNone(res.dsr)
+        self.assertIn("no usable equity", res.plain["dsr"])
+        rep = report.family_report(FAM)
+        self.assertEqual(rep.n_trials, 3)                       # still counted in N, Sharpe None
+        self.assertEqual({t.run_id: t.sharpe_per_period is None for t in rep.trials},
+                         {"r00": True, "r01": True, "r02": False})
+        finite_json(rep)
+        report.list_families()
+        report.run_research("r02", use_cache=False)
+
+    def test_the_risk_free_rows_are_read_once_per_call(self):
+        family_of(4)
+        real = stats.risk_free_rows
+        for call in (lambda: report.run_research("r00", use_cache=False), lambda: report.family_report(FAM),
+                     report.list_families):
+            with mock.patch.object(stats, "risk_free_rows", side_effect=real) as m:
+                call()
+            self.assertEqual(m.call_count, 1)
+
     def test_report_is_finite_json(self):
         registry.ensure_family(FAM)
         make_run("flat", FAM, daily_returns=[0.0] * 30)

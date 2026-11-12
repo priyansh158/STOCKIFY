@@ -117,6 +117,22 @@ def probabilistic_sharpe(sr: float, n: int, skew: float, kurt: float, benchmark:
     return _PHI.cdf((sr - benchmark) * math.sqrt(n - 1) / math.sqrt(rad))
 
 
+def sharpe_variance(trial_srs: list[float | None]) -> float:
+    """V: the sample variance (ddof 1) of the defined per-period Sharpes (a flat trial is None and left out);
+    0.0 when fewer than two are defined."""
+    defined = [s for s in trial_srs if s is not None]
+    if len(defined) < 2:
+        return 0.0
+    total = 0.0
+    for v in defined:
+        total += v
+    mean = total / len(defined)
+    ss = 0.0
+    for v in defined:
+        ss += (v - mean) ** 2
+    return ss / (len(defined) - 1)
+
+
 @dataclass(frozen=True)
 class DsrResult:
     sr: float
@@ -139,17 +155,7 @@ def deflated_sharpe(x: list[float], trial_srs: list[float | None], n_trials: int
     mom = moments(x)
     if mom.skew is None or mom.kurt is None:
         return None
-    defined = [s for s in trial_srs if s is not None]
-    var = 0.0
-    if len(defined) >= 2:
-        s = 0.0
-        for v in defined:
-            s += v
-        mean = s / len(defined)
-        ss = 0.0
-        for v in defined:
-            ss += (v - mean) ** 2
-        var = ss / (len(defined) - 1)
+    var = sharpe_variance(trial_srs)
     sr0 = expected_max_sharpe(n_trials, var)
     t = len(x)
     return DsrResult(sr=sr, t=t, skew=mom.skew, kurt=mom.kurt, n_trials=n_trials, var_sharpe=var, sr0=sr0,
