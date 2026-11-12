@@ -267,7 +267,9 @@ class MarketDayTest(pf.PaperDayTest):
         store.upsert_session_day("s1", "2026-11-16", status="open")
         self.assertEqual(self.run_day(), exitcodes.OK)
         self.assertFalse(paths.journal_file("s1", DAY).exists())
-        self.assertIn("session_failed", [r["kind"] for r in store.timeline("s1")])
+        kinds = [r["kind"] for r in store.timeline("s1")]
+        self.assertIn("blocked_on_finalise", kinds)               # CDM 5.1: not a failure; the catch-up finalises it
+        self.assertNotIn("session_failed", kinds)
         self.assertEqual(store.get_session("s1")["status"], "ARMED")
 
     def test_a_restart_resumes_the_journal_and_a_finalised_day_is_left_alone(self):

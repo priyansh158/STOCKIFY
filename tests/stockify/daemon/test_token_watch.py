@@ -348,7 +348,7 @@ class ExpiryTest(pf.PaperDayTest):
 class LiveLoginWaitTest(unittest.TestCase):
     """The live path, with a fake clock and no Kite: the wait happens in the process."""
 
-    class Reached(Exception):
+    class Reached(BaseException):
         pass
 
     def setUp(self):

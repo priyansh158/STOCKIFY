@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from datetime import date
 
 import kite_client  # noqa: F401  — first: patches the Kite SDK's client class to paper only (LCB 5.7)
@@ -63,6 +64,41 @@ def _ensure_refdata(day: date) -> None:
     instruments.sync(day, instruments.download_dumps())
     import kite_client
     kite_client.refresh_instruments(force=True)
+
+
+def refresh_refdata(day: date, clock, stop: threading.Event,  # noqa: ANN001
+                    on_idle: Callable[[], None] | None = None) -> bool | None:
+    """The `refdata` job (CDM 5.1): the day's instruments, which every session's day bundle is resolved from, so no
+    bundle is made before this returns. A failure is retried every `token_dependent_retry.every_min` until
+    `until` (09:10 IST); after that a failure that is not about the login leaves D-1's refdata in use and returns True
+    (the bundles are labelled `refdata_stale`). A failure that is about the login (`KiteAuthError`) waits for a later
+    login and runs at once when it comes, until the session group's close. `on_idle` (the catch-up) runs between
+    attempts. Returns False when fresh, True when stale, None when `stop` ended the wait."""
+    from stockify.daemon import scheduler
+    p = scheduler.plan(day)
+    step = scheduler.token_retry_ns()
+    while True:
+        try:
+            _ensure_refdata(day)
+            return False
+        except Exception as e:  # noqa: BLE001 — a refresh failure never costs the day
+            token = isinstance(e, kite_client.KiteAuthError)
+            now = clock.now_ns()
+            log.warning("refdata for %s failed (%s: %s)", day, type(e).__name__, e)
+            if (not token and now >= p.refdata_until_ns) or now >= p.unsubscribe_ns:
+                log.error("refdata for %s: giving up; D-1's instruments stay in use (refdata_stale)", day)
+                return True
+            if on_idle is not None:
+                try:
+                    on_idle()
+                except Exception:  # noqa: BLE001
+                    log.exception("a job run between refdata attempts failed")
+            now = clock.now_ns()
+            nxt = now + step
+            if now < p.refdata_until_ns:
+                nxt = min(nxt, p.refdata_until_ns)
+            if not clock.sleep_until(nxt, stop):
+                return None
 
 
 # Rough per-row cost in the landing file: raw packet + parsed columns + index overhead.
@@ -159,6 +195,102 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         removed = store.prune_recorder_status(week_ago)
         log.info("pruned %d recorder_status rows older than 7 days", removed)
         state.mark(job, day)
+    elif job == "finalise":
+        _finalise_job(day, state, now_ns)
+    elif job == "parity":
+        _parity_job(day, state)
+    elif job == "daily_summary":
+        _daily_summary(day, state)
+    elif job == "backup":
+        _backup_job(day, state)
+
+
+def _day_sessions(day: date) -> list[tuple[str, dict]]:
+    """(session id, its row for `day`) of every session that opened `day`, in id order."""
+    from stockify import store
+    d = day.isoformat()
+    out = []
+    for s in store.list_sessions():
+        row = store.get_session_day(s["session_id"], d)
+        if row is not None:
+            out.append((s["session_id"], row))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _finalise_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """Finalise each session that opened `day` (D-1's SETTLE records, engine end of day, stored outputs). The day waits
+    for NSE's evening files, then goes at the next trading day's `day_bundles` time. One session's trouble never stops
+    another. The job is done when every session is finalised or has failed for good; `waiting`, `busy` and raised
+    errors are tried again (finalise's own claim keeps a second scheduler out)."""
+    from stockify import store
+    from stockify.daemon import finalise, notify, scheduler
+    from stockify.data import calendar
+    cutoff_passed = now_ns >= scheduler.plan(calendar.next_trading_day("FO", day)).day_bundles_ns
+    files_complete = state.done("nse_fetch", day)
+    complete = True
+    for sid, row in _day_sessions(day):
+        if row["status"] == "finalised" or notify._failed(sid, day.isoformat()):
+            continue
+        try:
+            res = finalise.finalise_day(sid, day, files_complete=files_complete, cutoff_passed=cutoff_passed)
+        except Exception:  # noqa: BLE001
+            log.exception("finalising %s for %s raised; it will be tried again", sid, day)
+            complete = False
+            continue
+        if res.status == "failed":
+            log.error("session %s cannot finalise %s: %s", sid, day, res.error)
+            try:
+                store.add_timeline(sid, "session_failed", {"error": res.error, "day": day.isoformat(),
+                                                           "while": "finalise"}, wall_ns=now_ns, engine_ns=None)
+            except Exception:  # noqa: BLE001
+                log.exception("no timeline row for the failed session %s", sid)
+        elif res.status != "finalised":
+            complete = False
+    if complete:
+        state.mark("finalise", day)
+
+
+def _parity_job(day: date, state) -> None:  # noqa: ANN001
+    """Journal and recorder parity of each finalised session-day. `skipped` (the day could not be read now) is tried
+    again; a pass or a fail is a result, recorded by the parity module, and is not run twice."""
+    from stockify import parity, store
+    d = day.isoformat()
+    complete = True
+    for sid, row in _day_sessions(day):
+        if row["status"] != "finalised":
+            continue
+        try:
+            if not row.get("parity"):
+                if parity.journal_parity(sid, day).outcome == "skipped":
+                    complete = False
+            if store.get_parity_result(sid, d, "recorder") is None:
+                if parity.recorder_parity(sid, day).outcome == "skipped":
+                    complete = False
+        except Exception:  # noqa: BLE001
+            log.exception("parity of %s for %s raised; it will be tried again", sid, day)
+            complete = False
+    if complete:
+        state.mark("parity", day)
+
+
+def _backup_job(day: date, state) -> None:  # noqa: ANN001
+    """The nightly verified backup (GK 5.7). No target is a clear skip, not an error; a refused or unwritable target
+    is logged, and tomorrow's wake tries again."""
+    from pathlib import Path
+    from stockify import backup
+    from stockify.config import loader
+    target = (loader.load_json("storage.json").get("backup") or {}).get("target")
+    if not target:
+        log.info("backup: no target configured (storage.json backup.target); skipped")
+        state.mark("backup", day)
+        return
+    try:
+        res = backup.run(Path(target), day=day)
+        for error in getattr(res, "errors", None) or []:
+            log.error("backup: %s", error)
+    except Exception as e:  # noqa: BLE001 — never costs the day
+        log.error("backup to %s failed: %s", target, e)
+    state.mark("backup", day)
 
 
 SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up
@@ -233,11 +365,16 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
         runs on every poll (LCB 5.2): a missing login never holds up the earlier days' work."""
         now = clock.now_ns()
         for job, d in scheduler.missed_jobs(now, state):
+            if not scheduler.runnable(job, d, state):
+                continue                                     # parity and the summary wait for finalise
             last = tried.get((job, d))
             if last is not None and now < last + scheduler.retry_every_ns(job):
                 continue
             tried[(job, d)] = now
-            _run_job(job, d, state, now)
+            try:
+                _run_job(job, d, state, now)
+            except Exception:  # noqa: BLE001 — a failing job never stops the others
+                log.exception("job %s for %s failed", job, d)
 
     record = recorder or (lambda: run_market_day(ticker_spec="live", stop=stop, power=power,
                                                  session_ids=session_ids, token_fresh=token_fresh,
@@ -256,7 +393,6 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
             for job in ("compaction", "quality", "prune"):
                 if not state.done(job, today):
                     _run_job(job, today, state)
-            _daily_summary(today, state)
         else:
             day = scheduler.session_day(now)
             p = scheduler.plan(day)

@@ -281,7 +281,8 @@ def band_sink(dispatcher, sessions: list):  # noqa: ANN001
 
 
 def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: ANN001
-                  pins: SessionPins | None = None, *, clear_token_expired: bool = False) -> list:
+                  pins: SessionPins | None = None, *, clear_token_expired: bool = False,
+                  refdata_stale: bool = False) -> list:
     """Open each chosen session's day. One that cannot open is timelined and left out; the others go on. With `pins`,
     a session whose instruments would take the subscriptions past the cap does not run: an ARMED one stays ARMED,
     with the timeline row `subscription_cap`.
@@ -289,8 +290,12 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
     With `clear_token_expired` (the run has a usable Kite login) a day that opens afresh drops the `token_expired`
     reason an earlier day's expiry left behind, however late the login came: the new journal opens without it
     (journal first), then the store (`lifecycle.resume`), keeping every other reason, with a `login` timeline row
-    (LCB 5.24)."""
-    from stockify.daemon.finalise import next_sod_state
+    (LCB 5.24).
+
+    A session whose previous trading day is not finalised yet cannot start from its state: an ARMED one stays ARMED
+    with one `blocked_on_finalise` timeline row per day (CDM 5.1); the catch-up finalises it and the next start opens
+    it. `refdata_stale`: the day's refdata refresh failed, so the bundle says so (a label)."""
+    from stockify.daemon.finalise import FinaliseError, next_sod_state
     from stockify.daemon.session_day import SessionDay
     opened = []
     for row in rows:
@@ -313,7 +318,15 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
                 stale = clear_token_expired and "token_expired" in reasons
                 if stale:
                     reasons.remove("token_expired")
-                sd.open(next_sod_state(sid, day), reasons, now)
+                try:
+                    sod = next_sod_state(sid, day)
+                except FinaliseError as e:
+                    if row["status"] != "ARMED":
+                        raise
+                    _blocked_on_finalise(sid, day, str(e), now)
+                    sd.close()
+                    continue
+                sd.open(sod, reasons, now, refdata_stale=refdata_stale)
                 if stale:
                     lifecycle.resume(sid, "token_expired", wall_ns=now, engine_ns=now)
                     store.add_timeline(sid, "login", {"t_ns": now, "reasons": reasons, "cause": "new_day"},
@@ -342,6 +355,19 @@ def open_sessions(rows: list[dict], day: date, clock, log_sink=None,  # noqa: AN
             continue
         opened.append(sd)
     return opened
+
+
+def _blocked_on_finalise(sid: str, day: date, why: str, now: int) -> None:
+    """One `blocked_on_finalise` timeline row per session and day, however often the start is tried."""
+    log.warning("session %s stays ARMED for %s: %s", sid, day, why)
+    try:
+        d = day.isoformat()
+        if any(r["kind"] == "blocked_on_finalise" and (r["detail"] or {}).get("day") == d
+               for r in store.timeline(sid, limit=1_000_000)):
+            return
+        store.add_timeline(sid, "blocked_on_finalise", {"day": d, "why": why}, wall_ns=now, engine_ns=now)
+    except Exception:  # noqa: BLE001
+        log.warning("no timeline row for session %s", sid, exc_info=True)
 
 
 def process_mark(sessions: list) -> tuple[int, int] | None:  # noqa: ANN001
@@ -420,6 +446,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     stop = stop or threading.Event()
     schedule = loader.load_json("schedule.json")
     replay = ticker_spec != "live"
+    stale = False                                      # the day's refdata refresh failed (live only)
+    late_login = False                                 # the run waited for a login (live only)
     if faults and not replay:
         raise LiveFaultsRefused("--inject needs a replay ticker (--ticker replay:YYYY-MM-DD:...): faults are never "
                                 "injected into the live ticker, so none was armed")
@@ -456,9 +484,14 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
                                               until_ns=timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])):
                 return exitcodes.OK if stop.is_set() else exitcodes.TOKEN_EXPIRED
             log.info("Kite login accepted")
+            late_login = True
         if token_watch.read_status().get("waiting_for_login"):
             token_watch.login_accepted()
-        daemon._ensure_refdata(day)
+        stale = daemon.refresh_refdata(day, clock, stop, on_idle)      # no bundle is made before the refdata is in
+        if stale is None:
+            return exitcodes.OK
+        if on_idle is not None:                                        # D-1 is finalised before D's bundles (CDM 5.1)
+            on_idle()
         used_token_mtime = token_watch.token_mtime_ns()       # the file the ticker is built with (stat, before the read)
         payload = kite_client.load_cached_token()
         from stockify.daemon import conn_budget
@@ -504,7 +537,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
     pins = SessionPins(manager, cap=int(loader.load_json("kite_limits.json")["ws_max_instruments"]),
                        call_in_ticker=call, apply=lambda diff: session._apply(diff) if session.connected else None,
                        lock=session.sub_lock)
-    sessions = (open_sessions(choose_sessions(session_ids), day, clock, pump, pins, clear_token_expired=True)
+    sessions = (open_sessions(choose_sessions(session_ids), day, clock, pump, pins, clear_token_expired=True,
+                           refdata_stale=bool(stale))
                 if pump is not None else [])
     if replay:                                  # a restarted replay goes on after what the old process dispatched
         ticker.resume_after = process_mark([sd for sd in sessions if sd.resumed]) if sessions and all(
@@ -524,7 +558,11 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         dispatcher.on_book = pins.book_changed
         dispatcher.on_failed = pins.release
         try:                                    # a restart's gaps and the owner's pending commands, before any push
-            dispatcher.start(clock.now_ns())
+            outage_from = None
+            if late_login:                      # the login came after the open: the frames since it are lost (CDM 5.1)
+                opens = [ph.start_ns for ph in calendar.phases("FO_FUT", day) if ph.phase == "CONTINUOUS"]
+                outage_from = opens[0] if opens else None
+            dispatcher.start(clock.now_ns(), outage_from=outage_from)
         except Exception:  # noqa: BLE001 — the recording goes on; the commands stay pending in the store
             log.exception("applying a restart's gaps and pending commands failed")
         pins.live = True                        # from here the ticker thread owns every pin change

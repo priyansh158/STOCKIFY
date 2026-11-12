@@ -100,7 +100,7 @@ class SessionDay:
         """Bytes a reopened journal cut from its torn tail (set aside in `<journal>.torn`)."""
         return self._journal.torn_bytes if self._journal is not None else 0
 
-    def open(self, sod_state: dict | None, reasons: list[str], t0: int) -> None:
+    def open(self, sod_state: dict | None, reasons: list[str], t0: int, *, refdata_stale: bool = False) -> None:
         """Write the day's bundle, build the engine, open the journal. If the state's `strategy_enabled` /
         `pause_reasons` differ from `reasons` (the session's set now), the journal's first record is a
         `strategy_control(enabled = not reasons, reasons)` at `t0`. A journal that already holds records is a
@@ -111,7 +111,8 @@ class SessionDay:
         jpath = paths.journal_file(self.session_id, self.day)
         if jpath.exists() and jpath.stat().st_size > journal.HEADER_SIZE:
             raise SessionDayError(f"{jpath.name} already holds records: replay it, do not open it afresh")
-        bundle = bundle_mod.resolve_session_day(self.session_id, self.cfg, self.day, sod_state)
+        bundle = bundle_mod.resolve_session_day(self.session_id, self.cfg, self.day, sod_state,
+                                                 refdata_stale=refdata_stale)
         text = bundle_mod.dumps(bundle) + "\n"
         bpath = paths.day_bundle_file(self.session_id, self.day)
         tmp = bpath.with_name(bpath.name + ".tmp")

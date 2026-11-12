@@ -2,6 +2,7 @@
   "schema": "stockify.schedule/1",
   "jobs": {
     "refdata": "08:30",
+    "day_bundles": "08:30",
     "subscribe": "08:58",
     "unsubscribe": "15:45",
     "compaction": "16:30",
@@ -15,6 +16,19 @@
       "retry_every_min": 30,
       "until": "22:00"
     },
+    "finalise": {
+      "start": "19:30",
+      "retry_every_min": 15
+    },
+    "parity": {
+      "start": "19:45",
+      "retry_every_min": 15
+    },
+    "daily_summary": {
+      "start": "19:50",
+      "retry_every_min": 15
+    },
+    "backup": "05:45",
     "token_dependent_retry": {
       "every_min": 5,
       "until": "09:10"

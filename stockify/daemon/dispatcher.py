@@ -200,13 +200,19 @@ class Dispatcher:
         if not self.queue.empty():
             self.drain()
 
-    def start(self, t: int) -> None:
+    def start(self, t: int, *, outage_from: int | None = None) -> None:
         """Before the first live item, on the calling thread, with the engine thread not yet started (GK 5.4): a live
         restart's gaps are journaled (see `_resume_gaps`), then every pending owner command is applied, its
-        `strategy_control` journaled first, so nothing live reaches an engine that an owner's stop has not reached."""
+        `strategy_control` journaled first, so nothing live reaches an engine that an owner's stop has not reached.
+
+        `outage_from`: the run waited for a Kite login that came after the open (CDM 5.1), so a session that starts
+        now missed the frames since then: its journal opens with a scope-all `GAP(token_expired)` from that time,
+        which ends at the first frame."""
         self._stamp = t
         if not self.replay:
             self._resume_gaps(t)
+            if outage_from is not None and outage_from < t:
+                self._late_login_gaps(outage_from, t)
         else:
             self._resume_outages()
         self.apply_pending(t)
@@ -247,6 +253,23 @@ class Dispatcher:
                 self._open_gaps.add(("process_stop", None))
                 self._timeline(sid, "gap", {"cause": "process_crash", "phase": "start", "t_ns": sd.last_t}, t)
                 self._resume_end[sid] = "process_stop"
+
+    def _late_login_gaps(self, since: int, t: int) -> None:
+        """Every session that starts afresh after a late login journals the gap from `since` (the open) to its first
+        frame; one that resumes a journal already has its own gap state."""
+        for sd in self.sessions:
+            sid = sd.session_id
+            if sd.resumed or sid in self.stats.failed:
+                continue
+            try:
+                sd.feed([self._gap_record("start", "token_expired", since, None)], None)
+            except Exception as e:  # noqa: BLE001
+                self._fail(sid, e, t)
+                continue
+            self.stats.gaps += 1
+            self._open_gaps.add(("token_expired", None))
+            self._timeline(sid, "gap", {"cause": "late_login", "phase": "start", "t_ns": since}, t)
+            self._resume_end[sid] = "token_expired"
 
     def _resume_outages(self) -> None:
         """A replay restarted after a fault duration (`token_expiry@T+Ns`): the journal ends inside a disconnect or

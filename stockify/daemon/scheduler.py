@@ -12,6 +12,11 @@ trade date and are skipped on non-trading days:
 | nse_fetch   | 19:30 → 23:00             | catch-up: runs on the next wake if slept through (M1.3) |
 | margin_files | 17:20 → 22:00            | SPAN + ELM files (CAM 4.2); holds sleep until done or 22:00 |
 | prune       | after the session         | recorder_status rows older than 7 days       |
+| day_bundles | 08:30 (after refdata)     | a session's day bundle; also the finalise cut-off of the day before (CDM 5.1) |
+| finalise    | 19:30, retry 15 min       | catch-up; each session-day (M5.3), cut off at the next trading day's `day_bundles` |
+| parity      | 19:45, retry 15 min       | catch-up; after finalise; skipped results are retried |
+| daily_summary | 19:50, retry 15 min     | catch-up; after finalise; waits for every session of the day |
+| backup      | 05:45                     | catch-up on every wake; the latest trading day owes one; a null target is a skip |
 
 Completed jobs are remembered in `$LAB/scheduler_state.json` so a restart or a
 resume from hibernate runs what was missed, once.
@@ -38,7 +43,9 @@ from stockify.data import calendar
 SEGMENT = "FO"
 CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
-CATCH_UP = ("nse_fetch", "margin_files")
+CATCH_UP = ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary", "backup")
+DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "parity", "daily_summary")   # one day's jobs, in dependency order
+DEPENDS = {"parity": "finalise", "daily_summary": "finalise"}
 HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files",)   # fetched the same evening (CAM 4.4), not the next morning
 
 
@@ -59,6 +66,16 @@ class DayPlan:
     margin_files_ns: int
     margin_files_until_ns: int
     keep_awake_ns: int
+    day_bundles_ns: int
+    finalise_ns: int
+    parity_ns: int
+    daily_summary_ns: int
+    backup_ns: int
+
+
+def _start(spec, default_key: str = "start") -> str:  # noqa: ANN001
+    """A job's start time: a plain "HH:MM" or `{"start": "HH:MM", ...}`."""
+    return spec if isinstance(spec, str) else spec[default_key]
 
 
 def plan(day: date, cfg: dict | None = None) -> DayPlan:
@@ -76,6 +93,11 @@ def plan(day: date, cfg: dict | None = None) -> DayPlan:
         margin_files_ns=timeutil.ist_ns(day, jobs["margin_files"]["start"]),
         margin_files_until_ns=timeutil.ist_ns(day, jobs["margin_files"]["until"]),
         keep_awake_ns=timeutil.ist_ns(day, cfg["keep_awake"]["from"]),
+        day_bundles_ns=timeutil.ist_ns(day, _start(jobs["day_bundles"])),
+        finalise_ns=timeutil.ist_ns(day, _start(jobs["finalise"])),
+        parity_ns=timeutil.ist_ns(day, _start(jobs["parity"])),
+        daily_summary_ns=timeutil.ist_ns(day, _start(jobs["daily_summary"])),
+        backup_ns=timeutil.ist_ns(day, _start(jobs["backup"])),
     )
 
 
@@ -131,24 +153,46 @@ def retry_every_ns(job: str, cfg: dict | None = None) -> int:
     return int(spec.get("retry_every_min", 0)) * 60 * 1_000_000_000
 
 
+def token_retry_ns(cfg: dict | None = None) -> int:
+    """The gap between refdata attempts (`token_dependent_retry.every_min`)."""
+    return int((cfg or schedule())["jobs"]["token_dependent_retry"]["every_min"]) * 60 * 1_000_000_000
+
+
 def window_end_ns(job: str, day: date, cfg: dict | None = None) -> int:
     p = plan(day, cfg)
     return {"nse_fetch": p.nse_fetch_until_ns, "margin_files": p.margin_files_until_ns}[job]
 
 
+def _due_ns(job: str, p: DayPlan) -> int:
+    return {"nse_fetch": p.nse_fetch_ns, "margin_files": p.margin_files_ns, "finalise": p.finalise_ns,
+            "parity": p.parity_ns, "daily_summary": p.daily_summary_ns, "backup": p.backup_ns}[job]
+
+
+def runnable(job: str, day: date, state: State) -> bool:
+    """False for a job whose prerequisite is not done for `day` (parity and the summary wait for finalise)."""
+    needs = DEPENDS.get(job)
+    return needs is None or state.done(needs, day)
+
+
 def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tuple[str, date]]:
-    """Catch-up jobs whose start passed on a recent trading day and never completed."""
+    """Catch-up jobs whose start passed on a recent trading day and never completed: oldest day first, each day's in
+    `DAY_ORDER` (fetch, margin files, finalise, parity, summary), then the backup. The backup is one job for the
+    latest trading day whose 05:45 has passed (it copies whatever changed, so earlier days add nothing)."""
     out = []
     today = timeutil.ns_to_ist(now_ns).date()
+    latest = None
     for i in range(CATCH_UP_DAYS, -1, -1):
         d = today - timedelta(days=i)
         if not calendar.is_trading_day(SEGMENT, d):
             continue
         p = plan(d, cfg)
-        if "nse_fetch" in CATCH_UP and p.nse_fetch_ns <= now_ns and not state.done("nse_fetch", d):
-            out.append(("nse_fetch", d))
-        if "margin_files" in CATCH_UP and p.margin_files_ns <= now_ns and not state.done("margin_files", d):
-            out.append(("margin_files", d))
+        for job in DAY_ORDER:
+            if job in CATCH_UP and _due_ns(job, p) <= now_ns and not state.done(job, d):
+                out.append((job, d))
+        if "backup" in CATCH_UP and p.backup_ns <= now_ns:
+            latest = d
+    if latest is not None and not state.done("backup", latest):
+        out.append(("backup", latest))
     return out
 
 

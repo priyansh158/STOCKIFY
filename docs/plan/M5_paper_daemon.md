@@ -72,14 +72,20 @@ The access token dies at 06:00 IST every day and the official login is a browser
 
 Extends the M1.5 scheduler; all times from `schedule.json` (IST), skipped on holidays.
 
-| Job (IST) | Seattle, PDT | Seattle, PST (from 2026-11-01) |
-|---|---|---|
-| 08:30 refdata, day bundles, token check (retries to 09:10) | 20:00 (to 20:40) | 19:00 (to 19:40) |
-| 08:58 subscribe recorder universe + pinned session instruments | 20:28 | 19:28 |
-| 09:00 pre-open; 09:15 continuous (from `sessions.json`) | 20:30; 20:45 | 19:30; 19:45 |
-| 15:40 F&O close; 15:45 unsubscribe | 03:10; 03:15 next day | 02:10; 02:15 next day |
-| 16:30 compaction (M1.7) | 04:00 | 03:00 |
-| 19:30–23:00 NSE files (M1.3), settlement records, day finalisation (M5.3), then nightly parity (M5.10), quality report (M1.9), daily summary | 07:00–10:30 | 06:00–09:30 |
+| Job (IST) | Seattle (PST) |
+|---|---|
+| 05:45 verified backup (M5.13; catch-up on every wake; no target = skipped) | 16:15 |
+| 08:30 refdata (retries every 5 min to 09:10; a later login runs it at once), then day bundles | 19:00 (to 19:40) |
+| 08:58 subscribe recorder universe + pinned session instruments | 19:28 |
+| 09:00 pre-open; 09:15 continuous (from `sessions.json`) | 19:30; 19:45 |
+| 15:40 F&O close; 15:45 unsubscribe | 02:10; 02:15 next day |
+| 16:30 compaction (M1.7) | 03:00 |
+| 19:30 day finalisation (M5.3; cut off at the next trading day's 08:30), then 19:45 nightly parity (M5.10), 19:50 daily summary; NSE files (M1.3) 19:30–23:00 | 06:00; 06:15; 06:20; 06:00–09:30 |
+
+D-32 note: the laptop hibernates after the close and the day's compaction and wakes at 06:00 IST on the next trading day; none of the jobs above except `compaction` keeps it awake, so what it slept through runs on wake, in the order below.
+
+- [ ] **Order**: per trading day, oldest first: `nse_fetch`, `margin_files`, `finalise`, `parity`, `daily_summary`; then `backup`. `parity` and the summary wait for `finalise` of their day. A failing job is logged and retried at its `retry_every_min`; it never stops another job, the recorder or the daemon. Two schedulers (or the scheduler and the daemon) never run one session-day's finalise at once: it holds a per-day OS-lock claim, a second caller gets `busy`.
+- [ ] **Stale refdata / blocked start**: if refdata fails for a reason other than the login by 09:10, the day bundle uses D-1's refdata and is labelled `refdata_stale`. A session whose previous trading day is not finalised stays ARMED with the timeline row `blocked_on_finalise`. A login after the open starts the session with a `GAP(token_expired)` from 09:15.
 
 - [ ] **Catch-up**: on start, the scheduler runs every missed non-market job for past dates (compaction, NSE fetch, finalisation, parity) in date order. A machine that slept through the morning jobs therefore catches up when it wakes; only market hours require it to be awake.
 

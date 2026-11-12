@@ -706,9 +706,14 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
 
 ```json
 { "schema": "stockify.schedule/1",
-  "jobs": { "refdata": "08:30", "subscribe": "08:58", "unsubscribe": "15:45", "compaction": "16:30",
+  "jobs": { "refdata": "08:30", "day_bundles": "08:30", "subscribe": "08:58", "unsubscribe": "15:45",
+            "compaction": "16:30",
             "nse_fetch": { "start": "19:30", "retry_every_min": 15, "until": "23:00" },
             "margin_files": { "start": "17:20", "retry_every_min": 30, "until": "22:00" },
+            "finalise": { "start": "19:30", "retry_every_min": 15 },
+            "parity": { "start": "19:45", "retry_every_min": 15 },
+            "daily_summary": { "start": "19:50", "retry_every_min": 15 },
+            "backup": "05:45",
             "token_dependent_retry": { "every_min": 5, "until": "09:10" },
             "day_end": "23:59:59" } }
 ```
@@ -717,6 +722,15 @@ Catch-up jobs (`nse_fetch`, `margin_files`) are retried no more often than `retr
 daemon's clock. `margin_files` also holds sleep on its trade date until the day's `.s` and ELM file are archived or
 `until` passes (CAM 4.4), so it runs the same evening; only when the laptop was off does it run the next morning, where
 one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches it later).
+
+The paper day's jobs (CDM 5.1) are catch-up jobs too. Per trading day, oldest first, in this order: `nse_fetch`,
+`margin_files`, `finalise`, `parity`, `daily_summary`; then one `backup` for the latest trading day. `finalise` waits
+for the day's NSE files and is cut off at the next trading day's `day_bundles` time (a holiday in between is skipped);
+`parity` and `daily_summary` run only once `finalise` is done for the day. `day_bundles` for D runs after `refdata` for D:
+`refdata` is retried every `token_dependent_retry.every_min` until `until`, a failure that is not about the login then
+leaves D-1's refdata in use (bundle label `refdata_stale`), and a later login runs it at once. A session whose
+previous trading day is not finalised stays ARMED with the timeline row `blocked_on_finalise`. `backup` is `null`-safe: no
+`storage.json` `backup.target` is a logged skip. Only `compaction` blocks sleep.
 
 ### 7.9 `storage.json`
 
