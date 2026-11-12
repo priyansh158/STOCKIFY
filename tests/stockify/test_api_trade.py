@@ -55,6 +55,16 @@ class CreateTests(TradeBase):
     def post(self, **body):
         return self.client.post("/api/trade/sessions", json=body)
 
+    def test_a_created_session_leaves_its_family_row(self):
+        r = self.post(config=copy.deepcopy(CFG))
+        self.assertEqual(r.status_code, 201, r.text)
+        fam = store.get_session(r.json()["session_id"])["config"]["family_id"]
+        self.assertEqual(fam, "sma_cross/live-NSE_RELIANCE/sharpe")
+        self.assertEqual(store.get_family(fam)["objective"], "sharpe")
+        r = self.post(config={**copy.deepcopy(CFG), "family_id": "mine/live/1"})
+        self.assertEqual(r.status_code, 201, r.text)
+        self.assertIsNotNone(store.get_family("mine/live/1"))
+
     def test_create_validates_and_returns_201(self):
         r = self.post(config=copy.deepcopy(CFG))
         self.assertEqual(r.status_code, 201, r.text)

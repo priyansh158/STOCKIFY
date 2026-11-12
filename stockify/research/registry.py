@@ -212,15 +212,11 @@ def backfill(dry_run: bool = False) -> int:
                 return n
             n += sum(1 for r in page if r["family_id"] is None and _family_of_row(r) is not None)
             offset += len(page)
-    chosen: set[str] = set()
 
     def compute(row: dict) -> str | None:
         fam = _family_of_row(row)
         if fam is not None:
-            chosen.add(fam)
+            ensure_family(fam)                  # the family row first: a crash can leave a row, never a run without
         return fam
 
-    n = store.backfill_null_families(compute)
-    for fam in sorted(chosen):
-        ensure_family(fam)
-    return n
+    return store.backfill_null_families(compute)

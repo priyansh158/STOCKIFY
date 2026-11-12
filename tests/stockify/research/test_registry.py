@@ -173,6 +173,8 @@ class RegistryTests(SandboxedDBTest):
         self.assertIsNone(store.get_run("bad")["family_id"])
         self.assertEqual(store.get_run("kept")["family_id"], "mine/x/y")
         self.assertEqual([f["family_id"] for f in store.list_families()], [want])
+        self.assertIsNotNone(store.get_family(store.get_run("old")["family_id"]))    # a backfilled family has its row
+        self.assertIsNone(store.get_family("mine/x/y"))                              # a kept one is not touched
         self.assertEqual(registry.backfill(), 0)
 
 
@@ -219,6 +221,21 @@ class RunIntegrationTests(RunsTestBase):
         row = store.get_run(new_id)
         self.assertEqual((row["family_id"], row["role"]), ("mine/exp/1", "rerun"))
         self.assertEqual([t.run_id for t in registry.trials("mine/exp/1")], [rid])
+
+    def test_rerun_of_a_pre_m6_source_with_a_null_family(self):
+        rid = runs.launch(run_config(name="t", strategy=BUY), impl="oracle", report=False)
+        store.update_run(rid, family_id=None)                      # a pre-M6 row
+        run_json = paths.run_path(rid) / "run.json"
+        doc = json.loads(run_json.read_text(encoding="utf-8"))
+        default = registry.default_family_id(doc)
+        run_json.write_text(json.dumps({**doc, "family_id": "from/folder/1"}), encoding="utf-8")
+        new_id, _ = runs.rerun(rid)                               # the folder's family
+        self.assertEqual(store.get_run(new_id)["family_id"], "from/folder/1")
+        self.assertIsNotNone(store.get_family("from/folder/1"))
+        doc.pop("family_id", None)
+        run_json.write_text(json.dumps(doc), encoding="utf-8")
+        new_id, _ = runs.rerun(rid)                               # neither: the default
+        self.assertEqual((store.get_run(new_id)["family_id"], store.get_run(new_id)["role"]), (default, "rerun"))
 
     def _folder(self, run_id: str, cfg: dict) -> Path:
         d = paths.run_dir(run_id)

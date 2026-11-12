@@ -97,6 +97,7 @@ async def _body_cap(request: Request) -> None:
 @router.post("/api/trade/sessions", response_model=SessionCreatedDTO, status_code=201)
 def create_session(body: CreateSessionBody, _size: None = Depends(_body_cap)) -> SessionCreatedDTO:
     from stockify import sessionconfig, store, timeutil
+    from stockify.research import registry
     from stockify.strategies import _catalogue
     universe = body.config.get("universe")
     if isinstance(universe, list) and len(universe) > MAX_UNIVERSE:
@@ -129,6 +130,7 @@ def create_session(body: CreateSessionBody, _size: None = Depends(_body_cap)) ->
     for sid in candidates:
         try:
             store.create_session(sid, name, cfg, now)
+            registry.ensure_family(cfg["family_id"])              # M6.4: the session's family has its row
             return SessionCreatedDTO(session_id=sid)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=[f"session_id: {e}"])
