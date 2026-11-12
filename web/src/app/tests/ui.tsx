@@ -163,15 +163,11 @@ export function LabelChips({ run }: { run: Pick<TestRun, "labels" | "price_basis
   );
 }
 
-export function Card({ children, tone }: { children: ReactNode; tone?: "red" }) {
+export function Card({ children, tone }: { children: ReactNode; tone?: "red" | "amber" }) {
+  const border = tone === "red" ? "var(--color-red)" : tone === "amber" ? "var(--color-amber)" : "rgba(0,255,65,0.20)";
+  const bg = tone === "red" ? "rgba(255,68,68,0.06)" : tone === "amber" ? "rgba(255,170,64,0.06)" : "rgba(0,255,65,0.03)";
   return (
-    <section
-      className="rounded-lg border px-4 py-3"
-      style={{
-        borderColor: tone === "red" ? "var(--color-red)" : "rgba(0,255,65,0.20)",
-        background: tone === "red" ? "rgba(255,68,68,0.06)" : "rgba(0,255,65,0.03)",
-      }}
-    >
+    <section className="rounded-lg border px-4 py-3" style={{ borderColor: border, background: bg }}>
       {children}
     </section>
   );

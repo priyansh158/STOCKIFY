@@ -6,6 +6,7 @@ const NAV = [
   { href: "/portfolio", label: "💼 Portfolio" },
   { href: "/alerts", label: "Geo alerts" },
   { href: "/tests", label: "Strategy tests" },
+  { href: "/trade", label: "Paper trading" },
 ];
 
 export default function Home() {
@@ -22,8 +23,7 @@ export default function Home() {
       <p className="mt-6 leading-relaxed" style={{ color: "var(--color-fg)" }}>
         Record Kite market data, backtest equity and F&amp;O strategies with
         realistic costs, fills and margin, and paper-trade them live with no
-        real orders. Paper trading and data coverage pages arrive with the next
-        milestones.
+        real orders. Data coverage pages arrive with a later milestone.
       </p>
 
       <section className="mt-10">
