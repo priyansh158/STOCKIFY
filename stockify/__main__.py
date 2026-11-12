@@ -653,13 +653,12 @@ def _cmd_parity_recorder(args) -> int:
     if first is not None:
         print(f"first divergence at {s['first_divergence_ns']} ns, fill #{first['index']}: live "
               f"{json.dumps(first['live'], sort_keys=True)} / recorder {json.dumps(first['recorder'], sort_keys=True)}")
-    if s["explained_by"]:
-        known = s["known_differences"]
-        print(f"explained by: {', '.join(s['explained_by'])} (queue_full frames {known['queue_full']['frames']}, "
-              f"journaled margin answers {known['journal_only']['margin_requirement']}, "
-              f"strategy pauses {known['journal_only']['strategy_control']})")
-    elif first is not None or s["pnl_diff_paise"]:
-        print("unexplained: no dropped frames and no journal-only record to account for it")
+    if s["explained_by"]:                           # only differences have causes: an identical day prints nothing here
+        print(f"explained by: {', '.join(s['explained_by'])}")
+    if s["unexplained"]:
+        n = sum(1 for x in s["differences"] if not x["causes"])
+        print(f"unexplained: {n} of {s['differences_total']} difference(s) have no earlier dropped frames, journaled "
+              "margin answer or pause that covers them")
     return 0
 
 

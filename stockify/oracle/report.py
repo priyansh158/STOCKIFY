@@ -67,20 +67,35 @@ def equity_png(folder: Path) -> Path | None:
 
 
 def _gap_lines(folder: Path) -> list[str]:
-    """The days on which a pack had instruments with no events, as listed in the bundle (nothing is filled in)."""
+    """The days on which a pack had instruments with no events, and the frames the recorder dropped on a full queue,
+    as listed in the bundle (nothing is filled in)."""
     path = folder / "bundle.json"
     if not path.exists():
         return []
     days: dict[str, set[int]] = {}
+    spans: list[dict] = []
     for p in json.loads(path.read_text(encoding="utf-8")).get("packs", []):
         for day, ids in p.get("gaps", {}).get("days", {}).items():
             days.setdefault(day, set()).update(ids)
-    if not days:
-        return []
-    return (["## Data gaps", "",
-             f"`data:gaps={len(days)}`: on these days some instruments had no data in the packs. Nothing was filled in.", ""]
-            + [f"- {day}: instrument ids {', '.join(str(i) for i in sorted(ids))}" for day, ids in sorted(days.items())]
-            + [""])
+        spans += p.get("recorder_gaps", {}).get("spans", [])
+    out: list[str] = []
+    if days:
+        out += (["## Data gaps", "",
+                 f"`data:gaps={len(days)}`: on these days some instruments had no data in the packs. Nothing was filled in.", ""]
+                + [f"- {day}: instrument ids {', '.join(str(i) for i in sorted(ids))}" for day, ids in sorted(days.items())]
+                + [""])
+    if spans:
+        known = all(s.get("frames") is not None for s in spans)
+        total = str(sum(s["frames"] for s in spans)) if known else "unknown"
+        out += ["## Dropped frames", "",
+                f"`data:dropped_frames={total}`: the recorder's queue was full and refused these frames, so the packs "
+                "lack them for every instrument. Nothing was filled in.", ""]
+        for s in sorted(spans, key=lambda s: (s["day"], s.get("start_ns") or 0)):
+            first, last = s.get("first_frame_no"), s.get("last_frame_no")
+            frames = "frame numbers unknown" if first is None else f"frames {first}-{last}"
+            out.append(f"- {s['day']}: {frames} ({s.get('frames') if s.get('frames') is not None else 'unknown'} dropped)")
+        out.append("")
+    return out
 
 
 def write(folder: Path) -> Path:

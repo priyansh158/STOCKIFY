@@ -320,6 +320,21 @@ def resolve(selectors: list[dict] | None, day: date, recorded: set[int] | None =
 
 # ── Building ─────────────────────────────────────────────────────────────────
 
+def merge_recorder_gaps(*sources) -> dict | None:  # noqa: ANN002
+    """The union of `queue_full` spans, each source a list of spans or a manifest's `recorder_gaps` (or None), in
+    sorted order with the known frames summed; None when there are no spans. The union is what a refreshed manifest
+    keeps, so the label never depends on which source a pack was last built from."""
+    seen: dict[str, dict] = {}
+    for src in sources:
+        for span in (src.get("spans", []) if isinstance(src, dict) else src or []):
+            seen.setdefault(json.dumps(span, sort_keys=True), span)
+    if not seen:
+        return None
+    spans = sorted(seen.values(), key=lambda s: (s["day"], s["start_ns"] or 0, s["end_ns"] or 0,
+                                                 s["first_frame_no"] or 0, s["last_frame_no"] or 0))
+    return {"frames": sum(s["frames"] or 0 for s in spans), "spans": spans}
+
+
 @dataclass
 class _Build:
     spec: dict
@@ -356,10 +371,7 @@ class _Build:
 
     def recorder_gaps_manifest(self) -> dict | None:
         """None when nothing was dropped, so a manifest without drops has no such key and is as it always was."""
-        if not self.dropped:
-            return None
-        spans = sorted(self.dropped, key=lambda s: (s["day"], s["start_ns"] or 0, s["first_frame_no"] or 0))
-        return {"frames": sum(s["frames"] or 0 for s in spans), "spans": spans}
+        return merge_recorder_gaps(self.dropped)
 
     def add(self, t: int, rank: int, iid: int, rec: bytes, src_seq: int | None = None) -> None:
         if src_seq is None:
@@ -849,6 +861,19 @@ def _same_manifest(existing: str, ours: str, ignore: frozenset[str] = _WALL_CLOC
     return isinstance(a, dict) and strip(a) == strip(b)
 
 
+def _merge_provenance(existing: str, ours: str) -> str:
+    """`ours`, with `recorder_gaps` the union of both manifests' spans."""
+    try:
+        a, b = json.loads(existing), json.loads(ours)
+    except json.JSONDecodeError:
+        return ours
+    merged = merge_recorder_gaps(a.get("recorder_gaps"), b.get("recorder_gaps"))
+    if merged is None:
+        return ours
+    b["recorder_gaps"] = merged
+    return json.dumps(b, indent=2, sort_keys=True) + "\n"
+
+
 def _publish_text(target: Path, text: str) -> None:
     """Write a manifest atomically: a unique tmp, then os.rename, which refuses an existing target (CB 4.6).
     When it is refused, an existing manifest with the same content is kept as it is (a racing builder, or a
@@ -875,6 +900,11 @@ def _publish_text(target: Path, text: str) -> None:
                 if verdict is False:
                     if not _same_manifest(existing, text, _WALL_CLOCK_FIELDS | _PROVENANCE_FIELDS):
                         raise error                      # a complete manifest with other content: a conflict
+                    merged = _merge_provenance(existing, text)      # never drop or shrink what the manifest recorded
+                    if merged != text:
+                        _refused_retry(lambda p: p.write_text(merged, encoding="utf-8"), tmp)
+                    if _same_manifest(existing, merged):
+                        return
                     try:
                         tmp.replace(target)              # same pack read from elsewhere: follow the latest build
                         return

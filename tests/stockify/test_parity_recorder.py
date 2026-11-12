@@ -198,15 +198,241 @@ class RecorderParityTest(_RecorderBase):
                          [(3, 4, 2), (9, 9, 1)])
         self.assertEqual(known["spans"][0]["start_ns"], self.t("09:15:02"))
         self.assertFalse(res.summary["unexplained"])
-        self.assertIn("queue_full", res.summary["explained_by"])
+        self.assertEqual((res.summary["explained_by"], res.summary["differences"]), ([], []),
+                         "nothing differs, so nothing is explained (M-2)")
 
     def test_a_landing_file_from_before_migration_0002_reads_without_the_frame_columns(self):
-        rows = [{"gap_id": 1, "start_ns": 5, "end_ns": 9, "reason": "queue_full", "scope": "all"},
+        rows = [{"gap_id": 1, "start_ns": 5, "end_ns": 9, "reason": "queue_full"},
                 {"gap_id": 2, "start_ns": 1, "end_ns": 2, "reason": "disconnect", "scope": "all"}]
         known = parity._queue_full(rows)
         self.assertEqual(known["frames"], 0)
         self.assertEqual(known["spans"], [{"start_ns": 5, "end_ns": 9, "first_frame_no": None, "last_frame_no": None,
-                                           "frames": None}])
+                                           "frames": None, "scope": "all"}])
+
+    # ── fix round 1 ──────────────────────────────────────────────────────────────────────────────────────────
+
+    def drop_scoped(self, start_ns, end_ns, scope, first=3, last=4):
+        landing = LandingDB(pf.DAY)
+        landing.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope, first_frame_no, last_frame_no, frames) "
+                             "VALUES (?, ?, 'queue_full', ?, ?, ?, ?)", (start_ns, end_ns, scope, first, last, last - first + 1))
+        landing.close()
+
+    def wrong_fill(self):
+        """Tamper the stored fill: a real difference. Returns the fill's (t_ns, instrument_id)."""
+        fill = store.session_rows(SID, "fills")[0]
+        self.tamper_row("session_fills", "fill_id", "price_paise", 1)
+        return fill["t_ns"], fill["instrument_id"]
+
+    def test_a_cause_that_comes_after_the_difference_does_not_explain_it(self):
+        self.live_day()
+        t, _ = self.wrong_fill()
+        self.drop_scoped(t + 3600 * SEC, t + 3601 * SEC, "all")
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertTrue(s["unexplained"])
+        self.assertEqual(s["explained_by"], [])
+        self.assertTrue(s["differences"])
+        self.assertTrue(all(d["causes"] == [] for d in s["differences"]))
+
+    def test_a_cause_before_the_difference_explains_it_and_is_named(self):
+        self.live_day()
+        t, _ = self.wrong_fill()
+        self.drop_scoped(t - 2 * SEC, t - SEC, "all")
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertFalse(s["unexplained"])
+        self.assertEqual(s["explained_by"], ["queue_full"])
+        self.assertTrue(all(d["causes"] == ["queue_full"] for d in s["differences"]))
+        self.assertEqual({d["side"] for d in s["differences"]}, {"live", "recorder"})
+
+    def test_a_queue_full_on_another_instrument_does_not_explain_a_wrong_fill(self):
+        self.live_day()
+        t, iid = self.wrong_fill()
+        self.drop_scoped(t - 2 * SEC, t - SEC, f"instrument:{iid + 1000}")
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertTrue(s["unexplained"])
+        self.assertEqual(s["explained_by"], [])
+        self.drop_scoped(t - 2 * SEC, t - SEC, f"instrument:{iid}", 7, 8)       # the same instrument, before it
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertFalse(s["unexplained"])
+        self.assertEqual(s["explained_by"], ["queue_full"])
+
+    def test_a_queue_full_on_the_same_instrument_but_later_does_not_explain_it(self):
+        self.live_day()
+        t, iid = self.wrong_fill()
+        self.drop_scoped(t + SEC, t + 2 * SEC, f"instrument:{iid}")
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertTrue(s["unexplained"])
+
+    def test_a_margin_answer_alone_explains_a_difference_that_follows_it(self):
+        t_answer = self.t("09:15:01")
+        answer = margin_answer(65, self.ces[4], 9_000_000_000)
+        extra = [(t_answer, packs.RANK[packs.REFDATA_K], packs.enc_refdata(0, t_answer, "margin_requirement", answer))]
+        self.live_day(extra=extra)
+        self.wrong_fill()
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertEqual(s["known_differences"]["journal_only"], {"margin_requirement": 1, "strategy_control": 0})
+        self.assertFalse(s["unexplained"])
+        self.assertEqual(s["explained_by"], ["margin_requirement"])
+
+    def test_a_margin_answer_that_comes_later_does_not_explain_it(self):
+        t_answer = self.t("09:40:00")
+        answer = margin_answer(65, self.ces[4], 9_000_000_000)
+        extra = [(t_answer, packs.RANK[packs.REFDATA_K], packs.enc_refdata(0, t_answer, "margin_requirement", answer))]
+        self.live_day(extra=extra)
+        self.wrong_fill()
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertTrue(s["unexplained"])
+
+    def test_a_nav_only_difference_is_explained_by_any_cause_of_the_day(self):
+        self.live_day()
+        self.tamper("UPDATE session_equity SET nav_paise = nav_paise + 5 WHERE session_id = ?", SID)
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertEqual((s["fills_matched"], s["pnl_diff_paise"]), (s["fills_live"], -5))
+        self.assertTrue(s["unexplained"])
+        self.drop([(3, 4, self.t("09:15:02"), self.t("09:15:03"))])
+        s = parity.recorder_parity(SID, pf.DAY).summary
+        self.assertFalse(s["unexplained"])
+        self.assertEqual(s["explained_by"], ["queue_full"])
+
+    def test_fills_sort_by_time_then_order_then_fill_number(self):
+        rows = [{"t_ns": 5, "order_id": 2, "fill_id": 1}, {"t_ns": 5, "order_id": 1, "fill_id": 9},
+                {"t_ns": 5, "order_id": 1, "fill_id": 3}, {"t_ns": 4, "order_id": 7, "fill_id": 8}]
+        want = [(4, 7, 8), (5, 1, 3), (5, 1, 9), (5, 2, 1)]
+        for order in (rows, rows[::-1], rows[2:] + rows[:2]):
+            self.assertEqual([(r["t_ns"], r["order_id"], r["fill_id"]) for r in parity._fills(order)], want)
+
+    def test_the_cli_prints_explained_by_only_when_something_differs(self):
+        self.live_day()
+        self.drop([(3, 4, self.t("09:15:02"), self.t("09:15:03"))])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["parity", "recorder", "--session", SID, "--date", pf.EXPIRY]), 0)
+        self.assertNotIn("explained by", out.getvalue())
+
+    # I-3: a library call returns `skipped` for an I/O or database error, and still raises for the unexpected
+
+    def test_an_io_or_database_error_is_a_skip_not_an_exception(self):
+        self.live_day()
+        for exc in (PermissionError("pack store busy"), FileExistsError("manifest conflict"),
+                    sqlite3.DatabaseError("database disk image is malformed"), OSError("disk")):
+            with self.subTest(exc=type(exc).__name__), mock.patch.object(packs, "build", side_effect=exc):
+                res = parity.recorder_parity(SID, pf.DAY)
+                self.assertEqual(res.outcome, "skipped")
+                self.assertIn(type(exc).__name__, res.summary["reason"])
+        self.assertIsNone(self.stored_result())
+        with mock.patch.object(packs, "build", side_effect=ValueError("a bug")):
+            with self.assertRaises(ValueError):
+                parity.recorder_parity(SID, pf.DAY)
+
+    # M-1: busy means a -wal with rows or any -shm
+
+    def test_an_empty_wal_and_a_leftover_shm_are_not_busy_because_a_reader_leaves_them(self):
+        """M-1, as far as it can go: an ordinary read-only open (a pack build, replay) leaves `-wal` and `-shm` beside
+        the file, so neither may make the day unreadable. Only a `-wal` or `-journal` with rows in it is busy."""
+        self.live_day()
+        landing = paths.ticks_landing_file(pf.DAY)
+        wal, shm = (landing.with_name(landing.name + s) for s in ("-wal", "-shm"))
+        conn = sqlite3.connect(f"file:{landing.as_posix()}?mode=ro", uri=True)       # what every other reader does
+        conn.execute("SELECT COUNT(*) FROM packets").fetchone()
+        conn.close()
+        self.assertTrue(wal.exists() and shm.exists(), "a read-only reader leaves both files")
+        self.assertIsNone(ticks.landing_busy(pf.DAY))
+        self.assertEqual(parity.recorder_parity(SID, pf.DAY).outcome, "pass")
+        wal.write_bytes(b"rows")
+        self.assertIn("-wal", ticks.landing_busy(pf.DAY))
+        self.assertEqual(parity.recorder_parity(SID, pf.DAY).outcome, "skipped")
+
+    # M-5: the report leaves no pack behind
+
+    def test_the_report_leaves_no_new_pack_behind_and_keeps_an_existing_one(self):
+        self.live_day()
+        before = sorted(p.name for p in paths.packs_dir().iterdir())
+        res = parity.recorder_parity(SID, pf.DAY)
+        self.assertEqual(res.outcome, "pass")
+        self.assertEqual(sorted(p.name for p in paths.packs_dir().iterdir()), before)
+        ids = sorted(finalise._bundle_ids(SID, pf.DAY))
+        sha = packs.build({"dataset": "ticks", "from": pf.EXPIRY, "to": pf.EXPIRY, "instruments": [{"ids": ids}],
+                           "clock_cadence_ms": 1000})
+        kept = sorted(p.name for p in paths.packs_dir().iterdir())
+        again = parity.recorder_parity(SID, pf.DAY)
+        self.assertEqual(again.summary["pack"], sha)
+        self.assertEqual(sorted(p.name for p in paths.packs_dir().iterdir()), kept, "a pack that was there stays")
+
+    # I-2 / I-4: the manifest and the label
+
+    def spec(self):
+        return {"dataset": "ticks", "from": pf.EXPIRY, "to": pf.EXPIRY, "clock_cadence_ms": 1000}
+
+    def test_a_rebuild_never_drops_or_shrinks_the_recorded_gaps(self):
+        a = (3, 4, self.t("09:15:02"), self.t("09:15:03"))
+        b = (9, 9, self.t("09:15:08"), self.t("09:15:08"))
+        self.drop([a])
+        sha = packs.build(self.spec())
+        self.assertEqual(packs.manifest(sha)["recorder_gaps"]["frames"], 2)
+        self.drop([b])
+        packs.build(self.spec())
+        self.assertEqual(packs.manifest(sha)["recorder_gaps"]["frames"], 3, "the union")
+        spans = packs.manifest(sha)["recorder_gaps"]["spans"]
+        self.assertEqual([s["first_frame_no"] for s in spans], [3, 9])
+        landing = LandingDB(pf.DAY)                                   # a source that lost the rows: A gone, then all gone
+        landing.conn.execute("DELETE FROM gaps WHERE first_frame_no = 3")
+        landing.close()
+        packs.build(self.spec())
+        self.assertEqual(packs.manifest(sha)["recorder_gaps"]["spans"], spans)
+        landing = LandingDB(pf.DAY)
+        landing.conn.execute("DELETE FROM gaps WHERE reason = 'queue_full'")
+        landing.close()
+        packs.build(self.spec())
+        self.assertEqual(packs.manifest(sha)["recorder_gaps"]["spans"], spans)
+
+    def test_the_merge_does_not_depend_on_build_order(self):
+        a = (3, 4, self.t("09:15:02"), self.t("09:15:03"))
+        b = (9, 9, self.t("09:15:08"), self.t("09:15:08"))
+        self.drop([a, b])
+        sha = packs.build(self.spec())
+        want = packs.manifest(sha)["recorder_gaps"]
+        packs.manifest_path(sha).unlink()
+        self.drop([])
+        landing = LandingDB(pf.DAY)
+        landing.conn.execute("DELETE FROM gaps WHERE first_frame_no = 3")
+        landing.close()
+        packs.build(self.spec())                                      # only B first
+        self.assertEqual(packs.manifest(sha)["recorder_gaps"]["frames"], 1)
+        landing = LandingDB(pf.DAY)
+        landing.add_dropped_frames([a])
+        landing.close()
+        packs.build(self.spec())                                      # then A
+        self.assertEqual(packs.manifest(sha)["recorder_gaps"], want)
+
+    def test_an_unknown_frame_count_still_gives_a_label(self):
+        landing = LandingDB(pf.DAY)                                   # a row as a pre-0002 file has it: no frame numbers
+        landing.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope) VALUES (?, ?, 'queue_full', 'all')",
+                             (self.t("09:15:02"), self.t("09:15:03")))
+        landing.close()
+        rows = bundle.resolve_packs({"data": {"packs": [{"spec": self.spec()}]}})
+        self.assertEqual(bundle.dropped_frames_labels(rows), ["data:dropped_frames=unknown"])
+        self.assertEqual(bundle.dropped_frames_labels(
+            [{"recorder_gaps": {"frames": 2, "spans": [{"frames": 2}, {"frames": None}]}}]), ["data:dropped_frames=unknown"])
+        self.assertEqual(bundle.dropped_frames_labels([{"recorder_gaps": {"frames": 2, "spans": [{"frames": 2}]}}]),
+                         ["data:dropped_frames=2"])
+
+    # M-3: the run's report says so
+
+    def test_the_report_has_a_dropped_frames_section(self):
+        import tempfile
+        from pathlib import Path
+        from stockify.oracle import report
+        folder = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+        row = {"sha256": "a" * 64, "recorder_gaps": {"frames": 2, "spans": [
+            {"day": pf.EXPIRY, "reason": "queue_full", "start_ns": 5, "end_ns": 9, "first_frame_no": 3,
+             "last_frame_no": 4, "frames": 2}]}}
+        (folder / "bundle.json").write_text(json.dumps({"packs": [row]}), encoding="utf-8")
+        text = "\n".join(report._gap_lines(folder))
+        self.assertIn("## Dropped frames", text)
+        self.assertIn("data:dropped_frames=2", text)
+        self.assertIn(pf.EXPIRY, text)
+        self.assertIn("3-4", text)
+        (folder / "bundle.json").write_text(json.dumps({"packs": [{"sha256": "a" * 64}]}), encoding="utf-8")
+        self.assertEqual(report._gap_lines(folder), [])
 
     def test_the_archive_gaps_are_read_too(self):
         self.live_day()
@@ -218,6 +444,9 @@ class RecorderParityTest(_RecorderBase):
 
             def gaps(self):
                 return gaps
+
+            def subscriptions(self):
+                return []
 
             def close(self):
                 pass

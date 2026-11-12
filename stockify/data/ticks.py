@@ -186,6 +186,9 @@ def landing_busy(day: date) -> str | None:
         side = landing.with_name(landing.name + suffix)
         if side.is_file() and side.stat().st_size > 0:
             return f"busy, not read (the landing file's {suffix} file is not empty: the recorder may be writing)"
+    # An existing `-shm` (or an empty `-wal`) is NOT taken as busy: any read-only reader (a pack build, replay, the
+    # quality report) leaves both behind, so that rule would refuse every day that was ever read. Only rows waiting in
+    # the `-wal` matter: an immutable read cannot see them, and that is what a writer leaves.
     return None
 
 

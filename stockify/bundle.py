@@ -304,9 +304,14 @@ def _file_sha(path: Path) -> str:
 
 def dropped_frames_labels(pack_rows: list[dict]) -> list[str]:
     """`data:dropped_frames=<n>` when a pack's day lost frames to the recorder's full queue: the run is labelled, and
-    nothing is filled in (I-7)."""
-    frames = sum(p.get("recorder_gaps", {}).get("frames", 0) for p in pack_rows)
-    return [f"data:dropped_frames={frames}"] if frames else []
+    nothing is filled in (I-7). A span that names no frame count (a landing file from before migration 0002) makes the
+    total `unknown`: a drop is never labelled 0 and never left unlabelled."""
+    spans = [s for p in pack_rows for s in p.get("recorder_gaps", {}).get("spans", [])]
+    if not spans:
+        return []
+    if any(s.get("frames") is None for s in spans):
+        return ["data:dropped_frames=unknown"]
+    return [f"data:dropped_frames={sum(s['frames'] for s in spans)}"]
 
 
 def resolve_packs(cfg: dict) -> list[dict]:

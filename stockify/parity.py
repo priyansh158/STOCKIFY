@@ -30,6 +30,7 @@ import csv
 import hashlib
 import json
 import logging
+import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from datetime import date
@@ -240,9 +241,12 @@ def _record(result: ParityResult) -> ParityResult:
 # backtest over recorded data drifts from the live session is the answer, not a verdict: this report NEVER fails and
 # NEVER pauses a session, and what it stores is a `pass` with the numbers.
 #
-# Differences it can already explain are named so that they are not mistaken for bugs: frames the recorder dropped on
-# a full queue (`queue_full` gap rows, which no pack can carry), and what only the journal holds (a journaled Kite
-# margin answer, a strategy pause). `unexplained` is a difference with none of these to blame.
+# Each difference (a fill on one side only; or, when every fill matches, the NAV) is reported with the known causes
+# that can account for it: frames the recorder dropped on a full queue (`queue_full` gap rows, which no pack can carry),
+# and what only the journal holds (a journaled Kite margin answer, a strategy pause). A cause counts only if it began
+# at or before the difference and covers its instrument (a pause or margin answer covers the session; a queue_full row
+# carries the scope the recorder gave it, `all`); one anywhere else on the day explains nothing. `unexplained` is any
+# difference with no such cause.
 #
 # It only reads the recorder's files: an archive is never written after compaction, and a landing file is opened
 # `mode=ro&immutable=1` and only when its `-wal` is empty; a landing file still being written is "busy" and skipped
@@ -265,17 +269,17 @@ def _queue_full(gaps: list[dict]) -> dict:
     """The `queue_full` gap rows as spans, and how many frames they name. A landing file from before migration 0002
     has no frame columns: those are read with `.get`, and a span that names no frames adds none."""
     spans = [{"start_ns": g.get("start_ns"), "end_ns": g.get("end_ns"), "first_frame_no": g.get("first_frame_no"),
-              "last_frame_no": g.get("last_frame_no"), "frames": g.get("frames")}
+              "last_frame_no": g.get("last_frame_no"), "frames": g.get("frames"), "scope": g.get("scope") or "all"}
              for g in gaps if g.get("reason") == "queue_full"]
     spans.sort(key=lambda s: (s["start_ns"] or 0, s["first_frame_no"] or 0))
     return {"spans": spans, "frames": sum(s["frames"] or 0 for s in spans)}
 
 
-def _journal_only(jpath: Path) -> dict:
-    """What the journal holds that no pack can: journaled margin answers, and strategy pauses (the opening `enabled`
-    record is not a difference)."""
+def _journal_causes(jpath: Path) -> list[tuple[str, int]]:
+    """(cause, time) of what the journal holds that no pack can: journaled margin answers and strategy pauses (the
+    opening `enabled` record is not a difference). Both belong to the whole session, not to an instrument."""
     from stockify.data import packs
-    counts = dict(_NO_JOURNAL_ONLY)
+    out: list[tuple[str, int]] = []
     _, body, _ = journal.read(jpath)
     off = 0
     while off < len(body):
@@ -283,15 +287,19 @@ def _journal_only(jpath: Path) -> dict:
         if rec["kind"] != "REFDATA":
             continue
         if rec["subtype"] == "margin_requirement":
-            counts["margin_requirement"] += 1
+            out.append(("margin_requirement", rec["t_event"]))
         elif rec["subtype"] == "strategy_control" and not rec["payload"].get("enabled", True):
-            counts["strategy_control"] += 1
-    return counts
+            out.append(("strategy_control", rec["t_event"]))
+    return out
+
+
+def _journal_only(causes: list[tuple[str, int]]) -> dict:
+    return {name: sum(1 for n, _ in causes if n == name) for name in _NO_JOURNAL_ONLY}
 
 
 def _fills(rows) -> list[dict]:  # noqa: ANN001
-    """Fill rows in time order, normalised the way the stores compare them."""
-    return sorted((_norm(r) for r in rows), key=lambda r: (r["t_ns"], r["fill_id"]))
+    """Fill rows in a fixed order: time, then order, then the fill's own number."""
+    return sorted((_norm(r) for r in rows), key=lambda r: (r["t_ns"], r["order_id"], r["fill_id"]))
 
 
 def _first_fill_divergence(live: list[dict], twin: list[dict]) -> dict | None:
@@ -301,6 +309,54 @@ def _first_fill_divergence(live: list[dict], twin: list[dict]) -> dict | None:
         if a is None or b is None or [a[k] for k in _FILL_KEY] != [b[k] for k in _FILL_KEY]:
             return {"index": i, "live": a, "recorder": b}
     return None
+
+
+def _unmatched(live: list[dict], twin: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(live fills with no equal fill (time, instrument, side, quantity, price) on the other side, and the other
+    side's fills with none on the live side), each fill used once."""
+    key = lambda r: tuple(r[f] for f in _FILL_KEY)  # noqa: E731
+    left: dict[tuple, list[dict]] = {}
+    for r in twin:
+        left.setdefault(key(r), []).append(r)
+    live_only = []
+    for r in live:
+        if left.get(key(r)):
+            left[key(r)].pop()
+        else:
+            live_only.append(r)
+    twin_only = sorted((r for rows in left.values() for r in rows), key=lambda r: (r["t_ns"], r["order_id"], r["fill_id"]))
+    return live_only, twin_only
+
+
+def _scope_covers(scope: str, iid: int, subs: list[dict], t: int) -> bool:
+    """Whether a gap of this scope can have cost the instrument frames. `all` (what the recorder writes for a
+    queue_full) covers every instrument; a scope that cannot be read covers none: the report fails closed."""
+    from stockify.data import packs
+    if scope == "all":
+        return True
+    if scope.startswith("instrument:"):
+        return scope[11:] == str(iid)
+    if scope.startswith("tier:"):
+        return iid in packs._tier_ids(subs, scope[5:], t)
+    return False
+
+
+def _causes(t: int | None, iid: int | None, queue_full: list[dict], subs: list[dict],
+            journal_causes: list[tuple[str, int]]) -> list[str]:
+    """The known causes that can account for a difference at `t` on instrument `iid`: a drop of frames that began
+    at or before `t` and covers the instrument, a journaled margin answer or a pause at or before `t` (those belong
+    to the whole session). A cause that comes later, or on another instrument, accounts for nothing. With no time
+    and no instrument (a NAV that differs while every fill matches) any cause of the day counts."""
+    found = set()
+    for span in queue_full:
+        if span["start_ns"] is None:
+            continue
+        if t is None or (span["start_ns"] <= t and _scope_covers(span["scope"], iid, subs, span["start_ns"])):
+            found.add("queue_full")
+    for name, tc in journal_causes:
+        if t is None or tc <= t:
+            found.add(name)
+    return sorted(found)
 
 
 def _recorder_run(session_id: str, day: date, sha: str) -> tuple[list[dict], int]:
@@ -322,23 +378,20 @@ def _recorder_run(session_id: str, day: date, sha: str) -> tuple[list[dict], int
     return _fills(outputs.get("fills", ())), int(equity[0]["nav_paise"])
 
 
-def _matched(live: list[dict], twin: list[dict]) -> int:
-    """How many live fills have an equal fill (time, instrument, side, quantity, price) on the other side, each used once."""
-    left: dict[tuple, int] = {}
-    for r in twin:
-        k = tuple(r[f] for f in _FILL_KEY)
-        left[k] = left.get(k, 0) + 1
-    n = 0
-    for r in live:
-        k = tuple(r[f] for f in _FILL_KEY)
-        if left.get(k):
-            left[k] -= 1
-            n += 1
-    return n
+MAX_DIFFERENCES = 100                            # listed in the summary; `differences_total` says how many there are
 
 
 def recorder_parity(session_id: str, day: date) -> ParityResult:
-    """Run the finalised day again on the recorder's data and report the drift (see the section note above)."""
+    """Run the finalised day again on the recorder's data and report the drift (see the section note above). An
+    I/O or database error is a `skipped` result naming it, never an exception; anything else unexpected still raises."""
+    try:
+        return _recorder_parity(session_id, day)
+    except (OSError, sqlite3.DatabaseError) as e:
+        return ParityResult(session_id, day, RECORDER_KIND, "skipped",
+                            {"reason": f"the recorder report could not read what it needs: {type(e).__name__}: {e}"})
+
+
+def _recorder_parity(session_id: str, day: date) -> ParityResult:
     from stockify.data import packs, ticks
 
     def skipped(why: str) -> ParityResult:
@@ -359,6 +412,8 @@ def recorder_parity(session_id: str, day: date) -> ParityResult:
     jpath = paths.journal_file(session_id, day)
     if not paths.day_bundle_file(session_id, day).exists():
         return skipped(f"{session_id} has no bundle for {d}")
+    before = {p.name for p in paths.packs_dir().iterdir()}
+    sha = None
     try:
         ids = sorted(finalise._bundle_ids(session_id, day))
         tick_day = _open_ticks(day)
@@ -366,14 +421,22 @@ def recorder_parity(session_id: str, day: date) -> ParityResult:
             return skipped(f"{d} was not recorded: no landing file and no archive")
         try:
             queue_full = _queue_full(tick_day.gaps())
+            subs = tick_day.subscriptions()
         finally:
             tick_day.close()
         sha = packs.build({"dataset": "ticks", "from": d, "to": d, "instruments": [{"ids": ids}],
                            "clock_cadence_ms": CLOCK_MS}, immutable=True)
         twin_fills, twin_nav = _recorder_run(session_id, day, sha)
-        journal_only = _journal_only(jpath) if jpath.exists() else dict(_NO_JOURNAL_ONLY)
+        journal_causes = _journal_causes(jpath) if jpath.exists() else []
     except (packs.PackError, finalise.FinaliseError, journal.JournalError, SessionDayError, *_run_error()) as e:
         return skipped(f"the recorder's run could not be made: {type(e).__name__}: {e}")
+    finally:
+        if sha is not None and packs.pack_path(sha).name not in before:     # the report's own pack is not kept (M-5)
+            for leftover in (packs.pack_path(sha), packs.manifest_path(sha)):
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    pass
     busy = ticks.landing_busy(day)                  # an immutable read takes no lock: a writer may have started under it
     if busy:
         return skipped(busy)
@@ -381,18 +444,26 @@ def recorder_parity(session_id: str, day: date) -> ParityResult:
     live_fills = _fills(store.session_day_rows(session_id, d)["fills"].values())
     first = _first_fill_divergence(live_fills, twin_fills)
     pnl_diff = twin_nav - store.session_day_end(session_id, d)["equity"]["nav_paise"]
-    explained_by = [name for name, n in (("queue_full", len(queue_full["spans"])),
-                                         ("margin_requirement", journal_only["margin_requirement"]),
-                                         ("strategy_control", journal_only["strategy_control"])) if n]
+    live_only, twin_only = _unmatched(live_fills, twin_fills)
+    differences = [{"side": side, "t_ns": r["t_ns"], "instrument_id": r["instrument_id"], "fill": r,
+                    "causes": _causes(r["t_ns"], r["instrument_id"], queue_full["spans"], subs, journal_causes)}
+                   for side, rows in (("live", live_only), ("recorder", twin_only)) for r in rows]
+    differences.sort(key=lambda x: (x["t_ns"], x["side"]))
+    if not differences and pnl_diff != 0:           # the NAV differs and every fill matches: nothing to place it by
+        differences.append({"side": "nav", "t_ns": None, "instrument_id": None, "fill": None,
+                            "pnl_diff_paise": pnl_diff,
+                            "causes": _causes(None, None, queue_full["spans"], subs, journal_causes)})
     summary = {"day": d, "fills_live": len(live_fills), "fills_recorder": len(twin_fills),
-               "fills_matched": _matched(live_fills, twin_fills),
+               "fills_matched": len(live_fills) - len(live_only),
                "pnl_diff_paise": pnl_diff,                         # the recorder run's NAV less the live NAV
                "first_divergence_ns": None if first is None else min(
                    r["t_ns"] for r in (first["live"], first["recorder"]) if r is not None),
                "first_divergence": first,
-               "known_differences": {"queue_full": queue_full, "journal_only": journal_only},
-               "explained_by": explained_by,
-               "unexplained": bool((first is not None or pnl_diff != 0) and not explained_by),
+               "known_differences": {"queue_full": queue_full, "journal_only": _journal_only(journal_causes)},
+               "differences": differences[:MAX_DIFFERENCES], "differences_total": len(differences),
+               # a cause explains a difference only if it began at or before it and covers its instrument
+               "explained_by": sorted({c for x in differences for c in x["causes"]}),
+               "unexplained": any(not x["causes"] for x in differences),
                "pack": sha}
     return _record_report(ParityResult(session_id, day, RECORDER_KIND, "pass", summary))
 
