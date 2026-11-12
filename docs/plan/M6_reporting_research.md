@@ -30,6 +30,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 - [x] Every run and session has a `family_id` (default: strategy name + dataset + objective; the owner can name families). Runs are never deleted from the registry, even when their folders are pruned.
 - [ ] For the best run of a family report, from daily returns (per-period, not annualised):
+  - (Statistics core done: `stockify/research/stats.py`, D-86; the report that uses it follows.)
   - `SR` = Sharpe of the selected run; `T` = number of daily returns; `γ₃` = skewness; `γ₄` = kurtosis (not excess); `N` = number of trials in the family; `V` = variance of the per-period Sharpe across the family's trials.
   - Expected maximum Sharpe under the null: `SR₀ = √V · [(1 − γ)·Φ⁻¹(1 − 1/N) + γ·Φ⁻¹(1 − 1/(N·e))]`, with `γ ≈ 0.5772` (Euler–Mascheroni); for `N = 1`, `SR₀ = 0`.
   - **Deflated Sharpe Ratio**: `DSR = Φ( (SR − SR₀)·√(T − 1) / √(1 − γ₃·SR + ((γ₄ − 1)/4)·SR²) )` — the probability the true Sharpe exceeds what luck alone would give the best of N trials (Bailey and López de Prado, 2014).

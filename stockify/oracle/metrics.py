@@ -9,12 +9,43 @@ from __future__ import annotations
 import math
 
 
-def _rate_on(rows: list[dict], d: str) -> float:
+def rate_on(rows: list[dict], d: str) -> float:
     best = None
     for r in rows:
         if r["effective_from"] <= d and (best is None or r["effective_from"] > best["effective_from"]):
             best = r
     return (best["rate_ppb"] / 1_000_000_000) if best else 0.0
+
+
+_rate_on = rate_on
+
+
+def max_drawdown(navs: list[float]) -> tuple[float, int]:
+    """(max drawdown, longest drawdown duration in days); the peak starts at navs[0]."""
+    peak = navs[0]
+    max_dd = 0.0
+    dur = longest = 0
+    for d in range(1, len(navs)):
+        if navs[d] >= peak:
+            peak = navs[d]
+            dur = 0
+        else:
+            dur += 1
+            longest = max(longest, dur)
+            dd = 1 - navs[d] / peak
+            max_dd = max(max_dd, dd)
+    return max_dd, longest
+
+
+def drawdown_series(navs: list[float]) -> list[float]:
+    """1 - NAV_d / peak for each day d = 1..T (the peak starts at navs[0] and is only raised by a new high)."""
+    peak = navs[0]
+    out = []
+    for d in range(1, len(navs)):
+        if navs[d] >= peak:
+            peak = navs[d]
+        out.append(1 - navs[d] / peak)
+    return out
 
 
 def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, charges: list[dict],
@@ -29,7 +60,7 @@ def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, cha
     for d in range(1, T + 1):
         rd = navs[d] / navs[d - 1] - 1
         r.append(rd)
-        x.append(rd - _rate_on(risk_free, dates[d - 1]) / 252)
+        x.append(rd - rate_on(risk_free, dates[d - 1]) / 252)
 
     sharpe = sortino = vol = None
     if T >= 2:
@@ -62,18 +93,7 @@ def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, cha
         vol = 0.0 if min(r) == max(r) else math.sqrt(ssr / (T - 1)) * math.sqrt(252)
     cagr = (navs[T] / navs[0]) ** (252 / T) - 1 if T >= 1 and navs[0] > 0 and navs[T] > 0 else None
 
-    peak = navs[0]
-    max_dd = 0.0
-    dur = longest = 0
-    for d in range(1, T + 1):
-        if navs[d] >= peak:
-            peak = navs[d]
-            dur = 0
-        else:
-            dur += 1
-            longest = max(longest, dur)
-            dd = 1 - navs[d] / peak
-            max_dd = max(max_dd, dd)
+    max_dd, longest = max_drawdown(navs)
     calmar = cagr / max_dd if cagr is not None and max_dd != 0 else None
 
     # trades: FIFO matching of closing fills (and expiry settlements, D-45) against opening fills
