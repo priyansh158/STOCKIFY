@@ -387,12 +387,36 @@ def _cmd_pack_show(args) -> int:
     return 0
 
 
+def _with_unlock(config, reason: str | None):  # noqa: ANN001, ANN202
+    """`--unlock-holdout "<reason>"`: the config (a path or a dict) with `unlock_holdout` set to the reason. Without
+    the flag the config goes on as it is (a reason written in the file still counts)."""
+    import json
+    from pathlib import Path
+
+    if reason is None:
+        return config
+    if not isinstance(config, dict):
+        try:
+            config = json.loads(Path(config).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            from stockify import runconfig
+            raise runconfig.RunConfigError(f"run.json could not be read: {e}") from e
+    if not isinstance(config, dict):
+        from stockify import runconfig
+        raise runconfig.RunConfigError("run.json must be a JSON object")
+    return {**config, "unlock_holdout": reason}
+
+
+_UNLOCK_HELP = ("a real written reason (3+ characters) to run over the locked holdout (research.json holdout_from); "
+                "every unlock is logged and counted on the family's report")
+
+
 def _cmd_oracle_run(args) -> int:
     from stockify import bundle, runconfig
     from stockify.oracle import run
 
     try:
-        res = run(args.config, run_id=args.run_id)
+        res = run(_with_unlock(args.config, args.unlock_holdout), run_id=args.run_id)
     except (runconfig.RunConfigError, bundle.BundleError) as e:
         print(e, file=sys.stderr)
         return 1
@@ -423,7 +447,10 @@ def _cmd_run(args) -> int:
             print(e, file=sys.stderr)
             return 2
         try:
-            new_id, same = runs.rerun(args.rerun)
+            new_id, same = runs.rerun(args.rerun, unlock_holdout=args.unlock_holdout)
+        except runconfig.RunConfigError as e:
+            print(e, file=sys.stderr)
+            return 2
         except runs.RunFailed as e:
             print(e, file=sys.stderr)
             return 1
@@ -445,8 +472,13 @@ def _cmd_run(args) -> int:
     if args.config is None and args.run_id is None:
         print("stockify run: give --config or --rerun", file=sys.stderr)
         return 2
+    if args.unlock_holdout is not None and args.run_id is not None:
+        print("stockify run: --unlock-holdout goes with --config (a queued run keeps the reason it was queued with)",
+              file=sys.stderr)
+        return 2
     try:
-        run_id = runs.launch(args.config, run_id=args.run_id, impl=args.impl, report=not args.no_report)
+        config = _with_unlock(args.config, args.unlock_holdout)
+        run_id = runs.launch(config, run_id=args.run_id, impl=args.impl, report=not args.no_report)
     except (runconfig.RunConfigError, runs.RunNotQueued) as e:
         print(e, file=sys.stderr)
         return 2
@@ -970,6 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
     orun = osub.add_parser("run", help="run a run.json; prints the run folder")
     orun.add_argument("--config", required=True, help="path to run.json")
     orun.add_argument("--run-id", help="run folder name (default: <name>-<bundle hash>)")
+    orun.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
     orun.set_defaults(func=_cmd_oracle_run)
     rn = sub.add_parser("run", help="run a backtest on the engine and record it in lab.sqlite (M3.11)")
     rmode = rn.add_mutually_exclusive_group()
@@ -980,6 +1013,7 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--run-id", help="run this queued run (its stored config); --config is then optional")
     rn.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     rn.add_argument("--no-report", action="store_true", help="skip report.md and the charts")
+    rn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
     rn.set_defaults(func=_cmd_run)
     g = sub.add_parser("golden", help="golden scenarios (A3)")
     gsub = g.add_subparsers(dest="golden_command", required=True)

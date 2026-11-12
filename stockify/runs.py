@@ -86,6 +86,13 @@ def _with_family(cfg: dict) -> dict:
     return cfg
 
 
+def _log_unlock(reason: str | None, run_id: str, cfg: dict, job_id: str | None) -> None:
+    """Log a holdout unlock (`holdout.enforce` returned a reason): one row per (job, reason), and one per
+    standalone run (M6.6)."""
+    if reason:
+        store.log_holdout_unlock(run_id, cfg["family_id"], reason, job_id=job_id)
+
+
 def _check_role(role, job_id) -> None:  # noqa: ANN001
     from stockify.research import registry
     registry.check_role(role)
@@ -97,8 +104,11 @@ def queue(config, *, role: str = "trial", job_id: str | None = None) -> str:  # 
     """Validate the config (RunConfigError propagates), write `runs/<id>/request.json` and a `queued` row.
     A config without a `family_id` gets the default family (written into the stored config too); `role` is one
     of registry.ROLES (else ValueError). Starts nothing; returns the run id."""
+    from stockify.research import holdout
     _check_role(role, job_id)
-    cfg = _with_family(runconfig.load(config))
+    loaded = runconfig.load(config)
+    reason = holdout.enforce(loaded)          # before the family row, the folder and the run row (M6.6)
+    cfg = _with_family(loaded)
     run_id = queued_run_id(cfg["name"])
     folder = paths.run_path(run_id)
     folder.mkdir(parents=True)
@@ -106,6 +116,7 @@ def queue(config, *, role: str = "trial", job_id: str | None = None) -> str:  # 
     (folder / "request.json").write_text(text + "\n", encoding="utf-8", newline="\n")
     store.create_run({"run_id": run_id, "status": "queued", "name": cfg["name"], "family_id": cfg["family_id"],
                       "role": role, "job_id": job_id, "config_json": text, "folder": str(folder), "impl": "engine"})
+    _log_unlock(reason, run_id, cfg, job_id)
     return run_id
 
 
@@ -136,6 +147,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
     `job_id` and the default family when the config has none; a queued row keeps what `queue` stored.
     """
     from stockify import bundle as bundle_mod
+    from stockify.research import holdout
     if impl not in IMPLS:
         raise ValueError(f"impl must be one of {IMPLS}, not {impl!r}")
     _check_role(role, job_id)
@@ -148,22 +160,27 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         if row is None or row["status"] != "queued":
             raise RunNotQueued(f"run {run_id} is {'unknown' if row is None else row['status']}, not queued")
         cfg = runconfig.load(json.loads(row["config_json"]))
+        holdout.enforce(cfg)       # again: the holdout may have been set since the run was queued; logged by queue
         if not store.update_run(run_id, only_if_status="queued", status="running", started_ns=timeutil.now_ns(),
                                 impl=impl):
             raise RunNotQueued(f"run {run_id} stopped being queued before it started")
         _claim(run_id)
     else:
-        cfg = _with_family(runconfig.load(config))
+        loaded = runconfig.load(config)
+        reason = holdout.enforce(loaded)      # before any row or folder (M6.6)
+        cfg = _with_family(loaded)
     text = _config_json(cfg)
 
     try:
         b = bundle_mod.resolve_bundle(cfg)
+        holdout.enforce_bundle(cfg, b)        # the days the bundle really holds, not only the spec's dates
     except Exception as e:
         if run_id is None:
             run_id = queued_run_id(cfg["name"])
             store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                               "family_id": cfg["family_id"], "role": role, "job_id": job_id,
                               "config_json": text, "impl": impl, "started_ns": timeutil.now_ns()})
+            _log_unlock(reason, run_id, cfg, job_id)
         raise _fail(run_id, e) from e
 
     if run_id is None:
@@ -171,6 +188,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                           "family_id": cfg["family_id"], "role": role, "job_id": job_id,
                           "config_json": text, "impl": impl, "started_ns": timeutil.now_ns()})
+        _log_unlock(reason, run_id, cfg, job_id)
         _claim(run_id)
     folder = paths.run_path(run_id)
     try:
@@ -271,10 +289,13 @@ def import_run(folder) -> str:  # noqa: ANN001
 
 # ── re-run (DT-03, I-8) ──────────────────────────────────────────────────────
 
-def rerun(run_id: str) -> tuple[str, bool]:
+def rerun(run_id: str, *, unlock_holdout: str | None = None) -> tuple[str, bool]:
     """Run a finished run again from its folder: the archived bundle.json exactly (never re-resolved), the
-    packs it names, the same impl. Returns (new run id, determinism.json reproduced byte for byte)."""
+    packs it names, the same impl. Returns (new run id, determinism.json reproduced byte for byte).
+    A re-run over the locked holdout needs its own reason (`unlock_holdout`): the stored one is not reused (M6.6)."""
     import hashlib
+
+    from stockify.research import holdout
     try:
         src = paths.run_path(run_id)
     except ValueError as e:
@@ -286,10 +307,15 @@ def rerun(run_id: str) -> tuple[str, bool]:
     except FileNotFoundError as e:
         raise RunFailed(run_id, f"not a finished run folder: {e.filename} is missing") from e
     from stockify.oracle import sod_state
+    if not isinstance(cfg, dict):
+        raise RunFailed(run_id, "run.json is not an object")
+    cfg = {**cfg, "unlock_holdout": unlock_holdout}      # this re-run's own reason, never the stored one
+    reason = holdout.enforce(cfg)
     try:
         bundle = sod_state.loads_bundle(bundle_text)      # its sod_state is checked like a state text (depth, ints)
     except sod_state.StateError as e:
         raise RunFailed(run_id, str(e)) from e
+    holdout.enforce_bundle(cfg, bundle)                   # the archived bundle's own days
     pack_paths = [paths.lab_dir() / p["path"] for p in bundle["packs"]]
     missing = [str(p) for p in pack_paths if not p.exists()]
     if missing:
@@ -302,6 +328,7 @@ def rerun(run_id: str) -> tuple[str, bool]:
     store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"), "role": "rerun",
                       "family_id": cfg["family_id"], "config_json": _config_json(cfg), "impl": impl,
                       "folder": str(folder), "started_ns": timeutil.now_ns()})
+    _log_unlock(reason, new_id, cfg, None)
     _claim(new_id)
     try:
         if impl == "engine":

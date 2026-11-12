@@ -338,6 +338,9 @@ def _check_research(doc: dict) -> None:
             raise ConfigError(f"research.json: {key} is missing")
     if doc["holdout_from"] is not None:
         _iso_date(doc["holdout_from"], "research.json: holdout_from")
+        # Python 3.11+ also reads "20260801" and "2026-W31-6" as dates; the holdout is written YYYY-MM-DD only.
+        if date.fromisoformat(doc["holdout_from"]).isoformat() != doc["holdout_from"]:
+            raise ConfigError(f"research.json: holdout_from: not a YYYY-MM-DD date: {doc['holdout_from']!r}")
 
     wf = _research_section(doc, "walk_forward", ("train_days", "test_days", "step_days", "objective"))
     for key in ("train_days", "test_days", "step_days"):

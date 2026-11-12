@@ -45,7 +45,7 @@ class ResearchConfigTests(unittest.TestCase):
 
     def test_holdout_from_must_be_an_iso_date_or_null(self):
         self.assertEqual(load(changed("holdout_from", value="2026-08-01"))["holdout_from"], "2026-08-01")
-        for bad in ("2026-13-40", 20260801, ""):
+        for bad in ("2026-13-40", 20260801, "", "20260801", "2026-W31-6", " 2026-08-01", "2026-8-1"):
             with self.subTest(bad=bad):
                 self.refused(changed("holdout_from", value=bad), "holdout_from")
 

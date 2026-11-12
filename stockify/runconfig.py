@@ -287,6 +287,9 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     _int(pol["max_slices"], "policies.max_slices", 1)
     _choice(pol["rms_square_off"], (True, False), "policies.rms_square_off")
     _choice(cfg["mark"], ("ltp", "mid"), "mark")
+    unlock = cfg["unlock_holdout"]
+    _need(unlock is None or isinstance(unlock, str), "unlock_holdout",
+          f"must be null or a written reason (a string), got {unlock!r}")
     _int(cfg["seed"], "seed", 0)
     _need(cfg["seed"] < 2 ** 64, "seed", "must fit in 64 bits")
     # The default is left out of the normalised form, so a run config (and its bundle) without seed_mode, or

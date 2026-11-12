@@ -199,7 +199,10 @@ def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     problems = _catalogue.validate_params(schema, s.get("params", {}))
     if problems:
         raise HTTPException(status_code=422, detail=[f"strategy.params.{p}" for p in problems])
-    run_id = runs.queue(config)
+    try:
+        run_id = runs.queue(config)
+    except runconfig.RunConfigError as e:                           # the locked holdout (M6.6): 422, no traceback
+        raise HTTPException(status_code=422, detail=e.problems)
     get_queue().submit(run_id)
     return TestCreatedDTO(run_id=run_id)
 

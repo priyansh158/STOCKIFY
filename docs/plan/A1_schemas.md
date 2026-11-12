@@ -331,6 +331,8 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 }
 ```
 
+`unlock_holdout` (M6.6, D-88): `null`, or a written reason of at least 3 non-space characters that lets this run use data on or after `research.json` `holdout_from`. It is checked only when the run's last day reaches the holdout (or has no end date); `--unlock-holdout "<reason>"` sets it on `run` and `oracle run`. Leave it `null` in saved and example configs: a reason left in a file unlocks every run made from it.
+
 `seed_mode` (VOL 5.1): `run` (the default) seeds both PCG32 streams once from `seed`; `per_day` re-creates them each trading day from that day's seed (A4 §4.5), as paper sessions do. The validated form leaves `run` out, so configs and bundles without it are unchanged byte for byte.
 
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).

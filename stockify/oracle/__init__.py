@@ -90,11 +90,18 @@ def run(config, *, run_id: str | None = None) -> RunResult:  # noqa: ANN001
     """Validate the config, resolve the bundle (building packs if needed), run, write `runs/<run_id>/`."""
     from stockify import bundle as bundle_mod
     from stockify import runconfig
+    from stockify.research import holdout
     cfg = runconfig.load(config)
+    reason = holdout.enforce(cfg)                       # the locked holdout (M6.6): before any pack is built
     b = bundle_mod.resolve_bundle(cfg)
+    holdout.enforce_bundle(cfg, b)
     if run_id is None:
         digest = hashlib.sha256(bundle_mod.dumps(b).encode()).hexdigest()[:12]
         run_id = f"{cfg['name']}-{digest}"
     folder = paths.run_path(run_id)
+    if reason:                                          # no runs row exists yet: the log still records the unlock
+        from stockify import store
+        from stockify.research import registry
+        store.log_holdout_unlock(run_id, cfg.get("family_id") or registry.default_family_id(cfg), reason)
     pack_paths = [paths.lab_dir() / p["path"] for p in b["packs"]]
     return run_bundle(b, pack_paths, folder)
