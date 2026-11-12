@@ -250,12 +250,15 @@ class ReplayTicker:
     def run(self) -> None:
         self.connected = True
         self._fire(self.on_connect, {})
-        faults = list(self.faults)
+        mark = self.resume_after[1] if self.resume_after is not None else None
+        # A restart is given the same --inject list: a fault the earlier process already went through (its time is at
+        # or before the resume point) is not injected again. The kill is always after the mark, so it stays armed.
+        floor = max([x for x in (mark, self.resume_not_before_ns) if x is not None], default=None)
+        faults = [f for f in self.faults if floor is None or f.at_ns > floor]
         exhausted = False
         down_until = None
         prev = None
         try:
-            mark = self.resume_after[1] if self.resume_after is not None else None
             for t_ns, mono, kind, payload in self._events():
                 if self._stop.is_set():
                     break

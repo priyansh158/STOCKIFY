@@ -209,6 +209,16 @@ class ResumeTests(ReplayTest):
         self.assertEqual(ticker.resume_at_ns, t("09:18:00"))
         target.close()
 
+    def test_a_restart_given_the_same_faults_skips_the_ones_already_passed(self):      # XI 5.12, found by E-03
+        faults = [parse_fault("disconnect@09:16:00+30s", DAY), parse_fault("token_expiry@09:16:50+30s", DAY),
+                  parse_fault("kill@09:17:30", DAY)]
+        target, ticker, events = self.replay_into_recorder(faults=faults, resume_not_before_ns=t("09:17:20"),
+                                                           resume_after=(0, t("09:16:10")))
+        self.assertNotIn(("close", 1006), events)
+        self.assertNotIn(("error", 403), events)
+        self.assertTrue(ticker.killed)                      # the kill is after the resume point, so it stays armed
+        target.close()
+
     def test_a_disconnect_with_a_duration_still_reconnects_in_process(self):
         target, ticker, _ = self.replay_into_recorder(faults=[parse_fault("disconnect@09:16:00+30s", DAY)])
         self.assertIsNone(ticker.resume_at_ns)
