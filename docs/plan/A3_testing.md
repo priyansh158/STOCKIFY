@@ -121,7 +121,7 @@ G17 vectors (r = 6.5%, ACT/365; values from the plan author's reference implemen
 | U-07 | Margin | hand-computed T0 and T1 cases; an iron fly needs less T1 margin than a naked straddle |
 | U-08 | Black-76/IV | call and put bounds, deep ITM/OTM, T → 0, `LOW_VEGA`/`BELOW_TICK` flags |
 | U-09 | Strategy lint | allowed vs forbidden imports (A2 §4.4) |
-| U-10 | Secrets | with a fake token in `isolated_env`, no artifact, bundle, journal, log or export contains it (I-10) |
+| U-10 | Secrets | with a fake token in `isolated_env`, no artifact, bundle, journal, log or export contains it (I-10). Built for the daemon: the status file refuses secret-shaped names and values (`test_token_watch.py`), the order-route scan and secrets scan (`LCB 5.1`), and E-03's token file holds only a fake value |
 | U-11 | Float format | C++ formatter equals Python `repr` on 10⁶ random doubles plus edge cases (0.0, -0.0, 1e-4, 1e16, subnormals) |
 | U-12 | Interval VWAP | A4 §2.1 validity: volume 9,999,000 → 10,000,000 with ATP 10000 → 10001 paise gives an implausible value that must be discarded, not used |
 | U-13 | Recorder | batching (250 ms / 2,000 rows), `seq` continuing after restart, one gap row per reason, re-centring with hysteresis, pinning, the 3,000 cap, `subscription_log`, the queue-full alarm |
@@ -130,9 +130,9 @@ G17 vectors (r = 6.5%, ACT/365; values from the plan author's reference implemen
 
 | ID | Scenario |
 |---|---|
-| E-01 | A paper session over a fixture day via the replay ticker passes journal parity |
-| E-02 | `taskkill /F` of the daemon mid-day, restart: final artifacts equal an uninterrupted run (M5.4) |
-| E-03 | Injected disconnect and token expiry: sessions pause and resume; gaps and coverage are correct |
+| E-01 | A paper session over a fixture day via the replay ticker passes journal parity. Built: `tests/stockify/daemon/test_session_day.py`, `test_recovery.py`, `tests/stockify/test_parity*.py` and E-03 |
+| E-02 | `taskkill /F` of the daemon mid-day, restart: final artifacts equal an uninterrupted run (M5.4). Built: `tests/stockify/daemon/test_e02_kill.py` |
+| E-03 | Injected disconnect and token expiry: sessions pause and resume; gaps and coverage are correct. Built: `tests/stockify/daemon/test_e03_faults.py`: three subprocesses in a sandbox (disconnect, token expiry with a newer fake token file, kill), gap reasons, coverage `(continuous - 150 s) / continuous`, journal parity, and orders, fills and journal bytes equal to a twin with no kill (XI 5.12) |
 | E-04 | Recorder → compaction → pack → run on a fixture day |
 | E-05 | API: `POST /api/tests` → poll → fetch artifacts; `npm run build` passes |
 

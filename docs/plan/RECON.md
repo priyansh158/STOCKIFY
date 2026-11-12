@@ -1126,3 +1126,46 @@ warning (`paper.json` → `sod_state_warn_mb`) comes after about 6 months. Nothi
     `test_a_calendar_holiday_with_no_file_is_passed_to_the_session_before_it`, with a docstring, and the class
     docstring says which test passes a holiday and which step over empty trading days.
   - F7: the archive starts 2009-01-01 (`nsccl.20090101.s.zip`); the ENG 4.3 entry above said 2009-01-02.
+
+## 2026-11-12 - M5 demo, E-03 and the live gate (XI 5.12)
+
+(The brief's number XI 5.2 is taken; XI 5.0 to 5.11 are used.)
+
+**What ran.** E-03 (`tests/stockify/daemon/test_e03_faults.py`) and the demo, both as real daemon subprocesses with
+`--replay-sandbox` pointing at a throwaway copy of the test sandbox, on the fixture day (2026-11-17; no recorded day was
+copied: the one recorded day is a 20-minute session and the real lab is never touched). Kite is never contacted; the
+"fresh token" is a fake `kite_token.json` inside the sandbox, written after exit 76. The faults are
+`disconnect@09:20:00+90s`, `token_expiry@09:25:00+60s`, `kill@09:30:00`, with a twin that has the first two only.
+
+**Bug found by the test, fixed in `stockify/daemon/replay_ticker.py`.** A restart given the same `--inject` list fired
+every fault whose time had already passed on the first delivered frame, so the restarted daemon disconnected and
+expired its token again at once (exit 76 a second time). `ReplayTicker.run` now drops a fault at or before the resume
+point (the process mark, or a token expiry's `T + N`); the kill is always after the mark, so it stays armed. Test:
+`test_a_restart_given_the_same_faults_skips_the_ones_already_passed`.
+
+**Demo transcript (10x, fixture day; the same faults on every run).**
+
+| Run | Exit |
+|---|---|
+| 1: disconnect, token expiry, kill | 76 (token expired, sessions paused, gap journaled) |
+| 2: after a fresh fake token file | 137 (kill) |
+| 3: after the kill, no kill | 0 |
+
+Then `finalise`. `parity journal`: exit 0, `identical: s1 2026-11-17 (15761 journal records)` (orders 2, order events 7,
+fills 1, charges 2, equity 1, eod state 1). Coverage: continuous 23,100 s, covered 22,950 s (153/154), not below the
+threshold, gaps `disconnect` 90 s and `token_expired` 60 s only (the kill leaves no gap).
+`parity recorder`: exit 0, "reported": fills 1 live, 1 recorder, 0 matched; NAV differs by 9,689 paise (recorder less
+live); first divergence fill #0, 12,421 live against 12,272 recorder paise; explained by `strategy_control` (the pause
+the token expiry journaled). E-03 asserts gap reasons `["disconnect", "token_expired"]`, coverage
+`(continuous - 150 s) / continuous`, parity pass and orders, fills, charges and journal bytes equal to the twin.
+
+**Open: the live Definition of Done (owner, real trading days; Task 30 step 5). M5 is built, not done.** First possible
+live day: Wed 2026-11-11 IST. Record each day here:
+- (a) five live trading days, every journal parity passing; (b) coverage reported each day; (c) one real token expiry
+  handled (Task 19 step 6); (d) live margins logged (Task 21 step 6); (e) the backup and host steps done (Task 26 step 6);
+  (f) the API and the daemon on two ticker connections, a third refused. Also M5.0 box 2 (a full recorded day).
+
+| Live day | Journal parity | Coverage | Notes |
+|---|---|---|---|
+| (none recorded yet) | | | |
+

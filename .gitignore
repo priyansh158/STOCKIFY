@@ -33,3 +33,6 @@ simlab-plan-docs.zip
 # Claude Code memory files are never committed (owner rule)
 CLAUDE.md
 CLAUDE.local.md
+
+# Hallmark local cache from the UI redesign
+web/.hallmark/
