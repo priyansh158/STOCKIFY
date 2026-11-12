@@ -754,6 +754,31 @@ def _cmd_notify_test(args) -> int:
     return 0
 
 
+def _cmd_backup_run(args) -> int:
+    """Back the lab's irreplaceable stores up to `--target`, or `storage.json` -> `backup.target` (GK 5.7). Exit 0:
+    done; 1: some copy failed or did not verify; 2: no usable target (the reason is printed)."""
+    from pathlib import Path
+
+    from stockify import backup, timeutil
+    from stockify.config import loader
+    target = args.target or loader.load_json("storage.json")["backup"]["target"]
+    if not target:
+        print("backup: no target: pass --target DIR, or set backup.target in stockify/config/storage.json "
+              "(a folder outside the lab and the repo, ideally on another drive)", file=sys.stderr)
+        return 2
+    try:
+        res = backup.run(Path(target), day=timeutil.ist_today())
+    except backup.BackupRefused as e:
+        print(e, file=sys.stderr)
+        return 2
+    print(f"backup: {res.copied} copied, {res.skipped} skipped, {res.bytes} bytes -> {target}")
+    for note in res.notes:
+        print(f"backup: note: {note}")
+    for error in res.errors:
+        print(f"backup: ERROR: {error}", file=sys.stderr)
+    return 1 if res.errors else 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -808,6 +833,13 @@ def main(argv: list[str] | None = None) -> int:
     ntsub = nt.add_subparsers(dest="notify_command", required=True)
     ntsub.add_parser("test", help="send one test message through the channel in notify.json").set_defaults(
         func=_cmd_notify_test)
+
+    bk = sub.add_parser("backup", help="verified backup of the stores that cannot be rebuilt (M5.13)")
+    bksub = bk.add_subparsers(dest="backup_command", required=True)
+    bkr = bksub.add_parser("run", help="copy refdata, lab, journals, the tick archive, NSE raw files and the ELM "
+                                       "archive to the target; reads the lab, changes nothing in it")
+    bkr.add_argument("--target", help="backup folder (default: storage.json backup.target)")
+    bkr.set_defaults(func=_cmd_backup_run)
 
     r = sub.add_parser("refdata", help="reference data (instruments with history)")
     rsub = r.add_subparsers(dest="refdata_command", required=True)

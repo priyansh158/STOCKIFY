@@ -207,6 +207,35 @@ def _check_notify(doc: dict) -> None:
             raise ConfigError(f"notify.json: events.{name} must be true or false, got {on!r}")
 
 
+STORAGE_KEYS = ("retention_days", "disk_warn_free_gb", "disk_warn_free_fraction", "parquet_zstd_level", "backup")
+BACKUP_KEYS = ("target", "include_span")
+
+
+def _check_storage(doc: dict) -> None:
+    """storage.json (stockify.storage/1): an unknown key at any level is refused, naming it (D-76's style: a
+    misspelt `include_span` must not silently keep its default). `backup` is `{target, include_span}`: `target` is null
+    (no backup yet) or a non-empty folder, `include_span` is true or false (GK 5.7)."""
+    extra = set(doc) - set(STORAGE_KEYS) - {"schema"}
+    if extra:
+        raise ConfigError(f"storage.json: unknown keys {sorted(extra)}; known: {list(STORAGE_KEYS)}")
+    if "backup" not in doc:
+        return
+    cfg = doc["backup"]
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"storage.json: backup must be an object with {list(BACKUP_KEYS)}, got {cfg!r}")
+    extra = set(cfg) - set(BACKUP_KEYS)
+    if extra:
+        raise ConfigError(f"storage.json: backup has unknown keys {sorted(extra)}; known: {list(BACKUP_KEYS)}")
+    for key in BACKUP_KEYS:
+        if key not in cfg:
+            raise ConfigError(f"storage.json: backup.{key} is missing")
+    target = cfg["target"]
+    if target is not None and (not isinstance(target, str) or not target.strip()):
+        raise ConfigError(f"storage.json: backup.target must be null or a folder path, got {target!r}")
+    if not isinstance(cfg["include_span"], bool):
+        raise ConfigError(f"storage.json: backup.include_span must be true or false, got {cfg['include_span']!r}")
+
+
 def _check_paper(doc: dict) -> None:
     """paper.json (stockify.paper/1): every key present, whole numbers within PAPER_BOUNDS, and
     `coverage_threshold` a plain decimal string (digits and one optional dot: no sign, spaces or exponent) in (0, 1]."""
@@ -259,6 +288,8 @@ def load_json(name: str, config_dir: Path | None = None) -> dict:
         _check_paper(doc)
     if name == "notify.json":
         _check_notify(doc)
+    if name == "storage.json":
+        _check_storage(doc)
     return doc
 
 
