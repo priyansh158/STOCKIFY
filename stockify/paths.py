@@ -121,6 +121,32 @@ def run_dir(run_id: str) -> Path:
     return _dir(run_path(run_id))
 
 
+def research_dir() -> Path:
+    return _dir(lab_dir() / "research")
+
+
+def research_path(job_id: str) -> Path:
+    """The folder of a research job (sweep, walk-forward, sensitivity ...), without creating it: one safe segment of
+    at most 64 characters, a direct child of research_dir(), else ValueError (like run_path)."""
+    if not safe_segment(job_id, 64):
+        raise ValueError(f"not a valid research job id: {job_id!r}")
+    base = research_dir()
+    folder = base / job_id
+    if folder.resolve().parent != base.resolve():
+        raise ValueError(f"not a valid research job id: {job_id!r}")
+    return folder
+
+
+def exports_dir() -> Path:
+    return _dir(lab_dir() / "exports")
+
+
+def export_path(run_id: str, with_packs: bool) -> Path:
+    """The zip of a run export, without creating it: `<exports>/<run_id>.zip`, or `<run_id>-with-packs.zip`."""
+    run_path(run_id)                                    # the id is checked exactly as a run folder's is
+    return exports_dir() / (f"{run_id}-with-packs.zip" if with_packs else f"{run_id}.zip")
+
+
 def journals_dir(session_id: str | None = None) -> Path:
     base = lab_dir() / "journals"
     if session_id is None:

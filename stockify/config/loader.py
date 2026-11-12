@@ -24,6 +24,7 @@ import csv
 import json
 import re
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 from stockify import numerics
@@ -274,7 +275,122 @@ def _check_paper(doc: dict) -> None:
                 _bounded_int(sub[k], f"{where}.{k}", f"{key}.{k}")
 
 
-def load_json(name: str, config_dir: Path | None = None) -> dict:
+_SIGNED_DECIMAL = re.compile(r"-?[0-9]+(\.[0-9]+)?")
+RESEARCH_OBJECTIVES = ("sharpe", "net_pnl", "sortino", "calmar")
+
+
+def _research_decimal(value, where: str) -> Decimal:
+    """A decimal string (digits, one optional dot, optional leading minus) as an exact Decimal. A JSON number is
+    refused: a rate is never a float."""
+    if not isinstance(value, str) or _SIGNED_DECIMAL.fullmatch(value) is None:
+        raise ConfigError(f'research.json: {where} must be a decimal string such as "1.5", got {value!r}')
+    return Decimal(value)
+
+
+def _research_int(value, where: str, low: int, high: int = 10_000_000) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ConfigError(f"research.json: {where} must be a whole number from {low} to {high}, got {value!r}")
+    return value
+
+
+def _research_text(value, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"research.json: {where} must be a non-empty string, got {value!r}")
+    return value
+
+
+def _research_section(doc: dict, name: str, keys: tuple) -> dict:
+    sub = doc.get(name)
+    if not isinstance(sub, dict):
+        raise ConfigError(f"research.json: {name} must be an object with {list(keys)}")
+    extra = set(sub) - set(keys)
+    if extra:
+        raise ConfigError(f"research.json: {name} has unknown keys {sorted(extra)}; known: {list(keys)}")
+    for key in keys:
+        if key not in sub:
+            raise ConfigError(f"research.json: {name}.{key} is missing")
+    return sub
+
+
+def _research_edges(values, where: str, decimal: bool, low=None) -> None:
+    """A non-empty list, strictly increasing: decimal strings (exact compare) or whole numbers."""
+    if not isinstance(values, list) or not values:
+        raise ConfigError(f"research.json: {where} must be a non-empty list")
+    parsed = [_research_decimal(v, f"{where}[{i}]") if decimal else _research_int(v, f"{where}[{i}]", 0)
+              for i, v in enumerate(values)]
+    if low is not None and parsed[0] < low:
+        raise ConfigError(f"research.json: {where} must not go below {low}, got {values!r}")
+    if any(not a < b for a, b in zip(parsed, parsed[1:])):
+        raise ConfigError(f"research.json: {where} must be strictly increasing, got {values!r}")
+
+
+def _check_research(doc: dict) -> None:
+    """research.json (stockify.research/1): every key present, an unknown key at any level refused naming it, rates
+    and scales decimal strings, counts whole numbers within sanity bounds, edge lists strictly increasing.
+    `holdout_from` is null (no holdout) or an ISO date; `sweep.max_workers` is null (cpu_count - 1) or >= 1."""
+    top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage")
+    extra = set(doc) - set(top) - {"schema"}
+    if extra:
+        raise ConfigError(f"research.json: unknown keys {sorted(extra)}; known: {list(top)}")
+    for key in top:
+        if key not in doc:
+            raise ConfigError(f"research.json: {key} is missing")
+    if doc["holdout_from"] is not None:
+        _iso_date(doc["holdout_from"], "research.json: holdout_from")
+
+    wf = _research_section(doc, "walk_forward", ("train_days", "test_days", "step_days", "objective"))
+    for key in ("train_days", "test_days", "step_days"):
+        _research_int(wf[key], f"walk_forward.{key}", 1, 10_000)
+    if wf["objective"] not in RESEARCH_OBJECTIVES:
+        raise ConfigError(f"research.json: walk_forward.objective must be one of {list(RESEARCH_OBJECTIVES)}, "
+                          f"got {wf['objective']!r}")
+
+    bs = _research_section(doc, "bootstrap", ("mean_block", "resamples", "ci", "min_days"))
+    if _research_decimal(bs["mean_block"], "bootstrap.mean_block") < 1:
+        raise ConfigError(f"research.json: bootstrap.mean_block must be at least 1, got {bs['mean_block']!r}")
+    _research_int(bs["resamples"], "bootstrap.resamples", 100, 1_000_000)
+    if not 0 < _research_decimal(bs["ci"], "bootstrap.ci") < 1:
+        raise ConfigError(f"research.json: bootstrap.ci must be strictly between 0 and 1, got {bs['ci']!r}")
+    _research_int(bs["min_days"], "bootstrap.min_days", 1, 100_000)
+
+    sens = _research_section(doc, "sensitivity", ("cost_scale", "extra_ticks", "latency_ms",
+                                                  "fragile_cost_scale", "fragile_extra_ticks"))
+    _research_edges(sens["cost_scale"], "sensitivity.cost_scale", True, low=0)
+    _research_edges(sens["extra_ticks"], "sensitivity.extra_ticks", False)
+    _research_edges(sens["latency_ms"], "sensitivity.latency_ms", False)
+    if _research_decimal(sens["fragile_cost_scale"], "sensitivity.fragile_cost_scale") <= 0:
+        raise ConfigError("research.json: sensitivity.fragile_cost_scale must be above 0")
+    _research_int(sens["fragile_extra_ticks"], "sensitivity.fragile_extra_ticks", 1, 1000)
+
+    rg = _research_section(doc, "regimes", ("reference_index", "vix_symbol", "vix_edges", "gap_edges_pct",
+                                            "thin_days"))
+    _research_text(rg["reference_index"], "regimes.reference_index")
+    _research_text(rg["vix_symbol"], "regimes.vix_symbol")
+    _research_edges(rg["vix_edges"], "regimes.vix_edges", True, low=0)
+    _research_edges(rg["gap_edges_pct"], "regimes.gap_edges_pct", True)
+    _research_int(rg["thin_days"], "regimes.thin_days", 1, 100_000)
+
+    pbo = _research_section(doc, "pbo", ("slices", "min_trials"))
+    slices = _research_int(pbo["slices"], "pbo.slices", 4, 1000)
+    if slices % 2:
+        raise ConfigError(f"research.json: pbo.slices must be even, got {slices}")
+    _research_int(pbo["min_trials"], "pbo.min_trials", 2, 100_000)
+
+    sweep = _research_section(doc, "sweep", ("max_workers",))
+    if sweep["max_workers"] is not None:
+        _research_int(sweep["max_workers"], "sweep.max_workers", 1, 256)
+
+    cov = _research_section(doc, "coverage", ("ok_pct", "default_days", "max_days"))
+    if not 0 < _research_decimal(cov["ok_pct"], "coverage.ok_pct") <= 100:
+        raise ConfigError(f"research.json: coverage.ok_pct must be in (0, 100], got {cov['ok_pct']!r}")
+    default = _research_int(cov["default_days"], "coverage.default_days", 1, 100_000)
+    maximum = _research_int(cov["max_days"], "coverage.max_days", 1, 100_000)
+    if default > maximum:
+        raise ConfigError(f"research.json: coverage.default_days ({default}) must not exceed "
+                          f"coverage.max_days ({maximum})")
+
+
+def load_json(name: str,config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
     path = (config_dir or CONFIG_DIR) / name
@@ -293,6 +409,8 @@ def load_json(name: str, config_dir: Path | None = None) -> dict:
         _check_paper(doc)
     if name == "notify.json":
         _check_notify(doc)
+    if name == "research.json":
+        _check_research(doc)
     if name == "storage.json":
         _check_storage(doc)
     return doc
