@@ -291,6 +291,9 @@ All money fields are integer paise; times are UTC ns plus an ISO IST string for 
 | `GET /api/tests/{id}/{orders,fills,equity,charges,logs,margin}` | Run artifacts | M3.14 / M4.14 |
 | `POST /api/tests/{id}/cancel` | Kill a queued or running run | M3.14 |
 | `GET /api/tests/{id}/export` | Zip export (CSV + JSON) | M6.2 |
+| `GET /api/tests/{id}/research` | A run's deflated Sharpe (with N, V, rank), bootstrap intervals, plain sentences; 404 for an unknown run. May write the derived `research.json` cache | M6.4 / M6.8 |
+| `GET /api/research/families` | Trial families with N, best run and its DSR (`offset`/`limit`) | M6.4 |
+| `GET /api/research/families/{family_id}` | One family's tries, other runs, sessions, holdout unlocks (the id contains `/`; 404 unknown) | M6.4 |
 | `POST /api/trade/sessions` | Create a paper session → `{session_id}` | M5.12 |
 | `GET /api/trade/sessions` | Sessions with status, today's P&L, coverage, parity | M5.12 |
 | `GET /api/trade/sessions/{id}` (+ `/positions`, `/orders`, `/fills`, `/timeline`, `/margin`) | Session detail | M5.12 |

@@ -30,6 +30,7 @@ from server.routers import (
     data as data_router,
     kite as kite_router,
     portfolio,
+    research as research_router,
     search,
     tests as tests_router,
     trade as trade_router,
@@ -122,4 +123,5 @@ app.include_router(ticks.router)
 app.include_router(alerts.router)
 app.include_router(data_router.router)
 app.include_router(tests_router.router)
+app.include_router(research_router.router)
 app.include_router(trade_router.router)

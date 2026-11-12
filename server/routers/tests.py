@@ -13,7 +13,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
-from server.schemas import (StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
+from server.routers.research import run_research_dto
+from server.schemas import (RunResearchDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 
 router = APIRouter(tags=["tests"])
@@ -222,6 +223,14 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
                             metrics=_json(row.get("metrics_json"), {}), manifest=manifest,
                             fill_count=fill_count, cost_totals=cost_totals)
+
+
+@router.get("/api/tests/{run_id}/research", response_model=RunResearchDTO)
+def test_research(run_id: str) -> RunResearchDTO:
+    """The run's deflated Sharpe and bootstrap intervals (M6.4, M6.8). Derived from the database; the slow
+    bootstrap is cached in the run folder's research.json, so this GET may write that derived file."""
+    _row_or_404(run_id)
+    return run_research_dto(run_id)
 
 
 @router.get("/api/tests/{run_id}/orders", response_model=list[dict[str, Any]])

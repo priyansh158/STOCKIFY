@@ -30,7 +30,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 - [x] Every run and session has a `family_id` (default: strategy name + dataset + objective; the owner can name families). Runs are never deleted from the registry, even when their folders are pruned.
 - [x] For the best run of a family report, from daily returns (per-period, not annualised):
-  - (Statistics core `stockify/research/stats.py`, D-86; the report objects `report.run_research` and `report.family_report`, `python -m stockify research show`; the run page and API display follow in Task 9.)
+  - (Statistics core `stockify/research/stats.py`, D-86; the report objects `report.run_research` and `report.family_report`, `python -m stockify research show`; the API (`/api/tests/{id}/research`, `/api/research/families`) is Task 9; the run page follows in Tasks 30-34.)
   - `SR` = Sharpe of the selected run; `T` = number of daily returns; `γ₃` = skewness; `γ₄` = kurtosis (not excess); `N` = number of trials in the family; `V` = variance of the per-period Sharpe across the family's trials.
   - Expected maximum Sharpe under the null: `SR₀ = √V · [(1 − γ)·Φ⁻¹(1 − 1/N) + γ·Φ⁻¹(1 − 1/(N·e))]`, with `γ ≈ 0.5772` (Euler–Mascheroni); for `N = 1`, `SR₀ = 0`.
   - **Deflated Sharpe Ratio**: `DSR = Φ( (SR − SR₀)·√(T − 1) / √(1 − γ₃·SR + ((γ₄ − 1)/4)·SR²) )` — the probability the true Sharpe exceeds what luck alone would give the best of N trials (Bailey and López de Prado, 2014).
@@ -52,7 +52,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.8 Bootstrap confidence intervals (S)
 
-- [x] (bootstrap intervals done, `stockify/research/bootstrap.py`, cached by `report.run_research` in `runs/<id>/research.json`; the run-page display is Task 9) Stationary block bootstrap of daily returns (mean block length configurable, seeded): 90% intervals for Sharpe, mean daily return and max drawdown, on every run report.
+- [x] (bootstrap intervals done, `stockify/research/bootstrap.py`, cached by `report.run_research` in `runs/<id>/research.json`; the API is Task 9, the run-page display Tasks 30-34) Stationary block bootstrap of daily returns (mean block length configurable, seeded): 90% intervals for Sharpe, mean daily return and max drawdown, on every run report.
 
 ## M6.9 Regime breakdown (S)
 

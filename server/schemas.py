@@ -403,4 +403,96 @@ class TickEvent(BaseModel):
     ltp: float
     change_pct: float | None = None
     ts: int  # unix seconds
+
+# ── Research (M6.4 deflated Sharpe, M6.8 bootstrap; WF 6.1) ──────────────────
+
+class IntervalDTO(BaseModel):
+    """A point estimate with its bootstrap interval; any part is None when it could not be computed."""
+    point: float | None = None
+    lo: float | None = None
+    hi: float | None = None
+
+
+class DsrDTO(BaseModel):
+    """The deflated Sharpe of a try (per-day Sharpe; the page annualises). `dsr` and `psr` are probabilities."""
+    sr: float | None = None
+    t: int
+    skew: float | None = None
+    kurt: float | None = None
+    n_trials: int
+    var_sharpe: float | None = None
+    sr0: float | None = None
+    dsr: float | None = None
+    psr: float | None = None
+
+
+class BootstrapDTO(BaseModel):
+    """Stationary block bootstrap intervals at level `ci`; the mean return is a per-day fraction, the drawdown a
+    fraction of the peak."""
+    n_days: int
+    mean_block: float | None = None
+    resamples: int
+    ci: float | None = None
+    enough_days: bool
+    sharpe: IntervalDTO
+    mean_daily_return: IntervalDTO
+    max_drawdown: IntervalDTO
+
+
+class RunResearchDTO(BaseModel):
+    run_id: str
+    family_id: str | None = None
+    role: str
+    objective: str
+    n_trials: int
+    rank: int | None = None
+    is_best: bool
+    picked_run_id: str | None = None
+    picked_name: str | None = None
+    dsr: DsrDTO | None = None
+    bootstrap: BootstrapDTO | None = None
+    regimes: dict[str, Any] | None = None
+    holdout_unlocks: int
+    plain: dict[str, str]
+
+
+class TrialRowDTO(BaseModel):
+    run_id: str
+    name: str | None = None
+    role: str
+    status: str
+    objective_value: float | None = None
+    sharpe_per_period: float | None = None
+    net_pnl_paise: int | None = None
+    days: int
+    job_id: str | None = None
+
+
+class FamilySummaryDTO(BaseModel):
+    family_id: str
+    description: str | None = None
+    named: bool
+    objective: str
+    n_trials: int
+    n_other_runs: int
+    n_sessions: int
+    best_run_id: str | None = None
+    best_dsr: float | None = None
+    unlocks: int
+
+
+class FamilyDetailDTO(BaseModel):
+    family_id: str
+    description: str | None = None
+    objective: str
+    named: bool
+    n_trials: int
+    var_sharpe: float | None = None
+    best_run_id: str | None = None
+    best: DsrDTO | None = None
+    trials: list[TrialRowDTO]
+    others: list[TrialRowDTO]
+    sessions: list[dict[str, Any]]
+    holdout_unlocks: list[dict[str, Any]]
+    plain: dict[str, str]
 # </block>

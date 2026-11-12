@@ -381,4 +381,93 @@ export interface TickEvent {
   change_pct?: number;
   ts: number;
 }
+
+// ── Research (M6.4 deflated Sharpe, M6.8 bootstrap; WF 6.1) ──────────────────
+
+export interface IntervalDTO {
+  point: number | null;
+  lo: number | null;
+  hi: number | null;
+}
+
+export interface DsrDTO {
+  sr: number | null;
+  t: number;
+  skew: number | null;
+  kurt: number | null;
+  n_trials: number;
+  var_sharpe: number | null;
+  sr0: number | null;
+  dsr: number | null;
+  psr: number | null;
+}
+
+export interface BootstrapDTO {
+  n_days: number;
+  mean_block: number | null;
+  resamples: number;
+  ci: number | null;
+  enough_days: boolean;
+  sharpe: IntervalDTO;
+  mean_daily_return: IntervalDTO;
+  max_drawdown: IntervalDTO;
+}
+
+export interface RunResearchDTO {
+  run_id: string;
+  family_id: string | null;
+  role: string;
+  objective: string;
+  n_trials: number;
+  rank: number | null;
+  is_best: boolean;
+  picked_run_id: string | null;
+  picked_name: string | null;
+  dsr: DsrDTO | null;
+  bootstrap: BootstrapDTO | null;
+  regimes: Record<string, unknown> | null;
+  holdout_unlocks: number;
+  plain: Record<string, string>;
+}
+
+export interface TrialRowDTO {
+  run_id: string;
+  name: string | null;
+  role: string;
+  status: string;
+  objective_value: number | null;
+  sharpe_per_period: number | null;
+  net_pnl_paise: number | null;
+  days: number;
+  job_id: string | null;
+}
+
+export interface FamilySummaryDTO {
+  family_id: string;
+  description: string | null;
+  named: boolean;
+  objective: string;
+  n_trials: number;
+  n_other_runs: number;
+  n_sessions: number;
+  best_run_id: string | null;
+  best_dsr: number | null;
+  unlocks: number;
+}
+
+export interface FamilyDetailDTO {
+  family_id: string;
+  description: string | null;
+  objective: string;
+  named: boolean;
+  n_trials: number;
+  var_sharpe: number | null;
+  best_run_id: string | null;
+  best: DsrDTO | null;
+  trials: TrialRowDTO[];
+  others: TrialRowDTO[];
+  sessions: Record<string, unknown>[];
+  holdout_unlocks: Record<string, unknown>[];
+  plain: Record<string, string>;
+}
 // </block>
