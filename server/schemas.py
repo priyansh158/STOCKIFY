@@ -262,6 +262,93 @@ class TestCreatedDTO(BaseModel):
     run_id: str
 
 
+class SessionDTO(BaseModel):
+    """A paper session as a card. `today_pnl_paise` is the latest recorded day's NAV less the day before's (the
+    capital for a first day); None until that day has an equity row. `coverage_today` is 0..1."""
+    session_id: str
+    name: str
+    status: str
+    pause_reasons: list[str] = Field(default_factory=list)
+    today_pnl_paise: int | None = None
+    open_positions: int | None = None
+    coverage_today: float | None = None
+    parity_last: str | None = None
+    labels: list[str] = Field(default_factory=list)
+    created_ist: str
+
+
+class SessionStatsDTO(BaseModel):
+    days: int = 0
+    pnl_paise: int = 0
+    win_days: int = 0
+    loss_days: int = 0
+    best_day_paise: int | None = None
+    worst_day_paise: int | None = None
+    max_drawdown_paise: int = 0
+
+
+class SessionDetailDTO(BaseModel):
+    """The statistics are given twice (I-14): over every day, and over the days whose coverage reached the
+    threshold. A day whose coverage is unknown is never counted as full."""
+    session: SessionDTO
+    config: dict[str, Any] = Field(default_factory=dict)
+    trade_date: str | None = None
+    stats_all: SessionStatsDTO
+    stats_full_coverage: SessionStatsDTO
+    coverage_threshold: str
+    has_coverage_holes: bool = False
+
+
+class SessionCreatedDTO(BaseModel):
+    session_id: str
+
+
+class SessionCommandDTO(BaseModel):
+    cmd_id: int
+
+
+class SessionPositionDTO(BaseModel):
+    trade_date: str
+    instrument_id: int
+    instrument_token: int | None = None
+    tradingsymbol: str | None = None
+    product: str | None = None
+    qty: int
+    avg_price_paise: int | None = None
+    mark_paise: int | None = None
+    unrealised_paise: int | None = None
+    source: Literal["eod", "fills"]
+
+
+class SessionTimelineDTO(BaseModel):
+    engine_ns: int | None = None
+    wall_ns: int
+    wall_ist: str
+    kind: str
+    detail: Any = None
+
+
+class SessionMarginDTO(BaseModel):
+    wall_ns: int
+    wall_ist: str
+    trade_date: str | None = None
+    step: str | None = None
+    kite_total_paise: int | None = None
+    ours_total_paise: int | None = None
+    gap_paise: int | None = None
+    gap_ppm: int | None = None
+    error: str | None = None
+
+
+class TradeLoginDTO(BaseModel):
+    """The owner's Kite login window for the next session, on the owner's own clock."""
+    waiting_for_login: bool
+    day: str
+    window_local: list[str]
+    last_usable_local: str
+    market_open_local: str
+
+
 # ── Ticks (WS payloads) ──────────────────────────────────────────────────────
 
 class TickEvent(BaseModel):

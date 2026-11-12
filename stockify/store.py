@@ -515,6 +515,17 @@ def later_session_days(session_id: str, trade_date: str) -> list[dict]:
                                   "ORDER BY trade_date", (session_id, trade_date))]
 
 
+def session_days(session_id: str) -> list[dict]:
+    """Every (session, day) row of the session, oldest day first."""
+    return [dict(r) for r in _all("SELECT * FROM session_days WHERE session_id = ? ORDER BY trade_date", (session_id,))]
+
+
+def session_equities(session_id: str) -> list[dict]:
+    """The session's equity rows ({trade_date, nav_paise, cash_paise, margin_paise}), oldest day first."""
+    return [dict(r) for r in _all("SELECT trade_date, nav_paise, cash_paise, margin_paise FROM session_equity "
+                                  "WHERE session_id = ? ORDER BY trade_date", (session_id,))]
+
+
 def put_parity_result(session_id: str, trade_date: str, kind: str, outcome: str, summary: dict, *,
                       created_ns: int) -> None:
     """Record a parity result (kind `journal` | `recorder`; outcome `pass` | `fail`) in ONE transaction: the

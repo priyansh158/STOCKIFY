@@ -247,6 +247,88 @@ export interface TestCreated {
   run_id: string;
 }
 
+export interface SessionDTO {
+  session_id: string;
+  name: string;
+  status: string;
+  pause_reasons: string[];
+  today_pnl_paise?: number | null;
+  open_positions?: number | null;
+  coverage_today?: number | null;
+  parity_last?: string | null;
+  labels: string[];
+  created_ist: string;
+}
+
+export interface SessionStatsDTO {
+  days: number;
+  pnl_paise: number;
+  win_days: number;
+  loss_days: number;
+  best_day_paise?: number | null;
+  worst_day_paise?: number | null;
+  max_drawdown_paise: number;
+}
+
+export interface SessionDetailDTO {
+  session: SessionDTO;
+  config: Record<string, unknown>;
+  trade_date?: string | null;
+  stats_all: SessionStatsDTO;
+  stats_full_coverage: SessionStatsDTO;
+  coverage_threshold: string;
+  has_coverage_holes: boolean;
+}
+
+export interface SessionCreatedDTO {
+  session_id: string;
+}
+
+export interface SessionCommandDTO {
+  cmd_id: number;
+}
+
+export interface SessionPositionDTO {
+  trade_date: string;
+  instrument_id: number;
+  instrument_token?: number | null;
+  tradingsymbol?: string | null;
+  product?: string | null;
+  qty: number;
+  avg_price_paise?: number | null;
+  mark_paise?: number | null;
+  unrealised_paise?: number | null;
+  source: "eod" | "fills";
+}
+
+export interface SessionTimelineDTO {
+  engine_ns?: number | null;
+  wall_ns: number;
+  wall_ist: string;
+  kind: string;
+  detail?: unknown;
+}
+
+export interface SessionMarginDTO {
+  wall_ns: number;
+  wall_ist: string;
+  trade_date?: string | null;
+  step?: string | null;
+  kite_total_paise?: number | null;
+  ours_total_paise?: number | null;
+  gap_paise?: number | null;
+  gap_ppm?: number | null;
+  error?: string | null;
+}
+
+export interface TradeLoginDTO {
+  waiting_for_login: boolean;
+  day: string;
+  window_local: string[];
+  last_usable_local: string;
+  market_open_local: string;
+}
+
 // ── Live ticks (WS) ──────────────────────────────────────────────────────────
 
 export interface TickEvent {
