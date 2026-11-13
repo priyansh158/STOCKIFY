@@ -12,6 +12,7 @@ import {
   COMPARE_MAX, COMPARE_MIN, compareIds, dayNumber, getComparison, runLabels, sentenceOrDash, valuesDiffer,
 } from "@/lib/research";
 import type { CompareDiffDTO, CompareMetricDTO, CompareSeriesDTO, ComparisonDTO } from "@/lib/types";
+import { strategyName } from "@/lib/runView";
 import { labelText } from "../ui";
 import CompareCharts from "./Charts";
 
@@ -69,7 +70,7 @@ function settingWords(v: string): string {
 }
 
 /** A long hex fingerprint is cut to its first 12 characters (the whole one is the hover text); anything else in words. */
-function Value({ v }: { v: string | null }) {
+function Value({ v, field }: { v: string | null; field?: string }) {
   if (v === null || v === "") return <span className="stk-label">not recorded</span>;
   if (/^[0-9a-f]{32,}$/i.test(v)) {
     // the short form is for the eye; the whole value is in the text for screen readers, selection and copy
@@ -80,7 +81,8 @@ function Value({ v }: { v: string | null }) {
       </span>
     );
   }
-  return <span className="stk-cmp-mono">{settingWords(v)}</span>;
+  // the strategy is shown by its name, as the run page and the list do, not by its import path
+  return <span className="stk-cmp-mono">{field === "strategy.ref" ? strategyName(v) : settingWords(v)}</span>;
 }
 
 function Verdict({ differs }: { differs: boolean }) {
@@ -138,7 +140,7 @@ function DiffTable({ rows, labels, caption }: { rows: CompareDiffDTO[]; labels: 
           <Verdict differs={r.differs} />
           {r.values.map((v, i) => (
             <td key={labels[i]} data-wrap data-differs={r.differs ? "" : undefined}>
-              <Value v={v} />
+              <Value v={v} field={r.field} />
             </td>
           ))}
         </tr>

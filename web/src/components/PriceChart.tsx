@@ -552,7 +552,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const selIndex = selected === null ? -1 : rows.findIndex((r) => r.id === selected);
   const card = selIndex >= 0 ? cardModel(markers[selIndex], contract) : null;
   const listed = showAll ? rows : rows.slice(0, LIST_SHOWN);
-  const drawable = state === "empty" || state === "full" || (state === "pruned" && markers.length > 0);
+  // No price data means no canvas at all: one notice says so (below), and the trades stay in the lists. Never an empty axis.
+  const drawable = state === "empty" || state === "full";
   const summary = meta ? chartSummary({ ...meta, bars, markers }, symbol) : "Price chart";
 
   return (
@@ -567,7 +568,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         )}
         {ctrl && (
           <div className="stk-pricechart-controls">
-            {ctrl.instruments.length > 1 && (
+            {ctrl.instruments.length > 1 && state !== "pruned" && (
               <label className="stk-pricechart-pick">
                 <span>Instrument</span>
                 <select className="stk-field" data-fit
@@ -600,14 +601,16 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
                 </select>
               </label>
             )}
-            <label className="stk-pricechart-check">
-              <input type="checkbox" className="stk-check" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} />
-              <span>Volume</span>
-            </label>
+            {state !== "pruned" && (
+              <label className="stk-pricechart-check">
+                <input type="checkbox" className="stk-check" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} />
+                <span>Volume</span>
+              </label>
+            )}
           </div>
         )}
       </header>
-      {meta && (
+      {meta && state !== "pruned" && (
         <p className="stk-label">
           {intervalWords(meta.interval_s ?? DEFAULT_INTERVAL_S)} bars
           {meta.basis ? `, ${meta.basis} prices` : ""}
