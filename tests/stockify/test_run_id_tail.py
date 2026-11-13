@@ -29,6 +29,9 @@ class RunIdTailTests(unittest.TestCase):
         self.assertIn("{run.name && <div", page)          # no name: the link already shows the whole id, so no second line
         css = (REPO / "web" / "src" / "app" / "globals.css").read_text(encoding="utf-8")
         self.assertIn(".stk-run-chips", css)
+        # 11 columns must fit at 1440 px: the headers and start time wrap, the name column has no wide minimum.
+        self.assertIn(".stk-table:has(td.stk-pick) th", css)
+        self.assertRegex(css, r"td\.stk-pick \+ td\[data-wrap\] \{ min-width: 14rem; \}")
 
 
 if __name__ == "__main__":
