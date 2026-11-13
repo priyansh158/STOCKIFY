@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
-                            ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
+                            ResearchCountsDTO, ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
                             SweepHeatmapDTO, SweepRowDTO, TrialRowDTO, WalkforwardDTO, WalkforwardSummaryDTO,
                             WalkforwardWindowDTO)
 
@@ -99,6 +99,13 @@ def list_jobs(kind: str | None = Query(None, pattern=_KIND), offset: int = Query
     return [ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"},
                            plain=plain.job_status_sentence(j["status"], j.get("error")))
             for j in store.list_research_jobs(kind, offset, limit)]
+
+
+@router.get("/api/research/counts", response_model=ResearchCountsDTO)
+def research_counts() -> ResearchCountsDTO:
+    from stockify import store
+    return ResearchCountsDTO(families=len(store.list_families()), sweeps=store.count_research_jobs("sweep"),
+                             walkforwards=store.count_research_jobs("walkforward"))
 
 
 def _label(v: Any) -> str:

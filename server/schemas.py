@@ -573,6 +573,13 @@ class ResearchJobDTO(BaseModel):
     plain: str = ""
 
 
+class ResearchCountsDTO(BaseModel):
+    """How many families, sweeps and walk-forward runs exist: the totals behind the overview's capped lists."""
+    families: int
+    sweeps: int
+    walkforwards: int
+
+
 class SweepAxisDTO(BaseModel):
     path: str
     labels: list[str]

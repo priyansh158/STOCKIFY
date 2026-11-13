@@ -436,7 +436,8 @@ class OverviewSentenceTests(unittest.TestCase):
         for raw in (None, "", "KeyError: run_id", "Traceback (most recent call last)"):
             self.assertEqual(plain.job_status_sentence("failed", raw), "failed, and no readable reason was saved")
         self.assertEqual(plain.job_status_sentence("running", "ignored"), "still running")
-        self.assertEqual(plain.job_status_sentence("weird_state", None), "in a state this page does not know")
+        self.assertEqual(plain.job_status_sentence("weird", None), "in an unrecognised state (weird)")
+        self.assertEqual(plain.job_status_sentence("a/b c", None), "in an unrecognised state")
 
 
 if __name__ == "__main__":

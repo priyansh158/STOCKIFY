@@ -11,12 +11,13 @@ import type {
   FamilyDetailDTO,
   FamilySummaryDTO,
   GapPageDTO,
+  ResearchCountsDTO,
   ResearchJobDTO,
   RunResearchDTO,
   SensitivityDTO,
 } from "./types";
 
-export { bucketTone, costScale, familyHref, heatColourStep, jobHref, sentenceOrDash } from "./researchHelpers";
+export { bucketTone, costScale, familyHref, heatColourStep, jobHref, listCapNote, sentenceOrDash } from "./researchHelpers";
 export type { BucketTone } from "./researchHelpers";
 
 const enc = encodeURIComponent;
@@ -43,6 +44,11 @@ export function getSensitivity(id: string): Promise<SensitivityDTO | null> {
 
 export function getFamilies(offset = 0, limit = 50): Promise<FamilySummaryDTO[]> {
   return api<FamilySummaryDTO[]>(`/api/research/families?offset=${offset}&limit=${limit}`);
+}
+
+/** How many families, sweeps and walk-forward runs exist in all (the lists above are capped). */
+export function getResearchCounts(): Promise<ResearchCountsDTO> {
+  return api<ResearchCountsDTO>("/api/research/counts");
 }
 
 /** Sweep and walk-forward jobs, newest first (sensitivity jobs belong to a run and are left out). */

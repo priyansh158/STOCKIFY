@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { istWhenEpoch } from "@/lib/format";
-import { familyHref, getFamilies, getJobs, jobHref } from "@/lib/research";
+import { familyHref, getFamilies, getJobs, getResearchCounts, jobHref, listCapNote } from "@/lib/research";
 import type { FamilySummaryDTO, ResearchJobDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Table } from "@/components/ui";
 
@@ -30,6 +30,10 @@ function ErrorPanel({ children }: { children: ReactNode }) {
   );
 }
 
+function CapNote({ note }: { note: string | null }) {
+  return note ? <p className="stk-fine stk-gap-xs">{note}</p> : null;
+}
+
 function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
 }
@@ -37,8 +41,8 @@ function plural(n: number, one: string, many: string): string {
 function Families({ rows }: { rows: FamilySummaryDTO[] }) {
   return (
     <Table
-      caption="Trial families: every try of one idea, with the best try's chance of beating luck"
-      head={[{ label: "Family" }, { label: "Tries", num: true }, { label: "Best try, after allowing for luck" }, { label: "Times the held-back days were opened", num: true }]}
+      caption="Trial families: every try of one idea, the best try's chance of beating luck, and how many times the held-back days were looked at (holdout looks)"
+      head={[{ label: "Family" }, { label: "Tries", num: true }, { label: "Best try, after allowing for luck" }, { label: "Holdout looks", num: true }]}
     >
       {rows.map((f) => (
         <tr key={f.family_id}>
@@ -86,7 +90,8 @@ function Jobs({ caption, rows }: { caption: string; rows: ResearchJobDTO[] }) {
 }
 
 export default async function ResearchPage() {
-  const [fams, jobs] = await Promise.all([settle(getFamilies()), settle(getJobs())]);
+  const [fams, jobs, counts] = await Promise.all([settle(getFamilies()), settle(getJobs()), settle(getResearchCounts())]);
+  const total = counts.ok ? counts.value : null;
 
   return (
     <div className="stk-page">
@@ -112,7 +117,10 @@ export default async function ResearchPage() {
               will be counted here.
             </Empty>
           ) : (
-            <Families rows={fams.value} />
+            <>
+              <Families rows={fams.value} />
+              <CapNote note={listCapNote(fams.value.length, total?.families ?? null, "families", "first")} />
+            </>
           )}
         </section>
 
@@ -137,7 +145,10 @@ export default async function ResearchPage() {
                   No sweeps yet. Start one with <code>python -m stockify sweep --config sweep.yaml</code>.
                 </Empty>
               ) : (
-                <Jobs caption="Parameter sweeps, newest first" rows={jobs.value.sweeps} />
+                <>
+                  <Jobs caption="Parameter sweeps, newest first" rows={jobs.value.sweeps} />
+                  <CapNote note={listCapNote(jobs.value.sweeps.length, total?.sweeps ?? null, "sweeps", "latest")} />
+                </>
               )}
             </section>
 
@@ -148,7 +159,10 @@ export default async function ResearchPage() {
                   No walk-forward runs yet. Start one with <code>python -m stockify walkforward --sweep sweep.yaml</code>.
                 </Empty>
               ) : (
-                <Jobs caption="Walk-forward runs, newest first" rows={jobs.value.walkforwards} />
+                <>
+                  <Jobs caption="Walk-forward runs, newest first" rows={jobs.value.walkforwards} />
+                  <CapNote note={listCapNote(jobs.value.walkforwards.length, total?.walkforwards ?? null, "walk-forward runs", "latest")} />
+                </>
               )}
             </section>
           </>

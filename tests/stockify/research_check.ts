@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, costScale, familyHref, heatColourStep, heatMoreWord, jobHref, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
+import { SERIES_TOKENS, bucketTone, costScale, familyHref, heatColourStep, heatMoreWord, jobHref, listCapNote, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
@@ -74,6 +74,12 @@ const out = {
     family: ["sweep/ab12", "a b&c=d?e#f", "plain", "100%"].map(familyHref),
     job: [["sweep", "sweep-1"], ["walkforward", "wf/1 x"], ["sensitivity", "s1"], ["", "x"]].map(([k, i]) => jobHref(k, i)),
   },
+  capNote: [[50, 50, "families", "first"], [50, 130, "sweeps", "latest"], [3, 3, "sweeps", "latest"], [50, 51, "walk-forward runs", "latest"], [0, 0, "sweeps", "latest"], [50, null, "sweeps", "latest"]]
+    .map(([n, t, w, o]) => listCapNote(n as number, t as number | null, w as string, o as "first" | "latest")),
+  // the commands the data page prints, read from its source so a corrupted backslash shows up here
+  dataPageCommands: [...readFileSync(new URL("../../web/src/app/data/page.tsx", import.meta.url), "utf-8").matchAll(/<code>([^<]*)<\/code>/g)].map((m) => m[1]),
+  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/lib/researchHelpers.ts"]
+    .map((f) => /\r(?!\n)/.test(readFileSync(new URL(`../../${f}`, import.meta.url), "utf-8"))),
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

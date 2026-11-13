@@ -56,7 +56,18 @@ export function familyHref(id: string): string {
 
 /** The page of a sweep or walk-forward job; null for any other kind of job (it has no page). */
 export function jobHref(kind: string, id: string): string | null {
-  if (kind === "sweep") return `/research/sweep/${encodeURIComponent(id)}`;
+  if (kind === "sweep") return `/research/sweeps/${encodeURIComponent(id)}`;
   if (kind === "walkforward") return `/research/walkforward/${encodeURIComponent(id)}`;
   return null;
+}
+
+/**
+ * The line under a list that was cut at its page size: how many are shown of how many exist, and which end is shown.
+ * Null when everything is shown or the total is not known (a missing total is never guessed).
+ */
+export function listCapNote(shown: number, total: number | null, what: string, order: "first" | "latest"): string | null {
+  if (total === null || !(total > shown)) return null;
+  return `Showing the ${order} ${shown.toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")} ${what}. ${
+    order === "first" ? "The rest are not listed here." : "Older ones are not listed here."
+  }`;
 }

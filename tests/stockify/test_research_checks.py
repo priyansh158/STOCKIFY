@@ -119,7 +119,21 @@ class ResearchHelperChecks(unittest.TestCase):
             "/research/family?id=sweep%2Fab12", "/research/family?id=a%20b%26c%3Dd%3Fe%23f",
             "/research/family?id=plain", "/research/family?id=100%25"])
         # only a sweep and a walk-forward have a page; any other kind has no link
-        self.assertEqual(self.answers["hrefs"]["job"], ["/research/sweep/sweep-1", "/research/walkforward/wf%2F1%20x", None, None])
+        self.assertEqual(self.answers["hrefs"]["job"], ["/research/sweeps/sweep-1", "/research/walkforward/wf%2F1%20x", None, None])
+
+    def test_a_capped_list_says_how_many_are_shown_and_stays_quiet_otherwise(self):
+        self.assertEqual(self.answers["capNote"], [
+            None,
+            "Showing the latest 50 of 130 sweeps. Older ones are not listed here.",
+            None,
+            "Showing the latest 50 of 51 walk-forward runs. Older ones are not listed here.",
+            None,
+            None])
+
+    def test_the_data_page_prints_the_launcher_command_with_its_backslash_and_no_stray_carriage_return(self):
+        self.assertIn(".\\run.ps1 -DaemonOnly", self.answers["dataPageCommands"])
+        self.assertIn("python -m stockify nse fetch --date YYYY-MM-DD", self.answers["dataPageCommands"])
+        self.assertEqual(self.answers["webSourceHasStrayCR"], [False, False, False])
 
 
 if __name__ == "__main__":

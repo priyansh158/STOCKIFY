@@ -246,6 +246,17 @@ class SweepApiTests(SandboxedDBTest):
         from server.main import app
         self.client = TestClient(app, base_url=support.API_BASE_URL)
 
+    def test_counts_give_the_totals_behind_the_capped_overview_lists(self):
+        self.assertEqual(self.client.get("/api/research/counts").json(),
+                         {"families": 0, "sweeps": 0, "walkforwards": 0})
+        store.add_family("strat/x/sharpe", objective="sharpe", description=None)
+        add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
+        add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)
+        add_sweep_job(None, "wf-1", kind="walkforward", status="running", created_ns=3)
+        add_sweep_job(None, "s-1", kind="sensitivity", created_ns=4)
+        self.assertEqual(self.client.get("/api/research/counts").json(),
+                         {"families": 1, "sweeps": 2, "walkforwards": 1})
+
     def test_jobs_list_filters_by_kind(self):
         add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
         add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)

@@ -449,6 +449,14 @@ def list_research_jobs(kind: str | None = None, offset: int = 0, limit: int = 50
     return [dict(r) for r in _all(sql, (*args, limit, offset))]
 
 
+def count_research_jobs(kind: str | None = None) -> int:
+    """How many research_jobs rows there are (of one kind, when given)."""
+    sql, args = "SELECT COUNT(*) FROM research_jobs", ()
+    if kind is not None:
+        sql, args = sql + " WHERE kind = ?", (kind,)
+    return int(_one(sql, args)[0])
+
+
 def backfill_null_families(compute) -> int:  # noqa: ANN001
     """For each runs row whose family_id IS NULL call `compute(row) -> str | None`; a string is written to that
     column only (and only while it is still NULL). Returns how many rows were set. The lock is not held while

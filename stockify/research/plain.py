@@ -368,7 +368,7 @@ def job_status_sentence(status: str, error: str | None) -> str:
     if status == "failed":
         why = plain_reason(error)
         return f"failed: {why}" if why else "failed, and no readable reason was saved"
-    return "in a state this page does not know"
+    return f"in an unrecognised state ({status})" if status.isalpha() else "in an unrecognised state"
 
 
 def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001

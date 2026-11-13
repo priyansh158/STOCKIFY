@@ -545,6 +545,12 @@ export interface ResearchJobDTO {
   plain: string;
 }
 
+export interface ResearchCountsDTO {
+  families: number;
+  sweeps: number;
+  walkforwards: number;
+}
+
 export interface SweepAxisDTO {
   path: string;
   labels: string[];

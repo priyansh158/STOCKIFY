@@ -382,7 +382,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                 <h2>Day by day</h2>
                 {stores.length === 0 && nothingStored(matrix) ? (
                   <Empty>
-                    Nothing has been recorded or downloaded in this range yet. Start the recorder with <code>.un.ps1 -DaemonOnly</code>, or download
+                    Nothing has been recorded or downloaded in this range yet. Start the recorder with <code>.\run.ps1 -DaemonOnly</code>, or download
                     NSE files with <code>python -m stockify nse fetch --date YYYY-MM-DD</code>.
                   </Empty>
                 ) : (
