@@ -34,12 +34,14 @@ from typing import NamedTuple
 
 from stockify import paths, store
 from stockify.daemon import journal
+from stockify.data import packs
 from stockify.reporting import chart, chartbars
 
 CACHE_MAX = 8
 _SHIFT = 32
 _ROWS = 10_000_000                       # session_rows takes a limit; a session's rows are far fewer
 _LOCK = threading.Lock()
+_INFLIGHT: dict[tuple[str, int], threading.Event] = {}     # keys being read now: a second reader waits for the first
 
 
 class _Entry(NamedTuple):
@@ -68,20 +70,43 @@ def _journal_bars(path, instrument_id: int, anchors: dict) -> tuple[str, str | N
     if not path.is_file():
         return "no_pack", None, [], chartbars.DEFAULT_INTERVAL_S
     key = (str(path), instrument_id)
-    with _LOCK:
-        ent = _CACHE.get(key)
+    while True:                                  # one reader per key at a time: the others wait and then read on from it
+        with _LOCK:
+            waiting = _INFLIGHT.get(key)
+            if waiting is None:
+                mine = _INFLIGHT[key] = threading.Event()
+                ent = _CACHE.get(key)
+                break
+        waiting.wait()
+    try:
+        return _read_key(path, key, instrument_id, anchors, ent)
+    finally:
+        with _LOCK:
+            _INFLIGHT.pop(key, None)
+        mine.set()
+
+
+def _read_key(path, key: tuple[str, int], instrument_id: int, anchors: dict, ent: _Entry | None):  # noqa: ANN001, ANN202
     if ent is not None and ent.fold.anchors != anchors:
         ent = None
-    box = {"fold": ent.fold.copy() if ent else chartbars.BarFold(instrument_id, interval_s=None, anchors=anchors)}
+    box = {"fold": ent.fold.copy() if ent else chartbars.BarFold(instrument_id, interval_s=None, anchors=anchors),
+           "restarted": False}
 
     def restart() -> None:
         box["fold"] = chartbars.BarFold(instrument_id, interval_s=None, anchors=anchors)
+        box["restarted"] = True
+
+    def want(iid: int, kind: int) -> bool:        # what the fold uses: this instrument's records, and every GAP
+        return iid == instrument_id or kind == packs.GAP_K
 
     try:
         header, state, _torn, _restarted = journal.read_from(path, ent.state if ent else None,
-                                                             lambda rec: box["fold"].feed_one(rec), on_restart=restart)
+                                                             lambda rec: box["fold"].feed_one(rec), on_restart=restart,
+                                                             want=want)
     except (journal.JournalError, OSError, struct.error):
-        if ent is None:
+        if ent is None or box["restarted"]:      # the file is not the one the cache came from: its bars are not served
+            with _LOCK:
+                _CACHE.pop(key, None)
             return "pack unreadable", None, [], chartbars.DEFAULT_INTERVAL_S
         bars, got = ent.fold.result()
         return "ok", ent.basis, bars, got if got is not None else chartbars.DEFAULT_INTERVAL_S

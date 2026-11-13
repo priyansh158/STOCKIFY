@@ -115,6 +115,7 @@ def _load_crcs(path: Path, header: dict, data: bytes) -> list[int] | None:
 
 def _scan(data: bytes, header: dict, crcs: list[int] | None, *, start: int = HEADER_SIZE, base: int = 0, n0: int = 0,
           last_key0: tuple | None = None, on_record: Callable[[dict], None] | None = None,
+          want: Callable[[int, int], bool] | None = None,
           out: dict | None = None) -> tuple[int, int, int | None, int | None, int | None, bool, int]:
     """Walk the records after the header. Returns (end of the last good record, count, first t, last t, last
     rank, any CLOCK, torn bytes). Raises JournalError for corruption before the tail.
@@ -122,7 +123,9 @@ def _scan(data: bytes, header: dict, crcs: list[int] | None, *, start: int = HEA
     The defaults walk a whole file. To walk on from a known point, pass the bytes that follow it as `data` with
     `start=0`, `base` its byte offset in the file (only for messages), `n0` the records before it, `last_key0` the
     (t, rank, seq) of the last of them and `crcs` the checksums from that record on. `on_record` is called with
-    each whole record as it is decoded (decoded once, here); `out["last_key"]` gets the last record's key.
+    each whole record as it is decoded (decoded once, here); `out["last_key"]` gets the last record's key. With
+    `want(instrument_id, kind)` a record it refuses is neither decoded nor passed on: its checksum, size, seq and
+    time (all in the 24-byte prefix) are still checked, so only a fault in its body goes unseen.
     `end` and the torn count are about `data`; the count includes `n0`."""
     off, n, slot = start, n0, 0           # slot: the record's place in `crcs`, good or bad
     first_t = last_t = last_rank = None
@@ -159,10 +162,22 @@ def _scan(data: bytes, header: dict, crcs: list[int] | None, *, start: int = HEA
             continue
         if bad_from is not None:
             raise JournalError(f"record at byte {base + bad_from} is damaged and whole records follow it")
-        try:
-            rec, _ = packs.decode(data, off)
-        except (packs.PackError, struct.error, ValueError, KeyError) as e:
-            raise JournalError(f"corrupt record at byte {base + off}: {e}") from e
+        if want is not None:
+            _, _, iid, t_event, seq = PREFIX.unpack_from(data, off)
+            if not want(iid, kind):
+                rec = {"t_event": t_event, "seq": seq}
+                on_record_here = None
+            else:
+                on_record_here = on_record
+                rec = None
+        else:
+            on_record_here = on_record
+            rec = None
+        if rec is None:
+            try:
+                rec, _ = packs.decode(data, off)
+            except (packs.PackError, struct.error, ValueError, KeyError) as e:
+                raise JournalError(f"corrupt record at byte {base + off}: {e}") from e
         if rec["seq"] != n + 1:
             raise JournalError(f"record at byte {base + off} has seq {rec['seq']}, expected {n + 1}")
         rank = packs.RANK[kind]
@@ -173,8 +188,8 @@ def _scan(data: bytes, header: dict, crcs: list[int] | None, *, start: int = HEA
         if first_t is None:
             first_t = rec["t_event"]
         has_clock = has_clock or kind == packs.CLOCK
-        if on_record is not None:
-            on_record(rec)
+        if on_record_here is not None:
+            on_record_here(rec)
         n += 1
         slot += 1
         off += size
@@ -227,11 +242,13 @@ def _still_ours(f, size: int, ident: tuple, state: ReadState) -> bool:  # noqa: 
 
 
 def _crcs_from(path: Path, header: dict, data: bytes, slot: int) -> list[int] | None:
-    """The checksum sidecar from record `slot` on (read after the data, so it covers all of it)."""
+    """The checksums of the records in `data`, from record `slot` on (read after the data, so they cover all of it). A
+    record is at least `PREFIX.size` bytes, so `data` holds at most `len(data) // PREFIX.size` of them: that many
+    entries (and one to spare) are read, never the rest of the sidecar."""
     try:
         with open(_crc_path(path), "rb") as h:
             h.seek(4 * slot)
-            raw = h.read()
+            raw = h.read(4 * (len(data) // PREFIX.size + 1))
     except FileNotFoundError:
         if _final(header) or not data:
             return None
@@ -241,7 +258,7 @@ def _crcs_from(path: Path, header: dict, data: bytes, slot: int) -> list[int] | 
 
 
 def _read_chunk(path: Path, state: ReadState | None, on_record: Callable[[dict], None],
-                on_restart: Callable[[], None] | None) -> tuple[dict, ReadState, int, bool, bool]:
+                on_restart: Callable[[], None] | None, want: Callable[[int, int], bool] | None) -> tuple[dict, ReadState, int, bool, bool]:
     restarted = False
     with open(path, "rb") as f:
         st = os.fstat(f.fileno())
@@ -260,7 +277,7 @@ def _read_chunk(path: Path, state: ReadState | None, on_record: Callable[[dict],
     n0 = state.n if state else 0
     out: dict = {}
     end, n, _, _, _, _, torn = _scan(data, header, _crcs_from(path, header, data, n0), start=0, base=start, n0=n0,
-                                     last_key0=state.last_key if state else None, on_record=on_record, out=out)
+                                     last_key0=state.last_key if state else None, on_record=on_record, want=want, out=out)
     full = len(data) == CHUNK_BYTES
     if _final(header) and not full and header["count"] != n:
         raise JournalError(f"{path} is finalised with count {header['count']} but holds {n} whole records")
@@ -271,7 +288,7 @@ def _read_chunk(path: Path, state: ReadState | None, on_record: Callable[[dict],
 
 
 def read_from(path: Path, state: ReadState | None, on_record: Callable[[dict], None], *,
-              on_restart: Callable[[], None] | None = None) -> tuple[dict, ReadState, int, bool]:
+              on_restart: Callable[[], None] | None = None, want: Callable[[int, int], bool] | None = None) -> tuple[dict, ReadState, int, bool]:
     """Read the whole records of a journal after `state` (None: from the first), calling `on_record(record)` for each
     as it is decoded: (header, the state after them, torn-tail byte count, restarted). A poll of a growing journal
     costs the new bytes and a few small probes, not the file.
@@ -280,11 +297,12 @@ def read_from(path: Path, state: ReadState | None, on_record: Callable[[dict], N
     is no longer the file the state came from: another file, a shorter one, or other bytes at either probe. Reads
     only (never writes, locks, renames or repairs); a torn tail is reported and never taken; a short or foreign
     header, corruption before the tail, or a checksum file that lags whole records raises JournalError. The file is
-    read `CHUNK_BYTES` at a time."""
+    read `CHUNK_BYTES` at a time. `want(instrument_id, kind)`, when given, names the records worth decoding: the
+    others are checked by checksum and prefix only, never decoded and never passed to `on_record`."""
     path = Path(path)
     restarted = False
     while True:
-        header, state, torn, again, more = _read_chunk(path, state, on_record, on_restart)
+        header, state, torn, again, more = _read_chunk(path, state, on_record, on_restart, want)
         restarted = restarted or again
         if not more:
             return header, state, torn, restarted

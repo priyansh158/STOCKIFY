@@ -804,6 +804,55 @@ class ReadFromTests(unittest.TestCase):
             more, _, _, _ = self.take(st)
         self.assertEqual([r["seq"] for r in more], list(range(41, 48)))
 
+    def test_each_chunk_reads_only_the_checksums_it_can_use(self):
+        self.append(60, 1_000)
+        crc = Path(str(self.path) + ".crc").read_bytes()
+        full = list(struct.unpack(f"<{len(crc) // 4}I", crc))
+        want = self.take()[0]
+        seen = []
+        real = journal._crcs_from
+
+        def spy(path, header, data, slot):
+            got = real(path, header, data, slot)
+            seen.append((slot, got, len(data)))
+            return got
+
+        with patch.object(journal, "CHUNK_BYTES", 200), patch.object(journal, "_crcs_from", spy):
+            got, st, torn, _ = self.take()
+        self.assertEqual((got, torn), (want, 0))                         # the same records
+        self.assertGreater(len(seen), 5)                                 # in many chunks
+        for slot, crcs, size in seen:
+            self.assertEqual(crcs, full[slot:slot + len(crcs)])          # the same checksums as the sidecar holds
+            self.assertLessEqual(len(crcs), size // journal.PREFIX.size + 1)   # and no more than the chunk can hold
+        self.assertLess(sum(len(c) for _, c, _ in seen), 2 * len(full) + len(seen))    # not the sidecar once per chunk
+
+    def test_records_of_other_instruments_are_not_decoded_but_still_checked(self):
+        w = writer(self.path)
+        recs = []
+        for i in range(12):
+            iid = 1 + i % 3
+            recs.append((1_000 + i, packs.RANK[packs.BAR_K], packs.enc_bar(iid, 1_000 + i, 60, 1_000 + i, 1, 2, 0, 1, 5, 0)))
+        w.append(recs)
+        w.close(finalise=False)
+        real, calls = packs.decode, []
+
+        def counting(data, off):
+            calls.append(off)
+            return real(data, off)
+
+        got: list[dict] = []
+        with patch.object(packs, "decode", counting):
+            _, st, torn, _ = journal.read_from(self.path, None, got.append, want=lambda iid, kind: iid == 2)
+        self.assertEqual((len(calls), {r["instrument_id"] for r in got}, len(got)), (4, {2}, 4))
+        every = self.take()[1]
+        self.assertEqual((st.offset, st.n, st.last_key), (every.offset, every.n, every.last_key))   # same position
+        # a checksum failure inside a skipped record is still caught
+        data = bytearray(self.path.read_bytes())
+        data[journal.HEADER_SIZE + 88 * 2 + 40] ^= 0xFF                  # the third record (instrument 3, skipped)
+        self.path.write_bytes(bytes(data))
+        with self.assertRaises(journal.JournalError):
+            journal.read_from(self.path, None, lambda r: None, want=lambda iid, kind: iid == 2)
+
     def test_it_writes_nothing(self):
         self.append(6, 1_000)
         files = sorted(Path(self.tmp.name).iterdir())

@@ -180,6 +180,77 @@ class SessionChartModelTests(SandboxedDBTest):
         m = chart_session.session_chart(SID, DAY, None)
         self.assertEqual([b["open"] for b in m["bars"]], [30000 + 10 * k for k in range(6)])
 
+    def test_only_the_charted_instruments_records_are_decoded(self):
+        two = INST + [{"id": 2, "tradingsymbol": "OTHER", "kind": "EQ", "session_group": "CM", "cas_dates": []}]
+        make_session()
+        write_bundle(instruments=two)
+        w = journal.JournalWriter(paths.journal_file(SID, _d(DAY)), fsync_every_mono_ns=1_000, mono=lambda: next(_mono))
+        evs = []
+        for k in range(6):
+            for iid in (1, 2, 2):
+                start = T(9, 15 + k)
+                t = start + 59 * NS
+                evs.append((t, packs.RANK[packs.BAR_K], packs.enc_bar(iid, t, 60, start, 100, 105, 95, 102, 1, 0)))
+        w.append(evs)
+        w.close(finalise=False)
+        real, calls = packs.decode, []
+
+        def counting(data, off):
+            calls.append(off)
+            return real(data, off)
+
+        with patch.object(packs, "decode", counting):
+            m = chart_session.session_chart(SID, DAY, 1)
+        self.assertEqual((len(m["bars"]), len(calls)), (6, 6))             # the 6 of instrument 1, not all 18
+
+    def test_a_failed_read_right_after_a_restart_never_serves_the_old_file(self):
+        make_session()
+        write_bundle()
+        append_bars(range(3))
+        self.assertEqual(len(chart_session.session_chart(SID, DAY, None)["bars"]), 3)
+        jp = paths.journal_file(SID, _d(DAY))
+        other = paths.journal_file("other", _d(DAY))
+        append_bars(range(6), sid="other", price=30000)
+        data = bytearray(other.read_bytes())
+        data[journal.HEADER_SIZE + 88 + 40] ^= 0xFF                      # a damaged record with whole ones after it
+        jp.write_bytes(bytes(data))
+        Path(str(jp) + ".crc").write_bytes(Path(str(other) + ".crc").read_bytes())
+        m = chart_session.session_chart(SID, DAY, None)
+        self.assertEqual((m["data_state"], m["bars"]), ("pack unreadable", []))
+        self.assertEqual(chart_session.cache_size(), 0)
+
+    def test_two_first_reads_of_one_journal_share_one_scan(self):
+        import threading
+        make_session()
+        write_bundle()
+        append_bars(range(10))
+        real_read, real_decode = journal.read_from, packs.decode
+        inside, gate, calls = threading.Event(), threading.Event(), []
+
+        def slow_read(*a, **kw):
+            inside.set()
+            gate.wait(5)                                                   # hold the first reader until the second has arrived
+            return real_read(*a, **kw)
+
+        def counting(data, off):
+            calls.append(off)
+            return real_decode(data, off)
+
+        out = []
+        t1 = threading.Thread(target=lambda: out.append(chart_session.session_chart(SID, DAY, None)))
+        with patch.object(journal, "read_from", slow_read), patch.object(packs, "decode", counting):
+            t1.start()
+            self.assertTrue(inside.wait(5))
+            t2 = threading.Thread(target=lambda: out.append(chart_session.session_chart(SID, DAY, None)))
+            t2.start()
+            import time
+            time.sleep(0.3)
+            gate.set()
+            t1.join(10)
+            t2.join(10)
+        self.assertEqual([len(m["bars"]) for m in out], [10, 10])
+        self.assertEqual(len(calls), 10)                                   # one scan, not two
+
     def test_cached_basis_survives_a_transient_read_failure(self):
         make_session()
         write_bundle()
