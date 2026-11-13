@@ -4,6 +4,7 @@
  * Server components may call these; the base URL is handled by `api`.
  */
 import { api, ApiError } from "./api";
+import { familyApiPath } from "./researchHelpers";
 import type {
   ComparisonDTO,
   CoverageMatrixDTO,
@@ -17,7 +18,7 @@ import type {
   SensitivityDTO,
 } from "./types";
 
-export { bucketTone, costScale, familyHref, familyIdParam, heatColourStep, jobHref, listCapNote, objectiveText, roleWords, sentenceOrDash, sessionRows, unlockRows } from "./researchHelpers";
+export { bucketTone, costScale, familyHref, familyApiPath, familyIdParam, heatColourStep, jobHref, listCapNote, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sentenceOrDash, sessionRows, unlockRows } from "./researchHelpers";
 export type { BucketTone, SessionRow, UnlockRow } from "./researchHelpers";
 
 const enc = encodeURIComponent;
@@ -62,7 +63,7 @@ export async function getJobs(limit = 50): Promise<{ sweeps: ResearchJobDTO[]; w
 
 /** One trial family, or null when there is no such family. */
 export function getFamily(id: string): Promise<FamilyDetailDTO | null> {
-  return orNull(api<FamilyDetailDTO>(`/api/research/families/${id.split("/").map(enc).join("/")}`));
+  return orNull(api<FamilyDetailDTO>(familyApiPath(id)));
 }
 
 /** 2 to 6 finished runs side by side. */

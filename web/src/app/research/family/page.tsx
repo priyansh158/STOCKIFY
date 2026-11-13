@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { istWhenEpoch, rupees } from "@/lib/format";
-import { familyIdParam, getFamily, objectiveText, roleWords, sessionRows, unlockRows } from "@/lib/research";
+import { familyIdParam, getFamily, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sessionRows, unlockRows } from "@/lib/research";
 import type { FamilyDetailDTO, TrialRowDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Table, toneClass } from "@/components/ui";
 
@@ -53,13 +53,14 @@ function Net({ paise }: { paise: number | null }) {
 }
 
 function Tries({ fam }: { fam: FamilyDetailDTO }) {
-  const score = fam.plain.objective ? `Score: ${fam.plain.objective}` : "Score";
+  const ranks = scoreRanks(fam.trials.map((t) => t.objective_value));
+  const measure = fam.plain.objective ? ` Score is the ${fam.plain.objective}.` : "";
   return (
     <Table
-      caption="The tries of this family. The picked try is marked. Score is the family's own measure."
-      head={[{ label: "Try" }, { label: "State" }, { label: score, num: true }, { label: "Profit after costs", num: true }, { label: "Days", num: true }]}
+      caption={`The tries of this family. The picked try is marked. Scores are before allowing for luck, rank 1 is best.${measure}`}
+      head={[{ label: "Try" }, { label: "State" }, { label: "Score before allowing for luck", num: true }, { label: "Profit after costs", num: true }, { label: "Days", num: true }]}
     >
-      {fam.trials.map((t) => (
+      {fam.trials.map((t, i) => (
         <tr key={t.run_id}>
           <th scope="row" data-wrap>
             <RunName t={t} />
@@ -72,7 +73,10 @@ function Tries({ fam }: { fam: FamilyDetailDTO }) {
           <td>
             <Chip tone={runStatusTone(t.status)}>{t.status}</Chip>
           </td>
-          <td className="num">{objectiveText(t.objective_value, fam.objective)}</td>
+          <td className="num">
+            {objectiveText(t.objective_value, fam.objective)}
+            {ranks[i] !== null && <span className="stk-label"> (rank {ranks[i]})</span>}
+          </td>
           <Net paise={t.net_pnl_paise} />
           <td className="num">{t.days.toLocaleString("en-IN")}</td>
         </tr>
@@ -108,9 +112,12 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
   const unlocks = unlockRows(fam.holdout_unlocks);
   const sessions = sessionRows(fam.sessions);
   const pbo = sentence(fam.plain.pbo);
-  const note = fam.pbo_note?.trim();
   const named = fam.description?.trim();
   const dsr = sentence(fam.plain.dsr);
+  const trialsMeaning = sentence(fam.plain.trials);
+  const dsrMeaning = sentence(fam.plain.dsr_meaning);
+  const caveat = sentence(fam.plain.scores_caveat);
+  const pboNote = pboNoteLine(fam.pbo_note, Boolean(pbo));
   return (
     <>
       <PageHead
@@ -125,8 +132,9 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
       <div className="stk-stack">
         <section className="stk-section" aria-labelledby="tries-h">
           <h2 id="tries-h">Tries</h2>
-          {fam.plain.trials && <p className="stk-fine">{fam.plain.trials}</p>}
+          {trialsMeaning && <p className="stk-fine">{trialsMeaning}</p>}
           {dsr && <p className="stk-gap-xs">{dsr}</p>}
+          {dsr && dsrMeaning && <p className="stk-fine stk-gap-xs">{dsrMeaning}</p>}
           {fam.trials.length === 0 ? (
             <div className="stk-gap-s">
               <Empty>No finished tries yet, so there is nothing to compare.</Empty>
@@ -134,6 +142,7 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
           ) : (
             <div className="stk-gap-s">
               <Tries fam={fam} />
+              {caveat && <p className="stk-fine stk-gap-xs">{caveat}</p>}
             </div>
           )}
         </section>
@@ -143,10 +152,16 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
           {pbo ? (
             <>
               <p>{pbo}</p>
-              {note && <p className="stk-fine stk-gap-xs">Note: {note}.</p>}
+              {pboNote && <p className="stk-fine stk-gap-xs">{pboNote}.</p>}
+              {fam.pbo && (
+                <details className="stk-trust-details stk-gap-xs">
+                  <summary>How it was computed</summary>
+                  <p className="stk-fine">{pboHowText(fam.pbo)}</p>
+                </details>
+              )}
             </>
           ) : (
-            <p>{note ? `No estimate: ${note}.` : "No estimate for this family."}</p>
+            <p>{pboNote ? `No estimate: ${pboNote[0].toLowerCase()}${pboNote.slice(1)}.` : "No estimate for this family."}</p>
           )}
         </section>
 

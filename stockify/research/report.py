@@ -413,6 +413,7 @@ def family_report(family_id: str) -> FamilyReport:
                                           flat=dsr is None)
     texts["objective"] = plain.OBJECTIVE_LABELS[objective]
     texts["trials"] = plain.meaning("trials")
+    texts["scores_caveat"] = plain.SCORES_CAVEAT
     texts["dsr_meaning"] = plain.meaning("dsr")           # `dsr` itself is the best try's sentence
     texts["holdout_unlocks"] = plain.meaning("holdout_unlocks")
     outcome = pbo.family_pbo(family_id, rf_rows)

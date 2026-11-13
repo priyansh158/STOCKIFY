@@ -139,6 +139,22 @@ class ResearchHelperChecks(unittest.TestCase):
             {"session_id": "s1", "name": "n", "status": "RUNNING", "created_ns": 5},
             {"session_id": "s2", "name": None, "status": None, "created_ns": None}])
 
+    def test_the_family_fetch_path_keeps_slashes_and_encodes_everything_else(self):
+        self.assertEqual(self.answers["apiPath"], [
+            "/api/research/families/sweep/j1", "/api/research/families/strat/ds-1m-RELIANCE/sharpe",
+            "/api/research/families/100%2525", "/api/research/families/a%20b/c%3Fd%23e",
+            "/api/research/families/a/%2E/b", "/api/research/families/x/%2E%2E/y"])
+
+    def test_scores_are_ranked_best_first_with_ties_and_missing_scores_left_unranked(self):
+        self.assertEqual(self.answers["ranks"], [1, 5, 2, 2, None, None, 4])
+
+    def test_the_overfitting_note_is_not_said_twice_and_says_how_it_was_computed(self):
+        self.assertEqual(self.answers["pboNote"], ["Left out: zz (flat)", "Based on 5 of 6 tries; left out: zz (flat)",
+                                                   "Fewer than 2 tries", None, None, None])
+        self.assertEqual(self.answers["pboHow"], [
+            "Computed over 40 days, cut into 4 blocks. Every way of choosing half the blocks (6 in all) was set against the other half.",
+            "Computed over 1 day, cut into 2 blocks. Every way of choosing half the blocks (1 in all) was set against the other half."])
+
     def test_a_capped_list_says_how_many_are_shown_and_stays_quiet_otherwise(self):
         self.assertEqual(self.answers["capNote"], [
             None,

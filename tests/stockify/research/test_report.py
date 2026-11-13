@@ -127,6 +127,7 @@ class RunResearchTests(ReportTest):
         rep = report.family_report(FAM)
         for key in ("trials", "holdout_unlocks", "dsr_meaning"):
             self.assertEqual(rep.plain[key], plain.meaning({"dsr_meaning": "dsr"}.get(key, key)))
+        self.assertIn("Only the picked try is adjusted for luck", rep.plain["scores_caveat"])
         self.assertEqual(rep.plain["objective"], plain.OBJECTIVE_LABELS["sharpe"])
 
     def test_variants_do_not_change_n(self):

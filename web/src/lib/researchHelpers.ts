@@ -129,3 +129,39 @@ export function sessionRows(raw: Record<string, unknown>[] | null | undefined): 
     return id ? [{ session_id: id, name: text(r.name), status: text(r.status), created_ns: ns(r.created_ns) }] : [];
   });
 }
+
+/**
+ * The API path of one family. The id keeps its "/" (the route is a path), every segment is encoded, and a segment that is
+ * "." or ".." is written out as %2E so that fetch cannot fold it into a different family's path.
+ */
+export function familyApiPath(id: string): string {
+  const seg = (s: string) => (s === "." ? "%2E" : s === ".." ? "%2E%2E" : encodeURIComponent(s));
+  return `/api/research/families/${id.split("/").map(seg).join("/")}`;
+}
+
+/** 1 = best. Equal scores share a rank; a missing or non-finite score has none. */
+export function scoreRanks(values: (number | null)[]): (number | null)[] {
+  const ok = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  return values.map((v) => (typeof v === "number" && Number.isFinite(v) ? 1 + ok.filter((o) => o > v).length : null));
+}
+
+/**
+ * The note under the overfitting sentence. When the sentence already says "based on N of M tries" only the list of tries
+ * left out is kept ("Left out: ..."); any other note is shown whole. Null when there is nothing to add.
+ */
+export function pboNoteLine(note: string | null | undefined, sentenceShown: boolean): string | null {
+  const t = note?.trim();
+  if (!t) return null;
+  const cap = (x: string) => `${x[0].toUpperCase()}${x.slice(1)}`;
+  const at = t.indexOf("left out:");
+  if (sentenceShown) return t.startsWith("based on") ? (at >= 0 ? cap(t.slice(at)) : null) : null;
+  return cap(t);
+}
+
+/** How the overfitting estimate was computed, from the counts the API sends (days, blocks, ways of choosing half). */
+export function pboHowText(p: { n_days: number; slices: number; combinations: number }): string {
+  const n = (x: number) => x.toLocaleString("en-IN");
+  return `Computed over ${n(p.n_days)} ${p.n_days === 1 ? "day" : "days"}, cut into ${n(p.slices)} blocks. Every way of choosing half the blocks (${n(
+    p.combinations,
+  )} in all) was set against the other half.`;
+}
