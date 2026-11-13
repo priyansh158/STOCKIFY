@@ -544,6 +544,7 @@ export interface ResearchJobDTO {
 
 export interface SweepAxisDTO {
   path: string;
+  label: string;
   labels: string[];
   values: (string | number | boolean | null)[];
 }
@@ -590,6 +591,7 @@ export interface SweepDTO {
   name: string;
   family_id: string;
   objective: string;
+  objective_label: string;
   axes: SweepAxisDTO[];
   rows: SweepRowDTO[];
   best_run_id: string | null;

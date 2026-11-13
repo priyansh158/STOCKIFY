@@ -5,20 +5,14 @@ import { ApiError } from "@/lib/api";
 import { pct } from "@/lib/format";
 import { getSweep, heatFormat, heatGridProps } from "@/lib/research";
 import type { SweepDTO, SweepRowDTO } from "@/lib/types";
-import { Chip, Empty, Field, PageHead, Panel, Table } from "@/components/ui";
+import { Chip, Empty, PageHead, Panel, Table } from "@/components/ui";
+import AxisPicker from "./AxisPicker";
 import SweepGrid from "./SweepGrid";
 
 export const metadata: Metadata = { title: "Sweep - STOCKIFY" };
 export const dynamic = "force-dynamic";
 
-/** What each objective is called on screen. What it means is the server's text, never this file's. */
-const OBJECTIVE: Record<string, string> = {
-  sharpe: "Sharpe ratio",
-  sortino: "Sortino ratio",
-  calmar: "Calmar ratio",
-  cagr: "Yearly growth rate",
-  net_pnl: "Net profit or loss",
-};
+const upperFirst = (t: string) => (t ? t[0].toUpperCase() + t.slice(1) : t);
 
 function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
@@ -59,46 +53,29 @@ function Notice({ tone, title, children }: { tone: "red" | "amber" | "info"; tit
   );
 }
 
-function AxisPicker({ sweep, x, y }: { sweep: SweepDTO; x: string; y: string | null }) {
-  const paths = sweep.axes.map((a) => a.path);
-  if (paths.length < 2) {
+function Pick({ sweep, x, y }: { sweep: SweepDTO; x: string; y: string | null }) {
+  if (sweep.axes.length < 2) {
+    const a = sweep.axes[0];
     return (
       <p className="stk-fine">
-        This sweep changes one setting, <span className="stk-mono">{paths[0]}</span>, so the grid is a single row.
+        This sweep changes one setting, {a.label}
+        {a.label !== a.path && (
+          <>
+            {" "}
+            (<span className="stk-mono">{a.path}</span>)
+          </>
+        )}
+        , so the grid is a single row.
       </p>
     );
   }
-  return (
-    <form method="get" className="stk-sweep-pick" aria-label="Choose which two settings the grid compares">
-      <Field label="Columns: setting across the top">
-        <select className="stk-field" name="x" defaultValue={x} data-fit>
-          {paths.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Rows: setting down the side">
-        <select className="stk-field" name="y" defaultValue={y ?? ""} data-fit>
-          {paths.map((p) => (
-            <option key={p} value={p}>
-              {p}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <button type="submit" className="stk-btn" data-tone="primary">
-        Update grid
-      </button>
-    </form>
-  );
+  return <AxisPicker axes={sweep.axes.map((a) => ({ path: a.path, label: a.label }))} x={x} y={y ?? sweep.axes.find((a) => a.path !== x)?.path ?? x} />;
 }
 
 function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
+  const axes = sweep.axes;
   const fmt = heatGridProps(sweep.cells).format;
   const money = heatFormat("paise", true);
-  const paths = sweep.axes.map((a) => a.path);
   const unfinished = sweep.rows.filter((r) => r.status !== "done").length;
   return (
     <section className="stk-section" aria-labelledby="results-h">
@@ -111,8 +88,8 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
         <Table
           caption="Every trial of this sweep: its settings, its score and what it did"
           head={[
-            ...paths.map((p) => ({ label: p })),
-            { label: scored, num: true },
+            ...axes.map((a) => ({ label: a.label, sub: a.label === a.path ? undefined : a.path })),
+            { label: upperFirst(scored), num: true },
             ...(sweep.objective === "sharpe" ? [] : [{ label: "Sharpe ratio", num: true }]),
             ...(sweep.objective === "net_pnl" ? [] : [{ label: "Net profit or loss", num: true }]),
             { label: "Trades", num: true },
@@ -125,8 +102,8 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
             const done = r.status === "done";
             return (
               <tr key={r.index} data-best={best ? "true" : undefined}>
-                {paths.map((p) => (
-                  <td key={p}>{valueLabel(r.params[p])}</td>
+                {axes.map((a) => (
+                  <td key={a.path}>{valueLabel(r.params[a.path])}</td>
                 ))}
                 <td className="num">{r.objective_value === null ? "—" : fmt(r.objective_value)}</td>
                 {sweep.objective !== "sharpe" && <td className="num">{r.sharpe === null ? "—" : r.sharpe.toFixed(2)}</td>}
@@ -141,7 +118,7 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
                     <div>
                       <Link href={`/tests/${encodeURIComponent(r.run_id)}`}>
                         Open run
-                        <span className="sr-only"> for {paths.map((p) => `${p} ${valueLabel(r.params[p])}`).join(", ")}</span>
+                        <span className="sr-only"> for {axes.map((a) => `${a.label} ${valueLabel(r.params[a.path])}`).join(", ")}</span>
                       </Link>
                     </div>
                   )}
@@ -157,9 +134,9 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
 
 function Full({ sweep, warning }: { sweep: SweepDTO; warning: boolean }) {
   const c = sweep.cells;
-  const scored = OBJECTIVE[sweep.objective] ?? sweep.objective;
+  const scored = sweep.objective_label;
   const none = c.cells.flat().every((v) => v === null);
-  const caption = `${scored}${c.hidden_axes.length > 0 ? ", best over the other settings" : ""}`;
+  const caption = `${upperFirst(scored)}${c.hidden_axes.length > 0 ? ", best over the other settings" : ""}`;
   return (
     <Page title={sweep.name || "Parameter sweep"} lede={`${c.y === null ? "Each square is one setting" : "Each square is one pair of settings"}. Scored by: ${scored}.`}>
       {warning && (
@@ -171,14 +148,14 @@ function Full({ sweep, warning }: { sweep: SweepDTO; warning: boolean }) {
       <section className="stk-section" aria-labelledby="grid-h">
         <h2 id="grid-h">Heatmap</h2>
         <div className="stk-stack-s stk-gap-xs">
-          <AxisPicker sweep={sweep} x={c.x} y={c.y} />
+          <Pick sweep={sweep} x={c.x} y={c.y} />
           <p className="stk-lede">{sweep.plain}</p>
         </div>
         <div className="stk-gap-s">
           {none ? (
             <Empty>No trial finished with a usable result, so there is nothing to shade. The table below says what happened to each one.</Empty>
           ) : (
-            <SweepGrid cells={c} scored={scored} caption={caption} />
+            <SweepGrid cells={c} labels={Object.fromEntries(sweep.axes.map((a) => [a.path, a.label]))} scored={upperFirst(scored)} caption={caption} />
           )}
         </div>
       </section>
@@ -230,7 +207,9 @@ export default async function SweepPage({
       return (
         <Page title="This sweep failed">
           <Notice tone="red" title="It stopped before it finished, so there is no grid to show.">
-            Start it again, or open All research to see your other sweeps.
+            {res.reason ? `Why: ${res.reason}. ` : ""}Run it again with{" "}
+            <code className="stk-mono">python -m stockify sweep --config &lt;your sweep.yaml&gt;</code>, or open All research to see
+            your other sweeps.
           </Notice>
         </Page>
       );

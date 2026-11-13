@@ -70,8 +70,17 @@ class ResearchHelperChecks(unittest.TestCase):
 
     def test_one_axis_sweep_is_one_row_named_by_the_objective(self):
         o = self.answers["one"]
-        self.assertEqual((o["ys"], o["best"], o["cells"]), (["sharpe"], None, [[0.5, -0.2]]))
+        # the real one-axis DTO has a best {xi: k, yi: 0}: it becomes {x: k, y: 0}
+        self.assertEqual((o["best"], o["cells"]), ({"x": 2, "y": 0}, [[0.5, -0.2, 1.2]]))
+        self.assertEqual(o["links"], [["/tests/a", "/tests/b", "/tests/c"]])
         self.assertEqual(o["yLabel"], "Objective")
+        self.assertEqual(self.answers["one"]["ys"], ["Steadiness of returns"])      # the row is named by what is scored
+
+    def test_axis_labels_replace_the_paths_and_a_percent_grid_is_signed(self):
+        self.assertEqual(self.answers["grid2"]["xLabel"], "Fast average")
+        self.assertEqual(self.answers["grid2"]["yLabel"], "Slow average")
+        self.assertEqual(self.answers["grid2"]["links"], [["/tests/a", "/tests/b"], ["/tests/c", None]])   # a cell links to its run
+        self.assertEqual(self.answers["pc"], {"signed": True, "f": ["+12.34 %", "−5.00 %"]})
 
     def test_diverging_palette_words_and_css_agree(self):
         # info above zero, warn below: the validated colour-blind-safe pair (dataviz validator, deutan/protan/tritan
@@ -88,7 +97,10 @@ class ResearchHelperChecks(unittest.TestCase):
 
     def test_missing_sweep_detail_maps_to_running_failed_missing_or_unreadable(self):
         self.assertEqual(self.answers["missing"],
-                         ["missing", "running", "failed", "running", "unreadable", "missing", "missing"])
+                         ["missing", "running", "failed", "running", "unreadable", "missing", "missing", "failed", "running"])
+
+    def test_a_failed_sweeps_reason_is_the_text_after_its_status(self):
+        self.assertEqual(self.answers["failure"], ["the holdout is locked", None, None, None, None])
 
 
 if __name__ == "__main__":

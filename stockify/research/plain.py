@@ -14,6 +14,7 @@ wf_sentence (Task 22, done). pbo_sentence is here (Task 23). Their meanings are 
 from __future__ import annotations
 
 import math
+import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
@@ -350,13 +351,47 @@ def _words_ticks(ticks: int, kind: str) -> str:
     return f"{n} extra tick{'' if one else 's'}" + (" of slippage" if kind in ("break", "survive") else "")
 
 
-def plain_reason(error: str | None) -> str | None:
-    """A stored error as a short clause, or None when it is empty or looks like a raw log line (code names,
-    paths, a traceback, a long text): better to say nothing than to show that."""
-    text = (error or "").strip().rstrip(".")
-    if not text or len(text) > 120 or any(c in text for c in ("_", "/", chr(92), chr(10), chr(13))) or "Traceback" in text:
+# What a failed run or job may say about itself on a page or in the API. A fixed table keyed by the error class (the
+# class name a stored `ClassName: text` starts with), so exception text (a path, a value, a message) never leaves the
+# machine; the raw text stays in the stored row and the log. The same shape as walkforward.py's `_PLAIN_FAILURES`
+# (error class -> sentence), kept apart on purpose so the two tables can be merged later.
+GENERIC_FAILURE = "the run failed; see the log"
+PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
+    ("HoldoutLocked", "the holdout is locked"),
+    ("RunConfigError", "the settings were not accepted"),
+    ("SweepSpecError", "the run pool returned the wrong number of results"),
+    ("WalkforwardRunError", "the run pool returned the wrong number of results"),
+    ("SensitivityRunError", "the run pool returned the wrong number of results"),
+)
+# The sentences the code itself writes into a stored error (pool.py, sweep.py, sensitivity.py) and the table's lines.
+PLAIN_SENTENCES: frozenset[str] = frozenset({
+    "the run did not report its folder",
+    "the run failed",
+    "the run finished but has no stored result",
+    "the settings were not accepted",
+    GENERIC_FAILURE,
+    *(text for _cls, text in PLAIN_FAILURES),
+})
+_CLASS_PREFIX = re.compile(r"([A-Za-z_][A-Za-z0-9_]*):")
+
+
+def plain_reason(error: object, *, fallback: str | None = GENERIC_FAILURE) -> str | None:
+    """A stored failure text as a sentence that is safe to show: None for nothing; the text itself only when it is one of
+    the code's own sentences (PLAIN_SENTENCES); else the table's line for the class a leading `ClassName:` names; else
+    `fallback` (the generic line, or None for a caller that would rather say nothing). Exception text is never returned."""
+    if not isinstance(error, str):
         return None
-    return text
+    text = error.strip().rstrip(".")
+    if not text:
+        return None
+    if text in PLAIN_SENTENCES:
+        return text
+    m = _CLASS_PREFIX.match(text)
+    if m:
+        for cls, line in PLAIN_FAILURES:
+            if cls == m.group(1):
+                return line
+    return fallback
 
 
 def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001
@@ -418,7 +453,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
                 continue
             what = phrase(axis, "survive")
             if status == "not_applicable":
-                why = plain_reason(error)
+                why = plain_reason(error, fallback=None)
                 clauses.append(f"{what} couldn't be run for this strategy" + (f" ({why})" if why else ""))
             else:
                 clauses.append(f"the run with {what} didn't finish")

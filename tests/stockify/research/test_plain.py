@@ -270,8 +270,42 @@ def _sens(verdict, base, costs=("done", None), ticks=("done", None), ckey="costs
     rows = [SensitivityRow("baseline", "baseline", "Baseline", "r0", "baseline", base, None, None, None)]
     for key, axis, (st, net) in ((ckey, "costs", costs), (tkey, "slippage", ticks)):
         rows.append(SensitivityRow(key, axis, key, None if st != "done" else "x", st, net, None,
-                                   None if net is None else net - base, None if st == "done" else "it broke"))
+                                   None if net is None else net - base, None if st == "done" else "the run failed"))
     return SensitivityResult("r0", "j", rows, base, verdict == "fragile", verdict, [])
+
+
+class PlainReasonTests(unittest.TestCase):
+    """A stored failure text is shown only when the code itself wrote it: exception text never leaves the machine."""
+
+    def test_the_codes_own_sentences_pass_unchanged(self):
+        for text in sorted(plain.PLAIN_SENTENCES):
+            self.assertEqual(plain.plain_reason(text), text)
+        self.assertEqual(plain.plain_reason("the run did not report its folder."), "the run did not report its folder")
+
+    def test_exception_text_is_never_returned(self):
+        # none of these has an underscore, a slash, a newline or "Traceback", the old filter's only tests
+        for raw in ("ValueError: bad window", "KeyError: 'fast'", "boom", "C:" + chr(92) + "Users" + chr(92) + "x.py not found",
+                    "the lab is at D:/data", "RuntimeError: the pool fell over", "exit code 3", "x" * 200,
+                    "line1" + chr(10) + "line2", "IndexError: list index out of range"):
+            got = plain.plain_reason(raw)
+            self.assertEqual(got, plain.GENERIC_FAILURE, raw)
+
+    def test_a_leading_class_name_maps_through_the_fixed_table(self):
+        self.assertEqual(plain.plain_reason("HoldoutLocked: the holdout starts 2026-08-01 and this run reaches it"),
+                         "the holdout is locked")
+        self.assertEqual(plain.plain_reason("RunConfigError: strategy.params.slow must be above fast"),
+                         "the settings were not accepted")
+        self.assertEqual(plain.plain_reason("SweepSpecError: the pool returned 2 outcomes for 3 runs"),
+                         "the run pool returned the wrong number of results")
+        for text in set(dict(plain.PLAIN_FAILURES).values()):
+            self.assertIn(text, plain.PLAIN_SENTENCES)
+
+    def test_nothing_in_gives_nothing_out_and_a_caller_can_ask_for_no_fallback(self):
+        for raw in (None, "", "   ", 5):
+            self.assertIsNone(plain.plain_reason(raw))
+        self.assertIsNone(plain.plain_reason("ValueError: bad window", fallback=None))
+        self.assertEqual(plain.plain_reason("ValueError: bad window", fallback="x"), "x")
+        self.assertEqual(plain.plain_reason("HoldoutLocked: x", fallback=None), "the holdout is locked")
 
 
 class FragileSentenceTests(unittest.TestCase):
@@ -297,11 +331,11 @@ class FragileSentenceTests(unittest.TestCase):
         na = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("done", 3_000_000),
                                           ticks=("not_applicable", None)), **k)
         self.assertEqual(na, "Can't say yet: one extra tick of slippage couldn't be run for this strategy "
-                             "(it broke), so it isn't called robust.")
+                             "(the run failed), so it isn't called robust.")
         both = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("failed", None),
                                             ticks=("not_applicable", None)), **k)
         self.assertEqual(both, "Can't say yet: the run with 1.5 times all costs didn't finish; and one extra tick "
-                               "of slippage couldn't be run for this strategy (it broke), so it isn't called robust.")
+                               "of slippage couldn't be run for this strategy (the run failed), so it isn't called robust.")
         for raw in (None, "", "bad_key in C:" + chr(92) + "x", "x" * 200, "line1" + chr(10) + "line2"):
             s = _sens("inconclusive", 4_120_000, costs=("done", 3_000_000), ticks=("not_applicable", None))
             s.rows[2] = type(s.rows[2])(**{**s.rows[2].__dict__, "error": raw})

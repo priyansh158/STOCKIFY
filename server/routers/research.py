@@ -111,7 +111,11 @@ def _stored_sweep(job_id: str) -> dict:
     if job is None or job.get("kind") != "sweep":
         raise HTTPException(status_code=404, detail="no such sweep")
     if job.get("status") != "done":
-        raise HTTPException(status_code=404, detail=f"sweep not finished yet (status: {job.get('status')})")
+        detail = f"sweep not finished yet (status: {job.get('status')})"
+        if job.get("status") == "failed" and job.get("error"):
+            from stockify.research import plain
+            detail += f": {plain.plain_reason(job['error'])}"          # a plain reason from the fixed table, never the raw text
+        raise HTTPException(status_code=404, detail=detail)
     try:
         doc = json.loads(job.get("state_json") or "")
     except ValueError:
@@ -184,11 +188,17 @@ def _heatmap(doc: dict, x: str, y: str | None) -> SweepHeatmapDTO:
                            hidden_axes=[a for a in axes if a not in (x, y)])
 
 
-def _sweep_sentence(doc: dict, h: SweepHeatmapDTO) -> str:
+def _objective_label(objective: str) -> str:
+    """The one name for the objective, on the page and in the sentence: a name a reader knows, never a code."""
+    from stockify.research import plain
+    return plain.OBJECTIVE_LABELS.get(objective, objective)
+
+
+def _sweep_sentence(doc: dict, h: SweepHeatmapDTO, labels: dict[str, str]) -> str:
     from stockify.research import plain as words
-    obj = words.OBJECTIVE_LABELS.get(doc["objective"], doc["objective"])       # a name a reader knows, never a code
+    obj = _objective_label(doc["objective"])
     if h.hidden_axes:
-        what = (f"Each square is the best {obj} over every setting of {', '.join(h.hidden_axes)}, "
+        what = (f"Each square is the best {obj} over every setting of {', '.join(labels[a] for a in h.hidden_axes)}, "
                 "not an average and not one fixed value.")
     else:
         what = f"Each square is the {obj} of one trial."
@@ -196,14 +206,38 @@ def _sweep_sentence(doc: dict, h: SweepHeatmapDTO) -> str:
     if b is None:
         return f"{what} No trial finished with a usable {obj}, so there is no best one."
     value = words.rupees(b.value / 100) if doc["objective"] == "net_pnl" else f"{b.value:.4g}"
-    where = f"{h.x} = {h.xs[b.xi]}" + (f" and {h.y} = {h.ys[b.yi]}" if h.y is not None else "")
+    where = f"{labels[h.x]} = {h.xs[b.xi]}" + (f" and {labels[h.y]} = {h.ys[b.yi]}" if h.y is not None else "")
     return f"{what} The best of all {len(doc['rows'])} trials has {where}, with {obj} {value}."
 
 
-def _plain_error(error: object) -> str | None:
-    """A failed trial's stored error as a plain clause, or None when it looks like a raw log line (as for walk-forward windows)."""
+def _row_reason(r: dict) -> str | None:
+    """A failed trial's reason: the plain one stored with the row, else made now from its raw text (an older sweep)."""
     from stockify.research import plain
-    return plain.plain_reason(error if isinstance(error, str) else None)
+    stored = r.get("failure_reason")
+    if isinstance(stored, str) and stored in plain.PLAIN_SENTENCES:
+        return stored
+    return plain.plain_reason(r.get("error")) if r.get("status") != "done" else None
+
+
+def _axis_labels(job_id: str, paths: list[str]) -> dict[str, str]:
+    """A plain label for each `strategy.params.<name>` axis from the sweep's strategy (its params schema); every other
+    axis, or a sweep whose strategy is unknown, is labelled by its path."""
+    labels = {p: p for p in paths}
+    try:
+        from stockify import store
+        from stockify.strategies import _catalogue
+        spec = json.loads((store.get_research_job(job_id) or {}).get("spec_json") or "{}")
+        strat = spec["base"]["strategy"]
+        schema = _catalogue.schema_of(strat["kind"], strat["ref"]) or []
+    except Exception:  # noqa: BLE001 — a label is a nicety: any trouble means the path
+        return labels
+    names = {p.get("name"): p.get("label") for p in schema if isinstance(p, dict)}
+    for path in paths:
+        name = path.removeprefix("strategy.params.") if path.startswith("strategy.params.") else None
+        label = names.get(name) if name else None
+        if isinstance(label, str) and label.strip():
+            labels[path] = label.strip()
+    return labels
 
 
 @router.get("/api/research/sweeps/{job_id}", response_model=SweepDTO)
@@ -212,13 +246,15 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
     doc = _stored_sweep(job_id)
     chosen_x, chosen_y = _pick_axes(list(doc["axes"]), x, y)
     h = _heatmap(doc, chosen_x, chosen_y)
+    labels = _axis_labels(job_id, list(doc["axes"]))
     return SweepDTO(
         job_id=job_id, name=str(doc.get("name", "")), family_id=str(doc.get("family_id", "")),
-        objective=doc["objective"],
-        axes=[SweepAxisDTO(path=a, labels=[_label(v) for v in vs], values=vs) for a, vs in doc["axes"].items()],
-        rows=[SweepRowDTO(**{**{k: r.get(k) for k in SweepRowDTO.model_fields}, "error": _plain_error(r.get("error"))})
+        objective=doc["objective"], objective_label=_objective_label(doc["objective"]),
+        axes=[SweepAxisDTO(path=a, label=labels[a], labels=[_label(v) for v in vs], values=vs)
+              for a, vs in doc["axes"].items()],
+        rows=[SweepRowDTO(**{**{k: r.get(k) for k in SweepRowDTO.model_fields}, "error": _row_reason(r)})
               for r in doc["rows"]],
-        best_run_id=doc.get("best_run_id"), cells=h, plain=_sweep_sentence(doc, h))
+        best_run_id=doc.get("best_run_id"), cells=h, plain=_sweep_sentence(doc, h, labels))
 
 # ---- walk-forward report (M6.5, WF 6.6; Task 22) ----------------------------------------------------------------
 # The prefix `/api/research/walkforward/` is its own: no `{job_id}` route of another kind can shadow it, and the
@@ -237,5 +273,5 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
     d["summary"] = WalkforwardSummaryDTO(**s)
-    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"))}) for w in d["windows"]]
+    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None)}) for w in d["windows"]]
     return WalkforwardDTO(**d)

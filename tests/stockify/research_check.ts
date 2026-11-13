@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import {
   DIVERGING, SERIES_TOKENS, bucketTone, divergingStep, heatColourStep, heatFormat, heatGridProps, heatMoreWord, sentenceOrDash,
-  sweepMissingKind,
+  sweepFailureReason, sweepMissingKind,
 } from "../../web/src/lib/researchHelpers.ts";
 
 const css = readFileSync(new URL("../../web/src/app/globals.css", import.meta.url), "utf-8");
@@ -19,7 +19,12 @@ const dto = (over: object) => ({
   signed: true, format: "ratio", hidden_axes: [], ...over,
 });
 const gp = heatGridProps(dto({}) as never);
-const one = heatGridProps(dto({ y: null, ys: ["sharpe"], y_values: [null], cells: [[0.5, -0.2]], best: null }) as never);
+const gl = heatGridProps(dto({}) as never, { labels: { fast: "Fast average", slow: "Slow average" } });
+const one = heatGridProps(dto({
+  y: null, ys: ["sharpe"], y_values: [null], xs: ["5", "10", "15"], cells: [[0.5, -0.2, 1.2]], run_ids: [["a", "b", "c"]],
+  best: { xi: 2, yi: 0, run_id: "c", value: 1.2 },
+}) as never, { scored: "Steadiness of returns" });
+const pc = heatGridProps(dto({ format: "percent", signed: true }) as never);
 const money = heatGridProps(dto({ format: "paise", signed: false }) as never);
 
 const bucket = (pnl: number, thin = false) => ({
@@ -47,10 +52,15 @@ const out = {
     heatFormat("paise", false)(12345600), heatFormat("ratio", true)(Number.NaN), heatFormat("other", true)(1.5),
   ],
   grid: { x: gp.best, signed: gp.signed, xs: gp.xs, ys: gp.ys, cells: gp.cells, xLabel: gp.xLabel, yLabel: gp.yLabel, f: gp.format(1) },
-  one: { ys: one.ys, best: one.best, cells: one.cells, yLabel: one.yLabel },
+  one: { ys: one.ys, best: one.best, cells: one.cells, yLabel: one.yLabel, links: one.links },
+  grid2: { xLabel: gl.xLabel, yLabel: gl.yLabel, links: gl.links },
+  pc: { signed: pc.signed, f: [pc.format(0.1234), pc.format(-0.05)] },
   money: { signed: money.signed, f: money.format(412000) },
   missing: ["no such sweep", "sweep not finished yet (status: running)", "sweep not finished yet (status: failed)",
-    "sweep not finished yet (status: queued)", "the sweep has no readable stored result", "", "something else"].map(sweepMissingKind),
+    "sweep not finished yet (status: queued)", "the sweep has no readable stored result", "", "something else",
+    "sweep not finished yet (status: failed): the holdout is locked", "sweep not finished yet (status: running): x"].map(sweepMissingKind),
+  failure: ["sweep not finished yet (status: failed): the holdout is locked", "sweep not finished yet (status: failed)",
+    "sweep not finished yet (status: failed): ", "no such sweep", "sweep not finished yet (status: running): why"].map(sweepFailureReason),
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

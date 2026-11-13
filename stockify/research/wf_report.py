@@ -188,7 +188,7 @@ def _result_word(w: dict) -> str:
         return "tested"
     if w["chosen_params"] is None:
         return "not tested, no training run gave a usable result"
-    why = plain.plain_reason(w.get("error"))
+    why = plain.plain_reason(w.get("error"), fallback=None)
     return "test run did not finish" + (f" ({why})" if why else "")
 
 

@@ -4,7 +4,7 @@
  * Server components may call these; the base URL is handled by `api`.
  */
 import { api, ApiError } from "./api";
-import { sweepMissingKind, type SweepGone } from "./researchHelpers";
+import { sweepFailureReason, sweepMissingKind, type SweepGone } from "./researchHelpers";
 import type {
   ComparisonDTO,
   CoverageMatrixDTO,
@@ -16,7 +16,7 @@ import type {
   SweepDTO,
 } from "./types";
 
-export { bucketTone, heatColourStep, heatFormat, heatGridProps, sentenceOrDash, sweepMissingKind } from "./researchHelpers";
+export { bucketTone, heatColourStep, heatFormat, heatGridProps, sentenceOrDash, sweepFailureReason, sweepMissingKind } from "./researchHelpers";
 export type { BucketTone, SweepGone } from "./researchHelpers";
 
 const enc = encodeURIComponent;
@@ -76,7 +76,7 @@ export async function getSweep(
   id: string,
   x?: string,
   y?: string,
-): Promise<{ kind: "ready"; sweep: SweepDTO } | { kind: SweepGone } | { kind: "bad_axes"; detail: string }> {
+): Promise<{ kind: "ready"; sweep: SweepDTO } | { kind: SweepGone; reason: string | null } | { kind: "bad_axes"; detail: string }> {
   const q = new URLSearchParams();
   if (x) q.set("x", x);
   if (y) q.set("y", y);
@@ -84,7 +84,7 @@ export async function getSweep(
   try {
     return { kind: "ready", sweep: await api<SweepDTO>(`/api/research/sweeps/${enc(id)}${s ? `?${s}` : ""}`) };
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return { kind: sweepMissingKind(e.message) };
+    if (e instanceof ApiError && e.status === 404) return { kind: sweepMissingKind(e.message), reason: sweepFailureReason(e.message) };
     if (e instanceof ApiError && e.status === 422) return { kind: "bad_axes", detail: e.message };
     throw e;
   }

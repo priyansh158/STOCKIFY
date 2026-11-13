@@ -251,8 +251,8 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/sweeps/sweep-t-1")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "axes", "rows", "best_run_id",
-                                   "cells", "plain"])
+        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "objective_label", "axes", "rows",
+                                   "best_run_id", "cells", "plain"])
         self.assertEqual((j["objective"], j["best_run_id"]), ("sharpe", "run2"))
         self.assertEqual([a["path"] for a in j["axes"]], [self.X, self.Y])
         self.assertEqual(j["axes"][1]["labels"], ["20", "30", "40"])
@@ -331,24 +331,56 @@ class SweepApiTests(SandboxedDBTest):
         add_sweep_job(None, "wf-1", kind="walkforward", status="running")
         add_sweep_job(None, "sweep-run", status="running")
         add_sweep_job(None, "sweep-fail", status="failed")
+        add_sweep_job(None, "sweep-lock", status="failed")
+        store.update_research_job("sweep-lock", error="HoldoutLocked: the holdout starts 2026-08-01 C:" + chr(92) + "x")
+        add_sweep_job(None, "sweep-boom", status="failed")
+        store.update_research_job("sweep-boom", error="RuntimeError: the pool fell over")
         add_sweep_job(sweep_doc("sweep-j"), "sweep-j")
         store.update_research_job("sweep-j", state_json="{not json")
         for jid, text in (("nope", "no such sweep"), ("wf-1", "no such sweep"),
                           ("sweep-run", "sweep not finished yet (status: running)"),
                           ("sweep-fail", "sweep not finished yet (status: failed)"),
+                          ("sweep-lock", "sweep not finished yet (status: failed): the holdout is locked"),
+                          ("sweep-boom", "sweep not finished yet (status: failed): the run failed; see the log"),
                           ("sweep-j", "the sweep has no readable stored result")):
             r = self.client.get(f"/api/research/sweeps/{jid}")
             self.assertEqual((r.status_code, r.json()["detail"]), (404, text), jid)
 
-    def test_a_failed_trials_error_is_a_plain_reason_or_nothing(self):
-        # a short clean message passes; a code name, a path or a traceback is dropped (None), as for walk-forward windows
-        axes = {self.X: [5, 10, 15]}
-        rows = [_row(0, {self.X: 5}, None), _row(1, {self.X: 10}, None), _row(2, {self.X: 15}, None)]
-        for r, err in zip(rows, ("the run did not report its folder", "KeyError: fast_period in x/y.py", None)):
+    def test_a_failed_trials_error_is_a_plain_reason_never_exception_text(self):
+        from stockify.research import plain
+        axes = {self.X: [5, 10, 15, 20, 25]}
+        rows = [_row(i, {self.X: v}, None) for i, v in enumerate(axes[self.X])]
+        errs = ("the run did not report its folder", "ValueError: bad window", "KeyError: fast_period in x/y.py",
+                "HoldoutLocked: the holdout starts 2026-08-01", None)
+        for r, err in zip(rows, errs):
             r.update(status="failed", error=err)
+        rows[4]["failure_reason"] = "the settings were not accepted"        # stored at write time: read as it is
         add_sweep_job(sweep_doc(axes=axes, rows=rows))
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
-        self.assertEqual([r["error"] for r in j["rows"]], ["the run did not report its folder", None, None])
+        self.assertEqual([r["error"] for r in j["rows"]],
+                         ["the run did not report its folder", plain.GENERIC_FAILURE, plain.GENERIC_FAILURE,
+                          "the holdout is locked", "the settings were not accepted"])
+        self.assertNotIn("bad window", json.dumps(j))
+        self.assertNotIn("fast_period", json.dumps(j))
+
+    def test_axes_carry_a_plain_label_from_the_strategy_and_the_objective_a_name(self):
+        axes = {"strategy.params.interval_s": [60, 300], self.X: [5, 10]}
+        rows = [_row(i, {"strategy.params.interval_s": a, self.X: b}, float(i))
+                for i, (a, b) in enumerate((a, b) for a in axes["strategy.params.interval_s"] for b in axes[self.X])]
+        add_sweep_job(sweep_doc(axes=axes, rows=rows))
+        store.update_research_job("sweep-t-1", spec_json=json.dumps(
+            {"base": {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold"}}}))
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual([(a["path"], a["label"]) for a in j["axes"]],
+                         [("strategy.params.interval_s", "Bar length (seconds)"), (self.X, self.X)])   # no label known: the path
+        self.assertEqual(j["objective_label"], "steadiness of returns (Sharpe)")
+        self.assertIn("Bar length (seconds) = ", j["plain"])                  # the sentence names the settings as the page does
+        self.assertNotIn("interval_s", j["plain"])
+
+    def test_a_sweep_without_a_stored_spec_labels_every_axis_by_its_path(self):
+        add_sweep_job(sweep_doc())
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual([a["label"] for a in j["axes"]], [a["path"] for a in j["axes"]])
 
     def test_net_pnl_plain_sentence_is_in_rupees(self):
         axes = {self.X: [5, 10]}

@@ -79,26 +79,38 @@ export function heatFormat(kind: string, signed: boolean): (n: number) => string
   };
 }
 
-/** What the page hands HeatGrid: the sweep's cells as they are, `format` as a function, `best` {xi, yi} as {x, y}. */
-export function heatGridProps(d: SweepHeatmapDTO) {
+/**
+ * What the page hands HeatGrid: the sweep's cells as they are, `format` as a function, `best` {xi, yi} as {x, y}, and a link
+ * to the run behind each cell. `labels` (path to plain name) names the axes; `scored` names the single row of a one-axis sweep.
+ */
+export function heatGridProps(d: SweepHeatmapDTO, opts: { labels?: Record<string, string>; scored?: string } = {}) {
   return {
     xs: d.xs,
-    ys: d.ys,
+    ys: d.y === null && opts.scored ? [opts.scored] : d.ys,
     cells: d.cells,
     format: heatFormat(d.format, d.signed),
     best: d.best ? { x: d.best.xi, y: d.best.yi } : null,
     signed: d.signed,
-    xLabel: d.x,
-    yLabel: d.y ?? "Objective",
+    xLabel: opts.labels?.[d.x] ?? d.x,
+    yLabel: d.y === null ? "Objective" : opts.labels?.[d.y] ?? d.y,
+    links: d.run_ids.map((row) => row.map((id) => (id ? `/tests/${encodeURIComponent(id)}` : null))),
   };
 }
 
 export type SweepGone = "running" | "failed" | "missing" | "unreadable";
 
+const NOT_FINISHED = /^sweep not finished yet \(status: ([a-z_]+)\)(?:: ([\s\S]*))?$/;
+
 /** Which plain state a sweep's 404 detail from the server stands for (see sweep_detail in server/routers/research.py). */
 export function sweepMissingKind(detail: string): SweepGone {
-  const m = /^sweep not finished yet \(status: ([a-z_]+)\)$/.exec(detail.trim());
+  const m = NOT_FINISHED.exec(detail.trim());
   if (m) return m[1] === "failed" ? "failed" : "running";
   if (detail.trim() === "the sweep has no readable stored result") return "unreadable";
   return "missing";
+}
+
+/** The plain reason a failed sweep carries in its 404 detail (a sentence from the server's fixed table), or null. */
+export function sweepFailureReason(detail: string): string | null {
+  const m = NOT_FINISHED.exec(detail.trim());
+  return m && m[1] === "failed" && m[2]?.trim() ? m[2].trim() : null;
 }

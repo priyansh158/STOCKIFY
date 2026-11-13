@@ -6,6 +6,7 @@
  * the SVGs keep their aspect ratio and scale with the column, so the text in them is never stretched.
  */
 import { useState } from "react";
+import Link from "next/link";
 import { DIVERGING, SERIES_TOKENS, divergingStep, heatColourStep, heatMoreWord } from "@/lib/researchHelpers";
 
 const MAX_SERIES = 4;
@@ -287,6 +288,7 @@ export function HeatGrid({
   format,
   best,
   signed,
+  links,
   label,
   xLabel,
   yLabel,
@@ -297,6 +299,8 @@ export function HeatGrid({
   format: Fmt;
   best?: { x: number; y: number } | null;
   signed?: boolean;
+  /** `links[row][column]`: where a cell's value leads (its run), or null for none. */
+  links?: (string | null)[][];
   label?: string;
   xLabel?: string;
   yLabel?: string;
@@ -338,7 +342,12 @@ export function HeatGrid({
                       data-step={!ok ? undefined : signed ? Math.abs(d) : heatColourStep(v, lo, hi, HEAT_STEPS)}
                       data-best={isBest ? "true" : undefined}
                     >
-                      {v === null ? "—" : format(v)}
+                      {v !== null && links?.[yi]?.[xi] ? (
+                        <Link href={links[yi][xi] as string}>
+                          {format(v)}
+                          <span className="sr-only"> (open the run for {y}, {x})</span>
+                        </Link>
+                      ) : v === null ? "—" : format(v)}
                       {isBest && <span className="sr-only"> (best)</span>}
                     </td>
                   );
@@ -353,7 +362,7 @@ export function HeatGrid({
           ? `${[
               hi > 0 && `${upperFirst(DIVERGING.positive.word)} cells are above zero`,
               lo < 0 && `${hi > 0 ? "" : "Cells are below zero: "}${DIVERGING.negative.word} striped cells${hi > 0 ? " are below zero" : ""}`,
-            ].filter(Boolean).join(" and ")}; the stronger the shade, the further from zero. Values run from ${format(lo)} to ${format(hi)}.`
+            ].filter(Boolean).join(" and ")}. ${lo < 0 ? "A minus sign marks every value below zero, so you do not need the colours to tell them apart. " : ""}The stronger the shade, the further from zero. Values run from ${format(lo)} to ${format(hi)}.`
           : `${upperFirst(HEAT_MORE)} cells are larger values, from ${format(lo)} to ${format(hi)}.`}
         {best ? " The outlined cell is the best." : ""}
       </figcaption>
