@@ -255,7 +255,8 @@ out.bands = chart.windowBands(wfs);
 out.view = [
   chart.initialView(0, -1, 0, 300), chart.initialView(100, 5, 2, 300), chart.initialView(300, 5, 2, 300),
   chart.initialView(301, 5, 2, 300), chart.initialView(1000, 10, 3, 300), chart.initialView(1000, -1, 3, 300),
-  chart.initialView(1000, 10, 0, 300), chart.initialView(1000, 0, 1, 300),
+  chart.initialView(1000, 10, 0, 300), chart.initialView(1000, 0, 1, 300), chart.initialView(1000, 500, 1, 300),
+  chart.initialView(500, 450, 2, 300),
 ];
 out.bandsEmpty = chart.windowBands([]);
 const wb = chart.windowBands(wfs);

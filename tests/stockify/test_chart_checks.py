@@ -186,11 +186,15 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(v[0], fit)
         self.assertEqual(v[1], fit)                       # a short chart fits everything
         self.assertEqual(v[2], fit)                       # exactly the near limit still fits
-        self.assertEqual(v[3], {"kind": "range", "from": 5 - 150, "to": 5 + 150})
-        self.assertEqual(v[4], {"kind": "range", "from": 10 - 150, "to": 10 + 150})
-        self.assertEqual(v[5], {"kind": "range", "from": 1000 - 1 - 150, "to": 1000 - 1 + 150})   # trade not in the bars: the end
+        # The window never reaches past the data: it is slid back inside, leaving only the small margin (4 bars) at the ends.
+        self.assertEqual(v[3], {"kind": "range", "from": -4, "to": 296})
+        self.assertEqual(v[4], {"kind": "range", "from": -4, "to": 296})
+        self.assertEqual(v[5], {"kind": "range", "from": 1000 - 1 + 4 - 300, "to": 1000 - 1 + 4})   # trade not in the bars: the end
         self.assertEqual(v[6], fit)                       # no trades: fit
-        self.assertEqual(v[7], {"kind": "range", "from": -150, "to": 150})
+        self.assertEqual(v[7], {"kind": "range", "from": -4, "to": 296})
+        self.assertEqual(v[8], {"kind": "range", "from": 350, "to": 650})                          # mid-chart: centred on the trade
+        # A first trade late in the run: the window ends at the last bar (plus the margin) instead of leaving the right side empty.
+        self.assertEqual(v[9], {"kind": "range", "from": 203, "to": 503})
 
     def test_gap_windows_are_shaded_by_day_without_bars(self):
         w0 = 1_762_885_800
