@@ -112,7 +112,7 @@ def write_ticks(ticks: Iterable[dict]) -> int:
         return 0
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.executemany(
                 "INSERT OR REPLACE INTO ticks "
                 "(instrument_token, ts, ltp, volume, oi) VALUES (?,?,?,?,?)",
@@ -129,7 +129,7 @@ def trim_old(retention_seconds: int = _RETENTION_SECONDS) -> int:
     cutoff = int(time.time()) - retention_seconds
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             cur = conn.execute("DELETE FROM ticks WHERE ts < ?", (cutoff,))
             conn.commit()
             return cur.rowcount or 0
@@ -141,7 +141,7 @@ def checkpoint() -> None:
     """Truncate the WAL file. Call periodically (e.g. once an hour)."""
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
         pass
@@ -208,7 +208,7 @@ def add_subscription(instrument_token: int, kind: str = "analysis") -> None:
         return
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute(
                 "INSERT OR REPLACE INTO subscriptions "
                 "(instrument_token, kind, added_ts) VALUES (?, ?, ?)",
@@ -224,7 +224,7 @@ def remove_subscription(instrument_token: int) -> None:
         return
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute(
                 "DELETE FROM subscriptions WHERE instrument_token = ?",
                 (int(instrument_token),)
@@ -237,7 +237,7 @@ def remove_subscription(instrument_token: int) -> None:
 def remove_subscriptions_of_kind(kind: str) -> None:
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute("DELETE FROM subscriptions WHERE kind = ?", (kind,))
             conn.commit()
     except Exception:

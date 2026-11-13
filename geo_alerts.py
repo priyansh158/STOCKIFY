@@ -97,7 +97,7 @@ def mark_seen(
     if not guid:
         return False
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         cur = conn.execute(
             "INSERT OR IGNORE INTO seen_articles "
             "(guid, title, url, source, published_at, first_seen_at, query) "
@@ -212,7 +212,7 @@ def save_alert(
     if not guid:
         return None
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         try:
             cur = conn.execute(
                 "INSERT INTO geo_alerts ("
@@ -240,12 +240,13 @@ def save_alert(
             conn.commit()
             return int(cur.lastrowid)
         except sqlite3.IntegrityError:
+            conn.rollback()          # the failed INSERT left this thread's transaction open, holding the write lock
             return None
 
 
 def mark_emailed(alert_id: int) -> None:
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         conn.execute(
             "UPDATE geo_alerts SET emailed_at = ? WHERE id = ?",
             (int(time.time()), alert_id),
@@ -255,7 +256,7 @@ def mark_emailed(alert_id: int) -> None:
 
 def acknowledge(alert_id: int) -> bool:
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         cur = conn.execute(
             "UPDATE geo_alerts SET acknowledged_at = ? WHERE id = ?",
             (int(time.time()), alert_id),

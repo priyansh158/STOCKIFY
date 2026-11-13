@@ -6,9 +6,13 @@ hammers every converted module from many threads (seeded random lookups and rang
 single-threaded oracle says) while a writer inserts."""
 from __future__ import annotations
 
+import gc
 import random
 import sqlite3
+import sys
 import threading
+import time
+import types
 import unittest
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -16,6 +20,7 @@ from tests.support import SandboxedDBTest
 
 import geo_alerts
 import tick_buffer
+from stockify import dbconn
 from stockify.data import history, refdata
 
 MODULES = (refdata, history, tick_buffer, geo_alerts)
@@ -64,6 +69,129 @@ class PerThreadConnectionTest(SandboxedDBTest):
                     u.join()
                     self.assertEqual(seen, [1])
                 self.assertEqual(mod._connect().execute("SELECT 1").fetchone()[0], 1)
+
+    def test_a_second_thread_is_never_handed_the_connection_being_published(self):
+        # I1: `_conn` was published before the pool recorded it as its own, so a thread in that gap took it for a
+        # test's injected connection and shared it. Widen the gap deterministically: the setter sleeps.
+        published = threading.Event()
+
+        class Slow(types.ModuleType):
+            _c = None
+
+            @property
+            def _conn(self):
+                return self._c
+
+            @_conn.setter
+            def _conn(self, value):
+                self._c = value
+                published.set()
+                time.sleep(0.4)
+
+        fake = Slow("fake_pool_module")
+        sys.modules["fake_pool_module"] = fake
+        try:
+            pool = dbconn.Pool("fake_pool_module", lambda: sqlite3.connect(":memory:", check_same_thread=False))
+            first, second = [], []
+            a = threading.Thread(target=lambda: first.append(pool.get()))
+            a.start()
+            self.assertTrue(published.wait(5))
+            b = threading.Thread(target=lambda: second.append(pool.get()))
+            b.start()
+            a.join()
+            b.join()
+            self.assertIsNot(first[0], second[0])
+            pool.close_all()
+        finally:
+            del sys.modules["fake_pool_module"]
+
+    def test_every_pooled_connection_waits_as_long_as_the_migrations_do(self):
+        # I2: only the first connection had the 30 s busy timeout; the others got 10 s.
+        for mod in (refdata, history):
+            with self.subTest(mod.__name__):
+                mod._connect()
+                seen = []
+                t = threading.Thread(target=lambda: seen.append(mod._connect().execute("PRAGMA busy_timeout").fetchone()[0]))
+                t.start()
+                t.join()
+                self.assertEqual(seen, [30000])
+                self.assertEqual(mod._connect().execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+
+    def test_a_failed_write_on_one_thread_does_not_block_a_write_on_another(self):
+        # I4: tick_buffer / geo_alerts use implicit transactions; a failed INSERT left the thread's connection in a
+        # transaction, holding SQLite's write lock against every other thread's connection.
+        guid = {"severity": "high", "disruption_score": 5, "scope": "x", "title": "t", "source": "s", "url": "u",
+                "published_at": "p", "why_disruptive": "w", "investor_action": "a", "confidence": 0.5,
+                "affected_tickers": [], "article": {}}
+        geo_alerts.init_db()
+        outcome = []
+
+        def a():
+            geo_alerts.save_alert(guid="g1", **guid)
+            outcome.append(geo_alerts.save_alert(guid="g1", **guid))          # duplicate: IntegrityError, swallowed
+
+        def b():
+            try:
+                outcome.append(geo_alerts.mark_seen(guid="other", title="t"))
+            except sqlite3.OperationalError as e:
+                outcome.append(e)
+
+        ta = threading.Thread(target=a)
+        ta.start()
+        ta.join()
+        tb = threading.Thread(target=b)
+        tb.start()
+        tb.join(15)
+        self.assertFalse(tb.is_alive())
+        self.assertEqual(outcome, [None, True])
+        # and a write that raises through `locked_write` is rolled back and releases the lock
+        conn = tick_buffer._connect()
+        with self.assertRaises(RuntimeError):
+            with dbconn.locked_write(tick_buffer._lock, conn):
+                conn.execute("CREATE TABLE IF NOT EXISTS boom (x)")
+                conn.execute("INSERT INTO boom VALUES (1)")
+                raise RuntimeError("write failed")
+        self.assertFalse(conn.in_transaction)
+
+    def test_an_override_is_private_to_its_thread(self):
+        # M2: the read-only block must not turn every thread's reads and writes read-only.
+        mine = sqlite3.connect(":memory:", check_same_thread=False)
+        refdata._connect()
+        with refdata._pool.override(mine):
+            self.assertIs(refdata._connect(), mine)
+            seen = []
+            t = threading.Thread(target=lambda: seen.append(refdata._connect()))
+            t.start()
+            t.join()
+            self.assertIsNot(seen[0], mine)
+        self.assertIsNot(refdata._connect(), mine)
+        mine.close()
+
+    def test_a_reset_also_closes_a_connection_a_test_put_in_conn(self):
+        # M1
+        refdata._connect()
+        injected = sqlite3.connect(":memory:", check_same_thread=False)
+        refdata._conn = injected
+        support.reset_sqlite_singleton(refdata)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            injected.execute("SELECT 1")
+
+    def test_a_connection_is_closed_when_its_thread_ends_even_for_a_foreign_thread(self):
+        # M3: `_DummyThread.is_alive()` is always True, so liveness cannot be what frees a connection.
+        made = []
+
+        def work():
+            made.append(refdata._connect())
+
+        refdata._connect()
+        t = threading.Thread(target=work)
+        t.start()
+        t.join()
+        gc.collect()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            made[0].execute("SELECT 1")
+        self.assertIn(refdata._conn, refdata._pool._owned)                      # the first connection stays
+        self.assertEqual(refdata._connect().execute("SELECT 1").fetchone()[0], 1)
 
     def test_resetting_closes_every_thread_connection(self):
         for mod in MODULES:

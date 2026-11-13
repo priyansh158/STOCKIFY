@@ -95,6 +95,7 @@ def read_only(*modules):  # noqa: ANN002
     from stockify import paths, store
     from stockify.data import migrate, refdata
     saved, opened = [], []
+    stack = contextlib.ExitStack()
     try:
         for mod in modules or (store, refdata):
             path = Path(mod._db_path())
@@ -105,12 +106,17 @@ def read_only(*modules):  # noqa: ANN002
                 migrate.apply(conn, refdata.STORE if mod is refdata else "lab")
             conn.row_factory = sqlite3.Row
             opened.append(conn)
-            saved.append((mod, mod._conn))
-            mod._conn = conn
+            pool = getattr(mod, "_pool", None)
+            if pool is not None:
+                stack.enter_context(pool.override(conn))   # this thread only (D-143): the pool's own `_conn` is left
+            else:
+                saved.append((mod, mod._conn))
+                mod._conn = conn
         yield
     finally:
         for mod, conn in saved:
             mod._conn = conn
+        stack.close()
         for conn in opened:
             conn.close()
 

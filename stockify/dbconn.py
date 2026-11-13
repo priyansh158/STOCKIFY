@@ -4,18 +4,35 @@ A single `check_same_thread=False` connection shared by the API's worker threads
 two threads interleave `execute` / `fetch` on the same handle and SQLite answers `InterfaceError('bad
 parameter or other API misuse')` or hands back rows as None. WAL lets any number of connections read at once
 while one writes, so each thread gets its own connection; a module's writes stay serialised by its own write
-lock and `BEGIN IMMEDIATE`, exactly as before.
+lock (`locked_write`) and `BEGIN IMMEDIATE`, exactly as before.
 
-A module keeps its `_conn` global (the first connection it opened, where migrations ran). Tests and
-`span_validate.read_only` put their own connection in `_conn`; a connection the pool did not open is handed to
-every thread unchanged. Setting `_conn = None` (or `close_all`) retires every connection the pool opened.
+A module keeps its `_conn` global: the first connection it opened, where migrations ran. It is the pool's own,
+and stays open when the thread that opened it ends. Other threads' connections are closed when their thread
+ends (any kind of thread). Setting `_conn = None` or calling `close_all` retires every connection; a `_conn`
+set to a connection the pool did not open (a test's own) is used by every thread, so that is for tests only:
+code that must read through its own connection uses `override`, which is private to the calling thread.
 """
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import sys
 import threading
-from typing import Callable
+import weakref
+from typing import Callable, Iterator
+
+# One busy timeout for every pooled connection: the one `stockify.data.migrate` sets (30 s), which the single
+# shared connection used to carry, so a writer waiting on the daemon's long refdata transaction waits as before.
+BUSY_TIMEOUT_S = 30.0
+
+
+class _Slot:
+    """What a thread holds: its connection. Freed with the thread; `weakref.finalize` then closes the connection."""
+    __slots__ = ("conn", "generation", "__weakref__")
+
+    def __init__(self, conn: sqlite3.Connection, generation: int) -> None:
+        self.conn = conn
+        self.generation = generation
 
 
 class Pool:
@@ -28,38 +45,27 @@ class Pool:
         self._init_fn = init_fn
         self._guard = threading.RLock()
         self._local = threading.local()
-        self._owned: list[tuple[threading.Thread, sqlite3.Connection]] = []
+        self._owned: set[sqlite3.Connection] = set()       # every connection this pool opened and has not closed
         self._generation = 0
 
     def _module(self):
         return sys.modules[self._module_name]
 
-    def _is_owned(self, conn) -> bool:
-        return any(c is conn for _, c in self._owned)
-
-    def _prune(self) -> None:
-        primary = self._module()._conn
-        live = []
-        for thread, conn in self._owned:
-            if thread.is_alive() or conn is primary:      # the primary outlives its thread: `_conn` still names it
-                live.append((thread, conn))
-            else:
-                _close(conn)
-        self._owned = live
-
     def get(self) -> sqlite3.Connection:
+        local = self._local
+        override = getattr(local, "override", None)
+        if override is not None:
+            return override
         mod = self._module()
         primary = mod._conn
-        if primary is not None and not self._is_owned(primary):
-            return primary                       # an injected connection (read-only block, a test's own)
-        local = self._local
-        if primary is not None and getattr(local, "generation", None) == self._generation:
-            conn = getattr(local, "conn", None)
-            if conn is not None:
-                return conn
+        if primary is not None and primary not in self._owned:
+            return primary                       # a connection a test put in `_conn`
+        slot = getattr(local, "slot", None)
+        if primary is not None and slot is not None and slot.generation == self._generation:
+            return slot.conn
         with self._guard:
             primary = mod._conn
-            if primary is not None and not self._is_owned(primary):
+            if primary is not None and primary not in self._owned:
                 return primary
             if primary is None:                  # first use, or the module was reset: start a new generation
                 self._retire_all()
@@ -70,25 +76,62 @@ class Pool:
                 except Exception:
                     conn.close()
                     raise
-                mod._conn = conn
+                self._owned.add(conn)            # owned BEFORE it is published: a reader that sees `_conn` must
+                mod._conn = conn                 # find it in `_owned`, or it would take it for a test's own
+                slot = _Slot(conn, self._generation)
             else:
-                self._prune()
                 conn = self._open_fn()
-            self._owned.append((threading.current_thread(), conn))
-            local.conn, local.generation = conn, self._generation
+                self._owned.add(conn)
+                slot = _Slot(conn, self._generation)
+                weakref.finalize(slot, self._release, conn)    # closed when the thread (and its slot) goes
+            local.slot = slot
             return conn
 
+    def _release(self, conn: sqlite3.Connection) -> None:
+        self._owned.discard(conn)
+        _close(conn)
+
     def _retire_all(self) -> None:
-        for _, conn in self._owned:
+        owned, self._owned = self._owned, set()
+        for conn in owned:
             _close(conn)
-        self._owned = []
         self._generation += 1
 
+    @contextlib.contextmanager
+    def override(self, conn: sqlite3.Connection) -> Iterator[None]:
+        """For the block, THIS thread (only) reads and writes through `conn` (a read-only block, `span_validate`)."""
+        local = self._local
+        before = getattr(local, "override", None)
+        local.override = conn
+        try:
+            yield
+        finally:
+            local.override = before
+
     def close_all(self) -> None:
-        """Close every connection the pool opened and forget the module's `_conn`."""
+        """Close every connection the pool opened, and one a test put in `_conn`; forget the module's `_conn`."""
         with self._guard:
+            mod = self._module()
+            injected = mod._conn
             self._retire_all()
-            self._module()._conn = None
+            if injected is not None:
+                _close(injected)
+            mod._conn = None
+
+
+@contextlib.contextmanager
+def locked_write(lock, conn: sqlite3.Connection) -> Iterator[None]:
+    """The module's write lock around a write on `conn`; if the write fails the transaction is rolled back, so this
+    thread's connection does not keep the database's write lock against every other thread."""
+    with lock:
+        try:
+            yield
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
 
 
 def _close(conn: sqlite3.Connection) -> None:
