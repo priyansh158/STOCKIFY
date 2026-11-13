@@ -220,4 +220,21 @@ out.joinNone = chart.joinFillsAndMarkers([fl(5)], []);
 out.joinEmpty = chart.joinFillsAndMarkers([], [mk(1, "n")]);
 out.joinOrder = chart.joinFillsAndMarkers([fl(9), fl(3)], [mk(3, "c"), mk(9, "n")]).map((r: { fill: { fill_id: number } }) => r.fill.fill_id);
 
+// The sweep page's chosen trial (CH 6.19): which row `?trial=` picks, and the title in words.
+const trow = (index: number, run_id: string | null, status = "done") => ({ index, run_id, status, params: { fast: index * 5, slow: 20, stop: null, on: true } });
+const trows = [trow(0, "r0"), trow(1, "r1"), trow(2, null, "failed"), trow(3, "r3", "failed")];
+out.trialMissing = chart.resolveTrial(undefined, trows, "r1");
+out.trialEmpty = chart.resolveTrial("", trows, "r1");
+out.trialValid = chart.resolveTrial("r0", trows, "r1");
+out.trialUnknown = chart.resolveTrial("nope", trows, "r1");
+out.trialNotDone = chart.resolveTrial("r3", trows, "r1");
+out.trialNoBest = chart.resolveTrial(undefined, trows, null);
+out.trialBestNotInRows = chart.resolveTrial(undefined, trows, "zz");
+out.trialWords = chart.trialWords(
+  [{ path: "fast", label: "Fast average" }, { path: "slow", label: "Slow average" }, { path: "stop", label: "Stop" }, { path: "on", label: "Filter" }],
+  trows[1].params,
+);
+out.trialHref = chart.trialHref("sw 1", "fast", "slow", "run/1");
+out.trialHrefOneAxis = chart.trialHref("sw1", "fast", null, "r1");
+
 process.stdout.write(JSON.stringify(out));

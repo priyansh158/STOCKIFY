@@ -435,3 +435,10 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 /* The sweep page axis pickers (app/research/sweeps/[id]): two selects and one button on a row */
 .stk-sweep-pick { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-md); }
 .stk-table tr[data-best="true"] th, .stk-table tr[data-best="true"] td { background: var(--tint-up); }
+
+/* The sweep page's chosen trial (CH 6.19): the cell and the table row whose chart is shown under the grid */
+.stk-heat-cell[data-selected="true"] { box-shadow: inset 0 -4px 0 var(--color-ink); }
+.stk-heat-cell[data-selected="true"][data-step="4"] { box-shadow: inset 0 -4px 0 var(--color-paper); }
+.stk-heat-cell a:focus-visible { outline-offset: 2px; }
+.stk-table tr[data-picked="true"] th, .stk-table tr[data-picked="true"] td { box-shadow: inset 0 -2px 0 var(--color-ink-2); }
+.stk-trial { scroll-margin-top: var(--space-lg); }

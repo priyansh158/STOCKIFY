@@ -322,3 +322,41 @@ export function joinFillsAndMarkers(fills: TestFill[], markers: ChartMarker[]): 
     return { fill, markerId: m.id, why: { text: reasonOf(m), tag: m.note === "" && m.tag !== "" ? m.tag : null } };
   });
 }
+
+/** One row of a sweep, as far as picking a trial needs it. */
+export type TrialRow = { index: number; run_id: string | null; status: string; params: Record<string, string | number | boolean | null> };
+
+/**
+ * Which trial the sweep page charts. `param` is the page's `?trial=`: missing or empty gives the best trial, a finished
+ * trial's run id gives that trial, and anything else (an unknown id, a trial that did not finish) is "unknown", which the page
+ * shows as an empty state. "none" means there is no best trial to fall back on.
+ */
+export function resolveTrial<R extends TrialRow>(
+  param: string | undefined,
+  rows: R[],
+  bestRunId: string | null,
+): { kind: "best" | "picked" | "unknown" | "none"; row: R | null } {
+  const finished = (r: R) => r.status === "done" && r.run_id !== null;
+  if (!param) {
+    const best = bestRunId === null ? undefined : rows.find((r) => finished(r) && r.run_id === bestRunId);
+    return best ? { kind: "best", row: best } : { kind: "none", row: null };
+  }
+  const row = rows.find((r) => finished(r) && r.run_id === param);
+  return row ? { kind: "picked", row } : { kind: "unknown", row: null };
+}
+
+/** A trial's settings in words, "Fast average 5, Slow average 20" (none, true and false are written out). */
+export function trialWords(axes: { path: string; label: string }[], params: TrialRow["params"]): string {
+  return axes
+    .map((a) => {
+      const v = params[a.path];
+      return `${a.label} ${v === null || v === undefined ? "none" : typeof v === "boolean" ? (v ? "true" : "false") : String(v)}`;
+    })
+    .join(", ");
+}
+
+/** The link that picks a trial: the sweep page with its axes kept, `?trial=`, and the anchor of the chart under the grid. */
+export function trialHref(sweepId: string, x: string, y: string | null, runId: string): string {
+  const q = [`x=${encodeURIComponent(x)}`, ...(y === null ? [] : [`y=${encodeURIComponent(y)}`]), `trial=${encodeURIComponent(runId)}`];
+  return `/research/sweeps/${encodeURIComponent(sweepId)}?${q.join("&")}#trial-chart`;
+}

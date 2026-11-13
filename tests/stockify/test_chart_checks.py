@@ -204,6 +204,24 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(self.r["joinEmpty"], [])
         self.assertEqual(self.r["joinOrder"], [9, 3])
 
+    def test_trial_param_resolution(self):
+        r = self.r
+        self.assertEqual((r["trialMissing"]["kind"], r["trialMissing"]["row"]["run_id"]), ("best", "r1"))
+        self.assertEqual(r["trialEmpty"]["kind"], "best")
+        self.assertEqual((r["trialValid"]["kind"], r["trialValid"]["row"]["run_id"]), ("picked", "r0"))
+        # An unknown id, or a trial that did not finish, is the empty state, never an error and never the best run.
+        self.assertEqual((r["trialUnknown"]["kind"], r["trialUnknown"]["row"]), ("unknown", None))
+        self.assertEqual((r["trialNotDone"]["kind"], r["trialNotDone"]["row"]), ("unknown", None))
+        self.assertEqual((r["trialNoBest"]["kind"], r["trialNoBest"]["row"]), ("none", None))
+        self.assertEqual(r["trialBestNotInRows"]["kind"], "none")
+
+    def test_trial_link_keeps_the_picked_axes_and_lands_on_the_chart(self):
+        self.assertEqual(self.r["trialHref"], "/research/sweeps/sw%201?x=fast&y=slow&trial=run%2F1#trial-chart")
+        self.assertEqual(self.r["trialHrefOneAxis"], "/research/sweeps/sw1?x=fast&trial=r1#trial-chart")
+
+    def test_trial_title_names_each_setting_in_words(self):
+        self.assertEqual(self.r["trialWords"], "Fast average 5, Slow average 20, Stop none, Filter true")
+
     def test_card_lists_each_closed_chunk_with_its_profit_or_loss(self):
         rows = self.r["cardChunks"]["chunks"]
         self.assertEqual([c["label"] for c in rows], ["Closed 20, opened at ₹2,400.00",

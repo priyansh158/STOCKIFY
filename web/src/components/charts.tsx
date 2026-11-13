@@ -344,6 +344,7 @@ export function HeatGrid({
   cells,
   format,
   best,
+  selected,
   signed,
   links,
   label,
@@ -355,6 +356,8 @@ export function HeatGrid({
   cells: (number | null)[][];
   format: Fmt;
   best?: { x: number; y: number } | null;
+  /** The cell whose run is shown elsewhere on the page: marked by a bar under the value and `aria-current`. */
+  selected?: { x: number; y: number } | null;
   signed?: boolean;
   /** `links[row][column]`: where a cell's value leads (its run), or null for none. */
   links?: (string | null)[][];
@@ -390,6 +393,7 @@ export function HeatGrid({
                 {xs.map((x, xi) => {
                   const v = cells[yi]?.[xi] ?? null;
                   const isBest = best?.x === xi && best?.y === yi;
+                  const isSel = selected?.x === xi && selected?.y === yi;
                   const ok = v !== null && Number.isFinite(v);
                   const d = signed && ok ? divergingStep(v, maxAbs) : 0;
                   return (
@@ -398,11 +402,12 @@ export function HeatGrid({
                       data-sign={signed && ok ? (d > 0 ? "pos" : d < 0 ? "neg" : "zero") : undefined}
                       data-step={!ok ? undefined : signed ? Math.abs(d) : heatColourStep(v, lo, hi, HEAT_STEPS)}
                       data-best={isBest ? "true" : undefined}
+                      data-selected={isSel ? "true" : undefined}
                     >
                       {v !== null && links?.[yi]?.[xi] ? (
-                        <Link href={links[yi][xi] as string}>
+                        <Link href={links[yi][xi] as string} aria-current={isSel ? "true" : undefined}>
                           {format(v)}
-                          <span className="sr-only"> (open the run for {y}, {x})</span>
+                          <span className="sr-only"> (show the chart for {y}, {x})</span>
                         </Link>
                       ) : v === null ? "—" : format(v)}
                       {isBest && <span className="sr-only"> (best)</span>}

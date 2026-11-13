@@ -7,6 +7,7 @@ Fixed paths (`/api/tests/compare`, …) are declared before `/api/tests/{run_id}
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
