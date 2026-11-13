@@ -15,7 +15,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "export": ("M6", "export a run"),
     "sweep": ("M6", "parameter sweep"),
     "walkforward": ("M6", "walk-forward analysis"),
 }
@@ -660,7 +659,11 @@ def _cmd_margin_scorecard(args) -> int:
     from stockify.fno import margin_check as mc
     card = mc.scorecard()
     if not card.rows and not (card.live_answers or card.live_errors):
-        print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
+        if card.notes:                       # answers are stored but none could be scored: say why
+            for note in card.notes:
+                print(f"Note: {note}", file=sys.stderr)
+        else:
+            print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
         return 1
     _print_console(mc.scorecard_text(card))
     return 0
@@ -806,6 +809,11 @@ def _cmd_bench(args) -> int:
     return 0
 
 
+def _cmd_tools_measure(args) -> int:
+    from stockify.tools import measure
+    return measure.main(as_json=args.json)
+
+
 def _cmd_golden_run(args) -> int:
     from stockify import golden
 
@@ -854,6 +862,22 @@ def _cmd_compare_runs(args) -> int:
         print(f"stockify compare: {e}", file=sys.stderr)
         return 2
     print(rc.format_table(c))
+    return 0
+
+
+def _cmd_export(args) -> int:
+    from pathlib import Path
+
+    from stockify.reporting import export
+    try:
+        out = export.build(args.run_id, with_packs=args.with_packs, out=Path(args.out) if args.out else None)
+    except export.ExportError as e:
+        print(f"stockify export: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"stockify export: cannot write the zip: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    print(out)
     return 0
 
 
@@ -1060,6 +1084,11 @@ def main(argv: list[str] | None = None) -> int:
     cr = sub.add_parser("compare", help="put 2 to 6 finished runs side by side (metrics, equity, config differences)")
     cr.add_argument("runs", nargs="+", metavar="RUN_ID", help="2 to 6 run ids")
     cr.set_defaults(func=_cmd_compare_runs)
+    ex = sub.add_parser("export", help="write a finished run as a reproducible zip (never holds a secret)")
+    ex.add_argument("run_id", metavar="RUN_ID")
+    ex.add_argument("--with-packs", action="store_true", help="also include the event packs the run used")
+    ex.add_argument("--out", help="write the zip here instead of the exports folder")
+    ex.set_defaults(func=_cmd_export)
     ca = sub.add_parser("compare-artifacts", help="diff two run folders' deterministic artifacts")
     ca.add_argument("run_a")
     ca.add_argument("run_b")
@@ -1167,6 +1196,11 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--config", required=True, help="a stockify.compare/1 JSON file")
     cs.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     cs.set_defaults(func=_cmd_compare_strategies)
+    ms = tsub.add_parser("measure", help="the numbers for the write-up, each with its sample and source; \"not measured "
+                                         "yet\" where there is no sample (reads only; exit 0, 1 if the text fails the "
+                                         "privacy scan)")
+    ms.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    ms.set_defaults(func=_cmd_tools_measure)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)

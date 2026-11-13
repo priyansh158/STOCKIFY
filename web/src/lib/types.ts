@@ -450,6 +450,29 @@ export interface RunResearchDTO {
   plain: Record<string, string>;
 }
 
+export interface SensitivityRowDTO {
+  key: string;
+  axis: string;
+  label: string;
+  run_id: string | null;
+  status: string;
+  net_pnl_paise: number | null;
+  sharpe: number | null;
+  delta_net_paise: number | null;
+  error: string | null;
+}
+
+export interface SensitivityDTO {
+  run_id: string;
+  job_id: string;
+  rows: SensitivityRowDTO[];
+  baseline_net_paise: number;
+  fragile: boolean;
+  verdict: string;
+  reasons: string[];
+  plain: string;
+}
+
 export interface TrialRowDTO {
   run_id: string;
   name: string | null;
@@ -536,5 +559,68 @@ export interface ComparisonDTO {
   differing_labels: string[];
   manifest_diff: CompareDiffDTO[];
   notes: string[];
+}
+
+
+export interface CoverageCellDTO {
+  state: string;
+  value?: number | null;
+  detail?: string | null;
+}
+
+export interface CoverageDayDTO {
+  date: string;
+  trading: boolean;
+  cells: Record<string, CoverageCellDTO>;
+}
+
+export interface BarRangeDTO {
+  instrument_id: number;
+  symbol?: string | null;
+  interval: string;
+  from_ns: number;
+  to_ns: number;
+  from_ist: string;
+  to_ist: string;
+  days: number;
+  rows: number;
+}
+
+export interface StorageDTO {
+  landing_bytes: number;
+  archive_bytes: number;
+  refdata_bytes: number;
+  lab_bytes: number;
+  nse_bytes: number;
+  free_bytes: number;
+  total_bytes: number;
+  warnings: string[];
+}
+
+export interface CoverageMatrixDTO {
+  from_date: string;
+  to_date: string;
+  datasets: Record<string, string>[];
+  days: CoverageDayDTO[];
+  bars: BarRangeDTO[];
+  storage: StorageDTO;
+  recorder?: RecorderStatus | null;
+}
+
+export interface GapDTO {
+  start_ns: number;
+  end_ns?: number | null;
+  start_ist: string;
+  duration_s?: number | null;
+  reason?: string | null;
+  scope?: string | null;
+  frames?: number | null;
+}
+
+export interface GapPageDTO {
+  total: number;
+  offset: number;
+  limit: number;
+  gaps: GapDTO[];
 }
 // </block>

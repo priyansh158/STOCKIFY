@@ -17,12 +17,12 @@ Concepts: C-4, C-14, C-16, C-17.
 
 ## M6.2 Export (S)
 
-- [ ] `GET /api/tests/{id}/export` and `python -m stockify export <run_id>`: a zip with bundle, manifest, the CSV artifacts, the JSON files (`metrics.json`, `manifest.json`, plus a single `summary.json` with the run's config, metrics and labels) and `report.md` (packs excluded by default, their hashes listed; `--with-packs` includes them). Secrets can never be inside (I-10); a test asserts it by scanning the zip for token-like strings.
+- [x] `GET /api/tests/{id}/export` and `python -m stockify export <run_id>`: a zip with bundle, manifest, the CSV artifacts, the JSON files (`metrics.json`, `manifest.json`, plus a single `summary.json` with the run's config, metrics and labels) and `report.md` (packs excluded by default, their hashes listed; `--with-packs` includes them). Secrets can never be inside (I-10); a test asserts it by scanning the zip for token-like strings.
 
 ## M6.3 Data coverage page (M)
 
 - [ ] `/data`: a calendar (date × dataset) showing recorder coverage % (FULL and QUOTE), archive status (landing / archived / verified), NSE files fetched (F&O, CM, index closes), bar-cache ranges per instrument; drill-down to gaps and quality metrics (M1.9); storage used and free; live recorder status (M1.5).
-- [ ] `GET /api/data/coverage?from=&to=` returns the matrix.
+- [x] `GET /api/data/coverage?from=&to=` returns the matrix (Task 28, LCM 6.2, D-121); `GET /api/data/gaps?date=` the day's gaps.
 - [x] (Task 27, LCM 6.1) The quality report writes `coverage_full_pct` and `coverage_quote_pct` as day rows; older days get them when `data report --date D` is re-run (owner step, RECON).
 
 ## M6.4 Trial registry and deflated Sharpe (M)
@@ -51,7 +51,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 > The `costs.scale` run-config key the costs row needs is done (FW 6.1, D-90, `bundle.scale_charges`); the suite itself is Tasks 14 to 16. `fill_model.slippage.extra_ticks` (FW 6.2, D-91) is done on both runners; the engine must be rebuilt before Task 16.
 
-- [x] (suite and CLI done, `stockify/research/sensitivity.py`, FW 6.3; the API and wording are Task 16) `python -m stockify sensitivity --run <id>` re-runs with costs × {0, 1, 1.5, 2}, slippage + {0, 1, 2} ticks, latency {0, 250, 1000} ms, and every applicable fill model; prints a table and flags a strategy as **fragile** if its net P&L turns negative under costs × 1.5 or one extra tick.
+- [x] (suite and CLI done, `stockify/research/sensitivity.py`, FW 6.3; the API and plain sentence done, `GET /api/tests/{id}/sensitivity` and `plain.fragile_sentence`, FW 6.4) `python -m stockify sensitivity --run <id>` re-runs with costs × {0, 1, 1.5, 2}, slippage + {0, 1, 2} ticks, latency {0, 250, 1000} ms, and every applicable fill model; prints a table and flags a strategy as **fragile** if its net P&L turns negative under costs × 1.5 or one extra tick.
 
 ## M6.8 Bootstrap confidence intervals (S)
 
@@ -88,6 +88,7 @@ cd web; npm run lint; npm run build
 ## Candlestick charts (CH)
 
 - [x] CH 6.1 Note cleaning and Indian-grouped price and quantity text, the same in Python and C++ (`stockify/oracle/notes.py`, `engine/src/notes.cpp`; `fmt_price`, `fmt_qty`, `to_level` exported from `stockify.strategy`).
+- [x] CH 6.5 The FIFO trade loop is a public function, `stockify.oracle.metrics.fifo_trades` (returns `TradeChunk`s and the traded value), shared by `compute` and the chart's trade markers; `metrics.json` is byte-identical on every golden.
 
 ## Definition of done
 

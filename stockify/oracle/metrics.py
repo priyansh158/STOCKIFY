@@ -7,6 +7,8 @@ reduction is a plain left-to-right loop. Undefined values are None (`null`).
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from typing import NamedTuple
 
 
 def rate_on(rows: list[dict], d: str) -> float:
@@ -46,6 +48,58 @@ def drawdown_series(navs: list[float]) -> list[float]:
             peak = navs[d]
         out.append(1 - navs[d] / peak)
     return out
+
+
+class TradeChunk(NamedTuple):
+    """One closed slice of a FIFO lot: `qty` units opened at `open_price` and closed at `close_price`.
+
+    `close_fill_id` / `close_order_id` are None when an expiry settlement closed it (D-45)."""
+    close_t_ns: int
+    close_fill_id: int | None
+    close_order_id: int | None
+    instrument_id: int
+    product: str
+    open_side: str
+    qty: int
+    open_price: int
+    close_price: int
+    pnl: int
+
+
+def fifo_trades(fills, closes, products: Mapping[int, str]) -> tuple[list[TradeChunk], int]:
+    """FIFO matching of closing fills (and expiry settlements, D-45) against opening fills per (instrument, product).
+
+    `fills`: objects with fill_id, order_id, t_ns, instrument_id, side, qty, price. `closes`: expiry settlements
+    (t, iid, product, side, units, price) or None. `products`: order id -> product. Returns the closed chunks in
+    flow order and the traded value (fills only, paise). Flow order: (t_ns, is_settle, n)."""
+    lots: dict = {}
+    chunks: list[TradeChunk] = []
+    traded_value = 0
+    flow = [(f.t_ns, 0, n, f.instrument_id, products[f.order_id], f.side, f.qty, f.price, f.fill_id, f.order_id)
+            for n, f in enumerate(fills)]
+    flow += [(t, 1, n, iid, prod, side, units, price, None, None)
+             for n, (t, iid, prod, side, units, price) in enumerate(closes or [])]
+    flow.sort(key=lambda e: (e[0], e[1], e[2]))
+    for t, is_settle, _, iid, product, side, qty, price, fill_id, order_id in flow:
+        if not is_settle:
+            traded_value += qty * price
+        key = (iid, product)
+        q = lots.setdefault(key, [])
+        sign = 1 if side == "BUY" else -1
+        left = qty
+        while left and q and q[0][0] != sign:
+            open_sign, open_qty, open_price = q[0]
+            k = min(left, open_qty)
+            chunks.append(TradeChunk(t, fill_id, order_id, iid, product, "BUY" if open_sign == 1 else "SELL",
+                                     k, open_price, price, open_sign * k * (price - open_price)))
+            left -= k
+            if k == open_qty:
+                q.pop(0)
+            else:
+                q[0] = (open_sign, open_qty - k, open_price)
+        if left:
+            q.append((sign, left, price))
+    return chunks, traded_value
 
 
 def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, charges: list[dict],
@@ -96,33 +150,8 @@ def compute(*, capital: int, equity: list[tuple], fills: list, orders: dict, cha
     max_dd, longest = max_drawdown(navs)
     calmar = cagr / max_dd if cagr is not None and max_dd != 0 else None
 
-    # trades: FIFO matching of closing fills (and expiry settlements, D-45) against opening fills
-    # per (instrument, product)
-    lots: dict = {}
-    trades = []
-    traded_value = 0
-    flow = [(f.t_ns, 0, n, f.instrument_id, orders[f.order_id].product, f.side, f.qty, f.price)
-            for n, f in enumerate(fills)]
-    flow += [(t, 1, n, iid, prod, side, units, price) for n, (t, iid, prod, side, units, price) in enumerate(closes or [])]
-    flow.sort(key=lambda e: (e[0], e[1], e[2]))
-    for _, is_settle, _, iid, product, side, qty, price in flow:
-        if not is_settle:
-            traded_value += qty * price
-        key = (iid, product)
-        q = lots.setdefault(key, [])
-        sign = 1 if side == "BUY" else -1
-        left = qty
-        while left and q and q[0][0] != sign:
-            open_sign, open_qty, open_price = q[0]
-            k = min(left, open_qty)
-            trades.append(open_sign * k * (price - open_price))
-            left -= k
-            if k == open_qty:
-                q.pop(0)
-            else:
-                q[0] = (open_sign, open_qty - k, open_price)
-        if left:
-            q.append((sign, left, price))
+    chunks, traded_value = fifo_trades(fills, closes, {oid: o.product for oid, o in orders.items()})
+    trades = [c.pnl for c in chunks]
     wins = losses = 0
     gross_win = gross_loss = 0
     total_pnl = 0

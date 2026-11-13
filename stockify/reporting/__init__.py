@@ -1,1 +1,1 @@
-"""Reports over finished runs (M6): compare runs, and later the run report."""
+"""Reporting (M6): read-only views over the lab stores: compare, export and coverage."""
