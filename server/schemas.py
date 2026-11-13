@@ -112,6 +112,8 @@ class DataQualityResponse(BaseModel):
     date: str
     day: dict[str, float] = Field(default_factory=dict, description="day-level metrics (instrument_id 0)")
     instruments: list[InstrumentQualityDTO] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list, description="plain sentences naming a store that could not be read")
+    error_stores: list[str] = Field(default_factory=list, description="store keys the errors name: refdata, bars, lab")
 
 
 # ── Strategy tests (M3.14) ───────────────────────────────────────────────────

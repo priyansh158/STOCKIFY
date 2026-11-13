@@ -44,21 +44,21 @@ async def recorder_status() -> RecorderStatusResponse:
 async def data_quality(date: str = Query(..., description="IST trade date YYYY-MM-DD")) -> DataQualityResponse:
     from datetime import date as _date
 
-    from stockify.data import instruments, quality
+    from stockify.data import quality
 
     try:
         day = _date.fromisoformat(date)
     except ValueError:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
-    rows = quality.stored(day)
+    try:
+        rows, symbols = quality.stored_readonly(day)
+    except quality.StoreUnreadable as e:
+        # An unreadable store is named, not a 500; the sentence is fixed (no path, no exception text).
+        return DataQualityResponse(date=day.isoformat(), errors=[str(e)], error_stores=["refdata"])
     if not rows:
         raise HTTPException(status_code=404, detail=f"no quality report for {day}; run `python -m stockify data report --date {day}`")
-    items = []
-    for iid, metrics in sorted(rows.items()):
-        if iid == 0:
-            continue
-        info = instruments.get(iid) or {}
-        items.append(InstrumentQualityDTO(instrument_id=iid, symbol=info.get("tradingsymbol"), metrics=metrics))
+    items = [InstrumentQualityDTO(instrument_id=iid, symbol=symbols.get(iid), metrics=metrics)
+             for iid, metrics in sorted(rows.items()) if iid != 0]
     return DataQualityResponse(date=day.isoformat(), day=rows.get(0, {}), instruments=items)
 
 

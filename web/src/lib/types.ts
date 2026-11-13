@@ -101,6 +101,8 @@ export interface DataQualityResponse {
   date: string;
   day: Record<string, number>;
   instruments: InstrumentQuality[];
+  errors: string[];
+  error_stores: string[];
 }
 
 // ── Strategy tests (M3.14) ───────────────────────────────────────────────────

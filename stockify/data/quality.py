@@ -25,6 +25,7 @@ each run) and a Markdown summary to $LAB/reports/quality_YYYYMMDD.md.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from array import array
 from dataclasses import dataclass, field
 from datetime import date
@@ -269,6 +270,51 @@ def summary_markdown(result: dict) -> str:
     for cov, iid, m in ranked:
         lines.append(f"| {_name(iid)} | {cov:.1f} | {m['longest_gap_s']} | {m['packets']:,} |")
     return "\n".join(lines) + "\n"
+
+
+# What each store is called in the plain sentences of an `errors` list (no file names, paths or exception text).
+# The keys are the store keys of the coverage matrix's `error_stores`.
+STORE_NAMES = {"refdata": "recorded-day and download store", "bars": "bar store", "lab": "recorder status"}
+
+
+def unreadable_sentence(store_key: str) -> str:
+    return f"Couldn't read the {STORE_NAMES[store_key]}."
+
+
+class StoreUnreadable(RuntimeError):
+    """A lab store a read needs is missing or cannot be read. The text is the fixed sentence, never a path."""
+
+
+def stored_readonly(day: date) -> tuple[dict, dict[int, str | None]]:
+    """`stored(day)` plus the tradingsymbol of each instrument it names, read from refdata.sqlite on its own
+    READ-ONLY connection (`mode=ro`), closed after use.
+
+    Never through `refdata._connect()`: that opens read-write, so a missing file would be created empty and a locked
+    or corrupt one would raise. A missing or unreadable file raises `StoreUnreadable("Couldn't read ...")`.
+    """
+    path = paths.refdata_db()
+    sentence = unreadable_sentence("refdata")
+    if not path.exists():
+        raise StoreUnreadable(sentence)
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+    except (sqlite3.Error, OSError):
+        raise StoreUnreadable(sentence) from None
+    try:
+        conn.row_factory = sqlite3.Row
+        out: dict[int, dict] = {}
+        for r in conn.execute("SELECT instrument_id, metric, value FROM data_quality WHERE trade_date=?",
+                              (day.isoformat(),)).fetchall():
+            out.setdefault(r["instrument_id"], {})[r["metric"]] = r["value"]
+        ids = [i for i in out if i != 0]
+        symbols = {r["instrument_id"]: r["tradingsymbol"] for r in conn.execute(
+            f"SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN ({','.join('?' * len(ids))})",
+            tuple(ids)).fetchall()} if ids else {}
+        return out, symbols
+    except (sqlite3.Error, OSError):
+        raise StoreUnreadable(sentence) from None
+    finally:
+        conn.close()
 
 
 def stored(day: date) -> dict:
