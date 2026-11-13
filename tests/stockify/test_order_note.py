@@ -227,11 +227,15 @@ class OldRunsTests(NoteBase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["note"], "")
 
-    def test_a_new_run_with_no_note_imports_an_empty_string(self):
-        rid = runs.launch(self.config(BUY, "nonote"), impl="oracle", report=False)
+    def test_a_new_run_imports_the_note_the_strategy_wrote(self):
+        """buy_and_hold says why since CH 6.6, D-95: the stored note is the file's own text."""
+        rid = runs.launch(self.config(BUY, "withnote"), impl="oracle", report=False)
         from stockify import store
         runs.import_run(paths.run_path(rid))
-        self.assertEqual(store.run_rows(rid, "orders")[0]["note"], "")
+        note = store.run_rows(rid, "orders")[0]["note"]
+        self.assertRegex(note, "^Bought [0-9,]+ NSE:RELIANCE on the first bar and will hold$")
+        with (paths.run_path(rid) / "orders.csv").open(encoding="utf-8", newline="") as f:
+            self.assertEqual(note, next(csv.DictReader(f))["note"])
 
     def test_a_cell_with_a_carriage_return_is_quoted(self):
         from stockify.oracle import artifacts
@@ -255,9 +259,31 @@ class OldRunsTests(NoteBase):
         code, out, err = _cli("run", "--rerun", rid)
         self.assertEqual(code, 0, err)
         new = f"{rid}-rerun"
-        self.assertIn(f"reproduced (orders.csv gained the note column, D-92) ({rid} -> {new})", err)
-        self.assertEqual(runs.determinism_diff(rid, new), ["orders.csv"])     # determinism_diff itself is not weakened
+        self.assertIn(f"reproduced (orders.csv gained the note column, D-92; plots.csv is new, D-94) ({rid} -> {new})",
+                      err)
+        # determinism_diff itself is not weakened: it still lists both files
+        self.assertEqual(runs.determinism_diff(rid, new), ["orders.csv", "plots.csv"])
         self.assertTrue(runs.note_column_only(rid, new))
+
+    def test_rerun_of_a_run_that_only_lacks_plots_csv_is_reproduced_with_a_new_file(self):
+        rid = runs.launch(self.config(BUY, "olp"), impl="oracle", report=False)
+        det = paths.run_path(rid) / "determinism.json"
+        hashes = json.loads(det.read_text(encoding="utf-8"))
+        self.assertIn("plots.csv", hashes)
+        hashes.pop("plots.csv")                                        # a folder saved between CH 6.2 and CH 6.4
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (paths.run_path(rid) / "plots.csv").unlink()
+        code, _, err = _cli("run", "--rerun", rid)
+        new = f"{rid}-rerun"
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"reproduced (plots.csv is new, D-94) ({rid} -> {new})", err)
+        self.assertNotIn("not reproduced", err)
+        self.assertEqual(runs.determinism_diff(rid, new), ["plots.csv"])
+        self.assertFalse(runs.note_column_only(rid, new))              # no note column was added here
+        # a plots.csv the old folder lists is never excused: a changed hash is a real difference
+        hashes["plots.csv"] = "0" * 64
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.assertEqual(runs.column_changes(rid, new), [])
 
     def test_any_other_difference_is_not_tolerated(self):
         rid = runs.launch(self.config(BUY, "olx"), impl="oracle", report=False)

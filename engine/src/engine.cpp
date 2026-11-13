@@ -6,6 +6,7 @@
 #include <cctype>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "stocksim/errors.hpp"
 #include "stocksim/indicators.hpp"
@@ -13,6 +14,7 @@
 #include "stocksim/margin/spanlite.hpp"
 #include "stocksim/margin/staircase.hpp"
 #include "stocksim/matcher.hpp"
+#include "stocksim/notes.hpp"
 #include "stocksim/pricing/black76.hpp"
 #include "stocksim/sod_state.hpp"
 
@@ -1232,6 +1234,53 @@ void Context::log(std::string_view level, std::string_view msg) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
     e_.log(upper, msg);
+}
+
+namespace {
+
+// A name's length in code points: the bytes that are not UTF-8 continuation bytes (a clean name is valid UTF-8).
+std::size_t code_points(std::string_view s) {
+    return static_cast<std::size_t>(std::count_if(s.begin(), s.end(), [](char ch) {
+        return (static_cast<unsigned char>(ch) & 0xC0U) != 0x80U;
+    }));
+}
+
+}  // namespace
+
+// The oracle's Context.plot / Engine.plot (stockify/oracle): the same checks in the same order, the same words.
+void Context::plot(std::string_view name, std::int64_t value, std::string_view kind, std::int64_t instrument) {
+    if (kind != "price" && kind != "level") {
+        throw std::invalid_argument(R"(ctx.plot: kind must be "price" or "level")");
+    }
+    if (const std::size_t n = code_points(name); n < 1 || n > 32 || clean_note(name) != name) {
+        throw std::invalid_argument(
+            "ctx.plot: name must be 1 to 32 characters, with no control characters and no space at either end");
+    }
+    if (instrument != 0 && (instrument < 0 || instrument > std::numeric_limits<InstrumentId>::max() ||
+                            !e_.instruments_.contains(static_cast<InstrumentId>(instrument)))) {
+        throw std::invalid_argument("ctx.plot: instrument " + std::to_string(instrument) +
+                                    " is not in this run's bundle");
+    }
+    Engine::PlotSeries series{instrument, std::string(name)};
+    const auto have = e_.plot_kinds_.find(series);
+    if (have != e_.plot_kinds_.end() && have->second != kind) {
+        throw std::invalid_argument("ctx.plot: series \"" + std::string(name) + "\" of instrument " +
+                                    std::to_string(instrument) + " is kind \"" + have->second + "\", not \"" +
+                                    std::string(kind) + "\"");
+    }
+    Engine::PlotKey key{e_.now_, instrument, std::string(name)};
+    if (have == e_.plot_kinds_.end() && e_.plot_kinds_.size() >= kPlotMaxSeries) {
+        if (!std::exchange(e_.plot_series_capped_, true)) {
+            e_.log("WARN", "plot limit reached: more than " + std::to_string(kPlotMaxSeries) + " series");
+        }
+    } else if (e_.plot_points_.size() >= kPlotMaxPoints && !e_.plot_points_.contains(key)) {
+        if (!std::exchange(e_.plot_points_capped_, true)) {
+            e_.log("WARN", "plot limit reached: more than " + std::to_string(kPlotMaxPoints) + " points");
+        }
+    } else {
+        e_.plot_kinds_.try_emplace(std::move(series), std::string(kind));
+        e_.plot_points_.insert_or_assign(std::move(key), value);
+    }
 }
 
 Pcg32& Context::rng() { return e_.strategy_rng_; }

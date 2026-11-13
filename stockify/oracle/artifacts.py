@@ -32,10 +32,11 @@ EQUITY = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,c
 # <block name="margin-daily-columns" same-as="engine/src/artifacts.cpp:margin-daily-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
 MARGIN = "trade_date,underlying_id,model,step,scan,somc,elm,addons,total"
 # </block>
+PLOTS = "t_ns,instrument_id,name,kind,value"
 # The ✔ rows of A1 §6.3, in order (checked by blockwatch).
 # <block name="deterministic-files" same-as="docs/plan/A1_schemas.md:deterministic-files" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+\.[a-z]+)"'>
 DETERMINISTIC = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
-                 "margin_daily.csv", "metrics.json", "events_log.txt")
+                 "margin_daily.csv", "plots.csv", "metrics.json", "events_log.txt")
 # </block>
 
 
@@ -74,6 +75,7 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
     _csv(folder / "positions_eod.csv", POSITIONS, engine.positions_eod)
     _csv(folder / "equity.csv", EQUITY, engine.equity)
     _csv(folder / "margin_daily.csv", MARGIN, getattr(engine, "margin_daily", []))
+    _csv(folder / "plots.csv", PLOTS, engine.plot_rows())
     (folder / "metrics.json").write_bytes((numerics.dumps_canonical(metrics) + "\n").encode("utf-8"))
     (folder / "events_log.txt").write_bytes(("\n".join(engine.log_lines) + ("\n" if engine.log_lines else "")).encode())
     hashes = {}

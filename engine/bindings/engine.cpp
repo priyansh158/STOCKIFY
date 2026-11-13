@@ -48,14 +48,18 @@ py::object to_python(const stocksim::Json& j, const OracleTypes& t) { return t.j
 // B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place are a Python int and nothing else. A float, a
 // bool, a str or a Decimal is refused, never rounded (py::int_(1.5) used to place 1). The rule and the words are
 // the oracle's (stockify/oracle/context.py, `_whole`).
-template <typename T>
-T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
+void check_whole(const char* name, const py::object& v, const char* fn) {
     if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
         throw py::type_error(std::string(fn) + ": " + name + " must be an int, not " +
                              std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
                              std::string(py::repr(v)) +
                              "): money is whole paise and quantity is whole units");
     }
+}
+
+template <typename T>
+T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
+    check_whole(name, v, fn);
     return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
 }
 
@@ -72,6 +76,18 @@ std::string note_text(const py::object& v) {
     static const py::object* const sub =
         new py::object(py::module_::import("re").attr("compile")(R"([\ud800-\udfff])").attr("sub"));
     return (*sub)("\xEF\xBF\xBD", v).cast<std::string>();
+}
+
+// CH 6.4: the checks of ctx.plot before the engine's own, in the oracle's order and words (context.py `_plot_args`):
+// name is text; value and instrument are whole ints; each fits int64 (a ValueError, not the cast error pybind
+// would give); kind is text. A name holding a lone surrogate cannot be UTF-8: it is handed on as "" so that the
+// engine's kind check still comes first and its name check then refuses it, as the oracle's clean_note does.
+std::int64_t plot_int64(const char* what, const py::object& v) {
+    try {
+        return v.cast<std::int64_t>();
+    } catch (const py::cast_error&) {
+        throw py::value_error(std::string("ctx.plot: ") + what + " does not fit in 64 bits");
+    }
 }
 
 // B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 10000 basis points; anything else is
@@ -367,6 +383,28 @@ void bind_engine(py::module_& m) {
              py::arg("instrument"), py::arg("side"), py::arg("qty"), py::arg("product"), py::arg("type"),
              py::arg("price") = 0, py::arg("trigger") = 0, py::arg("validity") = "DAY", py::arg("protection") = "AUTO",
              py::kw_only(), py::arg("tag") = "", py::arg("note") = "")
+        .def("plot",
+             [](CtxProxy& x, const py::object& name, const py::object& value, const py::object& kind,
+                const py::object& instrument) {
+                 if (!py::isinstance<py::str>(name)) {
+                     throw py::type_error("ctx.plot: name must be text");
+                 }
+                 check_whole("value", value, "ctx.plot");
+                 check_whole("instrument", instrument, "ctx.plot");
+                 const std::int64_t v = plot_int64("value", value);
+                 const std::int64_t iid = plot_int64("instrument", instrument);
+                 if (!py::isinstance<py::str>(kind)) {
+                     throw py::type_error("ctx.plot: kind must be text");
+                 }
+                 std::string text;
+                 try {
+                     text = name.cast<std::string>();
+                 } catch (const py::cast_error&) {  // a lone surrogate
+                     text.clear();
+                 }
+                 x.c().plot(text, v, kind.cast<std::string>(), iid);
+             },
+             py::arg("name"), py::arg("value"), py::kw_only(), py::arg("kind") = "price", py::arg("instrument") = 0)
         .def("modify",
              [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
                  // B2B 5.4: the oracle's Context.modify. qty, price and trigger are whole ints, checked in that order,

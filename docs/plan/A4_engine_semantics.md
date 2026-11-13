@@ -282,7 +282,7 @@ Undefined metrics are `null`, never NaN.
 
 ## §9 Outputs and determinism
 
-**9.1 Deterministic artifacts** (A1 §6.3): `orders.csv`, `order_events.csv`, `fills.csv`, `charges.csv`, `positions_eod.csv`, `equity.csv`, `margin_daily.csv`, `metrics.json`, `events_log.txt`. `determinism.json` holds the SHA-256 of each. `manifest.json` (wall-clock duration, host) is outside the hashed set.
+**9.1 Deterministic artifacts** (A1 §6.3): `orders.csv`, `order_events.csv`, `fills.csv`, `charges.csv`, `positions_eod.csv`, `equity.csv`, `margin_daily.csv`, `plots.csv`, `metrics.json`, `events_log.txt`. `determinism.json` holds the SHA-256 of each. `manifest.json` (wall-clock duration, host) is outside the hashed set.
 
 **9.2 Formatting.** CSV: fixed column order, `\n` line ends, UTF-8, enums spelled as in this file (`BUY`, `CNC`, `SL-M`, `COMPLETE`, `R_QTY_LOT`, `AUTO_SQOFF`, …). CSVs contain only integers, enums and plain strings, never floats. Floats appear only in `metrics.json`, written by our own JSON writer (sorted keys, no spaces) using one float format in both implementations: the shortest round-trip digits laid out like Python's `repr` (fixed notation for 1e-4 ≤ |x| < 1e16, otherwise `d.ddde±XX`; a trailing `.0` on integral values). The C++ formatter is tested against Python's `repr` on 10⁶ random doubles (A3 U-11).
 
