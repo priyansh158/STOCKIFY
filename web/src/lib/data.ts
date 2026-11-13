@@ -148,23 +148,23 @@ function agoWords(seconds: number): string {
  */
 export function recorderWords(
   s: Pick<RecorderStatus, "connected" | "packets_per_s" | "last_packet_age_ms" | "age_s" | "stale" | "market_open"> | null | undefined,
-): { headline: string; tone: "up" | "down" | "warn" | "info"; rate: string; last: string; note: string | null } {
+): { headline: string; tone: "up" | "down" | "warn" | "info"; rate: string | null; last: string | null; note: string | null } {
   if (!s) {
     return {
-      headline: "The recorder has not reported yet", tone: "warn", rate: "—", last: "—",
+      headline: "The recorder has not reported yet", tone: "warn", rate: null, last: null,
       note: `Start the recorder to see live figures: run ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
     };
   }
   if (s.stale && !s.market_open) {
     // outside market hours the recorder writes nothing, running or not: say what is known, not that it is broken
     return {
-      headline: "No report while the market is closed", tone: "info", rate: "—", last: "—",
+      headline: "No report while the market is closed", tone: "info", rate: null, last: null,
       note: `The last report was ${agoWords(s.age_s)} ago. The recorder reports only while the market is open. If it should have run, start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
     };
   }
   if (s.stale) {
     return {
-      headline: "The recorder is not running", tone: "warn", rate: "—", last: "—",
+      headline: "The recorder is not running", tone: "warn", rate: null, last: null,
       note: `Its last report was ${agoWords(s.age_s)} ago, so nothing is being recorded now. Start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
     };
   }
@@ -182,22 +182,29 @@ function hasData(c: CoverageCellDTO | undefined): boolean {
   return c?.state === "ok" || c?.state === "partial";
 }
 
+/** Which cells count as evidence: a recording is any recorder column, a recording not yet reported by mode, or the tick archive. */
+function isEvidence(kind: "recorder" | "nse", key: string, c: CoverageCellDTO): boolean {
+  if (kind === "nse") return key.startsWith("nse") && hasData(c);
+  if (key.startsWith("recorder")) return hasData(c) || c.state === "not_reported";
+  return key === "archive" && hasData(c);
+}
+
 /**
  * "Nothing has been recorded since Thu 5 Nov" from the coverage days, so a stopped daemon is plain on the page.
  * `prefix` picks the datasets ("recorder" or "nse"). Today is left out (its day is still going). Null when the newest
  * trading day (before today) has data, or when the window holds no such trading day.
  */
-export function silenceSince(days: CoverageDayDTO[], prefix: "recorder" | "nse", today: string): { last: string | null; missed: number; latestMissed: string } | null {
+export function silenceSince(days: CoverageDayDTO[], prefix: "recorder" | "nse", today: string): { last: string | null; missed: number; firstMissed: string; latestMissed: string } | null {
   const past = days.filter((d) => d.trading && d.date < today).sort((a, b) => a.date.localeCompare(b.date));
   let missed = 0;
   let latestMissed = "";
   for (let i = past.length - 1; i >= 0; i--) {
-    const cells = Object.entries(past[i].cells).filter(([k]) => k.startsWith(prefix)).map(([, c]) => c);
-    if (cells.some(hasData)) return missed === 0 ? null : { last: past[i].date, missed, latestMissed };
+    const found = Object.entries(past[i].cells).some(([k, c]) => isEvidence(prefix, k, c));
+    if (found) return missed === 0 ? null : { last: past[i].date, missed, firstMissed: past[i + 1].date, latestMissed };
     if (missed === 0) latestMissed = past[i].date;
     missed += 1;
   }
-  return missed === 0 ? null : { last: null, missed, latestMissed };
+  return missed === 0 ? null : { last: null, missed, firstMissed: past[0].date, latestMissed };
 }
 
 /** The sentence for `silenceSince`, or null when there is nothing to say. `what` is "recorded" or "downloaded from NSE". */

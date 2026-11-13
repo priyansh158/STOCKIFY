@@ -110,9 +110,18 @@ const out = {
     const none = [day("2026-11-11", true, "missing", "missing")];
     const r = silenceSince(days as never, "recorder", "2026-11-13");
     const n = silenceSince(days as never, "nse", "2026-11-13");
+    // the integrated app's shape: 5 Nov has only a verified tick archive (the recorder columns "not reported yet"), then missing days
+    const cell = (state: string, detail?: string) => ({ state, detail });
+    const shaped = [
+      { date: "2026-11-05", trading: true, cells: { recorder_full: cell("not_reported"), recorder_quote: cell("not_reported"), archive: cell("ok", "verified"), nse_fo: cell("ok") } },
+      ...["2026-11-06", "2026-11-09", "2026-11-10"].map((d) => ({ date: d, trading: true, cells: { recorder_full: cell("missing"), recorder_quote: cell("missing"), archive: cell("missing"), nse_fo: cell("missing") } })),
+    ];
+    const onlyNotReported = [{ date: "2026-11-05", trading: true, cells: { recorder_full: cell("not_reported"), archive: cell("missing") } },
+      { date: "2026-11-06", trading: true, cells: { recorder_full: cell("missing"), archive: cell("missing") } }];
+    const shapedRec = silenceSince(shaped as never, "recorder", "2026-11-13");
     return [r, n, silenceSince(fresh as never, "recorder", "2026-11-13"), silenceSince([] as never, "nse", "2026-11-13"),
       silenceSince(none as never, "recorder", "2026-11-13"),
-      silenceSentence(r, "recorded"), silenceSentence(n, "downloaded from NSE"), silenceSentence(silenceSince(none as never, "recorder", "2026-11-13"), "recorded"), silenceSentence(null, "x")];
+      silenceSentence(r, "recorded"), silenceSentence(n, "downloaded from NSE"), silenceSentence(silenceSince(none as never, "recorder", "2026-11-13"), "recorded"), silenceSentence(null, "x"), shapedRec, silenceSentence(shapedRec, "recorded"), silenceSince(shaped as never, "nse", "2026-11-13"), silenceSince(onlyNotReported as never, "recorder", "2026-11-13")];
   })(),
   days: {
     today: [istToday(new Date("2026-10-06T19:00:00Z")), istToday(new Date("2026-10-06T18:29:00Z"))],

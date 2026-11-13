@@ -109,16 +109,16 @@ class ResearchHelperChecks(unittest.TestCase):
                "in a terminal in the STOCKIFY folder.")
         closed = ("The last report was {} ago. The recorder reports only while the market is open. If it should have run, "
                   "start it with .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder.")
-        none = {"headline": "The recorder has not reported yet", "tone": "warn", "rate": "—", "last": "—",
+        none = {"headline": "The recorder has not reported yet", "tone": "warn", "rate": None, "last": None,
                 "note": "Start the recorder to see live figures: run .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder."}
         self.assertEqual(self.answers["recorder"], [
             none,
             {"headline": "Connected", "tone": "up", "rate": "12.3 packets a second", "last": "last packet 340 ms ago", "note": None},
             {"headline": "Connected", "tone": "up", "rate": "0 packets a second", "last": "no packet seen yet", "note": None},
             {"headline": "Not connected", "tone": "down", "rate": "0 packets a second", "last": "last packet 2 min 5 s ago", "note": None},
-            {"headline": "The recorder is not running", "tone": "warn", "rate": "—", "last": "—", "note": old.format("6 min 40 s")},
-            {"headline": "The recorder is not running", "tone": "warn", "rate": "—", "last": "—", "note": old.format("8 days")},
-            {"headline": "No report while the market is closed", "tone": "info", "rate": "—", "last": "—", "note": closed.format("8 days")},
+            {"headline": "The recorder is not running", "tone": "warn", "rate": None, "last": None, "note": old.format("6 min 40 s")},
+            {"headline": "The recorder is not running", "tone": "warn", "rate": None, "last": None, "note": old.format("8 days")},
+            {"headline": "No report while the market is closed", "tone": "info", "rate": None, "last": None, "note": closed.format("8 days")},
             {"headline": "Connected", "tone": "up", "rate": "204.3 packets a second", "last": "last packet 94 ms ago", "note": None},
         ])
 
@@ -131,15 +131,21 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_silence_names_the_last_day_with_data_from_the_coverage_cells(self):
         rec, nse, fresh, empty, never = self.answers["silence"][:5]
         # the recorder last had data on Thu 5 Nov; 4 trading days since (today, 13 Nov, is left out)
-        self.assertEqual(rec, {"last": "2026-11-05", "missed": 3, "latestMissed": "2026-11-12"})
-        self.assertEqual(nse, {"last": "2026-11-09", "missed": 2, "latestMissed": "2026-11-12"})
+        self.assertEqual(rec, {"last": "2026-11-05", "missed": 3, "firstMissed": "2026-11-09", "latestMissed": "2026-11-12"})
+        self.assertEqual(nse, {"last": "2026-11-09", "missed": 2, "firstMissed": "2026-11-10", "latestMissed": "2026-11-12"})
         self.assertIsNone(fresh)
         self.assertIsNone(empty)
-        self.assertEqual(never, {"last": None, "missed": 1, "latestMissed": "2026-11-11"})
-        self.assertEqual(self.answers["silence"][5:], [
+        self.assertEqual(never, {"last": None, "missed": 1, "firstMissed": "2026-11-11", "latestMissed": "2026-11-11"})
+        self.assertEqual(self.answers["silence"][5:9], [
             "Nothing has been recorded since Thu 5 Nov 2026 (3 trading days).",
             "Nothing has been downloaded from NSE since Mon 9 Nov 2026 (2 trading days).",
             "Nothing has been recorded in this range (1 trading day).", None])
+        shaped, sentence, nse, only = self.answers["silence"][9:]
+        # a verified archive on 5 Nov is a recording: the note says since then, never "nothing in this range"
+        self.assertEqual(shaped, {"last": "2026-11-05", "missed": 3, "firstMissed": "2026-11-06", "latestMissed": "2026-11-10"})
+        self.assertEqual(sentence, "Nothing has been recorded since Thu 5 Nov 2026 (3 trading days).")
+        self.assertEqual(nse, {"last": "2026-11-05", "missed": 3, "firstMissed": "2026-11-06", "latestMissed": "2026-11-10"})
+        self.assertEqual(only, {"last": "2026-11-05", "missed": 1, "firstMissed": "2026-11-06", "latestMissed": "2026-11-06"})
 
     def test_day_helpers_use_ist_and_reject_what_is_not_a_date(self):
         d = self.answers["days"]
