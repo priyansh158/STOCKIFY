@@ -469,7 +469,7 @@ def _cmd_run(args) -> int:
         changes = runs.column_changes(args.rerun, new_id)    # a folder saved before D-64 (final I-3) and/or CH 6.2
         if changes:
             print(f"reproduced ({'; '.join(changes)}) ({args.rerun} -> {new_id}): every other deterministic "
-                  "file is byte for byte the same, and only the columns named above were added", file=sys.stderr)
+                  "file is byte for byte the same, and only the columns and files named above were added", file=sys.stderr)
             return 0
         print(f"not reproduced ({args.rerun} -> {new_id})", file=sys.stderr)
         for name in runs.determinism_diff(args.rerun, new_id):

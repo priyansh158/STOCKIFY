@@ -124,6 +124,9 @@ def _cutoff_key(group: str) -> str:
         return "FO"
     return "CM_CAS" if group == "CM_CAS" else "CM"
 
+PLOT_MAX_SERIES, PLOT_MAX_POINTS = 8, 200_000      # CH 6.4: per run (D-94)
+
+
 class Engine:
     def __init__(self, bundle: dict, records: list[tuple], strategy, *, log_lines: list | None = None):  # noqa: ANN001
         self.bundle = bundle
@@ -196,6 +199,9 @@ class Engine:
         self.equity: list = []
         self.log_lines = log_lines if log_lines is not None else []
         self.labels: set[str] = set(bundle.get("labels", []))
+        self.plot_kinds: dict[tuple, str] = {}         # CH 6.4: (instrument, name) -> kind, fixed by the first call
+        self.plot_points: dict[tuple, int] = {}        # (t_ns, instrument, name) -> value; a repeat replaces
+        self.plot_capped: set[str] = set()             # the caps already logged ("series", "points")
         self.settle_closes: list = []                  # (t, iid, product, side, units, price): expiry closes (D-45)
         self.fsp_seen: dict = {}                       # (underlying_id, date) -> fsp
         self.underlying_last: dict[int, int] = {}
@@ -422,6 +428,33 @@ class Engine:
 
     def log(self, level: str, msg: str) -> None:
         self.log_lines.append(f"{self.now} {level} {msg}")
+
+    def plot(self, name: str, value: int, kind: str, instrument: int) -> None:
+        """CH 6.4 (Context.plot, args already checked): an unknown instrument or a changed kind is a ValueError; past
+        PLOT_MAX_SERIES series or PLOT_MAX_POINTS points the call is dropped and one WARN line says so per cap."""
+        if instrument != 0 and instrument not in self.inst:
+            raise ValueError(f"ctx.plot: instrument {instrument} is not in this run's bundle")
+        series = (instrument, name)
+        have = self.plot_kinds.get(series)
+        if have is not None and have != kind:
+            raise ValueError(f'ctx.plot: series "{name}" of instrument {instrument} is kind "{have}", not "{kind}"')
+        key = (self.now, instrument, name)
+        if have is None and len(self.plot_kinds) >= PLOT_MAX_SERIES:
+            self._plot_cap("series", PLOT_MAX_SERIES)
+        elif key not in self.plot_points and len(self.plot_points) >= PLOT_MAX_POINTS:
+            self._plot_cap("points", PLOT_MAX_POINTS)
+        else:
+            self.plot_kinds[series] = kind
+            self.plot_points[key] = value
+
+    def _plot_cap(self, which: str, limit: int) -> None:
+        if which not in self.plot_capped:
+            self.plot_capped.add(which)
+            self.log("WARN", f"plot limit reached: more than {limit} {which}")
+
+    def plot_rows(self) -> list[tuple]:
+        """plots.csv's rows, sorted by (t_ns, instrument_id, name)."""
+        return [(t, i, n, self.plot_kinds[(i, n)], v) for (t, i, n), v in sorted(self.plot_points.items())]
 
     def _event(self, book: Book, o: Order, event: str, detail: str = "") -> None:
         book.order_events.append((self.now, o.order_id, event, detail))

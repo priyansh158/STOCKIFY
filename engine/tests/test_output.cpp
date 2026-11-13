@@ -7,8 +7,10 @@
 #include <ostream>  // doctest prints string_view through operator<<
 
 #include "doctest.h"
+#include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/format.hpp"
+#include "stocksim/json_bundle.hpp"
 #include "stocksim/json_out.hpp"
 #include "stocksim/sha256.hpp"
 
@@ -74,4 +76,49 @@ TEST_CASE("CSV cells and rows match stockify.oracle.artifacts._csv") {
 TEST_CASE("SHA-256 of known inputs") {
     CHECK(sha256_hex(std::string_view("")) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     CHECK(sha256_hex(std::string_view("abc")) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+}
+
+// CH 6.4: the plot buffer's rules on an engine that has not run (time 0): the cap, the kinds, the names, last-wins.
+// The 200,000-point cap needs 200,000 distinct times; tests/stockify/test_plot.py runs it on both runners.
+TEST_CASE("ctx.plot: caps, kinds, names and last-wins") {
+    Engine e(load_bundle(std::string(STOCKSIM_FIXTURES_DIR) + "/sod_state/day1_bundle.json"));
+    Context& c = e.context();
+    static_assert(kPlotMaxSeries == 8 && kPlotMaxPoints == 200'000);
+    SUBCASE("a repeat at the same time replaces, and the series keeps its first kind") {
+        c.plot("s", 1);
+        c.plot("s", 2);
+        CHECK(e.plot_points().size() == 1);
+        CHECK(e.plot_points().begin()->second == 2);
+        CHECK_THROWS_WITH_AS(c.plot("s", 3, "level"), doctest::Contains("is kind \"price\", not \"level\""),
+                             std::invalid_argument);
+        c.plot("s", 4, "price", 0);
+        CHECK(e.plot_points().begin()->second == 4);
+    }
+    SUBCASE("the ninth series is dropped and one line says so, however many calls") {
+        for (int i = 0; i < 1000; ++i) {
+            c.plot("s" + std::to_string(i % 12), i);
+        }
+        CHECK(e.plot_kinds().size() == 8);
+        CHECK(e.plot_points().size() == 8);
+        int lines = 0;
+        for (const std::string& l : e.log_lines()) {
+            lines += l.find("plot limit") != std::string::npos ? 1 : 0;
+        }
+        CHECK(lines == 1);
+        CHECK(e.log_lines().back() == "0 WARN plot limit reached: more than 8 series");
+    }
+    SUBCASE("names and kinds are checked, kind first") {
+        CHECK_THROWS_AS(c.plot("", 1), std::invalid_argument);
+        CHECK_THROWS_AS(c.plot(std::string(33, 'x'), 1), std::invalid_argument);
+        CHECK_NOTHROW(c.plot(std::string(32, 'x'), 1));
+        CHECK_NOTHROW(c.plot("Ã©Ã©", 1));  // two code points, four bytes
+        CHECK_THROWS_AS(c.plot(" pad", 1), std::invalid_argument);
+        CHECK_THROWS_AS(c.plot("a
+b", 1), std::invalid_argument);
+        CHECK_THROWS_AS(c.plot("aÿ", 1), std::invalid_argument);  // not UTF-8
+        CHECK_THROWS_WITH_AS(c.plot("", 1, "volume"), doctest::Contains("kind must be"), std::invalid_argument);
+        CHECK_THROWS_WITH_AS(c.plot("a", 1, "price", 4'000'000'000), doctest::Contains("is not in this run's bundle"),
+                             std::invalid_argument);
+        CHECK_THROWS_AS(c.plot("a", 1, "price", -1), std::invalid_argument);
+    }
 }

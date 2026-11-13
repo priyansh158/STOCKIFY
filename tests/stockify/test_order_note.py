@@ -255,9 +255,33 @@ class OldRunsTests(NoteBase):
         code, out, err = _cli("run", "--rerun", rid)
         self.assertEqual(code, 0, err)
         new = f"{rid}-rerun"
-        self.assertIn(f"reproduced (orders.csv gained the note column, D-92) ({rid} -> {new})", err)
-        self.assertEqual(runs.determinism_diff(rid, new), ["orders.csv"])     # determinism_diff itself is not weakened
+        self.assertIn(f"reproduced (orders.csv gained the note column, D-92; plots.csv is new, D-94) ({rid} -> {new})",
+                      err)
+        # determinism_diff itself is not weakened: it still lists both files
+        self.assertEqual(runs.determinism_diff(rid, new), ["orders.csv", "plots.csv"])
         self.assertTrue(runs.note_column_only(rid, new))
+
+    def test_rerun_of_a_run_that_only_lacks_plots_csv_is_reproduced_with_a_new_file(self):
+        rid = runs.launch(self.config(BUY, "olp"), impl="oracle", report=False)
+        det = paths.run_path(rid) / "determinism.json"
+        hashes = json.loads(det.read_text(encoding="utf-8"))
+        self.assertIn("plots.csv", hashes)
+        hashes.pop("plots.csv")                                        # a folder saved between CH 6.2 and CH 6.4
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "
+", encoding="utf-8")
+        (paths.run_path(rid) / "plots.csv").unlink()
+        code, _, err = _cli("run", "--rerun", rid)
+        new = f"{rid}-rerun"
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"reproduced (plots.csv is new, D-94) ({rid} -> {new})", err)
+        self.assertNotIn("not reproduced", err)
+        self.assertEqual(runs.determinism_diff(rid, new), ["plots.csv"])
+        self.assertFalse(runs.note_column_only(rid, new))              # no note column was added here
+        # a plots.csv the old folder lists is never excused: a changed hash is a real difference
+        hashes["plots.csv"] = "0" * 64
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "
+", encoding="utf-8")
+        self.assertEqual(runs.column_changes(rid, new), [])
 
     def test_any_other_difference_is_not_tolerated(self):
         rid = runs.launch(self.config(BUY, "olx"), impl="oracle", report=False)

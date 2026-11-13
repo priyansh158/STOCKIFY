@@ -427,8 +427,9 @@ def _note_added(old_folder: Path, new_folder: Path, old_hashes: dict) -> bool:
 def column_changes(run_old: str, run_new: str) -> list[str]:
     """The known column additions (STEP_COLUMN_NOTE, NOTE_COLUMN_NOTE) that, together, are the whole of how a re-run
     of an older folder differs from it; [] when it differs in anything else (or not at all). They compose: a folder
-    older than D-64 differs in margin_daily.csv and in orders.csv. A plots.csv only the new run lists is allowed
-    alongside. `determinism_diff` itself is unchanged: this only decides whether what it reports is these additions."""
+    older than D-64 differs in margin_daily.csv and in orders.csv. A plots.csv only the new run lists (CH 6.4) is the third
+    (PLOTS_NOTE), and is excused by itself too. `determinism_diff` itself is unchanged: this only decides whether what
+    it reports is these additions."""
     old_folder, new_folder = paths.run_path(run_old), paths.run_path(run_new)
     try:
         old_hashes = json.loads((old_folder / "determinism.json").read_text(encoding="utf-8"))
@@ -436,15 +437,18 @@ def column_changes(run_old: str, run_new: str) -> list[str]:
     except (OSError, ValueError):
         return []
     diff = set(determinism_diff(run_old, run_new))
-    if "plots.csv" in new_hashes and "plots.csv" not in old_hashes:
-        diff.discard("plots.csv")
     notes = []
+    plots_new = "plots.csv" in new_hashes and "plots.csv" not in old_hashes     # CH 6.4: the file did not exist yet
+    if plots_new:
+        diff.discard("plots.csv")
     if "margin_daily.csv" in diff and _step_added(old_folder, new_folder, old_hashes):
         diff.discard("margin_daily.csv")
         notes.append(STEP_COLUMN_NOTE)
     if "orders.csv" in diff and _note_added(old_folder, new_folder, old_hashes):
         diff.discard("orders.csv")
         notes.append(NOTE_COLUMN_NOTE)
+    if plots_new:
+        notes.append(PLOTS_NOTE)
     return notes if not diff else []
 
 
@@ -453,6 +457,9 @@ def step_column_only(run_old: str, run_new: str) -> bool:
     column (final I-3), possibly together with the note column (column_changes)."""
     return STEP_COLUMN_NOTE in column_changes(run_old, run_new)
 
+
+# A folder saved before CH 6.4 (D-94) has no plots.csv.
+PLOTS_NOTE = "plots.csv is new, D-94"
 
 # orders.csv's header before CH 6.2 added the last column, `note` (D-92).
 NOTE_COLUMN_NOTE = "orders.csv gained the note column, D-92"
