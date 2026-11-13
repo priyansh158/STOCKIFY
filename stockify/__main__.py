@@ -13,11 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "nse": ("M1", "fetch NSE public end-of-day files"),
-    "bars": ("M1", "fetch and cache Kite historical candles"),
-    "compact": ("M1", "verify and archive landing tick files"),
-    "pack": ("M1", "build event packs"),
-    "data": ("M1", "data quality report"),
     "oracle": ("M2", "run the Python oracle backtester"),
     "golden": ("M2", "run golden scenarios"),
     "compare-artifacts": ("M3", "compare two runs' deterministic artifacts"),
@@ -132,6 +127,167 @@ def _cmd_calendar(args) -> int:
     return 0
 
 
+def _cmd_data_report(args) -> int:
+    from datetime import date
+
+    from stockify.data import quality
+
+    try:
+        result = quality.report(date.fromisoformat(args.date))
+    except quality.QualityError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(quality.summary_markdown(result))
+    print(f"(rows written to data_quality; summary saved to {result['summary_path']})", file=sys.stderr)
+    return 0
+
+
+def _cmd_compact(args) -> int:
+    from datetime import date
+
+    from stockify.data import compact
+
+    day = date.fromisoformat(args.date)
+    res = compact.compact(day, force=args.force)
+    if res.status == "verified" and not args.keep_landing:
+        # Same policy as the nightly job (D-38): delete only what retention allows.
+        from stockify import timeutil
+        deleted = compact.apply_retention(timeutil.ist_today())
+        if deleted:
+            print(f"landing files deleted (verified archives kept): {', '.join(deleted)}", file=sys.stderr)
+    json.dump(res.__dict__, sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    for warning in compact.disk_warnings():
+        print(f"WARNING: {warning}", file=sys.stderr)
+    return 0 if res.status in ("verified", "no_landing") else 1
+
+
+def _nse_datasets(text: str) -> tuple[str, ...]:
+    from stockify.data import nse_files
+    names = tuple(x.strip() for x in text.split(",") if x.strip())
+    bad = [x for x in names if x not in nse_files.DATASETS]
+    if bad:
+        raise SystemExit(f"unknown dataset(s) {', '.join(bad)}; choose from {', '.join(nse_files.DATASETS)}")
+    return names
+
+
+def _print_nse(res) -> None:  # noqa: ANN001
+    print(f"{res.dataset:<10} {res.trade_date}  {res.outcome:<8} {res.detail}")
+
+
+def _cmd_nse_fetch(args) -> int:
+    from datetime import date
+
+    from stockify import timeutil
+    from stockify.data import nse_files
+
+    day = date.fromisoformat(args.date) if args.date else timeutil.ist_today()
+    try:
+        results = nse_files.fetch(day, _nse_datasets(args.datasets), allow_unverified=args.allow_unverified,
+                                  force=args.force)
+    except nse_files.NseError as e:
+        print(e, file=sys.stderr)
+        return 1
+    for res in results:
+        _print_nse(res)
+    for s in nse_files.settle(day):
+        print(f"settlement {s['underlying']:<12} {s['expiry']}  {s['status']}"
+              + (f" fsp={s['fsp_paise'] / 100:.2f} ({s['source']}, cross-check {s['cross_check']})"
+                 if s["status"] == "ok" else ""))
+    return 0 if all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False
+                    for r in results) else 1
+
+
+def _cmd_nse_backfill(args) -> int:
+    from datetime import date, timedelta
+
+    from stockify import timeutil
+    from stockify.data import nse_files
+
+    end = date.fromisoformat(args.to) if args.to else timeutil.ist_today() - timedelta(days=1)
+    try:
+        totals = nse_files.backfill(date.fromisoformat(args.from_), end, _nse_datasets(args.datasets),
+                                    allow_unverified=args.allow_unverified,
+                                    progress=_print_nse if args.verbose_rows else None)
+    except nse_files.NseError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(json.dumps(totals, sort_keys=True))
+    return 0 if not totals.get("error") else 1
+
+
+def _cmd_bars_fetch(args) -> int:
+    from datetime import date
+
+    from stockify.data import history, instruments
+
+    _load_env()
+    start, end = date.fromisoformat(args.from_), date.fromisoformat(args.to)
+    code = 0
+    for sym in (s.strip() for s in args.symbols.split(",") if s.strip()):
+        try:
+            if args.continuous:
+                stats = history.fetch_continuous(sym, start, end)
+            else:
+                exchange, _, name = sym.rpartition(":")
+                iid = instruments.find(exchange or "NSE", name)
+                if iid is None:
+                    print(f"{sym}: not in refdata (run `refdata sync`)", file=sys.stderr)
+                    code = 1
+                    continue
+                stats = history.fetch(iid, args.interval, start, end)
+        except history.HistoryError as e:
+            print(f"{sym}: {e}", file=sys.stderr)
+            code = 1
+            continue
+        extra = f", adjustment {stats.adjustment}" if stats.adjustment else ""
+        print(f"{sym:<20} {stats.interval:<9} {stats.outcome:<9} {stats.rows} bars in {stats.chunks} chunks, "
+              f"{stats.requests} requests{extra} {stats.detail}")
+    return code
+
+
+def _cmd_bars_sweep(args) -> int:
+    from stockify.data import history
+
+    _load_env()
+    out = history.sweep()
+    flagged = [s for s in out if s.adjustment]
+    print(f"checked {len(out)} cached live instruments; {len(flagged)} adjusted")
+    for s in flagged:
+        print(f"  instrument {s.instrument_id}: {s.adjustment}")
+    return 0
+
+
+def _cmd_pack_build(args) -> int:
+    from pathlib import Path
+
+    from stockify.data import packs
+
+    try:
+        sha = packs.build(json.loads(Path(args.spec).read_text(encoding="utf-8")))
+    except packs.PackError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(sha)
+    return 0
+
+
+def _cmd_pack_show(args) -> int:
+    from stockify import paths
+    from stockify.data import packs
+
+    hits = sorted(p.stem for p in paths.packs_dir().glob(f"{args.sha}*.evt"))
+    if len(hits) != 1:
+        print(f"{len(hits)} packs match {args.sha!r}", file=sys.stderr)
+        return 1
+    sha = hits[0]
+    print(json.dumps(packs.manifest(sha), indent=2, sort_keys=True))
+    _, records = packs.read(packs.pack_path(sha))
+    for rec in records[:args.records]:
+        print(json.dumps(rec, sort_keys=True))
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -166,6 +322,59 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--date", help="trade date YYYY-MM-DD (default: today in IST)")
     rs.add_argument("--dir", help="read NSE.csv / NFO.csv from this folder instead of downloading")
     rs.set_defaults(func=_cmd_refdata_sync)
+
+    dq = sub.add_parser("data", help="data tools")
+    dqs = dq.add_subparsers(dest="data_command", required=True)
+    dr = dqs.add_parser("report", help="data-quality report for a recorded day (M1.9)")
+    dr.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
+    dr.set_defaults(func=_cmd_data_report)
+
+    n = sub.add_parser("nse", help="NSE public end-of-day files (M1.3)")
+    nsub = n.add_subparsers(dest="nse_command", required=True)
+    nf = nsub.add_parser("fetch", help="fetch and load one trade date (default: today in IST)")
+    nf.add_argument("--date", help="IST trade date YYYY-MM-DD")
+    nf.add_argument("--datasets", default="fo,cm,idx,qtyfreeze", help="comma list of fo,cm,idx,qtyfreeze")
+    nf.add_argument("--force", action="store_true", help="download again even if already fetched")
+    nf.add_argument("--allow-unverified", action="store_true", help="use sources.json rows not yet verified")
+    nf.set_defaults(func=_cmd_nse_fetch)
+    nb = nsub.add_parser("backfill", help="fetch every trading day in a range (resumable)")
+    nb.add_argument("--datasets", default="fo,cm,idx", help="comma list of fo,cm,idx")
+    nb.add_argument("--from", dest="from_", required=True, help="first date YYYY-MM-DD")
+    nb.add_argument("--to", help="last date YYYY-MM-DD (default: yesterday in IST)")
+    nb.add_argument("--allow-unverified", action="store_true", help="use sources.json rows not yet verified")
+    nb.add_argument("--rows", dest="verbose_rows", action="store_true", help="print one line per file")
+    nb.set_defaults(func=_cmd_nse_backfill)
+
+    b = sub.add_parser("bars", help="Kite historical bar cache (M1.4)")
+    bsub = b.add_subparsers(dest="bars_command", required=True)
+    bf = bsub.add_parser("fetch", help="fetch and cache candles")
+    bf.add_argument("--symbols", required=True,
+                    help="comma list: RELIANCE (NSE), NFO:NIFTY26NOVFUT, or underlyings with --continuous")
+    bf.add_argument("--interval", default="day", help="minute, 3minute, 5minute, 10minute, 15minute, "
+                    "30minute, 60minute or day")
+    bf.add_argument("--from", dest="from_", required=True, help="first IST date YYYY-MM-DD")
+    bf.add_argument("--to", required=True, help="last IST date YYYY-MM-DD")
+    bf.add_argument("--continuous", action="store_true", help="continuous day futures for the underlyings (K-5)")
+    bf.set_defaults(func=_cmd_bars_fetch)
+    bsub.add_parser("sweep", help="corporate-action check for every cached live instrument"
+                    ).set_defaults(func=_cmd_bars_sweep)
+
+    pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
+    pksub = pk.add_subparsers(dest="pack_command", required=True)
+    pb = pksub.add_parser("build", help="build a pack from a JSON spec; prints its SHA-256")
+    pb.add_argument("--spec", required=True, help="path to the spec JSON")
+    pb.set_defaults(func=_cmd_pack_build)
+    ps = pksub.add_parser("show", help="print a pack's manifest and first records")
+    ps.add_argument("sha", help="the pack's SHA-256 (a unique prefix is enough)")
+    ps.add_argument("--records", type=int, default=10, help="how many records to print (default 10)")
+    ps.set_defaults(func=_cmd_pack_show)
+
+    cp = sub.add_parser("compact", help="archive a finished day's landing file to verified Parquet (M1.7)")
+    cp.add_argument("--date", required=True, help="IST trade date YYYY-MM-DD")
+    cp.add_argument("--force", action="store_true", help="rebuild even if the day is already verified")
+    cp.add_argument("--keep-landing", action="store_true",
+                    help="do not apply the retention policy (landing files stay)")
+    cp.set_defaults(func=_cmd_compact)
 
     c = sub.add_parser("calendar", help="upcoming NSE sessions and Kite login windows in your time zone")
     c.add_argument("--start", help="first IST trade date YYYY-MM-DD (default: today in IST)")

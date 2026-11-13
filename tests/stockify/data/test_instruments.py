@@ -51,6 +51,9 @@ class InstrumentsTest(SandboxedDBTest):
         return row["instrument_id"]
 
 
+LATEST = len(list((Path(__file__).resolve().parents[3] / "stockify" / "data" / "migrations" / "refdata").glob("*.sql")))
+
+
 class SchemaTests(InstrumentsTest):
     def test_migrations_create_every_a1_table(self):
         names = {r["name"] for r in refdata._connect().execute(
@@ -59,11 +62,11 @@ class SchemaTests(InstrumentsTest):
                       "nse_fetch_log", "fo_eod", "cm_eod", "index_eod", "settlement_prices",
                       "freeze_limits", "daily_limits", "fo_universe", "tick_days", "data_quality"):
             self.assertIn(table, names)
-        self.assertEqual(refdata.schema_version(), 1)
+        self.assertEqual(refdata.schema_version(), LATEST)
 
     def test_reopening_does_not_reapply(self):
         support.reset_sqlite_singleton(refdata)
-        self.assertEqual(refdata.schema_version(), 1)
+        self.assertEqual(refdata.schema_version(), LATEST)
 
     def test_an_edited_applied_migration_is_refused(self):
         import shutil, tempfile

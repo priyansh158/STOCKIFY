@@ -1,0 +1,11 @@
+{
+  "dataset": "ticks",
+  "from": "2026-11-05",
+  "to": "2026-11-05",
+  "instruments": [
+    {"chain": {"underlying": "NIFTY", "expiry": "nearest", "strikes": 10, "futures": true}},
+    {"symbols": ["NSE:NIFTY 50"]}
+  ],
+  "clock_cadence_ms": 0,
+  "include_gaps": true
+}

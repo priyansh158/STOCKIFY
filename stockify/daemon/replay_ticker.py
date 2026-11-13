@@ -39,6 +39,21 @@ _SPEC = re.compile(r"^replay:(\d{4}-\d{2}-\d{2}):(\d+x|max)$")
 _FAULT = re.compile(r"^(disconnect|token_expiry|kill)@(\d{2}:\d{2}:\d{2})(?:\+(\d+)s)?$")
 
 
+# Sources come from stockify.data.ticks (archive first, D-38); kept under the
+# old names for callers and tests.
+from stockify.data.ticks import ArchiveDay as ArchiveSource  # noqa: E402
+from stockify.data.ticks import LandingDay as LandingSource  # noqa: E402
+
+
+def source_for(day: date, path=None):
+    """The verified archive when there is one (preferred), otherwise the landing file."""
+    from stockify.data import ticks
+    found = ticks.open_day(day, landing_path=path)
+    if found is None:
+        raise FileNotFoundError(f"no recording for {day}")
+    return found
+
+
 class ReplayClock(Clock):
     """Wall and monotonic time taken from the frame being replayed."""
 
@@ -96,9 +111,10 @@ def parse_fault(text: str, day: date) -> Fault:
 class ReplayTicker:
     MODE_LTP, MODE_QUOTE, MODE_FULL = MODE_LTP, MODE_QUOTE, MODE_FULL
 
-    def __init__(self, source: LandingDB, clock: ReplayClock, *, speed: float | None = None,
+    def __init__(self, source, clock: ReplayClock, *, speed: float | None = None,
                  faults: list[Fault] | None = None, heartbeats: bool = True):
-        self.source = source
+        # A LandingDB is accepted directly for convenience.
+        self.source = LandingSource.from_db(source) if isinstance(source, LandingDB) else source
         self.clock = clock
         self.speed = speed
         self.faults = sorted(faults or [], key=lambda f: f.at_ns)
@@ -154,25 +170,22 @@ class ReplayTicker:
         Heartbeats are spread 1 ms apart from the start of their minute; data
         frames carry their recorded times.
         """
-        conn = self.source.conn
         beats = []
         if self.heartbeats:
-            for row in conn.execute("SELECT minute_ns, count FROM heartbeats ORDER BY minute_ns"):
-                beats.extend(row["minute_ns"] + i * 1_000_000 for i in range(row["count"]))
+            for minute_ns, count in self.source.heartbeats():
+                beats.extend(minute_ns + i * 1_000_000 for i in range(count))
         b = 0
         current, packets, rec_ns, rec_mono = None, [], 0, 0
-        cursor = conn.execute("SELECT frame_no, recv_ns, mono_ns, instrument_token, raw FROM packets "
-                              "ORDER BY seq")
-        for row in cursor:
-            if row["frame_no"] != current:
+        for frame_no, recv_ns, mono_ns, token, raw in self.source.frames():
+            if frame_no != current:
                 if current is not None:
                     while b < len(beats) and beats[b] < rec_ns:
                         yield beats[b], None, "beat", b"\x00"
                         b += 1
                     yield rec_ns, rec_mono, "data", packets
-                current, packets = row["frame_no"], []
-                rec_ns, rec_mono = row["recv_ns"], row["mono_ns"]
-            packets.append((row["instrument_token"], bytes(row["raw"])))
+                current, packets = frame_no, []
+                rec_ns, rec_mono = recv_ns, mono_ns
+            packets.append((token, raw))
         if current is not None:
             while b < len(beats) and beats[b] < rec_ns:
                 yield beats[b], None, "beat", b"\x00"
@@ -253,11 +266,10 @@ class ReplayTicker:
 
 
 def open_replay(spec: str, *, faults: list[str] | None = None, path=None):
-    """Build (ticker, clock) for a `replay:<date>:<speed>` spec."""
+    """Build (ticker, clock) for a `replay:<date>:<speed>` spec (archive preferred)."""
     day, speed = parse_spec(spec)
-    source = LandingDB(day, path, readonly=True)
-    first = source.conn.execute("SELECT MIN(recv_ns) FROM packets").fetchone()[0] or \
-        timeutil.ist_ns(day, "09:00")
+    source = source_for(day, path)
+    first = source.first_recv_ns() or timeutil.ist_ns(day, "09:00")
     clock = ReplayClock(int(first) - 1_000_000)
     ticker = ReplayTicker(source, clock, speed=speed, faults=[parse_fault(f, day) for f in faults or []])
     return ticker, clock

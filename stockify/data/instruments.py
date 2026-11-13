@@ -374,7 +374,8 @@ def spec_at(instrument_id: int, on_date: date | str) -> dict | None:
 
 
 def expiries(underlying: str, kind: str, on_date: date | str) -> list[str]:
-    """Expiries on or after `on_date` among contracts listed by then.
+    """Expiries on or after `on_date` among contracts listed by then and not
+    expired early before it (D-41).
 
     `kind` is FUT, CE, PE or OPT (calls and puts).
     """
@@ -382,7 +383,7 @@ def expiries(underlying: str, kind: str, on_date: date | str) -> list[str]:
     marks = ",".join("?" * len(kinds))
     rows = refdata._connect().execute(
         f"SELECT DISTINCT expiry FROM instruments WHERE underlying=? AND kind IN ({marks}) "
-        "AND first_seen<=? AND expiry>=? ORDER BY expiry",
+        "AND first_seen<=? AND IFNULL(actual_expiry, expiry)>=? ORDER BY expiry",
         (underlying.upper(), *kinds, _iso(on_date), _iso(on_date)),
     ).fetchall()
     return [r["expiry"] for r in rows]
@@ -393,8 +394,8 @@ def option_chain(underlying: str, expiry: str, on_date: date | str) -> list[dict
     rows = refdata._connect().execute(
         "SELECT instrument_id, kind, strike_paise, tradingsymbol FROM instruments "
         "WHERE underlying=? AND expiry=? AND kind IN ('CE','PE') AND first_seen<=? "
-        "ORDER BY strike_paise, kind",
-        (underlying.upper(), expiry, _iso(on_date)),
+        "AND IFNULL(actual_expiry, expiry)>=? ORDER BY strike_paise, kind",
+        (underlying.upper(), expiry, _iso(on_date), _iso(on_date)),
     ).fetchall()
     return [dict(r) for r in rows]
 

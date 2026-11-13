@@ -1,11 +1,12 @@
-"""Data-layer endpoints (M1): recorder health; data quality comes with M1.9."""
+"""Data-layer endpoints (M1): recorder health and the data-quality report."""
 from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
-from server.schemas import RecorderStatusDTO, RecorderStatusResponse
+from server.schemas import (DataQualityResponse, InstrumentQualityDTO, RecorderStatusDTO,
+                            RecorderStatusResponse)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -26,3 +27,26 @@ async def recorder_status() -> RecorderStatusResponse:
         bytes_today=row["bytes_today"] or 0,
         age_s=max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9),
     ))
+
+
+@router.get("/quality", response_model=DataQualityResponse)
+async def data_quality(date: str = Query(..., description="IST trade date YYYY-MM-DD")) -> DataQualityResponse:
+    from datetime import date as _date
+
+    from stockify.data import instruments, quality
+
+    try:
+        day = _date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    rows = quality.stored(day)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"no quality report for {day}; run `python -m stockify data report --date {day}`")
+    items = []
+    for iid, metrics in sorted(rows.items()):
+        if iid == 0:
+            continue
+        info = instruments.get(iid) or {}
+        items.append(InstrumentQualityDTO(instrument_id=iid, symbol=info.get("tradingsymbol"), metrics=metrics))
+    return DataQualityResponse(date=day.isoformat(), day=rows.get(0, {}), instruments=items)
+

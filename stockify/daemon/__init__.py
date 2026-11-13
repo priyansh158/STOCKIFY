@@ -89,10 +89,50 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
     """Jobs whose milestone is not built yet are logged, not faked."""
     if job == "compaction":
-        log.info("compaction for %s: not built yet (M1.7); landing file kept as is", day)
+        from stockify.data import compact
+        try:
+            res = compact.compact(day)
+            if res.status == "failed":
+                log.error("compaction of %s failed: %s; the landing file is kept", day, res.error)
+            for warning in compact.disk_warnings():
+                log.warning("disk: %s", warning)
+            deleted = compact.apply_retention(day)
+            if deleted:
+                log.info("retention: deleted verified landing files for %s", ", ".join(deleted))
+        except Exception as e:                       # never keep the laptop up over a compaction error
+            log.exception("compaction of %s raised: %s", day, e)
+        # Marked done either way so a failure cannot block sleep; the landing
+        # file stays (tick_days status 'landing') and `compact --date` retries it.
+        state.mark(job, day)
+    elif job == "quality":
+        from stockify.data import quality
+        try:
+            result = quality.report(day)
+            d = result["day"]
+            log.info("quality %s: %d instruments, %d packets, %d silent minutes; summary %s",
+                     day, d["instruments"], d["packets"], d["silent_minutes"], result["summary_path"])
+        except quality.QualityError as e:
+            log.info("quality report for %s skipped: %s", day, e)
+        except Exception as e:                       # a report must never keep the laptop up
+            log.exception("quality report for %s failed: %s", day, e)
         state.mark(job, day)
     elif job == "nse_fetch":
-        log.info("NSE fetch for %s: not built yet (M1.3); use `nse backfill` once it exists", day)
+        from stockify.daemon import scheduler
+        from stockify.data import nse_files
+        try:
+            results = nse_files.fetch(day)
+        except Exception as e:                       # network or config trouble: retried on the next pass
+            log.exception("NSE fetch for %s failed: %s", day, e)
+            return
+        for r in results:
+            log.info("NSE %s %s: %s %s", r.dataset, r.trade_date, r.outcome, r.detail)
+        if nse_files.complete(results):
+            state.mark(job, day)
+        elif all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False for r in results)                 and timeutil.now_ns() >= scheduler.plan(day).nse_fetch_until_ns:
+            # Past the retry window and NSE still has not published: stop asking for this day.
+            log.warning("NSE files for %s still missing after the retry window; giving up "
+                        "(run `python -m stockify nse fetch --date %s` later)", day, day)
+            state.mark(job, day)
     elif job == "prune":
         from stockify import store
         week_ago = timeutil.now_ns() - 7 * 86_400 * 1_000_000_000
@@ -142,7 +182,7 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
         today = timeutil.ns_to_ist(now).date()
         if calendar_is_trading(today) and now >= scheduler.plan(today).unsubscribe_ns:
             obligations = today                                   # situation 1
-            for job in ("compaction", "prune"):
+            for job in ("compaction", "quality", "prune"):
                 if not state.done(job, today):
                     _run_job(job, today, state)
         else:
@@ -267,15 +307,22 @@ def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
     log.info("expected landing size today: about %.0f MB (assumes about %d chain strikes once "
              "centred and one packet per instrument per second)", est["bytes"] / 1e6, est["chain_instruments"])
     last_power_check = 0
+    bands = None
+    if not replay:
+        from stockify.data import limits
+        bands = limits.Snapshotter(day, manager, client=kite_client.get_client(), clock=clock)
     try:
         while not stop.is_set() and not session.stopped.is_set():
             session.tick()
+            if bands is not None:
+                bands.tick()                    # price bands into daily_limits (M1.5)
             if power is not None and clock.now_ns() - last_power_check >= 60 * 1_000_000_000:
                 last_power_check = clock.now_ns()
                 if power.on_ac_power() is False:
                     if "on_battery" not in recorder.stats.alarms:
                         recorder.stats.alarms.append("on_battery")
-                    log.warning("running on battery during the session: closing the lid would sleep the laptop")
+                    log.warning("running on battery during the session: recording continues until the battery "
+                                "runs out (Windows then hibernates; the stop is recorded as a gap)")
             if replay and ticker.finished.is_set():
                 break
             if clock.now_ns() >= end_ns:

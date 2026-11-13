@@ -117,12 +117,12 @@ All on `https://nsearchives.nseindia.com`. NSE may block clients without browser
 
 | ID | Dataset | URL pattern | Valid dates | Status |
 |---|---|---|---|---|
-| S-1 | F&O bhavcopy, UDiFF | `/content/fo/BhavCopy_NSE_FO_0_0_0_{YYYYMMDD}_F_0000.csv.zip` | 2024-07-08 → | ✔ pattern used in [open-source code](https://rdrr.io/github/nandp1/nser/src/R/fobhav.R); not downloaded during planning |
-| S-2 | F&O bhavcopy, legacy | `/content/historical/DERIVATIVES/{YYYY}/{MON}/fo{DD}{MON}{YYYY}bhav.csv.zip` | → 2024-07-05 | ⚠ (old host `archives.nseindia.com` in old code) |
-| S-3 | CM bhavcopy, UDiFF | `/content/cm/BhavCopy_NSE_CM_0_0_0_{YYYYMMDD}_F_0000.csv.zip` | 2024-07-08 → | ✔ [tradingqna](https://tradingqna.com/t/has-nse-changed-bhavcopy-location/169551) |
-| S-4 | CM bhavcopy, legacy | `/content/historical/EQUITIES/{YYYY}/{MON}/cm{DD}{MON}{YYYY}bhav.csv.zip` | → 2024-07-05 | ⚠ |
-| S-5 | All index closes | `/content/indices/ind_close_all_{DDMMYYYY}.csv` | | ⚠ (two independent catalogues list it) |
-| S-6 | Quantity freeze | `/content/fo/qtyfreeze.csv` (current only; lags circulars) | | ⚠ |
+| S-1 | F&O bhavcopy, UDiFF | `/content/fo/BhavCopy_NSE_FO_0_0_0_{YYYYMMDD}_F_0000.csv.zip` | **2024-01-01 →** (back-published; 2023-12-29 and earlier 404) | ✔ downloaded and parsed 2026-11-04 (20261104: 36,667 rows; 20240705: 33,930 rows, the same contracts as the legacy file). Carries `NewBrdLotQty` (lot size). `TtlTradgVol` = contracts. On expiry day every expiring contract's `SttlmPric` = `UndrlygPric` = the FSP (D-39). |
+| S-2 | F&O bhavcopy, legacy | `/content/historical/DERIVATIVES/{YYYY}/{MON}/fo{DD}{MON}{YYYY}bhav.csv.zip` | → 2024-07-05 (used only before 2024-01-01) | ✔ downloaded and parsed 2026-11-04 (fo05JUL2024bhav: 33,930 rows; fo28DEC2023/fo29DEC2023 loaded). **No lot-size column.** `CONTRACTS` = contracts, `VAL_INLAKH` = ₹ lakh to 2 decimals (differs from UDiFF turnover by < ₹1,000). Every other field equals UDiFF for 2024-07-05. |
+| S-3 | CM bhavcopy, UDiFF | `/content/cm/BhavCopy_NSE_CM_0_0_0_{YYYYMMDD}_F_0000.csv.zip` | **2024-01-01 →** | ✔ downloaded and parsed 2026-11-04 (20261104: 3,705 rows; 20240705 identical to legacy after parsing). |
+| S-4 | CM bhavcopy, legacy | `/content/historical/EQUITIES/{YYYY}/{MON}/cm{DD}{MON}{YYYY}bhav.csv.zip` | → 2024-07-05 (used only before 2024-01-01) | ✔ downloaded and parsed 2026-11-04 (cm05JUL2024bhav: 2,775 rows). |
+| S-5 | All index closes | `/content/indices/ind_close_all_{DDMMYYYY}.csv` | 2024-01-02 and 2026 checked | ✔ downloaded and parsed 2026-11-04 (167 indices). Names differ from Kite's ("Nifty Financial Services" vs `NIFTY FIN SERVICE`): `sources.json` → `index_aliases`. India VIX open/high/low carry 4 decimals. |
+| S-6 | Quantity freeze | `/content/fo/qtyfreeze.csv` (current only; lags circulars) | | ✔ downloaded and parsed 2026-11-04 (224 rows, space-padded columns). **Confirmed lag:** it still says NIFTY 1,800 while FAOP set 3,510 from 2026-10-05 (X-5). |
 | S-7 | SPAN risk parameters, ELM files, CM VaR files | unknown public URLs | | 🛑 verify in a browser on `nseindia.com/all-reports-derivatives` before coding M4.8 |
 
 UDiFF column names are expected to include `TradDt, BizDt, FinInstrmTp, TckrSymb, XpryDt, StrkPric, OptnTp, OpnPric, HghPric, LwPric, ClsPric, LastPric, PrvsClsgPric, UndrlygPric, SttlmPric, OpnIntrst, ChngInOpnIntrst, TtlTradgVol, TtlTrfVal, NewBrdLotQty` ⚠. The parser must read the header of a real file, map columns by name, and fail loudly on anything unexpected.

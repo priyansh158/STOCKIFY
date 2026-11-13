@@ -88,6 +88,18 @@ export interface RecorderStatusResponse {
   status: RecorderStatus | null;
 }
 
+export interface InstrumentQuality {
+  instrument_id: number;
+  symbol?: string | null;
+  metrics: Record<string, number>;
+}
+
+export interface DataQualityResponse {
+  date: string;
+  day: Record<string, number>;
+  instruments: InstrumentQuality[];
+}
+
 // ── Live ticks (WS) ──────────────────────────────────────────────────────────
 
 export interface TickEvent {

@@ -127,3 +127,71 @@ Append one dated section per milestone. Line numbers refer to the tree at the ti
 - **Owner decision 2026-11-05: backup target deferred.** `storage.json` → `retention_days` stays `null` (never delete) until a backup exists. Options discussed: a cloud bucket with an upload-only key and object lock (recommended, off-site), a USB drive (same location as the laptop), or both (3-2-1).
 - Dropped the extra landing index `ix_packets_frame` (not in A1; replay reads in `seq` order). Edited in `0001_init.sql` because no real landing file existed yet.
 
+## 2026-11-05 — first live recording (infrastructure test)
+
+A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) with the owner-approved default universe:
+
+- **61,286 packets in 299 s (205/s)** in 1,294 frames, 0 dropped, 99 heartbeats; all **202** instruments recorded (131 FULL, 71 QUOTE), 0 unresolved tokens, **no gaps**. Packet lengths: 42,506 × 184 (full), 16,105 × 44 (quote), 2,675 × 32 (index full).
+- Rates: NIFTY 50 ≈ 4 packets/s, NIFTY BANK ≈ 3, INDIA VIX ≈ 2, liquid equities ≈ 2, chain strikes ≈ 0.6. Receive time minus exchange timestamp ≈ +0.7 to +0.9 s (includes the laptop's clock offset; worth checking against NTP in M1.9).
+- Two text frames on connect (`instruments_meta`, `app_code`) were logged, not stored.
+- The on-battery alarm fired once a minute as designed.
+- **Size, measured:** 260 bytes per packet in the landing file → **~1.28 GB per full day** (pre-open to the F&O close). The same rows as zstd-9 Parquet: **5.1× smaller → ~0.25 GB/day**; raw bytes plus keys only would be ~0.16 GB/day. With 300 GB, compressed archives hold roughly 1,190 trading days (~4.8 years).
+- Today's real `refdata.sqlite` sync: 53,937 instruments (NSE + NFO). NIFTY's weekly expiry in the dump is 2026-11-09 and the November monthly 2026-11-23, matching the calendar's holiday shifts.
+
+## 2026-11-05 — M1.7 compaction notes
+
+- `index.parquet` carries `mono_ns` and `instrument_token` in addition to the A1 §3.2 columns, so a replay from the archive can rebuild frames exactly.
+- The archive is written to `date=YYYY-MM-DD.tmp` and renamed only after verification (row counts, a SHA-256 over `(seq, frame_no, instrument_id, raw)` in `seq` order matching the landing file, and every file's SHA-256 in `meta.json`).
+- A failed compaction never blocks the post-close sleep: the job is marked done, `tick_days.status` stays `landing`, the landing file is kept, and `compact --date` retries.
+- **First real day (2026-11-05, 5-minute test):** 61,286 packets, 15.9 MB landing → 4.8 MB archive (3.3×), verified in 2.2 s. The 30 parsed depth columns cost about a third of `full.parquet`; grouping rows by instrument inside each row group and delta-encoding integers would cut it about 23%, and dropping the depth columns (raw keeps them) about 51% (owner decision pending).
+- **Owner chose the instrument-grouped, delta-encoded layout (D-37).** Re-compacted 2026-11-05: 15.9 MB → 3.6 MB (4.4×), verified.
+
+## 2026-11-05 — M1.9 quality report notes
+
+- First real report (2026-11-05, 5-minute test, from the archive): 202 instruments, 61,084 packets in the continuous phase, 0 silent minutes, 0 crossed books, 0 volume decreases, 0 out-of-order exchange timestamps; median receive-minus-exchange latency about 796 ms.
+- **Coverage measures feed activity, not only recording health.** Kite sends a packet only when something changes, so illiquid strikes (e.g. far BANKNIFTY December options: about one packet every 30 s) show 3–5% coverage on a perfect recording. Recording problems show up as day-level silent minutes, gap rows and gaps on liquid instruments (indices, near futures, ATM strikes).
+- The latency includes the laptop clock's offset from the exchange; add an NTP offset check before trusting sub-second latency numbers.
+- Equities use the CM continuous phase (09:15–15:30); F&O-eligible stocks stop continuous trading at 15:15 from 2026-08-03 (closing auction), so their last 15 minutes count as uncovered until CAS eligibility is modelled.
+
+## 2026-11-04 — M1.3 NSE end-of-day files (LWB 1.1)
+
+- Every source downloaded and parsed for real before `verified: true` (evidence rows in `sources.json`, facts S-1…S-6).
+- UDiFF exists from 2024-01-01 (D-40); legacy only before. Legacy F&O has no lot size: those rows load with `lot_size` NULL.
+- Units as published: F&O volume = contracts (both formats), OI = units, turnover → paise. Legacy turnover is ₹ lakh to 2 dp (< ₹1,000 off UDiFF).
+- FSP (D-39): NSE's settlement price of the expiring contracts. On 2026-10-27, 18 of 213 stocks differ from the CM close by > 1 tick (closing auction); indices all match. 2023-12-28 (legacy) shows the same pattern for 16 stocks.
+- `ind_close_all` names ≠ Kite names: 66 of 167 map (aliases in `sources.json`); the rest are indices Kite does not list or names not aliased yet. India VIX O/H/L have 4 decimals and are rounded half-up to points × 100.
+- `qtyfreeze.csv` lags circulars (NIFTY 1,800 vs 3,510): stored as observed (`source = qtyfreeze.csv`); M4.1 cross-checks circulars.
+- Contracts first seen in a bhavcopy get `tradingsymbol` NULL, `source = 'bhavcopy'`. Their lot size becomes a `contract_specs` row only when a tick size is known from the same contract or a sibling (same underlying and kind); otherwise skipped (73 on 2026-10-27).
+- Speed: one trading day (fo + cm + idx) ≈ 7 s, so a 2024-01-01 → today backfill ≈ 1.5 h. A `kind='EQ'` lookup could not use the partial unique index and took 107 s per CM file until it used the index's own predicate.
+- Loaded into the real refdata so far: 2023-12-28, 2023-12-29, 2026-10-27, 2026-10-28, 2026-10-29, 2026-11-04, plus qtyfreeze 2026-11-05.
+- `data_quality` is shared: the quality report now deletes only its own metrics for a day (`quality.FOREIGN_METRICS`).
+
+## 2026-11-05 — M1.4 Kite bar cache (RWB 1.1)
+
+- The cache lives in `stockify/data/history.py` next to the M0.1 helpers; `bars.sqlite` from migration `bars/0001_init.sql`.
+- `kite_client.historical` swallows exceptions, so the cache calls the SDK's `historical_data` directly (it must see `InputException` to learn range limits).
+- Throttle: capacity-1 token bucket at `historical_rps` (3/s): calls are spaced 1/3 s apart. A burst-of-3 bucket allowed 4 calls inside one second.
+- Chunk defaults (`kite_limits.json` → `historical_max_days`) are the community-reported values; learned limits go to `$LAB/kite_limits_learned.json` (runtime state, not config).
+- Kite prices arrive as floats: shortest repr, rounded half-up to paise.
+- Corporate-action check: last 5 cached day bars (else the requested interval) re-fetched; a consistent ratio (spread ≤ 0.05%, |ratio − 1| > 0.1%) → `adjustments_detected`; live → whole cache of that instrument dropped and the requested range refetched.
+- First real fetch (2026-11-05): RELIANCE/INFY day 2026-01-01 → 2026-11-04 (208 bars each, 1 request); Kite day closes equal the bhavcopy CM closes on 10-27, 10-28 and 11-04. NIFTY continuous futures 2024-01-01 → 2026-11-04: 706 day bars with OI.
+- **Observed:** RELIANCE minute bars end at 15:14 IST (360 per day) while NIFTY 50 runs to 15:29 (375). F&O stocks stop continuous trading at 15:15 for the closing auction (D-13, `CM_CAS`); Kite has no minute bars for the auction window.
+
+## 2026-11-05 — M1.8 event packs (CAM 1.1)
+
+- `stockify/data/packs.py`: encoder, builder, `read(path) -> (header, records)` (records as dicts; checks sizes, order and count) and `read_numpy(path, kind)` for one fixed-size kind. A2 listed `read(path) -> numpy records`; variable-size REFDATA makes one array impossible, hence the split.
+- Ticks are read through `stockify.data.ticks` from their raw bytes (`kite_packets.parse_packet` / `parse_depth` / `index_change`), so a pack is byte-identical whether the day comes from the landing file or the archive (test).
+- One day's records are held in memory at a time; ticks are merged with the other events because receive order is already time order (a day with a backwards clock step is sorted).
+- Selectors: ids, symbols, chain (`expiry: nearest` or a date, `strikes: N` around the ATM from the underlying's previous-day close in `index_eod` / `cm_eod`, optional nearest future). Ticks with no selector take every instrument in the day's subscription log.
+- LTP-mode (8-byte) packets have no record kind and raise; the recorder never subscribes in LTP mode.
+- `GAP` reason 5 `not_subscribed` is encodable but not generated yet; tier gaps are expanded per subscribed pack instrument.
+- `REFDATA price_band` comes from `daily_limits`, which the M1.5 scheduler does not fill yet (quote-endpoint snapshot still open).
+- Real packs built 2026-11-05: the recorded day (61,488 records, 18.3 MB, all 61,286 packets), a NIFTY nearest-expiry ±10 chain with 1 s CLOCK (17,588 records), RELIANCE/INFY day bars (adjusted) and a bhav_eod pack. Each rebuilt to the same SHA-256.
+
+## 2026-11-05 — backfill findings (LWB 1.2)
+
+- The first backfill (2024-01-01 →) refused 124 F&O and 114 CM days, by design (unknown columns / unexpected values raise). Two real causes:
+  - UDiFF files back-published for 2024-01-01 … 2024-06-20 call the reserved columns `Rsvd01…Rsvd04`; later files `Rsvd1…Rsvd4`. Accepted as synonyms.
+  - Early expiry on corporate actions (D-41): IDFC 2024-10-09, ITC 2025-01-03, SIEMENS 2025-04-04, ABFRL 2025-05-21 (scheduled expiries up to 3 months later). Stored in `instruments.actual_expiry`.
+- Refused days kept their raw files; re-running the backfill re-parses them (only `parsed_ok = 1` days are skipped).
+

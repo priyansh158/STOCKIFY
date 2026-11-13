@@ -98,6 +98,19 @@ class RecorderStatusResponse(BaseModel):
     status: RecorderStatusDTO | None
 
 
+class InstrumentQualityDTO(BaseModel):
+    """data_quality metrics of one instrument for one day (M1.9)."""
+    instrument_id: int
+    symbol: str | None = None
+    metrics: dict[str, float]
+
+
+class DataQualityResponse(BaseModel):
+    date: str
+    day: dict[str, float] = Field(default_factory=dict, description="day-level metrics (instrument_id 0)")
+    instruments: list[InstrumentQualityDTO] = Field(default_factory=list)
+
+
 # ── Ticks (WS payloads) ──────────────────────────────────────────────────────
 
 class TickEvent(BaseModel):

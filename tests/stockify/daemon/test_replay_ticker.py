@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 from datetime import date
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -118,6 +119,29 @@ class ByteForByteTests(ReplayTest):
         ticker.on_message = lambda ws, payload, binary: seen.append(payload)
         ticker.connect()
         self.assertEqual(seen, [kp.build_frame(p) for p in frames.values()])
+
+
+class ArchiveSourceTests(ReplayTest):
+    def test_replay_from_the_archive_matches_replay_from_landing(self):
+        from stockify.data import compact, refdata
+        from stockify.daemon.replay_ticker import ArchiveSource, LandingSource, source_for
+        support.reset_sqlite_singleton(refdata)
+        self.addCleanup(support.reset_sqlite_singleton, refdata)
+        self.source.close()
+        with unittest.mock.patch.object(compact, "ROW_GROUP", 40), \
+                unittest.mock.patch.object(compact, "session_over", return_value=True):   # 9 Nov is in the future
+            res = compact.compact(DAY)
+        self.assertEqual(res.status, "verified", res.error)
+        chosen = source_for(DAY)
+        self.assertIsInstance(chosen, ArchiveSource)
+        landing = LandingSource(DAY)
+        self.assertEqual(list(chosen.frames()), list(landing.frames()))
+        self.assertEqual(chosen.heartbeats(), landing.heartbeats())
+        self.source = LandingDB(DAY)          # reopened for tearDown
+
+    def test_without_an_archive_the_landing_file_is_used(self):
+        from stockify.daemon.replay_ticker import LandingSource, source_for
+        self.assertIsInstance(source_for(DAY), LandingSource)
 
 
 class SubscriptionTests(ReplayTest):

@@ -174,7 +174,7 @@ Prices in `packets` are as sent by Kite (paise; index values × 100). Parsing ru
 | `gaps.parquet`, `subscriptions.parquet`, `heartbeats.parquet` | copies of the landing tables | |
 | `meta.json` | | row counts, per-file SHA-256, landing digest, parser version, created time |
 
-zstd compression, row groups ≈ 1M rows, sorted by `seq`.
+zstd compression, row groups ≈ 1M rows. Each row group covers a contiguous `seq` range; inside it rows are ordered by `(instrument_id, seq)` with delta-encoded integers (D-37), so readers sort a row group by `seq`.
 
 ## §4 `lab.sqlite`
 
