@@ -92,6 +92,7 @@ cd web; npm run lint; npm run build
 - [x] CH 6.4 `ctx.plot` and `plots.csv` on both runners (`ctx.plot(name, value, *, kind="price", instrument=0)`, 8 series and 200,000 points per run, a deterministic file; D-94).
 - [x] CH 6.6 The shipped Python strategies say why they trade and draw their own lines (`note=` on every order, `ctx.plot` in sma_cross and the opening-range breakout; the exact sentences are D-95, for the C++ twins to copy).
 - [x] CH 6.7 The C++ twins `orb_cpp` and `sma_cross_cpp` write the same notes and plots as their Python originals, byte for byte (the sentences are D-95).
+- [x] CH 6.8 The engine side of the charts is reviewed and recorded (differential review, sharp-edges, insecure-defaults; one slippage `k` fix; `RECON.md`; c-review runs at the final review).
 
 ## Definition of done
 

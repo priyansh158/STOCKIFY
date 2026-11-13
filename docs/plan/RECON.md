@@ -1253,3 +1253,34 @@ Read-only on the real lab (refdata opened `mode=ro`, the tick archive read throu
 ### M6.7 extra slippage ticks (Task 14)
 
 🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.\run.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.
+
+
+## 2026-11-12 — chart engine side (CH 6.8)
+
+What the code really looks like after C1-C7 (`8985275~1..b43f2da`, plus one fix).
+
+- **Rebuild first.** `.\run.ps1 -BuildEngine` is required on every machine before any run is compared: a stale `_engine`
+  has no `note` on `ctx.place`, no `ctx.plot`, no `plots.csv`, no `orb_cpp`/`sma_cross_cpp` notes, and now the checked
+  slippage reads, so the oracle and the engine then write different bytes.
+- **Hashes C3 and C4 changed.** C3 (D-92): `orders.csv` gains the last column `note`, so every run's `orders.csv` hash and
+  its `determinism.json` hash moved; the bundle gains `system_notes` (the pinned run bundles keep their old pins, the test
+  pops `system_notes` and checks it on its own); the `sod_state` order fields gain `note` (optional on read, so
+  `tests/fixtures/sod_state/day0_state.json` was regenerated with `"note": ""`); the pins re-measured then were flat
+  `de43313c` to `c9566a44` and staircase `62f700a5` to `0cb3291d` (cause: the `extra_ticks` key of Task 14 reached the
+  bundle first, not the note). C4 (D-94): `plots.csv` is a new deterministic file, so `determinism.json` of every run
+  lists a new row and its hash moved again; a re-run of an older folder is "reproduced" with `PLOTS_NOTE` (D-94),
+  `NOTE_COLUMN_NOTE` (D-92) and the step note (D-64) composed in `runs.column_changes`. The paper parity compare skips
+  `note` for a stored order that lacks the key (D-93).
+- **Review fixes.** One defect: a `random_ticks` slippage `k` of 4294967295 or more was cast to `uint32_t` after `+ 1`
+  (wrapped, or int64 overflow for the largest), so a valid run config made the engine disagree with the oracle. The engine
+  and `runconfig` now both refuse `k` above 4294967294 (`kMaxRandomTicksK`, `MAX_RANDOM_TICKS_K`); the other slippage
+  reads (`k`, `bp`, `kind`) are checked in `matcher.cpp::slip_whole`. The remaining unchecked reads of the C3 list
+  (`engine_trading.cpp` market protection `bp`, `costs.cpp` rows, `engine.cpp` queued `kind`) read dated repo config or
+  the engine's own data and are recorded as safe in the audit.
+- **Open, not fixed.** The C++ strategies `orb_cpp` and `sma_cross_cpp` carry no state between runs of an engine
+  (`save_state` is the default `"{}"`), while the Python twins carry every attribute (the C++ `closed_` of the ORB is one
+  such member); the two agree across a day boundary, not on a resume inside one day. A carried `sod_state` note is checked as text
+  only (like `tag`).
+- **c-review is deferred** to the final whole-branch review (owner ruling, 2026-11-12). The full suite is run by the
+  integrator on the integration branch; this task ran focused filters only.
+- The reviews are in `.superpowers/audits/charts-C1-C7-engine-reviews.md`.
