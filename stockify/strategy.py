@@ -218,11 +218,20 @@ def fmt_qty(units: int) -> str:
 
 
 def to_level(x: float) -> int:
-    """An indicator value as an integer, x * 10,000 rounded half to even: 54.3217 -> 543217. NaN or infinity: ValueError."""
+    """An indicator value as an integer, x * 10,000 rounded half to even: 54.3217 -> 543217.
+    Only an int or a float (not a bool or a string). NaN, infinity, or a result outside int64: ValueError."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        raise TypeError(f"x must be an int or a float, not {type(x).__name__}")
     v = float(x)
     if v != v or v in (float("inf"), float("-inf")):
         raise ValueError("a level must be finite")
-    return round(v * 10000.0)
+    try:
+        r = round(v * 10000.0)
+    except OverflowError:
+        raise ValueError("a level does not fit in an int64") from None
+    if not -2**63 <= r < 2**63:
+        raise ValueError("a level does not fit in an int64")
+    return r
 
 
 # ── Indicators (A2 §4.3): exactly this expression order ──────────────────────

@@ -1,6 +1,7 @@
 """CH 6.1: clean_note, fmt_price, fmt_qty and to_level, identical in Python and C++."""
 from __future__ import annotations
 
+import math
 import random
 import re
 import unicodedata
@@ -69,6 +70,39 @@ class CleanNoteTests(unittest.TestCase):
         for bad in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 to_level(bad)
+
+    def test_to_level_refuses_past_int64_and_non_numbers(self):
+        for bad in (1e20, -1e20, 1e305, -1e305, 2**70):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                to_level(bad)
+        for bad in ("1.5", True, False, None, b"1"):
+            with self.subTest(bad=bad), self.assertRaises(TypeError):
+                to_level(bad)  # type: ignore[arg-type]
+        self.assertEqual(to_level(3), 30000)
+
+    @unittest.skipUnless(engine.available(), _ENGINE)
+    def test_to_level_matches_engine_at_the_int64_boundary(self):
+        eng = engine.load()
+        edge = 2.0**63 / 10000.0
+        probes = [edge, -edge, 1e20, -1e20, 1e305, -1e305]
+        for base in (edge, -edge):
+            x = base
+            for _ in range(4):
+                x = math.nextafter(x, 0.0)
+                probes.append(x)
+            x = base
+            for _ in range(4):
+                x = math.nextafter(x, math.copysign(math.inf, base))
+                probes.append(x)
+        for x in probes:
+            try:
+                want = to_level(x)
+            except ValueError:
+                with self.subTest(x=x), self.assertRaises(RuntimeError):
+                    eng.to_level(x)
+            else:
+                with self.subTest(x=x):
+                    self.assertEqual(eng.to_level(x), want)
 
     def test_helpers_are_importable_by_a_strategy(self):
         check_source("from stockify.strategy import fmt_price\n", "stockify.strategies.t", "t.py")
