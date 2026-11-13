@@ -18,6 +18,7 @@ from server.routers.research import _clean, run_research_dto
 from server.schemas import (ChartBarDTO, ChartChunkDTO, ChartInstrumentDTO, ChartMarkerDTO, ChartPlotDTO, ChartPointDTO,
                             ComparisonDTO, RunChartDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
+from stockify.reporting import figures
 from stockify.reporting.settlements import DELIVERED as _DELIVERED  # noqa: F401  (still importable from here)
 from stockify.reporting.settlements import SETTLED as _SETTLED  # noqa: F401
 from stockify.reporting.settlements import read_settlements
@@ -283,9 +284,10 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     if folder is not None and (folder / "manifest.json").exists():
         manifest = _json((folder / "manifest.json").read_text(encoding="utf-8"), None)
     fill_count, cost_totals = _folder_totals(folder)
+    metrics, withheld = figures.present(_json(row.get("metrics_json"), {}))    # one rule for what may be shown (D-135)
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
-                            metrics=_json(row.get("metrics_json"), {}), manifest=manifest,
-                            fill_count=fill_count, cost_totals=cost_totals)
+                            metrics=metrics, manifest=manifest,
+                            fill_count=fill_count, cost_totals=cost_totals, withheld=withheld)
 
 
 @router.get("/api/tests/{run_id}/export")

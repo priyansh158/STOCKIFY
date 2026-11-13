@@ -125,7 +125,9 @@ function Metrics({ rows, labels }: { rows: CompareMetricDTO[]; labels: string[] 
             <Verdict differs={differs} />
             {m.values.map((v, i) => (
               <td key={labels[i]} className="num" data-differs={differs ? "" : undefined}>
-                {v === null ? <abbr title="not available">n/a</abbr> : num(v, m.kind, m.key === "net_pnl" || m.key === "return")}
+                {v === null
+                  ? (m.reasons?.[i] ? <span title="not shown for this run">{m.reasons[i]}</span> : <abbr title="not available">n/a</abbr>)
+                  : num(v, m.kind, m.key === "net_pnl" || m.key === "return")}
               </td>
             ))}
           </tr>

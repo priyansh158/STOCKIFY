@@ -162,6 +162,8 @@ export interface TestRunDetail {
   manifest?: Record<string, unknown> | null;
   fill_count?: number | null;
   cost_totals: Record<string, number>;
+  /** metrics key -> plain reason the figure is not shown (its value in `metrics` is null) */
+  withheld?: Record<string, string>;
 }
 
 export interface TestFill {
@@ -623,6 +625,7 @@ export interface CompareMetricDTO {
   values: (number | null)[];
   kind: string;
   plain: string;
+  reasons?: (string | null)[];
 }
 
 export interface CompareDiffDTO {

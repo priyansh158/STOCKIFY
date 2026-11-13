@@ -19,8 +19,6 @@ import { costScale } from "@/lib/research";
 const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 30_000;  // after errors the poll waits longer each time, up to this
 const FILL_PAGE = 200;
-// A yearly rate from a few weeks of results is noise: show it only for runs of about a trading year or more.
-const MIN_DAYS_FOR_YEARLY = 240;
 
 const COST_NAMES: Record<string, string> = {
   brokerage: "Brokerage",
@@ -167,7 +165,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   }
 
   const run = detail?.run;
-  const m = detail?.metrics ?? {};
+  const m = detail?.metrics ?? {};      // figures the server withheld (too short a run, D-135) are null here; `detail.withheld` says why
   const g = growth(run?.nav_start_paise, run?.nav_end_paise);
   const costTotals = detail?.cost_totals ?? {};      // the whole run, summed by the server (/charges is paged)
   const fillCount = detail?.fill_count ?? extra.fills.length;
@@ -270,7 +268,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   <Stat label="Ended with" value={rupeesWhole(run.nav_end_paise)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
                   <Stat label="Gain or loss" value={pct(g, true)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
                   <Stat label="Per year, on average"
-                    value={(num(m.days) ?? 0) >= MIN_DAYS_FOR_YEARLY ? pct(num(m.cagr), true) : "too short to say"} />
+                    value={detail?.withheld?.cagr ?? pct(num(m.cagr), true)} />
                   <Stat label="Worst fall from a high" value={pct(run.max_drawdown)} />
                   <Stat label="Trades" value={String(run.trades ?? 0)} />
                   <Stat label="Trades that made money" value={pct(num(m.win_rate))} />

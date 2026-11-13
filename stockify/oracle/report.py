@@ -5,6 +5,8 @@ import csv
 import json
 from pathlib import Path
 
+from stockify.reporting import figures
+
 LABEL_TEXT = {
     "eod_approx": "fills at the next day's close from end-of-day files (approximate, A4 §4.9)",
     "fill:approximate": "snapshot LTP fills (approximate, A4 §4.2)",
@@ -36,12 +38,12 @@ def _rupees(paise) -> str:  # noqa: ANN001
     return f"{sign}₹{s}.{frac:02d}"
 
 
-def _pct(x) -> str:  # noqa: ANN001
-    return "–" if x is None else f"{x * 100:.2f}%"
+def _pct(x, why: str | None = None) -> str:  # noqa: ANN001
+    return (why or "–") if x is None else f"{x * 100:.2f}%"
 
 
-def _num(x, digits: int = 2) -> str:  # noqa: ANN001
-    return "–" if x is None else f"{x:.{digits}f}"
+def _num(x, digits: int = 2, why: str | None = None) -> str:  # noqa: ANN001
+    return (why or "–") if x is None else f"{x:.{digits}f}"
 
 
 def equity_png(folder: Path) -> Path | None:
@@ -101,6 +103,7 @@ def _gap_lines(folder: Path) -> list[str]:
 
 def write(folder: Path) -> Path:
     m = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
+    m, withheld = figures.present(m)      # the same rule the run page and the compare table use (D-135)
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     png = equity_png(folder)
@@ -115,13 +118,15 @@ def write(folder: Path) -> Path:
         lines += gaps
     lines += ["## Headline", "", "| metric | value |", "|---|---|",
               f"| Start → end NAV | {_rupees(m['nav_start_paise'])} → {_rupees(m['nav_end_paise'])} |",
-              f"| CAGR | {_pct(m['cagr'])} |", f"| Volatility | {_pct(m['volatility'])} |",
-              f"| Sharpe / Sortino | {_num(m['sharpe'])} / {_num(m['sortino'])} |",
+              f"| CAGR | {_pct(m['cagr'], withheld.get('cagr'))} |",
+              f"| Volatility | {_pct(m['volatility'], withheld.get('volatility'))} |",
+              f"| Sharpe / Sortino | {_num(m['sharpe'], why=withheld.get('sharpe'))} / "
+              f"{_num(m['sortino'], why=withheld.get('sortino'))} |",
               f"| Max drawdown (days) | {_pct(m['max_drawdown'])} ({m['max_drawdown_days']}) |",
-              f"| Calmar | {_num(m['calmar'])} |",
+              f"| Calmar | {_num(m['calmar'], why=withheld.get('calmar'))} |",
               f"| Trades / win rate / profit factor | {m['trades']} / {_pct(m['win_rate'])} / {_num(m['profit_factor'])} |",
               f"| Average trade | {_rupees(round(m['avg_trade_paise'])) if m['avg_trade_paise'] is not None else '–'} |",
-              f"| Exposure / turnover | {_pct(m['exposure'])} / {_num(m['turnover'])} |",
+              f"| Exposure / turnover | {_pct(m['exposure'])} / {_num(m['turnover'], why=withheld.get('turnover'))} |",
               f"| Max participation used | {_pct(m['max_participation'])} |", ""]
     if png:
         lines += ["![equity](equity.png)", ""]
@@ -130,7 +135,7 @@ def write(folder: Path) -> Path:
         if v:
             lines.append(f"| {k} | {_rupees(v)} |")
     lines += [f"| **total** | **{_rupees(m['costs_total_paise'])}** |",
-              f"| share of gross P&L ({_rupees(m['gross_pnl_paise'])}) | {_pct(m['cost_share_of_gross'])} |", ""]
+              f"| share of gross P&L ({_rupees(m['gross_pnl_paise'])}) | {_pct(m['cost_share_of_gross'], withheld.get('cost_share_of_gross'))} |", ""]
     if m["rejects"]:
         lines += ["## Rejected orders", ""] + [f"- `{k}`: {v}" for k, v in m["rejects"].items()] + [""]
     lines += ["## Run", "",
