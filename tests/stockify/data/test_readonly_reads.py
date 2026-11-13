@@ -66,6 +66,27 @@ class ReadonlyUriTest(SandboxedDBTest):
             sqlite3.connect(paths.readonly_uri(path), uri=True)
         self.assertFalse(path.exists())
 
+    def test_a_read_of_a_closed_wal_store_leaves_the_data_file_alone(self):
+        path = self.odd("wal")
+        path.parent.mkdir(parents=True)
+        c = sqlite3.connect(str(path))
+        c.execute("PRAGMA journal_mode=WAL")
+        c.executescript("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (7)")
+        c.commit()
+        c.close()
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in path.parent.iterdir()}
+        conn = sqlite3.connect(paths.readonly_uri(path), uri=True)
+        try:
+            self.assertEqual(conn.execute("SELECT v FROM t").fetchone()[0], 7)
+        finally:
+            conn.close()
+        after = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in path.parent.iterdir()}
+        self.assertEqual(after[path.name], before[path.name])
+        new = set(after) - set(before)
+        self.assertLessEqual(new, {path.name + "-shm", path.name + "-wal"})
+        for name in set(before) & set(after):
+            self.assertEqual(after[name], before[name], name)
+
     def test_immutable_adds_the_flag(self):
         self.assertTrue(paths.readonly_uri(self.odd("a b"), immutable=True).endswith("?mode=ro&immutable=1"))
         self.assertTrue(paths.readonly_uri(self.odd("a b")).endswith("?mode=ro"))

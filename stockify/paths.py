@@ -18,7 +18,8 @@ def readonly_uri(path: Path, *, immutable: bool = False) -> str:
 
     The one place a `mode=ro` URI is built. `Path.as_uri()` percent-escapes `#`, `%` and `?`, which a hand-built
     `file:{path}` leaves as URI syntax (a `#` cuts the path, a `%41` reads as `A`), so a state folder named with one
-    would open another file or none. `immutable` adds `&immutable=1`: only for a file nothing is writing.
+    would open another file or none. `mode=ro` never changes the data file, but may leave `-shm`/`-wal` side files
+    beside a WAL store. `immutable` adds `&immutable=1` and is only for a file no process writes.
     """
     return f"{Path(path).resolve().as_uri()}?mode=ro" + ("&immutable=1" if immutable else "")
 
