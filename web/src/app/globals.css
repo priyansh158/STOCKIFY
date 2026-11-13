@@ -356,3 +356,4 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-table th[scope="row"] { font-weight: 600; color: var(--color-ink); white-space: nowrap; }
 .stk-daydetail h3 { margin-bottom: var(--space-sm); }
 .stk-grid .stk-chip { white-space: nowrap; }
+.stk-grid tr[aria-current="true"] th[scope="row"] { box-shadow: inset 3px 0 0 var(--color-ink-2); }

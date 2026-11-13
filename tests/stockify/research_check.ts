@@ -49,6 +49,7 @@ const out = {
     { state: "not_applicable", detail: "no instruments recorded in this mode; 2 instruments recorded before mode logging; not counted" },
     { state: "not_applicable" }, { state: "surprise" },
   ].map((c) => [cellWords(c), cellTone(c.state), cellSymbol(c.state), cellNote(c)]),
+  nseWords: [cellWords({ state: "ok" }, "nse_fo"), cellWords({ state: "ok" }, "archive"), cellWords({ state: "ok", detail: "verified" }, "nse_cm"), cellWords({ state: "partial" }, "nse_idx")],
   durations: [null, undefined, 0, 12, 59.6, 125, 3600, 3725, Number.NaN].map((x) => durationWords(x)),
   bytes: [null, 0, 999, 1500, 2_500_000, 12_345_678_901, 3_000_000_000_000, Number.NaN].map((x) => bytesWords(x)),
   recorder: [

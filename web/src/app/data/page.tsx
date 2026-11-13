@@ -34,10 +34,10 @@ const STATE_LEGEND: { state: string; detail?: string; means: string }[] = [
   { state: "closed", means: "weekend or exchange holiday" },
 ];
 
-function StateChip({ cell }: { cell: CoverageCellDTO }) {
+function StateChip({ cell, datasetKey }: { cell: CoverageCellDTO; datasetKey?: string }) {
   return (
     <Chip tone={cellTone(cell.state) ?? undefined}>
-      <span aria-hidden>{cellSymbol(cell.state)}</span>&nbsp;{cellWords(cell)}
+      <span aria-hidden>{cellSymbol(cell.state)}</span>&nbsp;{cellWords(cell, datasetKey)}
     </Chip>
   );
 }
@@ -59,7 +59,7 @@ function ErrorPanel({ children }: { children: ReactNode }) {
 function Grid({ matrix, days, selected }: { matrix: CoverageMatrixDTO; days: number; selected?: string }) {
   const rows = [...matrix.days].reverse();
   return (
-    <div className="stk-table-wrap">
+    <div className="stk-table-wrap" tabIndex={0} role="region" aria-label="Coverage by day">
       <table className="stk-table stk-grid">
         <caption className="sr-only">
           Recording, archive and NSE file coverage for each day, newest first. Choose a day to see its gaps and files.
@@ -79,13 +79,14 @@ function Grid({ matrix, days, selected }: { matrix: CoverageMatrixDTO; days: num
             <tr key={day.date} data-closed={day.trading ? undefined : ""} aria-current={day.date === selected ? "true" : undefined}>
               <th scope="row">
                 <Link href={href(days, day.date)}>{dayLabel(day.date)}</Link> <span className="stk-label">{day.date.slice(0, 4)}</span>
+                {day.date === selected && <span className="stk-label"> (open)</span>}
               </th>
               {matrix.datasets.map((d) => {
                 const cell = day.cells[d.key];
-                const note = cell ? cellNote(cell) : null;
+                const note = cell ? cellNote(cell, d.key) : null;
                 return (
                   <td key={d.key}>
-                    {cell ? <StateChip cell={cell} /> : <span className="stk-label">no information</span>}
+                    {cell ? <StateChip cell={cell} datasetKey={d.key} /> : <span className="stk-label">no information</span>}
                     {note && <div className="stk-label">{note}</div>}
                   </td>
                 );
@@ -244,10 +245,10 @@ function WorstBlock({ quality }: { quality: Settled<Awaited<ReturnType<typeof ge
   );
 }
 
-async function DayDetail({ day, days, matrix }: { day: string; days: number; matrix: CoverageMatrixDTO }) {
+async function DayDetail({ day, days, matrix, hideNse }: { day: string; days: number; matrix: CoverageMatrixDTO; hideNse: boolean }) {
   const inRange = matrix.days.find((d) => d.date === day);
   const [own, gaps, quality] = await Promise.all([
-    inRange
+    inRange || hideNse
       ? Promise.resolve<Settled<CoverageDayDTO | undefined>>({ ok: true, value: inRange })
       : settle(getCoverage(day, day).then((m) => m.days[0])),
     settle(getGaps(day)),
@@ -273,7 +274,11 @@ async function DayDetail({ day, days, matrix }: { day: string; days: number; mat
       <WorstBlock quality={quality} />
 
       <h3 className="stk-gap-top">NSE files for this day</h3>
-      {!cells || files.length === 0 ? (
+      {hideNse ? (
+        <ErrorPanel>
+          <p>The NSE file status is not shown, because it comes from a store that could not be read (see above).</p>
+        </ErrorPanel>
+      ) : !cells || files.length === 0 ? (
         <ErrorPanel>
           <p>Couldn&apos;t load the NSE file status for this day.</p>
         </ErrorPanel>
@@ -284,14 +289,14 @@ async function DayDetail({ day, days, matrix }: { day: string; days: number; mat
             return (
               <tr key={f.key}>
                 <th scope="row">{f.label}</th>
-                <td>{c ? <StateChip cell={c} /> : "no information"}</td>
+                <td>{c ? <StateChip cell={c} datasetKey={f.key} /> : "no information"}</td>
                 <td>{c?.detail ?? "—"}</td>
               </tr>
             );
           })}
         </Table>
       )}
-      {cells && files.some((f) => cells[f.key]?.state === "missing") && (
+      {!hideNse && cells && files.some((f) => cells[f.key]?.state === "missing") && (
         <p className="stk-fine stk-gap-xs">
           To download what is missing, run <code>python -m stockify nse fetch --date {day}</code>.
         </p>
@@ -317,6 +322,10 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
   const cov = await settle(getCoverage(addDays(today, -(days - 1)), today));
   const matrix = cov.ok ? cov.value : null;
   const stores = matrix?.errors ?? [];
+  const badStores = matrix?.error_stores ?? [];
+  const noDays = badStores.includes("refdata");
+  const noBars = badStores.includes("bars");
+  const hidden = [noDays && "the day grid and the NSE file status", noBars && "the price bar list"].filter(Boolean).join(" and ");
 
   return (
     <div className="stk-page">
@@ -360,40 +369,42 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                   <p key={s}>{s}</p>
                 ))}
                 <p className="stk-fine">
-                  The day grid and the bar list are hidden until this is fixed, because a store that cannot be read looks the same as an empty one.
+                  Check that the lab data folder can be read and that nothing else is locking it, then reload this page.
+                  {hidden && ` Meanwhile ${hidden} ${noDays ? "are" : "is"} hidden, because a store that cannot be read looks the same as an empty one.`}
                 </p>
               </ErrorPanel>
             )}
 
-            {day && <DayDetail day={day} days={days} matrix={matrix} />}
+            {day && <DayDetail day={day} days={days} matrix={matrix} hideNse={noDays} />}
 
-            {stores.length === 0 && (
-              <>
-                <section className="stk-section">
-                  <h2>Day by day</h2>
-                  {nothingStored(matrix) ? (
-                    <Empty>
-                      Nothing has been recorded or downloaded in this range yet. Start the recorder with <code>.\run.ps1 -DaemonOnly</code>, or
-                      download NSE files with <code>python -m stockify nse fetch --date YYYY-MM-DD</code>.
-                    </Empty>
-                  ) : (
-                    <div className="stk-stack-s">
-                      <Legend />
-                      <Grid matrix={matrix} days={days} selected={day} />
-                    </div>
-                  )}
-                </section>
+            {!noDays && (
+              <section className="stk-section">
+                <h2>Day by day</h2>
+                {stores.length === 0 && nothingStored(matrix) ? (
+                  <Empty>
+                    Nothing has been recorded or downloaded in this range yet. Start the recorder with <code>.un.ps1 -DaemonOnly</code>, or download
+                    NSE files with <code>python -m stockify nse fetch --date YYYY-MM-DD</code>.
+                  </Empty>
+                ) : (
+                  <div className="stk-stack-s">
+                    <Legend />
+                    <p className="stk-fine">Choose a day to see its gaps, its least-covered instruments and its NSE files.</p>
+                    <Grid matrix={matrix} days={days} selected={day} />
+                  </div>
+                )}
+              </section>
+            )}
 
-                <section className="stk-section">
-                  <h2>Price bars</h2>
-                  {matrix.bars.length === 0 ? <Empty>No price bars are saved yet.</Empty> : <BarsTable bars={matrix.bars} />}
-                </section>
-              </>
+            {!noBars && (
+              <section className="stk-section">
+                <h2>Price bars</h2>
+                {matrix.bars.length === 0 ? <Empty>No price bars are saved yet.</Empty> : <BarsTable bars={matrix.bars} />}
+              </section>
             )}
 
             <section className="stk-section">
               <h2>Storage</h2>
-              <Storage s={matrix.storage} breakdown={stores.length === 0} />
+              <Storage s={matrix.storage} breakdown={!noDays} />
             </section>
           </>
         )}

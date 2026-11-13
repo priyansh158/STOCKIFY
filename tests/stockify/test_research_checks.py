@@ -85,6 +85,9 @@ class ResearchHelperChecks(unittest.TestCase):
             ["unknown state: surprise", None, "?", None],
         ])
 
+    def test_a_downloaded_nse_file_says_downloaded_and_other_datasets_say_complete(self):
+        self.assertEqual(self.answers["nseWords"], ["downloaded", "complete", "verified", "partly there"])
+
     def test_durations_bytes_and_the_recorder_strip_are_in_words(self):
         self.assertEqual(self.answers["durations"], ["still open", "still open", "0 s", "12 s", "1 min", "2 min 5 s", "1 h", "1 h 2 min", "—"])
         self.assertEqual(self.answers["bytes"], ["—", "0 B", "999 B", "1.5 kB", "2.5 MB", "12.3 GB", "3 TB", "—"])

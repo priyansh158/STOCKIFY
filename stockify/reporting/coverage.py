@@ -67,6 +67,7 @@ class CoverageMatrix:
     storage: dict
     recorder: dict | None = field(default=None)
     errors: list[str] = field(default_factory=list)
+    error_stores: list[str] = field(default_factory=list)   # the `_STORE_NAMES` keys of the stores `errors` names
 
 
 def _num(x) -> float | None:  # noqa: ANN001
@@ -91,8 +92,13 @@ def datasets() -> list[dict[str, str]]:
     return out
 
 
+def _sentence(store_key: str) -> str:
+    return f"Couldn't read the {_STORE_NAMES[store_key]}."
+
+
 def _unreadable(errors: list[str] | None, store_key: str) -> None:
-    sentence = f"Couldn't read the {_STORE_NAMES[store_key]}."
+    """Record, once per store, that it could not be read (the sentence is `_sentence(store_key)`)."""
+    sentence = _sentence(store_key)
     if errors is not None and sentence not in errors:
         errors.append(sentence)
 
@@ -259,10 +265,11 @@ def matrix(from_: date, to: date, *, bar_limit: int = _BAR_LIMIT) -> CoverageMat
     bars, storage = _bars(bar_limit, errors), _storage(errors)
     try:
         recorder = store.latest_recorder_status()
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
         recorder = None
         _unreadable(errors, "lab")
-    return CoverageMatrix(from_, to, listed, days, bars, storage, recorder, errors)
+    error_stores = [key for key in _STORE_NAMES if _sentence(key) in errors]
+    return CoverageMatrix(from_, to, listed, days, bars, storage, recorder, errors, error_stores)
 
 
 def gaps(day: date) -> list[dict]:
@@ -289,4 +296,5 @@ def to_dict(m: CoverageMatrix) -> dict:
     return {"from_date": m.from_.isoformat(), "to_date": m.to.isoformat(), "datasets": m.datasets,
             "days": [{"date": d.date.isoformat(), "trading": d.trading,
                       "cells": {k: _cell_dict(c) for k, c in d.cells.items()}} for d in m.days],
-            "bars": m.bars, "storage": m.storage, "recorder": m.recorder, "errors": m.errors}
+            "bars": m.bars, "storage": m.storage, "recorder": m.recorder, "errors": m.errors,
+            "error_stores": m.error_stores}

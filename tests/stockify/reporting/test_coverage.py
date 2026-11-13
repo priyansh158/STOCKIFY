@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
 from datetime import date
 from unittest import mock
@@ -226,7 +227,6 @@ class CoverageTest(SandboxedDBTest):
                 self.assertFalse(p.with_name(p.name + suffix).exists(), p.name + suffix)
 
     def test_an_unreadable_store_is_an_error_not_an_empty_lab(self):
-        import sqlite3
         from stockify import paths
         for make_bad, name in ((lambda p: p.mkdir(parents=True), "unopenable"),
                                (lambda p: (p.parent.mkdir(parents=True, exist_ok=True), p.write_bytes(b"not a database " * 50)),
@@ -240,14 +240,15 @@ class CoverageTest(SandboxedDBTest):
                 make_bad(paths.refdata_db())
                 m = coverage.matrix(FROM, TO)
                 self.assertEqual(len(m.errors), 1, m.errors)
+                self.assertEqual(m.error_stores, ["refdata"])
                 self.assertIn("Couldn't read the", m.errors[0])
                 self.assertIn("recorded-day and download store", m.errors[0])
                 for bad in ("\\", "/", ".sqlite", "sqlite3", "Error"):
                     self.assertNotIn(bad, m.errors[0])
         self.assertEqual(coverage.to_dict(m)["errors"], m.errors)
+        self.assertEqual(coverage.to_dict(m)["error_stores"], ["refdata"])
 
     def test_a_locked_bars_store_names_the_bars_store(self):
-        import sqlite3
         from stockify import paths
         history._connect().close()
         holder = sqlite3.connect(str(paths.bars_db()), isolation_level=None)
@@ -261,15 +262,29 @@ class CoverageTest(SandboxedDBTest):
             holder.close()
         self.assertEqual(len(m.errors), 1, m.errors)
         self.assertIn("bar store", m.errors[0])
+        self.assertEqual(m.error_stores, ["bars"])
         self.assertEqual(m.bars, [])
 
     def test_a_missing_store_or_an_old_schema_is_not_an_error(self):
-        self.assertEqual(coverage.matrix(FROM, TO).errors, [])
+        m = coverage.matrix(FROM, TO)
+        self.assertEqual((m.errors, m.error_stores), ([], []))
+
+    def test_an_unreadable_recorder_status_names_the_lab_store(self):
+        for exc in (OSError("disk gone"), sqlite3.OperationalError("database is locked")):
+            with self.subTest(type(exc).__name__):
+                with mock.patch.object(coverage.store, "latest_recorder_status", side_effect=exc):
+                    m = coverage.matrix(FROM, TO)
+                self.assertEqual(m.error_stores, ["lab"])
+                self.assertEqual(m.errors, ["Couldn't read the recorder status."])
+                self.assertIsNone(m.recorder)
+                for bad in ("disk gone", "locked", "\\", ".sqlite"):
+                    self.assertNotIn(bad, m.errors[0])
 
     def test_two_reads_of_one_bad_store_say_it_once(self):
         from stockify import paths
         paths.refdata_db().mkdir(parents=True)
-        self.assertEqual(len(coverage.matrix(FROM, TO).errors), 1)
+        m = coverage.matrix(FROM, TO)
+        self.assertEqual((len(m.errors), m.error_stores), (1, ["refdata"]))
 
     def test_reads_do_not_create_stores(self):
         from stockify import paths
@@ -294,8 +309,8 @@ class CoverageApiTests(SandboxedDBTest):
         r = self.client.get("/api/data/coverage?from=2026-10-01&to=2026-10-07")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["from_date", "to_date", "datasets", "days", "bars", "storage", "recorder", "errors"])
-        self.assertEqual(j["errors"], [])
+        self.assertEqual(list(j), ["from_date", "to_date", "datasets", "days", "bars", "storage", "recorder", "errors", "error_stores"])
+        self.assertEqual((j["errors"], j["error_stores"]), ([], []))
         self.assertEqual(len(j["days"]), 7)
         self.assertEqual(list(j["days"][0]), ["date", "trading", "cells"])
         self.assertEqual(j["days"][6]["cells"]["recorder_full"], {"state": "ok", "value": 99.9, "detail": None})

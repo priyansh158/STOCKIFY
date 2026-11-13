@@ -41,7 +41,7 @@ function percentWords(v: number): string {
 }
 
 /** The chip's words and the small line under it (the part of the API's detail the words do not already say). */
-export function cellParts(cell: CoverageCellDTO): { words: string; note: string | null } {
+export function cellParts(cell: CoverageCellDTO, datasetKey?: string): { words: string; note: string | null } {
   const detail = cell.detail?.trim() || null;
   const hasValue = typeof cell.value === "number" && Number.isFinite(cell.value);
   switch (cell.state) {
@@ -49,7 +49,8 @@ export function cellParts(cell: CoverageCellDTO): { words: string; note: string 
     case "partial":
       if (hasValue) return { words: percentWords(cell.value as number), note: detail };
       if (detail) return { words: PARTIAL_WORDS[detail] ?? detail, note: null };
-      return { words: cell.state === "ok" ? "complete" : "partly there", note: null };
+      if (cell.state === "ok") return { words: datasetKey?.startsWith("nse_") ? "downloaded" : "complete", note: null };
+      return { words: "partly there", note: null };
     case "missing":
       if (!detail || detail === "no recording for this day") return { words: "no recording", note: null };
       return { words: detail, note: null };
@@ -67,14 +68,14 @@ export function cellParts(cell: CoverageCellDTO): { words: string; note: string 
   }
 }
 
-/** "98.4% covered", "no recording", "not reported yet", "market closed", or the API's own short detail. */
-export function cellWords(cell: CoverageCellDTO): string {
-  return cellParts(cell).words;
+/** "98.4% covered", "no recording", "not reported yet", "market closed", or the API's own short detail. A file from NSE that is fine reads "downloaded". */
+export function cellWords(cell: CoverageCellDTO, datasetKey?: string): string {
+  return cellParts(cell, datasetKey).words;
 }
 
 /** The line under the chip, when the API had more to say (such as instruments recorded before mode logging). */
-export function cellNote(cell: CoverageCellDTO): string | null {
-  return cellParts(cell).note;
+export function cellNote(cell: CoverageCellDTO, datasetKey?: string): string | null {
+  return cellParts(cell, datasetKey).note;
 }
 
 /**

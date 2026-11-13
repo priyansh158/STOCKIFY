@@ -634,6 +634,7 @@ class CoverageMatrixDTO(BaseModel):
     storage: StorageDTO
     recorder: RecorderStatusDTO | None = None
     errors: list[str] = []
+    error_stores: list[str] = []
 
 
 class GapDTO(BaseModel):

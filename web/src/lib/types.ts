@@ -607,6 +607,7 @@ export interface CoverageMatrixDTO {
   storage: StorageDTO;
   recorder?: RecorderStatus | null;
   errors: string[];
+  error_stores: string[];
 }
 
 export interface GapDTO {
