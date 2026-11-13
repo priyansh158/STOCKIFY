@@ -30,6 +30,78 @@ class Bar(NamedTuple):
     volume: int
 
 
+class BarFold:
+    """The bars of one instrument, folded record by record: `feed` records in stream order (as often as you like, in
+    any chunks) and `result()` is what `bars_from_records` returns for all the records fed so far. `copy()` is an
+    independent fold, so a cached one can be continued without disturbing readers of the old one."""
+
+    def __init__(self, instrument_id: int, *, interval_s: int | None, anchors: Mapping[str, int]) -> None:
+        if interval_s is not None and (isinstance(interval_s, bool) or not isinstance(interval_s, int) or interval_s <= 0):
+            raise ValueError(f"interval_s must be a whole number of seconds above 0, not {interval_s!r}")
+        self.instrument_id = instrument_id
+        self.interval_s = interval_s
+        self.anchors = anchors
+        self._isec = interval_s or DEFAULT_INTERVAL_S
+        self._real: dict[int, list[Bar]] = {}
+        self._acc: dict[int, list[int]] = {}
+        self._day: str | None = None
+        self._prev_vol: int | None = None
+
+    def copy(self) -> BarFold:
+        c = BarFold(self.instrument_id, interval_s=self.interval_s, anchors=self.anchors)
+        c._real = {k: list(v) for k, v in self._real.items()}
+        c._acc = {k: list(v) for k, v in self._acc.items()}
+        c._day, c._prev_vol = self._day, self._prev_vol
+        return c
+
+    def feed(self, records: Iterable[dict]) -> None:
+        for rec in records:
+            self.feed_one(rec)
+
+    def feed_one(self, rec: dict) -> None:
+        kind = rec["kind"]
+        iid = self.instrument_id
+        if kind == "GAP":                                   # a gap forgets the last snapshot, as the runner does
+            if rec["scope"] != 1 or rec["instrument_id"] == iid:
+                self._prev_vol = None
+            return
+        if rec["instrument_id"] != iid:
+            return
+        if kind == "BAR":
+            self._real.setdefault(rec["interval_s"], []).append(
+                Bar(rec["start_ns"], rec["open"], rec["high"], rec["low"], rec["close"], rec["volume"]))
+            return
+        if kind == "INDEX":
+            price, vol = rec["value"], None
+        elif kind in ("TICK_QUOTE", "TICK_FULL"):
+            price, vol = rec["ltp"], rec["volume"]
+        else:
+            return
+        t = rec["t_event"]
+        d = timeutil.ns_to_ist(t).date().isoformat()
+        if d != self._day:
+            self._day, self._prev_vol = d, None
+        dv = volume_delta(vol, self._prev_vol)
+        if vol is not None:                                 # an index is not a snapshot: it leaves the baseline alone
+            self._prev_vol = vol
+        anchor = self.anchors.get(d)
+        if anchor is None or t < anchor:
+            return
+        start = bucket_start(anchor, t, self._isec)
+        b = self._acc.get(start)
+        if b is None:
+            self._acc[start] = [price, price, price, price, dv]
+        else:
+            b[1], b[2], b[3] = max(b[1], price), min(b[2], price), price
+            b[4] += dv
+
+    def result(self) -> tuple[list[Bar], int | None]:
+        if self._real:
+            chosen = self.interval_s if self.interval_s in self._real else min(self._real)
+            return list(self._real[chosen]), chosen
+        return [Bar(s, *self._acc[s]) for s in sorted(self._acc)], None
+
+
 def bars_from_records(records: Iterable[dict], instrument_id: int, *, interval_s: int | None,
                       anchors: Mapping[str, int]) -> tuple[list[Bar], int | None]:
     """(bars, interval) of one instrument from decoded pack or journal records in stream order.
@@ -38,52 +110,9 @@ def bars_from_records(records: Iterable[dict], instrument_id: int, *, interval_s
     smallest present when None). Otherwise the bars are built at `interval_s` (60 when None) and the second value
     is None; `anchors` maps an IST date to the CONTINUOUS start (ns) of that day, and a day without one makes no bars.
     """
-    if interval_s is not None and (isinstance(interval_s, bool) or not isinstance(interval_s, int) or interval_s <= 0):
-        raise ValueError(f"interval_s must be a whole number of seconds above 0, not {interval_s!r}")
-    real: dict[int, list[Bar]] = {}
-    acc: dict[int, list[int]] = {}
-    isec = interval_s or DEFAULT_INTERVAL_S
-    day: str | None = None
-    prev_vol: int | None = None
-    for rec in records:
-        kind = rec["kind"]
-        if kind == "GAP":                                   # a gap forgets the last snapshot, as the runner does
-            if rec["scope"] != 1 or rec["instrument_id"] == instrument_id:
-                prev_vol = None
-            continue
-        if rec["instrument_id"] != instrument_id:
-            continue
-        if kind == "BAR":
-            real.setdefault(rec["interval_s"], []).append(
-                Bar(rec["start_ns"], rec["open"], rec["high"], rec["low"], rec["close"], rec["volume"]))
-            continue
-        if kind == "INDEX":
-            price, vol = rec["value"], None
-        elif kind in ("TICK_QUOTE", "TICK_FULL"):
-            price, vol = rec["ltp"], rec["volume"]
-        else:
-            continue
-        t = rec["t_event"]
-        d = timeutil.ns_to_ist(t).date().isoformat()
-        if d != day:
-            day, prev_vol = d, None
-        dv = volume_delta(vol, prev_vol)
-        if vol is not None:                                 # an index is not a snapshot: it leaves the baseline alone
-            prev_vol = vol
-        anchor = anchors.get(d)
-        if anchor is None or t < anchor:
-            continue
-        start = bucket_start(anchor, t, isec)
-        b = acc.get(start)
-        if b is None:
-            acc[start] = [price, price, price, price, dv]
-        else:
-            b[1], b[2], b[3] = max(b[1], price), min(b[2], price), price
-            b[4] += dv
-    if real:
-        chosen = interval_s if interval_s in real else min(real)
-        return real[chosen], chosen
-    return [Bar(s, *acc[s]) for s in sorted(acc)], None
+    fold = BarFold(instrument_id, interval_s=interval_s, anchors=anchors)
+    fold.feed(records)
+    return fold.result()
 
 
 def anchors_from_bundle(bundle: dict, instrument_id: int) -> dict[str, int]:

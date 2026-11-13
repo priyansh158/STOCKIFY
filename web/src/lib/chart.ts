@@ -190,7 +190,7 @@ export type ChartViewState = "loading" | "error" | "pruned" | "empty" | "full";
 export function chartViewState(model: ChartModel | null | "error"): ChartViewState {
   if (model === null) return "loading";
   if (model === "error") return "error";
-  if (model.data_state === "pruned" || model.data_state === "no_pack") return "pruned";
+  if (model.data_state !== "ok") return "pruned"; // pruned, no_pack and pack unreadable are plain states, not "no trades"
   return model.markers.length === 0 ? "empty" : "full";
 }
 
@@ -258,7 +258,7 @@ export function shadeWindows(
   return out;
 }
 
-export type ChartOpts = { instrument?: number; from_ns?: number; to_ns?: number; trade_date?: string };
+export type ChartOpts = { instrument?: number; from_ns?: number; to_ns?: number; trade_date?: string; signal?: AbortSignal };
 
 /** The query string for a chart request: only what is set (an instrument of 0 is set). */
 export function chartQuery(o: ChartOpts): string {
@@ -447,4 +447,27 @@ export function initialView(barCount: number, at: number, markerCount: number, n
   if (barCount <= near || markerCount === 0) return { kind: "fit" };
   const i = at < 0 ? barCount - 1 : at;
   return { kind: "range", from: i - near / 2, to: i + near / 2 };
+}
+
+/** Poll delay in ms for a live chart: only while the day is open and the tab is visible; null means do not poll. */
+export function pollDelay(live: boolean, hidden: boolean, ms: number): number | null {
+  return live && !hidden && ms > 0 ? ms : null;
+}
+
+/** The wait before the next poll: the base after a success, doubled for each failure in a row, capped at 30 s (never below the base). */
+export function nextDelay(base: number, failures: number, cap = 30_000): number {
+  if (!(base > 0)) return 0;
+  if (!(failures > 0)) return base;
+  return Math.max(base, Math.min(cap, base * 2 ** failures));
+}
+
+/** The plain sentence for a chart with no price data (state "pruned"). */
+export function prunedWords(dataState: ChartModel["data_state"], paper: boolean): string {
+  if (dataState === "no_pack") {
+    return paper
+      ? "No price data was recorded for this day. The trades are listed below."
+      : "There is no price recording for this day. The trades are listed below.";
+  }
+  if (dataState === "pack unreadable") return "The price recording for this day cannot be read right now. Reload to try again; the trades are listed below.";
+  return "The price data for this run is no longer on disk. The trades are listed below.";
 }

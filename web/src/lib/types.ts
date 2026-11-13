@@ -848,4 +848,11 @@ export interface WalkforwardChartWindowDTO {
 export interface WalkforwardChartDTO extends RunChartDTO {
   windows: WalkforwardChartWindowDTO[];
 }
+
+export interface SessionChartDTO extends RunChartDTO {
+  trade_date: string;
+  days: string[];
+  paper: boolean;
+  live: boolean;
+}
 // </block>

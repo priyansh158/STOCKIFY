@@ -177,6 +177,24 @@ def day_bundle_file(session_id: str, day: date) -> Path:
     return journals_dir(session_id) / f"{day:%Y%m%d}.bundle.json"
 
 
+def _journals_ro(session_id: str) -> Path:
+    """A session's journal folder, without creating it or anything above it (a reader's path: a missing folder is
+    "nothing recorded", not a reason to make one). The id must be one safe segment, else ValueError."""
+    if not safe_segment(session_id, 128):
+        raise ValueError(f"not a valid session id: {session_id!r}")
+    return stockify_paths.state_dir() / "lab" / "journals" / session_id
+
+
+def journal_path_ro(session_id: str, day: date) -> Path:
+    """`journal_file` for a reader: the same path, and nothing is created."""
+    return _journals_ro(session_id) / f"{day:%Y%m%d}.evt"
+
+
+def day_bundle_path_ro(session_id: str, day: date) -> Path:
+    """`day_bundle_file` for a reader: the same path, and nothing is created."""
+    return _journals_ro(session_id) / f"{day:%Y%m%d}.bundle.json"
+
+
 def journal_day_dir(session_id: str, day: date) -> Path:
     """The day's other files (run artifacts of the live engine), `journals/<sid>/<YYYYMMDD>/`."""
     return _dir(journals_dir(session_id) / f"{day:%Y%m%d}")

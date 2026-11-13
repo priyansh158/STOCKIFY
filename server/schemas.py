@@ -884,4 +884,11 @@ class WalkforwardChartWindowDTO(BaseModel):
 
 class WalkforwardChartDTO(RunChartDTO):
     windows: list[WalkforwardChartWindowDTO]
+
+
+class SessionChartDTO(RunChartDTO):
+    trade_date: str
+    days: list[str]
+    paper: bool
+    live: bool
 # </block>

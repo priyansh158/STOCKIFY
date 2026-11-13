@@ -261,4 +261,21 @@ const wb = chart.windowBands(wfs);
 out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, false);
 out.shadeGapDaily = chart.shadePoints([], [wb[1]], true);
 
+// The paper session page (CH 6.17): polling only while the day is live and the tab visible; the plain states.
+out.pollLive = chart.pollDelay(true, false, 5000);
+out.pollHidden = chart.pollDelay(true, true, 5000);
+out.pollClosed = chart.pollDelay(false, false, 5000);
+out.pollClosedHidden = chart.pollDelay(false, true, 5000);
+out.pollNoMs = chart.pollDelay(true, false, 0);
+out.backoff = [0, 1, 2, 3, 4, 9].map((n) => chart.nextDelay(5000, n));
+out.backoffOdd = [chart.nextDelay(0, 3), chart.nextDelay(5000, -1), chart.nextDelay(40000, 0), chart.nextDelay(5000, 2000)];
+const mdl = (data_state: string, markers: unknown[] = []) => ({ data_state, markers });
+out.viewNoPack = chart.chartViewState(mdl("no_pack"));
+out.viewUnreadable = chart.chartViewState(mdl("pack unreadable"));
+out.viewOkEmpty = chart.chartViewState(mdl("ok"));
+out.wordsNoPackPaper = chart.prunedWords("no_pack", true);
+out.wordsNoPackRun = chart.prunedWords("no_pack", false);
+out.wordsUnreadable = chart.prunedWords("pack unreadable", true);
+out.wordsPruned = chart.prunedWords("pruned", false);
+
 process.stdout.write(JSON.stringify(out));

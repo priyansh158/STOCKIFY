@@ -56,6 +56,8 @@ import {
   type ChartOpts,
   type ChartPlot,
   type ChartWindow,
+  prunedWords,
+  nextDelay,
 } from "@/lib/chart";
 import { Loading, Panel, Skeleton } from "./ui";
 
@@ -63,7 +65,7 @@ const toneClass = (t: "up" | "down" | "flat"): string => (t === "up" ? "stk-up" 
 
 export type PriceChartProps = {
   /** Fetches the chart: no range for the opening view, a range for a neighbouring page; `opts` carries the picker choices. */
-  load: (range?: { from_ns: number; to_ns: number }, opts?: Pick<ChartOpts, "instrument" | "trade_date">) => Promise<ChartModel | null>;
+  load: (range?: { from_ns: number; to_ns: number }, opts?: Pick<ChartOpts, "instrument" | "trade_date" | "signal">) => Promise<ChartModel | null>;
   title: string;
   paperBadge?: boolean;
   pollMs?: number;
@@ -149,6 +151,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const [showAll, setShowAll] = useState(false);
   const [themeTick, setThemeTick] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [pollFailed, setPollFailed] = useState(false);
   const [lastMeta, setLastMeta] = useState<ChartModel | null>(null);
   const [tip, setTip] = useState<{ title: string; reason: string; more: number; x: number; y: number } | null>(null);
 
@@ -171,7 +174,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   // --- the opening load, and a new one when the instrument or the day changes (or Try again) ---------------
   useEffect(() => {
     let cancelled = false;
-    live.current.load(undefined, { instrument, trade_date: tradeDate }).then(
+    const ctl = new AbortController();
+    live.current.load(undefined, { instrument, trade_date: tradeDate, signal: ctl.signal }).then(
       (res) => {
         if (cancelled) return;
         setBusy(false);
@@ -197,38 +201,64 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     );
     return () => {
       cancelled = true;
+      ctl.abort();
     };
   }, [instrument, tradeDate, reloadKey]);
 
-  // --- polling, paused while the tab is hidden --------------------------------------------------------------
+  // --- polling: one request at a time, a longer wait after each failure, paused while the tab is hidden -----
   useEffect(() => {
     if (!pollMs) return;
+    let stopped = false;
     let inflight = false;
+    let failures = 0;
+    let timer: number | undefined;
+    let ctl: AbortController | undefined;
+    const schedule = () => {
+      if (!stopped) timer = window.setTimeout(tick, nextDelay(pollMs, failures));
+    };
     const tick = () => {
-      if (document.hidden || inflight) return;
+      if (stopped || inflight) return;
+      if (document.hidden) return schedule();
       inflight = true;
       const { instrument: i, tradeDate: d } = live.current;
+      ctl = new AbortController();
       live.current
-        .load(undefined, { instrument: i, trade_date: d })
+        .load(undefined, { instrument: i, trade_date: d, signal: ctl.signal })
         .then((res) => {
-          if (!alive.current || !res || live.current.instrument !== i || live.current.tradeDate !== d) return;
+          if (stopped || !alive.current || !res || live.current.instrument !== i || live.current.tradeDate !== d) return;
+          failures = 0;
+          setPollFailed(false);
           setBars((have) => mergePages(res.bars, have)); // the fresh bar wins: the last one is still forming
           setMarkers((have) => mergeMarkers(have, res.markers));
           setModel(res);
           setLastMeta(res);
         })
-        .catch(() => undefined) // keep what is shown; the next tick tries again
+        .catch(() => {
+          if (stopped) return;
+          failures += 1; // keep what is shown; say so once, and try again later
+          setPollFailed(true);
+        })
         .finally(() => {
           inflight = false;
+          schedule();
         });
     };
-    const id = window.setInterval(tick, pollMs);
-    document.addEventListener("visibilitychange", tick);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", tick);
+    const onVisible = () => {
+      if (!document.hidden && !inflight) {
+        window.clearTimeout(timer);
+        tick();
+      }
     };
-  }, [pollMs]);
+    document.addEventListener("visibilitychange", onVisible);
+    schedule();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      ctl?.abort();
+      setPollFailed(false);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [pollMs, instrument, tradeDate]);
 
   // --- create the chart once; remove it on unmount ----------------------------------------------------------
   useEffect(() => {
@@ -530,6 +560,11 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       <header className="stk-pricechart-head">
         <Heading>{title}</Heading>
         {paperBadge && <span className="stk-chip" data-tone="warn">Paper trading: no real orders</span>}
+        {meta?.live && (
+          <span className="stk-chip" data-tone={pollFailed ? "warn" : "up"}>
+            {pollFailed ? "Live, paused" : "Live"}
+          </span>
+        )}
         {ctrl && (
           <div className="stk-pricechart-controls">
             {ctrl.instruments.length > 1 && (
@@ -576,14 +611,18 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         <p className="stk-label">
           {intervalWords(meta.interval_s ?? DEFAULT_INTERVAL_S)} bars
           {meta.basis ? `, ${meta.basis} prices` : ""}
-          {meta.live ? ", live" : ""}
-          {meta.plain ? `. ${meta.plain}` : ""}
+          {meta.plain && !paperBadge ? `. ${meta.plain}` : ""}
           {windows && windows.length > 0 ? ". Shaded bands are the test windows, named below the chart" : ""}
         </p>
       )}
-      {meta?.notice && (
+      {pollFailed && (
+        <p className="stk-pricechart-notice" role="status">
+          Live updates paused. Retrying…
+        </p>
+      )}
+      {(meta?.notice || meta?.pnl_complete === false) && (
         <p className="stk-pricechart-notice" role="note">
-          {meta.notice}
+          {meta.notice || "Some profit and loss figures are incomplete for this chart."}
         </p>
       )}
 
@@ -607,9 +646,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       )}
       {state === "pruned" && (
         <p className="stk-pricechart-notice" role="note">
-          {meta?.data_state === "no_pack"
-            ? "There is no price recording for this day. The trades are listed below."
-            : "The price data for this run is no longer on disk. The trades are listed below."}
+          {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge))}
         </p>
       )}
       {state === "empty" && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}
