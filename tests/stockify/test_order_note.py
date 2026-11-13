@@ -225,7 +225,29 @@ class OldRunsTests(NoteBase):
         runs.import_run(folder)
         rows = store.run_rows(rid, "orders")
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].get("note", ""), "")
+        self.assertEqual(rows[0]["note"], "")
+
+    def test_a_new_run_with_no_note_imports_an_empty_string(self):
+        rid = runs.launch(self.config(BUY, "nonote"), impl="oracle", report=False)
+        from stockify import store
+        runs.import_run(paths.run_path(rid))
+        self.assertEqual(store.run_rows(rid, "orders")[0]["note"], "")
+
+    def test_a_cell_with_a_carriage_return_is_quoted(self):
+        from stockify.oracle import artifacts
+        self.assertEqual(artifacts._cell("a\rb"), '"a\rb"')
+        self.assertEqual(artifacts._cell("a b"), "a b")
+
+    def test_the_step_and_note_additions_compose_in_one_rerun(self):
+        from tests.stockify.test_runs_rerun import to_old_margin_file
+        rid = runs.launch(self.config(BUY, "olc"), impl="oracle", report=False)
+        folder = paths.run_path(rid)
+        to_old_margin_file(folder)
+        _to_old_orders(folder)
+        code, _, err = _cli("run", "--rerun", rid)
+        self.assertEqual(code, 0, err)
+        self.assertIn("margin_daily.csv gained the step column, D-64; orders.csv gained the note column, D-92", err)
+        self.assertNotIn("not reproduced", err)
 
     def test_rerun_of_an_old_run_reports_the_new_column_not_a_failure(self):
         rid = runs.launch(self.config(BUY, "olr"), impl="oracle", report=False)
