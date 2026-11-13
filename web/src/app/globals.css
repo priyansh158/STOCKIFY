@@ -280,6 +280,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-lc-tick { fill: var(--color-muted); font-size: var(--text-xs); font-family: var(--font-outlier); }
 .stk-lc-base { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 4 4; }
 .stk-lc-cursor { stroke: var(--color-edge); stroke-width: 1; }
+.stk-lc-ytitle { margin-bottom: var(--space-3xs); }
 .stk-lc-mark { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 1 4; stroke-linecap: round; }
 .stk-lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
 /* Series: three colours the dataviz validator passed (accent, info, warn); the fourth reuses one and differs by dash and marker */

@@ -50,6 +50,8 @@ export function LineChart({
   label,
   marks,
   marksLabel,
+  yLabel,
+  describe,
 }: {
   series: LineSeries[];
   yFormat: Fmt;
@@ -65,6 +67,10 @@ export function LineChart({
   /** x values for dotted vertical boundary lines (such as where each test window starts); `marksLabel` says what they are. */
   marks?: number[];
   marksLabel?: string;
+  /** What y measures, shown above the plot (the axis title), such as "growth of 1 (capital = 1.0)". */
+  yLabel?: string;
+  /** One more sentence for the chart's accessible name, such as that the gaps between windows are not drawn. */
+  describe?: string;
 }) {
   const drawn = series.filter((s) => s.points.length > 0);
   const shown = drawn.slice(0, MAX_SERIES);
@@ -98,7 +104,7 @@ export function LineChart({
   const summary = `${label ?? "Line chart"}: ${shown.map((s) => {
     const sorted = [...s.points].sort((a, b) => a[0] - b[0]);
     return `${s.label} from ${yFormat(sorted[0][1])} to ${yFormat(sorted[sorted.length - 1][1])}`;
-  }).join("; ")}. Left and right arrow keys read the values.`;
+  }).join("; ")}.${describe ? ` ${describe}.` : ""} Left and right arrow keys read the values.`;
 
   const move = (to: number) => setCursor(Math.max(0, Math.min(xs.length - 1, to)));
   const onKey = (e: React.KeyboardEvent) => {
@@ -134,6 +140,7 @@ export function LineChart({
           ))}
         </ul>
       )}
+      {yLabel && <p className="stk-fine stk-lc-ytitle">{yLabel}</p>}
       <svg
         viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
         onKeyDown={onKey} onPointerMove={onPointer} onPointerLeave={() => setCursor(null)} onBlur={() => setCursor(null)}

@@ -22,19 +22,21 @@ function isoText(iso: string): string {
   return dayText(dayNumber(iso));
 }
 
-function sharpe(n: unknown): string {
-  return typeof n === "number" && Number.isFinite(n) ? n.toFixed(2) : "—";
-}
-
-/** A headline figure that can be withheld by the server (too few out-of-sample days): words, never a bare dash; the
- * server's sentence about why sits right above it. */
-function figure(n: unknown): string {
-  return typeof n === "number" && Number.isFinite(n) ? n.toFixed(2) : "Not available";
+function isNum(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n);
 }
 
 function signedRupees(paise: unknown): string {
-  if (typeof paise !== "number") return "—";
+  if (typeof paise !== "number") return "not available";
   return `${paise > 0 ? "+" : ""}${rupees(paise)}`;
+}
+
+/** One Sharpe cell of the window table: the figure; else the server's word for why (`no_sharpe`) when the run exists;
+ * else "not run" (the Result column says why). Never a bare dash. */
+function sharpeCell(run: Record<string, unknown> | null | undefined, word: string): string {
+  if (!run) return "not run";
+  const v = run.sharpe;
+  return isNum(v) ? v.toFixed(2) : word || "not available";
 }
 
 /** A server clause with a full stop unless it has one, as it came (a lead-in label goes before it); a dash when there is none. */
@@ -50,7 +52,7 @@ function sentence(s: string | null | undefined): string {
 }
 
 function settings(params: WalkforwardWindowDTO["chosen_params"], short: boolean): string {
-  if (!params || Object.keys(params).length === 0) return "—";
+  if (!params || Object.keys(params).length === 0) return "none chosen";
   return Object.entries(params)
     .map(([k, v]) => `${short ? k.split(".").pop() : k} = ${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(", ");
@@ -140,10 +142,10 @@ function Report({ r }: { r: WalkforwardDTO }) {
       <section className="stk-section" aria-labelledby="wf-ratio">
         <h2 id="wf-ratio">In-sample against out-of-sample</h2>
         <div className="stk-stack-s">
-          <p className="stk-answer">Out-of-sample against in-sample: {clause(p.ratio)}</p>
+          <p className="stk-answer">{p.ratio_lead}: {clause(p.ratio)}</p>
           <StatGrid>
-            <Stat label="In-sample Sharpe over a year" value={figure(s.is_sharpe)} />
-            <Stat label="Out-of-sample Sharpe over a year" value={figure(s.oos_sharpe)} />
+            {isNum(s.is_sharpe) && <Stat label="In-sample Sharpe over a year" value={s.is_sharpe.toFixed(2)} />}
+            {isNum(s.oos_sharpe) && <Stat label="Out-of-sample Sharpe over a year" value={s.oos_sharpe.toFixed(2)} />}
             <Stat label="Windows tested" value={`${tested.toLocaleString("en-IN")} of ${s.windows.toLocaleString("en-IN")}`} />
             <Stat label="Out-of-sample days" value={s.oos_days.toLocaleString("en-IN")} />
           </StatGrid>
@@ -160,12 +162,12 @@ function Report({ r }: { r: WalkforwardDTO }) {
 
       <section className="stk-section" aria-labelledby="wf-curve">
         <h2 id="wf-curve">Out-of-sample equity</h2>
-        <p className="stk-lede">{clause(p.curve)} Each tested window is its own line; the days between windows are left empty.</p>
+        <p className="stk-lede">{clause(p.curve)} {clause(p.gaps)}</p>
         <div className="stk-gap-top">
           {curve.points.length === 0 ? (
             <Empty>No out-of-sample days, so there is no curve to draw.</Empty>
           ) : (
-            <Curve curve={curve} />
+            <Curve curve={curve} yLabel={p.y_label} gaps={p.gaps} />
           )}
         </div>
       </section>
@@ -181,7 +183,7 @@ function Report({ r }: { r: WalkforwardDTO }) {
       <section className="stk-section" aria-labelledby="wf-windows">
         <h2 id="wf-windows">Settings per window</h2>
         <div className="stk-stack-s">
-          <p className="stk-answer">Stability: {clause(p.stability)}</p>
+          <p className="stk-answer">{p.stability_lead}: {clause(p.stability)}</p>
           <Table
             caption="Each window's training days, test days, the settings chosen and the results"
             head={[
@@ -201,14 +203,19 @@ function Report({ r }: { r: WalkforwardDTO }) {
                 <td>{isoText(w.train_from)} to {isoText(w.train_to)}</td>
                 <td>{isoText(w.test_from)} to {isoText(w.test_to)}</td>
                 <td className="stk-mono">{settings(w.chosen_params, short)}</td>
-                <td className="num">{sharpe(w.train?.sharpe)}</td>
-                <td className="num">{sharpe(w.test?.sharpe)}</td>
-                <td className="num">{w.test ? signedRupees(w.test.net_pnl_paise) : "—"}</td>
+                <td className="num">{sharpeCell(w.train, w.no_sharpe)}</td>
+                <td className="num">{sharpeCell(w.test, w.no_sharpe)}</td>
+                <td className="num">{w.test ? signedRupees(w.test.net_pnl_paise) : "not run"}</td>
                 <td>{w.result}</td>
               </tr>
             ))}
           </Table>
         </div>
+      </section>
+
+      <section className="stk-section" aria-labelledby="wf-cost">
+        <h2 id="wf-cost">Cost sensitivity</h2>
+        <p>{clause(p.sensitivity)}</p>
       </section>
 
       <section className="stk-section" aria-labelledby="wf-holdout">
@@ -218,7 +225,7 @@ function Report({ r }: { r: WalkforwardDTO }) {
 
       <section className="stk-section" aria-labelledby="wf-pbo">
         <h2 id="wf-pbo">Chance of overfitting</h2>
-        <p>Overfitting: {clause(p.pbo)}</p>
+        <p>{p.pbo_lead}: {clause(p.pbo)}</p>
       </section>
     </div>
   );

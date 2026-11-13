@@ -220,17 +220,19 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
 
 def _not_done(job_id: str, message: str) -> JSONResponse:
     """The 409 for a job that is not finished: the plain message, its status and, for a failed job, the stored
-    error only when it reads as a plain clause (`plain.plain_reason`: no paths, no code names), so the page can
-    say "still running" or "failed: <reason>" without ever echoing a raw error."""
+    reason only as the job's stored plain reason (`walkforward.failure_reason`, from a fixed table keyed by the error
+    class), never the raw error, so the page can say "still running" or "failed: <reason>" without echoing text."""
     from stockify import store
-    from stockify.research import plain
+    from stockify.research import walkforward
     job = store.get_research_job(job_id) or {}
     status = str(job.get("status", ""))
-    reason = plain.plain_reason(job.get("error")) if status == "failed" else None
+    reason = walkforward.failure_reason(job) if status == "failed" else None
     return JSONResponse(status_code=409, content={"detail": message, "status": status, "reason": reason})
 
 
-@router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO)
+@router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO,
+            responses={409: {"description": "Not finished (the body has `status` and, for a failed job, a plain "
+                                            "`reason`), or finished with its result file gone (`detail` only)."}})
 def walkforward_detail(job_id: str) -> WalkforwardDTO:
     """A finished walk-forward job, read from its walkforward.json: 404 for an unknown job (or one of another
     kind), 409 for a job that is not finished or whose file is gone. Read-only; a stored error text is never

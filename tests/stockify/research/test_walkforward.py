@@ -277,6 +277,7 @@ class RunTests(SandboxedDBTest):
             (job,) = store.list_research_jobs(kind="walkforward")
             self.assertEqual(job["status"], "failed")
             self.assertEqual(job["error"], f"HoldoutLocked: {cm.exception}")
+            self.assertEqual(wf.failure_reason(job), "the holdout is locked")
             self.assertEqual(store.holdout_unlock_rows(), [])
             res = wf.run_windows(spec, pool_run=fake, unlock_reason="looking once on purpose",
                                  **{**kw, "now_ns": 1_700_000_000_000_000_005})
@@ -301,6 +302,17 @@ class RunTests(SandboxedDBTest):
         jobs = store.list_research_jobs(kind="walkforward")
         self.assertEqual({j["status"] for j in jobs}, {"failed"})
         self.assertTrue(all("fell over" in j["error"] and j["finished_ns"] for j in jobs))
+        # the stored plain reason is from the fixed table; the raw text is in the error column and the log only
+        self.assertEqual({wf.failure_reason(j) for j in jobs}, {"an internal error; see the log"})
+
+    def test_plain_failure_is_a_fixed_table_keyed_by_the_error_class(self):
+        self.assertEqual(wf.plain_failure(wf.WalkforwardRunError("the pool returned 1 outcomes for 2 runs")),
+                         "the run pool returned the wrong number of results")
+        self.assertEqual(wf.plain_failure(holdout.HoldoutLocked("C:/x/y locked")), "the holdout is locked")
+        for e in (ValueError("bad window"), KeyError("x"), OSError("disk full at C:/z")):
+            self.assertEqual(wf.plain_failure(e), "an internal error; see the log")
+        self.assertIsNone(wf.failure_reason({"state_json": "not json"}))
+        self.assertIsNone(wf.failure_reason({"state_json": None}))
 
     def test_zero_windows_is_a_clear_error(self):
         with self.assertRaisesRegex(wf.WalkforwardError, "no window fits"):

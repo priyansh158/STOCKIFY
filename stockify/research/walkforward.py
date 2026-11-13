@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -33,6 +34,52 @@ class WalkforwardError(ValueError):
 class WalkforwardRunError(WalkforwardError):
     """A failure after the job exists (the pool misbehaved): the job is marked failed. The command exits 1 for it, not
     2 (usage or refusal)."""
+
+
+_log = logging.getLogger(__name__)
+
+# What a failed job says about itself to the page and the API: a fixed table keyed by the error class, so no
+# exception text (a path, a value, a message) ever leaves the machine. The raw text stays in the job's `error`
+# column (the command's retry message reads it) and in the log.
+_PLAIN_FAILURES: tuple[tuple[type, str], ...] = (
+    (WalkforwardRunError, "the run pool returned the wrong number of results"),
+    (holdout.HoldoutLocked, "the holdout is locked"),
+)
+_PLAIN_FAILURE_OTHER = "an internal error; see the log"
+
+
+def plain_failure(e: BaseException) -> str:
+    """The plain reason for a failure: the first table entry the error is an instance of, else the generic line."""
+    for cls, text in _PLAIN_FAILURES:
+        if isinstance(e, cls):
+            return text
+    return _PLAIN_FAILURE_OTHER
+
+
+def failure_reason(job: dict) -> str | None:
+    """The plain reason stored beside a failed job's state, or None (older job, no reason stored)."""
+    try:
+        reason = json.loads(job.get("state_json") or "")["failure_reason"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return reason if isinstance(reason, str) and reason else None
+
+
+def _mark_failed(job_id: str, e: BaseException) -> None:
+    """Mark a job failed: raw text in the `error` column and the log, the plain reason in the state beside the windows."""
+    raw = f"{type(e).__name__}: {e}"
+    _log.error("walk-forward job %s failed: %s", job_id, raw)
+    try:
+        try:
+            state = json.loads((store.get_research_job(job_id) or {}).get("state_json") or "")
+        except ValueError:
+            state = None
+        state = state if isinstance(state, dict) else {}
+        state["failure_reason"] = plain_failure(e)
+        store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(), error=raw[:500],
+                                  state_json=json.dumps(state, sort_keys=True))
+    except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
+        pass
 
 
 @dataclass(frozen=True)
@@ -217,11 +264,7 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
         state = _dump(results)
         store.update_research_job(job_id, state_json=_state(state))   # `running` until Task 21's finish
     except BaseException as e:
-        try:
-            store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
-                                      error=f"{type(e).__name__}: {e}"[:500])
-        except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
-            pass
+        _mark_failed(job_id, e)
         raise
     return WalkforwardResult(
         job_id=job_id, name=spec.name, family_id=family, objective=objective, train=train, test=test, step=step,
@@ -369,11 +412,7 @@ def finish(job_id: str) -> WalkforwardFinished:
             store.update_research_job(job_id, status="done", finished_ns=timeutil.now_ns(), error=None)
     except BaseException as e:
         if was_running:
-            try:
-                store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
-                                          error=f"{type(e).__name__}: {e}"[:500])
-            except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
-                pass
+            _mark_failed(job_id, e)
         raise
     return finished
 
