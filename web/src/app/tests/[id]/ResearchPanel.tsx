@@ -137,7 +137,7 @@ function Swing({ r }: { r: RunResearchDTO }) {
         <p className="stk-muted">No range for this run: it has no daily results to re-draw.</p>
       ) : (
         <>
-          {!b.enough_days && <p className="stk-warn">This run has only {b.n_days} days, too few for a reliable range.</p>}
+          {!b.enough_days && <p className="stk-warn">This run has only {b.n_days === 1 ? "1 day" : `${b.n_days} days`}, too few for a reliable range.</p>}
           <div className="stk-trust-intervals">
             <IntervalRow name="Sharpe" iv={b.sharpe} format={(n) => n.toFixed(2)} text={p.bootstrap_sharpe} />
             <IntervalRow name="Average day" iv={b.mean_daily_return} format={(n) => pct(n, true)} text={p.bootstrap_mean_return} />
@@ -172,11 +172,16 @@ function Regimes({ r }: { r: RunResearchDTO }) {
           {r.plain.regimes_caveat && <p className="stk-fine">{r.plain.regimes_caveat}</p>}
           <div className="stk-stack">
             {REGIMES.map(({ key, title, first }) => (
-              <div key={key} className="stk-stack-s">
-                <h4>{title}</h4>
-                {r.plain[`regime_${key}`] && <p className="stk-fine">{r.plain[`regime_${key}`]}</p>}
-                <RegimeTable rows={reg[key]} first={first} caption={`${title}: days, gain or loss, and share of up days`} />
-              </div>
+              <details key={key} className="stk-regime">
+                <summary>
+                  <h4>{title}</h4>
+                  <span className="stk-label">{reg[key].length === 1 ? "1 row" : `${reg[key].length} rows`}</span>
+                </summary>
+                <div className="stk-stack-s">
+                  {r.plain[`regime_${key}`] && <p className="stk-fine">{r.plain[`regime_${key}`]}</p>}
+                  <RegimeTable rows={reg[key]} first={first} caption={`${title}: days, gain or loss, and share of up days`} />
+                </div>
+              </details>
             ))}
             {reg.notes.length > 0 && <ul className="stk-bullets">{reg.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
           </div>

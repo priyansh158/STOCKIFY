@@ -1,13 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, use, useCallback, useEffect, useState } from "react";
+import { Fragment, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
+import { getRunChart } from "@/lib/chart_api";
+import { joinFillsAndMarkers, type ChartMarker } from "@/lib/chart";
 import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
 import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
 import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
 import { LabelChips, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
+import { PriceChartLazy } from "@/components/PriceChartLazy";
 import EquityChart from "./EquityChart";
 import ResearchPanel from "./ResearchPanel";
 import { costScale } from "@/lib/research";
@@ -52,6 +55,48 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  // The chart's markers, kept here so the Fills table can show each order's note; a fill row and its marker point at each other.
+  const [chartMarkers, setChartMarkers] = useState<ChartMarker[]>([]);
+  const [focusId, setFocusId] = useState<string | undefined>(undefined);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [chartLoaded, setChartLoaded] = useState(false); // the chart's first answer has come (the Why column can say more)
+  const chartRef = useRef<HTMLDivElement>(null);
+
+  const loadChart = useCallback<NonNullable<React.ComponentProps<typeof PriceChartLazy>["load"]>>(
+    async (range, opts) => {
+      const model = await getRunChart(id, { ...opts, ...range }).finally(() => setChartLoaded(true));
+      if (model) {
+        setChartMarkers((have) => {
+          const seen = new Set(have.map((m) => m.id));
+          const add = model.markers.filter((m) => !seen.has(m.id));
+          return add.length ? [...have, ...add] : have;
+        });
+      }
+      return model;
+    },
+    [id],
+  );
+
+  // A focus request is a one-shot: clear it once the chart has seen it, so the same row can be asked for again.
+  useEffect(() => {
+    if (focusId === undefined) return;
+    const t = setTimeout(() => setFocusId(undefined), 0);
+    return () => clearTimeout(t);
+  }, [focusId]);
+
+  function showOnChart(markerId: string) {
+    setActiveId(markerId);
+    setFocusId(markerId);
+    chartRef.current?.scrollIntoView({ block: "nearest" });
+  }
+
+  function markerClicked(markerId: string) {
+    setActiveId(markerId);
+    const row = document.querySelector(`[data-marker-id="${CSS.escape(markerId)}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+  }
+
+  const joined = useMemo(() => joinFillsAndMarkers(extra.fills, chartMarkers), [extra.fills, chartMarkers]);
 
   const refresh = useCallback(async (): Promise<Outcome> => {
     try {
@@ -204,6 +249,17 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
             </Panel>
           )}
 
+          {run.status !== "done" && (
+            <Panel>
+              <h2>Price and trades</h2>
+              <p className="stk-muted">
+                {run.status === "queued" || run.status === "running"
+                  ? "The chart appears here when the test has finished."
+                  : `This test ${run.status === "failed" ? "failed" : "was cancelled"}, so there is no chart.`}
+              </p>
+            </Panel>
+          )}
+
           {run.status === "done" && (
             <>
               <Panel>
@@ -218,6 +274,12 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   <Stat label="Trades that made money" value={pct(num(m.win_rate))} />
                   <Stat label="Costs paid" value={rupees(run.costs_total_paise)} />
                 </StatGrid>
+              </Panel>
+
+              <Panel>
+                <div ref={chartRef}>
+                  <PriceChartLazy load={loadChart} title="Price and trades" headingLevel={2} hideTradesList focusMarkerId={focusId} onMarkerClick={markerClicked} />
+                </div>
               </Panel>
 
               <ResearchPanel runId={id} />
@@ -238,15 +300,33 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                       head={[
                         { label: "Time (IST)" },
                         { label: "Trade" },
+                        { label: "Why" },
                         { label: "Price", num: true },
                         { label: "Order", num: true },
                       ]}
                     >
-                      {extra.fills.map((f) => (
-                        <tr key={f.fill_id}>
+                      {joined.map(({ fill: f, markerId, why }) => (
+                        <tr key={f.fill_id} data-marker-id={markerId ?? undefined} data-active={markerId !== null && markerId === activeId ? "" : undefined}>
                           <td className="stk-label">{f.t_ist.slice(0, 16).replace("T", " ")}</td>
                           <td className={f.side === "BUY" ? "stk-up" : "stk-down"} data-wrap>
                             {f.side === "BUY" ? "Bought" : "Sold"} {f.qty.toLocaleString("en-IN")} {f.tradingsymbol ?? `instrument ${f.instrument_id}`}
+                            {markerId !== null && (
+                              <button type="button" className="stk-btn" data-tone="quiet" aria-pressed={markerId === activeId}
+                                aria-label={`Show on chart: ${f.side === "BUY" ? "bought" : "sold"} ${f.qty.toLocaleString("en-IN")} at ${f.t_ist.slice(11, 16)}`}
+                                onClick={() => showOnChart(markerId)}>
+                                Show on chart
+                              </button>
+                            )}
+                          </td>
+                          <td data-wrap>
+                            {why === null ? (
+                              <span className="stk-muted">{chartLoaded ? "Not on the loaded chart; pan to load it" : "Loading…"}</span>
+                            ) : (
+                              <>
+                                {why.text}
+                                {why.tag !== null && <> <code>{why.tag}</code></>}
+                              </>
+                            )}
                           </td>
                           <td className="num">{rupees(f.price_paise)}</td>
                           <td className="num">{f.order_id}</td>
