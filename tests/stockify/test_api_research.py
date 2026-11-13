@@ -94,6 +94,8 @@ class ResearchApiTests(SandboxedDBTest):
         self.assertEqual(len(j["trials"]), 3)
         self.assertEqual(j["trials"][0]["days"], 30)
         self.assertIsNotNone(j["best"])
+        self.assertIn("pbo", j)                                 # a PboDTO or None, with its note
+        self.assertTrue(j["pbo"] is not None or j["pbo_note"])
         self.assertEqual(self.client.get("/api/research/families/no/such/family").status_code, 404)
         self.assertEqual(self.client.get("/api/research/families/../../x").status_code, 404)
 

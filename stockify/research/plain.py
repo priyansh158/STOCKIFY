@@ -9,7 +9,7 @@ interval_sentence accepts `label` (the brief's signature) but does not show it, 
 table row that already names the statistic. Its unit "%" takes fractions (0.021 prints as 2.1%).
 
 Later tasks add only their own builder: fragile_sentence (Task 16),
-wf_sentence (Task 22), pbo_sentence (Task 23). Their meanings are already in KEYS.
+wf_sentence (Task 22). pbo_sentence is here (Task 23). Their meanings are already in KEYS.
 """
 from __future__ import annotations
 
@@ -241,3 +241,15 @@ def regime_sentence(bucket: "Bucket") -> str:
     if bucket.thin or bucket.up_share is None:
         return f"{head}: only {days}, take with care (average {average} a day)"
     return f"{head}: {days}, average {average} a day, up on {_percent_text(bucket.up_share)} of them"
+
+
+def pbo_sentence(pbo: float | None, n_trials: int, n_total: int | None = None) -> str:
+    """The chance of overfitting a family of tries, in one line: how often the try that looked best on half of the
+    days landed at or below the middle on the other half, over every way of splitting the days in two. When some
+    tries had to be left out, it says "based on N of M tries"."""
+    p = _usable(pbo)
+    if p is None:
+        return TOO_FEW_DAYS
+    tries = f"based on {n_trials} of {n_total} tries" if n_total and n_total > n_trials else f"{n_trials} tries"
+    return (f"in {_percent_text(p)} of the ways to split your days in two, the try that looked best on one half "
+            f"landed at or below the middle on the other ({tries})")

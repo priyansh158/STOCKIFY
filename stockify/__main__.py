@@ -15,11 +15,9 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "compare": ("M6", "compare runs"),
     "export": ("M6", "export a run"),
     "sweep": ("M6", "parameter sweep"),
     "walkforward": ("M6", "walk-forward analysis"),
-    "sensitivity": ("M6", "cost and fill sensitivity"),
 }
 
 
@@ -615,6 +613,20 @@ def _cmd_research_show(args) -> int:
     return 2
 
 
+def _cmd_sensitivity(args) -> int:
+    """M6.7: re-run a finished run with costs, extra slippage ticks, latency and other fill models, one change at a
+    time. Exit 0 done (robust, fragile or already losing), 1 when a variant failed or the verdict is inconclusive, 2 for an unknown or unfinished run or a locked holdout."""
+    from stockify import runconfig
+    from stockify.research import sensitivity
+    try:
+        res = sensitivity.run_suite(args.run, workers=args.workers, unlock_reason=args.unlock_holdout)
+    except (sensitivity.SensitivityError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    _print_console(sensitivity.format_table(res))
+    return 1 if res.verdict == "inconclusive" or any(r.status == "failed" for r in res.rows) else 0
+
+
 def _cmd_margin_check(args) -> int:
     """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
     from datetime import date
@@ -831,6 +843,20 @@ def _cmd_compare(args) -> int:
     return 0 if not problems else 1
 
 
+def _cmd_compare_runs(args) -> int:
+    from stockify.reporting import compare as rc
+    try:
+        c = rc.compare_runs(list(args.runs))
+    except KeyError as e:
+        print(f"stockify compare: no test run {str(e.args[0])[:80]!r}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"stockify compare: {e}", file=sys.stderr)
+        return 2
+    print(rc.format_table(c))
+    return 0
+
+
 def _cmd_capture_charges(args) -> int:
     from pathlib import Path
 
@@ -1031,6 +1057,9 @@ def main(argv: list[str] | None = None) -> int:
     grun.add_argument("--impl", default="oracle", choices=["oracle", "engine"])
     grun.add_argument("--only", help="comma list of ids, e.g. G01,G09")
     grun.set_defaults(func=_cmd_golden_run)
+    cr = sub.add_parser("compare", help="put 2 to 6 finished runs side by side (metrics, equity, config differences)")
+    cr.add_argument("runs", nargs="+", metavar="RUN_ID", help="2 to 6 run ids")
+    cr.set_defaults(func=_cmd_compare_runs)
     ca = sub.add_parser("compare-artifacts", help="diff two run folders' deterministic artifacts")
     ca.add_argument("run_a")
     ca.add_argument("run_b")
@@ -1089,6 +1118,13 @@ def main(argv: list[str] | None = None) -> int:
     rw = rssub.add_parser("show", help="print the research lines of a run or a family, in plain words")
     rw.add_argument("target", help="a run id or a family id")
     rw.set_defaults(func=_cmd_research_show)
+
+    sn = sub.add_parser("sensitivity", help="re-run a finished run with costs x0/1.5/2, extra slippage ticks, more "
+                                            "latency and other fill models, and flag it fragile (M6.7)")
+    sn.add_argument("--run", required=True, help="the finished run's id")
+    sn.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
+    sn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    sn.set_defaults(func=_cmd_sensitivity)
 
     se = sub.add_parser("session", help="paper session maintenance")
     sesub = se.add_subparsers(dest="session_command", required=True)

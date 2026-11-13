@@ -12,8 +12,8 @@ Concepts: C-4, C-14, C-16, C-17.
 
 ## M6.1 Compare runs (S)
 
-- [ ] `/tests/compare?ids=…` (2–6 runs): metrics side by side, equity curves normalised to 1.0, drawdowns, labels with differences highlighted, and a manifest diff (parameters, fill model, margin model, config hashes, engine build).
-- [ ] CLI: `python -m stockify compare <run_id> <run_id> …` prints the same table.
+- [x] `/tests/compare?ids=…` (2–6 runs): metrics side by side, equity curves normalised to 1.0, drawdowns, labels with differences highlighted, and a manifest diff (parameters, fill model, margin model, config hashes, engine build).
+- [x] CLI: `python -m stockify compare <run_id> <run_id> …` prints the same table.
 
 ## M6.2 Export (S)
 
@@ -51,7 +51,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 > The `costs.scale` run-config key the costs row needs is done (FW 6.1, D-90, `bundle.scale_charges`); the suite itself is Tasks 14 to 16. `fill_model.slippage.extra_ticks` (FW 6.2, D-91) is done on both runners; the engine must be rebuilt before Task 16.
 
-- [ ] `python -m stockify sensitivity --run <id>` re-runs with costs × {0, 1, 1.5, 2}, slippage + {0, 1, 2} ticks, latency {0, 250, 1000} ms, and every applicable fill model; prints a table and flags a strategy as **fragile** if its net P&L turns negative under costs × 1.5 or one extra tick.
+- [x] (suite and CLI done, `stockify/research/sensitivity.py`, FW 6.3; the API and wording are Task 16) `python -m stockify sensitivity --run <id>` re-runs with costs × {0, 1, 1.5, 2}, slippage + {0, 1, 2} ticks, latency {0, 250, 1000} ms, and every applicable fill model; prints a table and flags a strategy as **fragile** if its net P&L turns negative under costs × 1.5 or one extra tick.
 
 ## M6.8 Bootstrap confidence intervals (S)
 
@@ -67,7 +67,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.11 Probability of backtest overfitting (stretch, M)
 
-- [ ] Combinatorially symmetric cross-validation (Bailey, Borwein, López de Prado and Zhu, 2015) over a family's trial return matrix; report the PBO estimate.
+- [x] (done, `stockify/research/pbo.py`, on the family report as `pbo` / `pbo_note`; a walk-forward family gets a note, its windows share no days) Combinatorially symmetric cross-validation (Bailey, Borwein, López de Prado and Zhu, 2015) over a family's trial return matrix; report the PBO estimate.
 
 ## M6.12 Project write-up (S, optional)
 

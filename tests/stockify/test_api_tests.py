@@ -108,8 +108,7 @@ class CatalogueAndRoutesTests(ApiTestBase):
 
     def test_fixed_paths_are_not_ids(self):
         r = self.client.get("/api/tests/compare")
-        self.assertEqual(r.status_code, 501)
-        self.assertIn("M6", r.json()["detail"])
+        self.assertEqual(r.status_code, 422)  # compare, not a run id: it asks for 2 to 6 ids
         self.assertEqual(self.client.get("/api/tests/nope").status_code, 404)
         self.assertEqual(self.client.get("/api/tests/nope/fills").status_code, 404)
         self.assertEqual(self.client.post("/api/tests/nope/cancel").status_code, 404)

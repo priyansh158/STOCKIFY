@@ -51,7 +51,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("config OK", out)
 
     def test_unimplemented_command_names_its_milestone(self):
-        code, _, err = self.run_cli("compare")             # `margin` became real in M4.9, `parity` in M5.10
+        code, _, err = self.run_cli("export")              # `margin` became real in M4.9, `parity` in M5.10
         self.assertEqual(code, 2)
         self.assertIn("M6", err)
 

@@ -13,8 +13,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, RunResearchDTO,
-                            TrialRowDTO)
+from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
+                            RunResearchDTO, TrialRowDTO)
 
 router = APIRouter(tags=["research"])
 
@@ -64,6 +64,8 @@ def family_detail(family_id: str) -> FamilyDetailDTO:
     d = _clean(report.family_report(family_id))
     if d["best"] is not None:
         d["best"] = DsrDTO(**d["best"])
+    if d["pbo"] is not None:
+        d["pbo"] = PboDTO(**d["pbo"])
     d["trials"] = [TrialRowDTO(**t) for t in d["trials"]]
     d["others"] = [TrialRowDTO(**t) for t in d["others"]]
     return FamilyDetailDTO(**d)
