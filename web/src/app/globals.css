@@ -434,4 +434,3 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-table td[data-wrap] > .stk-btn { display: block; margin-top: var(--space-3xs); }
 .stk-table td[data-wrap] code { overflow-wrap: anywhere; }
 .stk-pricechart-tip { position: absolute; z-index: var(--z-tooltip); display: flex; flex-direction: column; gap: var(--space-3xs); max-width: 22rem; margin: var(--space-sm) 0 0 var(--space-md); padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-edge); border-radius: var(--radius-control); background: var(--color-paper-3); color: var(--color-ink); font-size: var(--text-sm); line-height: 1.35; pointer-events: none; overflow-wrap: anywhere; }
->>>>>>> fe49746
