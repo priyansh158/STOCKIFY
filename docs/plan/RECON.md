@@ -1252,4 +1252,4 @@ Read-only on the real lab (refdata opened `mode=ro`, the tick archive read throu
 
 ### M6.7 extra slippage ticks (Task 14)
 
-🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.un.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.
+🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.\run.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.

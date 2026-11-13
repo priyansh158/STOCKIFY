@@ -121,5 +121,26 @@ class ParityTests(unittest.TestCase):
         self.assertEqual(seen, want)
 
 
+@unittest.skipUnless(engine.available(), "stockify._engine is not built")
+class HandEditedBundleTests(unittest.TestCase):
+    """The runners do not trust the run config's 0..1000: a bundle edited by hand is refused, not run."""
+
+    def test_both_runners_refuse_an_out_of_range_extra_ticks_in_the_bundle(self):
+        from stockify import golden
+        from stockify.oracle import run_bundle
+        from stockify.tools import fuzz
+        world = fuzz.fuzz_world(4001)
+        for bad in (-1, 1001, 2.5, True, "2", None, 2**64 - 1):
+            with self.subTest(extra_ticks=bad), tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                pack = golden.build_pack(world, folder)
+                bundle = golden.build_bundle(world)
+                bundle["run"]["fill_model"]["slippage"]["extra_ticks"] = bad
+                with self.assertRaisesRegex(Exception, "extra_ticks"):
+                    run_bundle(bundle, [pack], folder / "oracle", strategy=fuzz._strategy(world), report=False)
+                with self.assertRaisesRegex(Exception, "extra_ticks"):
+                    engine.run_bundle(bundle, [pack], folder / "engine", strategy=fuzz._strategy(world), report=False)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,10 @@ struct Opportunity {
 
 // A4 §3.3: buy floor, sell ceil, on the tick grid.
 Paise protection_limit(Side side, Paise ref, Bp bp, Paise tick);
+// FW 6.2: run.fill_model.slippage.extra_ticks, 0 when absent. A whole number from 0 to kMaxExtraTicks, else RunError
+// naming fill_model.slippage.extra_ticks (a hand-edited bundle is not trusted: no float, bool, string or wrapped uint64).
+inline constexpr std::int64_t kMaxExtraTicks = 1000;
+std::int64_t extra_ticks_of(const Json& slip);
 // Adverse slippage (A4 §4.4), never beyond cap. `slip` is run.fill_model.slippage.
 Paise slipped(Side side, Paise price, Paise tick, const Json& slip, Pcg32& rng, std::optional<Paise> cap);
 // A4 §4.0: floor_to(floor_div(volume · ppm, 10⁶), lot).

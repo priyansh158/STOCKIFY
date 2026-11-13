@@ -21,6 +21,17 @@ def protection_limit(side: str, ref: int, bp: int, tick: int) -> int:
     return numerics.ceil_div(ref * (10000 - bp), 10000 * tick) * tick
 
 
+MAX_EXTRA_TICKS = 1000
+
+
+def extra_ticks_of(slip: dict) -> int:
+    """FW 6.2: `slip["extra_ticks"]`, 0 when absent; a whole number from 0 to 1000 (no bool, float or string)."""
+    n = slip.get("extra_ticks", 0)
+    if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= MAX_EXTRA_TICKS:
+        raise ValueError(f"fill_model.slippage.extra_ticks: must be a whole number from 0 to {MAX_EXTRA_TICKS}")
+    return n
+
+
 def slipped(side: str, price: int, tick: int, slip: dict, rng, cap: int | None) -> int:  # noqa: ANN001
     """Adverse slippage (A4 §4.4), never beyond `cap` (the protection / limit price)."""
     kind = slip.get("kind", "none")
@@ -34,8 +45,7 @@ def slipped(side: str, price: int, tick: int, slip: dict, rng, cap: int | None) 
         move = numerics.ceil_to(numerics.ceil_div(price * slip["bp"], 10000), tick)
     else:
         raise ValueError(f"slippage {kind!r}")
-    if "extra_ticks" in slip:                       # FW 6.2: after the kind's own draw, before the sign and the cap
-        move += slip["extra_ticks"] * tick
+    move += extra_ticks_of(slip) * tick             # FW 6.2: after the kind's own draw, before the sign and the cap
     out = price + move if side == "BUY" else price - move
     if cap is not None:
         out = min(out, cap) if side == "BUY" else max(out, cap)

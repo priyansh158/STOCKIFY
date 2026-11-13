@@ -28,7 +28,7 @@ from stockify import numerics, timeutil
 from stockify.oracle import costs as costs_mod
 from stockify.oracle.ledger import Ledger
 from stockify.oracle.margin import DERIVATIVES, FlatMargin
-from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, participation_cap, path_points, protection_limit,
+from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, extra_ticks_of, participation_cap, path_points, protection_limit,
                                      slipped)
 from stockify.oracle.orders import ACTIVE, FINAL, SYSTEM_TAGS, Fill, FillView, Order, OrderView
 from stockify.oracle.rng import SLIPPAGE_STREAM, STRATEGY_STREAM, Pcg32
@@ -128,6 +128,7 @@ class Engine:
         self.bundle = bundle
         self.run_cfg = bundle["run"]
         self.fill_cfg = self.run_cfg["fill_model"]
+        extra_ticks_of(self.fill_cfg.get("slippage", {}))               # FW 6.2: a hand-edited bundle fails here
         self.policies = self.run_cfg["policies"]
         self.latency_ns = self.run_cfg["latency_ms"] * 1_000_000
         self.inst = {i["id"]: i for i in bundle["instruments"]}

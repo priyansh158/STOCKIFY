@@ -1,6 +1,9 @@
 #include "stocksim/matcher.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <numeric>
+#include <string>
 
 #include "stocksim/errors.hpp"
 
@@ -29,6 +32,24 @@ Paise protection_limit(Side side, Paise ref, Bp bp, Paise tick) {  // matcher.pr
     }
     // ceil_div(ref·(10000 − bp), 10000·tick)·tick = −floor_div(−ref·(10000 − bp), 10000·tick)·tick
     return checked_mul(-mul_div_floor(-ref, 10'000 - bp, checked_mul(10'000, tick)), tick);
+}
+
+std::int64_t extra_ticks_of(const Json& slip) {  // matcher.extra_ticks_of
+    const auto it = slip.find("extra_ticks");
+    if (it == slip.end()) {
+        return 0;
+    }
+    // nlohmann holds a non-negative integer as unsigned: read it as such and clamp, so 2^64 - 1 never wraps to -1.
+    const bool whole = it->is_number_integer();
+    const std::int64_t n = !whole ? -1
+                           : it->is_number_unsigned()
+                               ? static_cast<std::int64_t>(std::min<std::uint64_t>(it->get<std::uint64_t>(), kMaxExtraTicks + 1))
+                               : it->get<std::int64_t>();
+    if (n < 0 || n > kMaxExtraTicks) {
+        throw RunError("fill_model.slippage.extra_ticks: must be a whole number from 0 to " +
+                       std::to_string(kMaxExtraTicks));
+    }
+    return n;
 }
 
 Paise slipped(Side side, Paise price, Paise tick, const Json& slip, Pcg32& rng, std::optional<Paise> cap) {

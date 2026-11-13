@@ -130,6 +130,9 @@ Engine::Engine(Bundle bundle)
     stale_after_ns_ = checked_mul(require_int(pricing, "stale_after_ms", "pricing"), 1'000'000);
     const Json& run = run_of(bundle_);
     fill_cfg_ = require(run, "fill_model", "run");
+    if (const auto slip = fill_cfg_.find("slippage"); slip != fill_cfg_.end()) {
+        (void)extra_ticks_of(*slip);  // FW 6.2: a hand-edited bundle fails here, before any event
+    }
     fill_kind_ = require_string(fill_cfg_, "kind", "run.fill_model");
     policies_ = require(run, "policies", "run");
     mark_kind_ = require_string(run, "mark", "run");
