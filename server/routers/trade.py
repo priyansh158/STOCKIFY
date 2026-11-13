@@ -27,6 +27,7 @@ from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedD
 router = APIRouter(tags=["trade"])
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_INSTRUMENT = re.compile(r"[0-9]{1,19}")
 MAX_BODY_BYTES = 64 * 1024
 MAX_UNIVERSE = 500
 MAX_LIVE_SESSIONS = 50
@@ -404,7 +405,7 @@ _SESSION_CHART_PLAIN = {
 
 
 @router.get("/api/trade/sessions/{session_id}/chart", response_model=SessionChartDTO)
-def session_chart(session_id: str, instrument: int | None = Query(None, ge=0, le=2**63 - 1),
+def session_chart(session_id: str, instrument: str | None = Query(None),
                   trade_date: str | None = Query(None)) -> SessionChartDTO:
     """One instrument of one paper-session day as bars (read incrementally from the day's journal), a marker per paper
     fill with the strategy's note, and each closing fill's trade profit (CH 6.13). Same wire format as a run's chart
@@ -413,8 +414,10 @@ def session_chart(session_id: str, instrument: int | None = Query(None, ge=0, le
     read, is a 200 with `data_state`. Read-only; no id, path or exception text is echoed."""
     from server.routers.tests import _chart_dto
     from stockify.reporting import chart_session
+    if instrument is not None and not (_INSTRUMENT.fullmatch(instrument) and int(instrument) <= 2**63 - 1):
+        raise HTTPException(status_code=422, detail="the chart request is not valid")      # (a typed Query would echo the input)
     try:
-        model = chart_session.session_chart(session_id, trade_date, instrument)
+        model = chart_session.session_chart(session_id, trade_date, None if instrument is None else int(instrument))
     except LookupError:
         raise HTTPException(status_code=404, detail="no such session, day or instrument") from None
     except ValueError:

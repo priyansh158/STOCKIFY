@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import itertools
 import json
-import sys
 import unittest
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -109,22 +109,95 @@ class SessionChartModelTests(SandboxedDBTest):
         calls = []
 
         def counting(data, off):
-            if sys._getframe(1).f_globals["__name__"] == chart_session.__name__:    # not the journal's own scan
-                calls.append(off)
+            calls.append(off)                                      # every decode, the journal reader's own included
             return real(data, off)
 
         with patch.object(packs, "decode", counting):
             first = chart_session.session_chart(SID, DAY, None)
             n1 = len(calls)
+            self.assertEqual(n1, 3)                                # the 3 bars, once each
             same = chart_session.session_chart(SID, DAY, None)
             self.assertEqual(len(calls), n1)                       # nothing new: nothing decoded
             self.assertEqual(same["bars"], first["bars"])
             append_bars(range(3, 5))
             calls.clear()
             third = chart_session.session_chart(SID, DAY, None)
-        self.assertEqual(len(calls), 2)                            # only the two new records
+        self.assertEqual(len(calls), 2)                            # only the 2 new records
         self.assertEqual(len(third["bars"]), 5)
         self.assertEqual(third["bars"][:3], first["bars"])
+
+    def test_a_poll_reads_only_the_new_bytes(self):
+        make_session()
+        write_bundle()
+        append_bars(range(40))
+        chart_session.session_chart(SID, DAY, None)
+        jp = paths.journal_file(SID, _d(DAY))
+        size = jp.stat().st_size
+        append_bars(range(40, 42))
+        grown = jp.stat().st_size - size
+        sizes = []
+        import builtins
+        real_open = builtins.open
+
+        class Spy:
+            def __init__(self, f):
+                self.f = f
+
+            def read(self, *a):
+                data = self.f.read(*a)
+                sizes.append(len(data))
+                return data
+
+            def __getattr__(self, name):
+                return getattr(self.f, name)
+
+            def __enter__(self):
+                self.f.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return self.f.__exit__(*a)
+
+        def spy_open(file, mode="r", *a, **kw):
+            f = real_open(file, mode, *a, **kw)
+            return Spy(f) if "b" in mode and str(file).endswith((".evt", ".crc")) else f
+
+        with patch.object(builtins, "open", spy_open):
+            chart_session.session_chart(SID, DAY, None)
+        self.assertGreater(size, 3_000)
+        self.assertLess(sum(sizes), grown + 600)                   # the new bytes, their checksums and two small probes
+
+    def test_a_different_longer_file_at_the_same_path_resets_the_cache(self):
+        make_session()
+        write_bundle()
+        append_bars(range(3))
+        self.assertEqual(len(chart_session.session_chart(SID, DAY, None)["bars"]), 3)
+        jp = paths.journal_file(SID, _d(DAY))
+        other = paths.journal_file("other", _d(DAY))
+        append_bars(range(6), sid="other", price=30000)
+        jp.write_bytes(other.read_bytes())                  # the same file (same id) now holds another, longer journal
+        Path(str(jp) + ".crc").write_bytes(Path(str(other) + ".crc").read_bytes())
+        m = chart_session.session_chart(SID, DAY, None)
+        self.assertEqual([b["open"] for b in m["bars"]], [30000 + 10 * k for k in range(6)])
+
+    def test_cached_basis_survives_a_transient_read_failure(self):
+        make_session()
+        write_bundle()
+        append_bars(range(3))
+        first = chart_session.session_chart(SID, DAY, None)
+        self.assertEqual(first["basis"], "raw")
+        with patch.object(journal, "read_from", side_effect=journal.JournalError("mid-append")):
+            again = chart_session.session_chart(SID, DAY, None)
+        self.assertEqual((again["basis"], again["bars"]), ("raw", first["bars"]))
+
+    def test_a_chunked_first_read_gives_the_same_bars(self):
+        make_session()
+        write_bundle()
+        append_bars(range(20))
+        whole = chart_session.session_chart(SID, DAY, None)["bars"]
+        chart_session.clear_cache()
+        with patch.object(journal, "CHUNK_BYTES", 300):
+            self.assertEqual(chart_session.session_chart(SID, DAY, None)["bars"], whole)
 
     def test_journal_that_shrinks_resets_the_cache(self):
         make_session()
@@ -213,6 +286,59 @@ class SessionChartModelTests(SandboxedDBTest):
         chart_session.session_chart(SID, DAY, None)
         self.assertEqual({p: p.read_bytes() for p in paths.journals_dir(SID).iterdir()}, snap)
 
+    def test_a_read_creates_no_folder(self):
+        make_session()
+        put_rows(DAY, [order(1)], [fill(1, 1, T(9, 16, 5), "BUY", 10, 10010)])
+        folder = paths.journals_dir() / SID                        # (the journals root only, never the session's folder)
+        self.assertFalse(folder.exists())
+        m = chart_session.session_chart(SID, DAY, None)
+        self.assertEqual(m["data_state"], "no_pack")
+        self.assertFalse(folder.exists())
+
+    def test_the_readers_paths_match_the_writers_and_create_nothing(self):
+        root = paths.journals_dir()
+        d = _d(DAY)
+        self.assertEqual(paths.journal_path_ro("fresh", d), root / "fresh" / "20260302.evt")
+        self.assertEqual(paths.day_bundle_path_ro("fresh", d), root / "fresh" / "20260302.bundle.json")
+        self.assertFalse((root / "fresh").exists())
+        self.assertEqual(paths.journal_path_ro("fresh", d), paths.journal_file("fresh", d))    # (this one creates it)
+        for bad in ("..\evil", "a/b", "", "x" * 200, "CON"):
+            with self.assertRaises(ValueError):
+                paths.journal_path_ro(bad, d)
+            with self.assertRaises(ValueError):
+                paths.day_bundle_path_ro(bad, d)
+
+    def test_a_later_days_order_id_that_collides_with_a_carried_one(self):
+        make_session(days=(DAY, DAY2))
+        write_bundle(DAY2)
+        append_bars(range(3), DAY2)
+        put_rows(DAY, [order(1, product="NRML"), order(2, product="NRML")],
+                 [fill(1, 1, T(15, 0, day=DAY), "BUY", 10, 10000)])
+        # day 2: its own order 1 (not day 1's order 1), a fill of day 1's still-open order 2, and a sell that must
+        # close that carried buy under its NRML product
+        put_rows(DAY2, [order(1, side="SELL", product="NRML"), order(3, side="SELL", product="NRML")],
+                 [fill(1, 1, T(9, 16, 5, day=DAY2), "SELL", 10, 10100),
+                  fill(2, 2, T(9, 17, 5, day=DAY2), "BUY", 6, 10050),
+                  fill(3, 3, T(9, 18, 5, day=DAY2), "SELL", 6, 10200)])
+        m = chart_session.session_chart(SID, DAY2, None)
+        self.assertEqual([(x["fill_id"], x["order_id"], x["trade_pnl_paise"]) for x in m["markers"]],
+                         [(1, 1, 1000), (2, 2, None), (3, 3, 900)])
+
+    def test_a_position_left_open_in_an_expired_contract_says_the_profit_is_incomplete(self):
+        fut = [{"id": 1, "tradingsymbol": "TESTFUT", "kind": "FUT", "session_group": "FO_FUT", "cas_dates": [],
+                "expiry": DAY, "actual_expiry": None, "strike_paise": None}]
+        make_session()
+        write_bundle(instruments=fut)
+        append_bars(range(3))
+        put_rows(DAY, [order(1, product="NRML")], [fill(1, 1, T(9, 16, 5), "BUY", 10, 10010)])
+        m = chart_session.session_chart(SID, DAY, None)
+        self.assertIs(m["pnl_complete"], False)
+        self.assertEqual(m["skipped_settlements"], 1)
+        self.assertIn("expiry", m["notice"])
+        write_bundle(instruments=[{**fut[0], "expiry": "2026-03-26"}])          # not yet expired: nothing is missing
+        m = chart_session.session_chart(SID, DAY, None)
+        self.assertEqual((m["pnl_complete"], m["notice"]), (True, None))
+
 
 @support.requires_fastapi
 class SessionChartApiTests(SandboxedDBTest):
@@ -262,10 +388,11 @@ class SessionChartApiTests(SandboxedDBTest):
             self.assertEqual(r.status_code, 404, r.text)
         self.assertNotIn("nosuch", self.get("nosuch").text)
         self.assertNotIn("2026-03-09", self.get(trade_date="2026-03-09").text)
-        for q in ({"trade_date": "yesterday"}, {"trade_date": "2026-13-45"}, {"instrument": "x"}, {"instrument": -1},
-                  {"instrument": 2**63}):
+        for q in ({"trade_date": "yesterday"}, {"trade_date": "2026-13-45"}, {"instrument": "abc"}, {"instrument": -1},
+                  {"instrument": 2**63}, {"instrument": "1.5"}):
             r = self.get(**q)
             self.assertEqual(r.status_code, 422, (q, r.text))
+            self.assertEqual(r.json(), {"detail": "the chart request is not valid"})     # fixed: nothing echoed
 
     def test_unsafe_session_id_is_404(self):
         self.world()

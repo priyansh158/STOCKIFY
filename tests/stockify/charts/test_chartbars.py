@@ -273,6 +273,26 @@ class ChartBarsTests(unittest.TestCase):
             with self.assertRaises(packs.PackError):
                 records_of_pack("../x")                                  # not a pack hash
 
+    def test_feeding_records_in_chunks_equals_the_batch(self):
+        from stockify.reporting.chartbars import BarFold, bars_from_records
+        with tempfile.TemporaryDirectory(prefix="cb13-") as tmp:
+            recs = packs.read(golden.build_pack(_tick_world(), Path(tmp)))[1]
+        anchors = {D1: _ts(D1, "09:15:00"), D2: _ts(D2, "09:15:00")}
+        for iid in (1, 2):
+            for isec in (60, 300):
+                want = bars_from_records(recs, iid, interval_s=isec, anchors=anchors)
+                self.assertTrue(want[0])
+                for seed in range(8):
+                    rng = random.Random(seed)
+                    fold, i = BarFold(iid, interval_s=isec, anchors=anchors), 0
+                    while i < len(recs):
+                        j = min(len(recs), i + rng.randint(1, 400))
+                        fold = fold.copy()                            # a poll continues a copy of the cached fold
+                        fold.feed(recs[i:j])
+                        i = j
+                        got = fold.result()                           # a result mid-stream is a valid prefix
+                    self.assertEqual(got, want, (iid, isec, seed))
+
     def test_a_torn_journal_tail_is_ignored_and_left_alone(self):
         import itertools
         from stockify.daemon import journal
