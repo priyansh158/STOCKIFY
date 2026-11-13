@@ -130,6 +130,25 @@ def _series(dates, navs, capital: int, rf_rows: list[dict]) -> tuple[list[float]
     return r, stats.excess_returns(list(dates), r, rf_rows)
 
 
+def _flat_reason(x: list[float], row: dict | None) -> str:
+    """Why a daily-return series has no Sharpe (D-135): the run never traded, it has fewer than 2 days, or every
+    day ended the same. A run that traded is never called "no trades"."""
+    trades = _json_metrics(row).get("trades")
+    if isinstance(trades, int) and not isinstance(trades, bool) and trades == 0:
+        return plain.NO_TRADES
+    if len(x) < 2:
+        return plain.ONE_DAY
+    return plain.NO_SWING
+
+
+def _json_metrics(row: dict | None) -> dict:
+    try:
+        m = json.loads((row or {}).get("metrics_json") or "{}")
+    except ValueError:
+        return {}
+    return m if isinstance(m, dict) else {}
+
+
 def _trial_sharpe(t: registry.TrialRun, rf_rows: list[dict]) -> float | None:
     _, x = _series(t.dates, t.navs, t.capital_paise, rf_rows)
     return stats.sharpe_per_period(x)
@@ -336,10 +355,11 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
 
     rf_rows = stats.risk_free_rows()
     usable = _usable(navs, capital)
-    res, flat = None, True
+    res, flat, flat_reason = None, True, plain.NO_TRADES
     if usable:
         _, x = _series(dates, navs, capital, rf_rows)
         flat = stats.sharpe_per_period(x) is None
+        flat_reason = _flat_reason(x, row)
         res = stats.deflated_sharpe(x, [_trial_sharpe(t, rf_rows) for t in tries], max(n, len(tries), 1))
 
     texts: dict[str, str] = {}
@@ -347,8 +367,9 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
         texts["psr"] = _NO_SERIES
         texts["dsr"] = _unfinished_try(row.get("status")) if role == "trial" and not is_try else _NO_SERIES
     elif flat:
-        texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True, n_finished=len(tries))
-        texts["psr"] = texts["dsr"]
+        texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True, flat_reason=flat_reason,
+                                          n_finished=len(tries))
+        texts["psr"] = plain.no_sharpe_sentence(flat_reason)
     else:
         if not is_try:
             texts["dsr"] = _NOT_A_TRY if role != "trial" else _unfinished_try(row.get("status"))
@@ -423,8 +444,13 @@ def family_report(family_id: str) -> FamilyReport:
     rows = store.family_runs(family_id, roles=None, status=None)
     texts: dict[str, str] = {}
     if best is not None:
+        why, no_sharpe = plain.NO_TRADES, False
+        if dsr is None:
+            _, bx = _series(best.dates, best.navs, best.capital_paise, rf_rows)
+            no_sharpe = stats.sharpe_per_period(bx) is None      # else a Sharpe exists and only the DSR is missing
+            why = _flat_reason(bx, store.get_run(best.run_id))
         texts["dsr"] = plain.dsr_sentence(n, 1, dsr.dsr if dsr else None, objective=objective,
-                                          flat=dsr is None, n_finished=len(tries))
+                                          flat=no_sharpe, flat_reason=why, n_finished=len(tries))
     texts["objective"] = plain.OBJECTIVE_LABELS[objective]
     texts["trials"] = plain.meaning("trials")
     texts["scores_caveat"] = plain.SCORES_CAVEAT

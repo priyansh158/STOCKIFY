@@ -178,8 +178,26 @@ def _ci_phrase(ci: float) -> str:
     return _percent_text(ci) + " of"
 
 
+# Why a run has no Sharpe at all (D-135): each reason has its own plain sentence, so a run that did trade is never
+# told it made no trades.
+NO_TRADES, ONE_DAY, NO_SWING = "no_trades", "too_few_days", "no_swing"
+NO_SHARPE_REASONS: dict[str, str] = {
+    NO_TRADES: "no trades, so no Sharpe to judge",
+    ONE_DAY: "too few days (it needs at least 2 days of results), so no Sharpe to judge",
+    NO_SWING: "every day ended the same, so there is no day-to-day swing to judge a Sharpe from",
+}
+
+
+def no_sharpe_sentence(reason: str) -> str:
+    try:
+        return NO_SHARPE_REASONS[reason]
+    except KeyError:
+        raise ValueError(f"reason must be one of {list(NO_SHARPE_REASONS)}, not {reason!r}") from None
+
+
 def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str = "sharpe",
-                 picked_name: str | None = None, flat: bool = False, n_finished: int | None = None) -> str:
+                 picked_name: str | None = None, flat: bool = False, flat_reason: str = NO_TRADES,
+                 n_finished: int | None = None) -> str:
     """Where this run stands among all the tries of its family, in one line. Every setting tried counts, finished
     or not (D-85); when some did not finish (`n_finished` below `n_trials`) the line says "N tries (M finished)".
 
@@ -188,7 +206,7 @@ def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str 
     if n_trials < 1 or not 1 <= rank <= n_trials:
         raise ValueError(f"rank must be between 1 and n_trials, got rank={rank}, n_trials={n_trials}")
     if flat:
-        return "no trades, so no Sharpe to judge"
+        return no_sharpe_sentence(flat_reason)
     if n_trials == 1:
         return "the only try, so nothing to allow for"
     try:

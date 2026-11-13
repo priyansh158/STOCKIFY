@@ -115,6 +115,36 @@ class RunResearchTests(ReportTest):
         self.assertIn(best.name, res.plain["dsr"])
         self.assertIn("runner-up", res.plain["dsr"])
 
+    def _set_trades(self, run_id: str, trades: int) -> None:
+        row = store.get_run(run_id)
+        m = json.loads(row["metrics_json"])
+        m["trades"] = trades
+        self.sql("UPDATE runs SET metrics_json=? WHERE run_id=?", (json.dumps(m), run_id))
+
+    def test_no_sharpe_says_why_and_a_run_that_traded_is_not_called_tradeless(self):
+        registry.ensure_family(FAM, "sharpe")
+        make_run("idle", FAM, daily_returns=[0.0] * 10, name="idle")              # never traded
+        make_run("oneday", FAM, daily_returns=[-0.0002], name="oneday")           # traded, 1 day
+        make_run("steady", FAM, daily_returns=[0.0] * 10, name="steady")          # traded, every day ended flat
+        self._set_trades("idle", 0)
+        self._set_trades("oneday", 1)
+        self._set_trades("steady", 4)
+        said = {r: report.run_research(r, use_cache=False).plain for r in ("idle", "oneday", "steady")}
+        self.assertEqual(said["idle"]["dsr"], plain.no_sharpe_sentence(plain.NO_TRADES))
+        self.assertEqual(said["oneday"]["dsr"], plain.no_sharpe_sentence(plain.ONE_DAY))
+        self.assertEqual(said["steady"]["dsr"], plain.no_sharpe_sentence(plain.NO_SWING))
+        self.assertEqual(said["oneday"]["psr"], said["oneday"]["dsr"])
+        for r in ("oneday", "steady"):
+            self.assertNotIn("no trades", said[r]["dsr"])
+
+    def test_family_report_says_why_the_best_try_has_no_sharpe(self):
+        fam = "strat/ds-1m-RELIANCE/net_pnl"          # ranked by profit, so a one-day try can still be the best
+        registry.ensure_family(fam, "net_pnl")
+        make_run("oneday", fam, daily_returns=[-0.0002], name="oneday")
+        self._set_trades("oneday", 1)
+        rep = report.family_report(fam)
+        self.assertEqual(rep.plain["dsr"], plain.no_sharpe_sentence(plain.ONE_DAY))
+
     def test_one_trial_family_reports_the_only_try(self):
         family_of(1)
         res = report.run_research("r00", use_cache=False)
