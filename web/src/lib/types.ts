@@ -529,6 +529,74 @@ export interface FamilyDetailDTO {
   pbo_flat: string[];
 }
 
+// ── Parameter sweeps (WF 6.3) ────────────────────────────────────────────────
+
+export interface ResearchJobDTO {
+  job_id: string;
+  kind: string;
+  name: string | null;
+  family_id: string | null;
+  status: string;
+  created_ns: number;
+  finished_ns: number | null;
+  error: string | null;
+}
+
+export interface SweepAxisDTO {
+  path: string;
+  labels: string[];
+  values: (string | number | boolean | null)[];
+}
+
+export interface SweepRowDTO {
+  index: number;
+  params: Record<string, string | number | boolean | null>;
+  run_id: string | null;
+  status: string;
+  objective_value: number | null;
+  sharpe: number | null;
+  net_pnl_paise: number | null;
+  trades: number | null;
+  max_drawdown: number | null;
+  error: string | null;
+}
+
+export interface SweepBestCellDTO {
+  xi: number;
+  yi: number;
+  run_id: string;
+  value: number;
+}
+
+/** Plain data for the heatmap; the page feeds HeatGrid through an adapter: xs, ys and cells (cells[yi][xi], null for a
+ * missing or failed trial) pass as they are, `format` (a kind) becomes a formatter, `best` {xi, yi} becomes {x, y}. */
+export interface SweepHeatmapDTO {
+  x: string;
+  y: string | null;
+  xs: string[];
+  ys: string[];
+  x_values: (string | number | boolean | null)[];
+  y_values: (string | number | boolean | null)[];
+  cells: (number | null)[][];
+  run_ids: (string | null)[][];
+  best: SweepBestCellDTO | null;
+  signed: boolean;
+  format: string;
+  hidden_axes: string[];
+}
+
+export interface SweepDTO {
+  job_id: string;
+  name: string;
+  family_id: string;
+  objective: string;
+  axes: SweepAxisDTO[];
+  rows: SweepRowDTO[];
+  best_run_id: string | null;
+  cells: SweepHeatmapDTO;
+  plain: string;
+}
+
 export interface CompareMetricDTO {
   key: string;
   label: string;

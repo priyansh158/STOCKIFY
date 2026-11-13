@@ -142,6 +142,22 @@ def objective_value(row: dict, objective: str) -> float | None:
     return float(v)
 
 
+def select_best(rows: list[dict], objective: str) -> dict | None:
+    """The `done` row with the highest finite objective value; a tie goes to the lowest grid `index`. A row's
+    value is its `objective_value`, or (key absent) read from its `metrics_json`. None when no row qualifies."""
+    best, best_key = None, None
+    for row in rows:
+        if row.get("status") != "done":
+            continue
+        v = row["objective_value"] if "objective_value" in row else objective_value(row, objective)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            continue
+        key = (-v, row["index"])
+        if best_key is None or key < best_key:
+            best, best_key = row, key
+    return best
+
+
 @dataclass(frozen=True)
 class TrialRun:
     run_id: str

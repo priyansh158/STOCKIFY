@@ -102,20 +102,7 @@ def window_config(cfg: dict, from_: date, to: date) -> dict:
     return out
 
 
-def select_best(rows: list[dict], objective: str) -> dict | None:
-    """The `done` row with the highest finite objective value; a tie goes to the lowest grid `index`. A row's
-    value is its `objective_value`, or (key absent) read from its `metrics_json`. None when no row qualifies."""
-    best, best_key = None, None
-    for row in rows:
-        if row.get("status") != "done":
-            continue
-        v = row["objective_value"] if "objective_value" in row else registry.objective_value(row, objective)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-            continue
-        key = (-v, row["index"])
-        if best_key is None or key < best_key:
-            best, best_key = row, key
-    return best
+select_best = registry.select_best          # moved to registry (Task 18); kept here for existing callers
 
 
 def _job_id(name: str, now_ns: int) -> str:

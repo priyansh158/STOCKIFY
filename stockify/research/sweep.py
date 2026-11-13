@@ -7,19 +7,26 @@ them in grid order. Every expanded config goes through runconfig.validate. The l
 from __future__ import annotations
 
 import copy
+import csv
 import dataclasses
 import difflib
+import io
 import json
 import math
 import re
+import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
-from stockify import paths, research, runconfig
-from stockify.research import registry, seeding
+from stockify import paths, research, runconfig, store, timeutil
+from stockify.research import fileio, holdout, plain, pool, registry, seeding
 
 SCHEMA = "stockify.sweep/1"
+RESULT_SCHEMA = "stockify.sweep.result/1"
+CONFIRM_ABOVE = 50                   # the CLI asks before launching more trials than this (D-101)
+_NAME_PART_IN_JOB = 24
 KEYS = ("schema", "name", "base", "objective", "search", "workers", "axes")
 NAME_MAX = 40
 LOCKED_AXES = ("name", "family_id", "schema", "unlock_holdout")
@@ -264,3 +271,150 @@ def expand(spec: SweepSpec) -> list[GridPoint]:
             raise SweepSpecError(f"trial {index} ({json.dumps(params)}): {e}") from e
         points.append(GridPoint(index=index, params=params, config=cfg))
     return points
+
+
+# ---- running a sweep (M6.10, WF 6.2) -------------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class SweepResult:
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    axes: dict
+    rows: list
+    best_run_id: str | None
+
+
+def _job_id(name: str, now_ns: int) -> str:
+    part = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)[:_NAME_PART_IN_JOB].rstrip(".") or "run"
+    stamp = datetime.fromtimestamp(now_ns / 1e9, tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
+    while True:                                                    # unique among jobs and research folders
+        job_id = f"sweep-{part}-{stamp}-{secrets.token_hex(3)}"
+        if store.get_research_job(job_id) is None and not paths.research_path(job_id).exists():
+            return job_id
+
+
+def _finite(x):  # noqa: ANN001, ANN202
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) else None
+
+
+def _metrics(run_id: str) -> dict:
+    """The result columns of a finished run, read from its stored metrics: None for a missing or non-finite one."""
+    try:
+        m = json.loads((store.get_run(run_id) or {}).get("metrics_json") or "{}")
+    except ValueError:
+        m = {}
+    m = m if isinstance(m, dict) else {}
+    a, b = m.get("nav_start_paise"), m.get("nav_end_paise")
+    ints = all(isinstance(v, int) and not isinstance(v, bool) for v in (a, b))
+    trades = m.get("trades")
+    return {"sharpe": _finite(m.get("sharpe")), "net_pnl_paise": b - a if ints else None,
+            "trades": trades if isinstance(trades, int) and not isinstance(trades, bool) else None,
+            "max_drawdown": _finite(m.get("max_drawdown"))}
+
+
+def _csv(axes: dict, rows: list[dict]) -> str:
+    tail = ["run_id", "status", "objective_value", "sharpe", "net_pnl_paise", "trades", "max_drawdown", "error"]
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\n")
+    w.writerow(["index", *axes, *tail])
+    for r in rows:
+        cells = [r["index"], *(r["params"][a] for a in axes), *(r[c] for c in tail)]
+        w.writerow(["" if c is None else repr(c) if isinstance(c, float) else c for c in cells])
+    return out.getvalue()
+
+
+def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int | None = None,
+              pool_run=None, now_ns: int | None = None) -> SweepResult:  # noqa: ANN001
+    """Run every grid point through the pool (role `trial`) as one job and one family of its own. A locked holdout
+    (no `unlock_reason`) or a pool that raises marks the job `failed` with the message and re-raises; a trial that
+    fails is a row with its error, not an exception. `pool_run` is looked up late (pool.run_all) so tests can patch."""
+    points = expand(spec)
+    now = timeutil.now_ns() if now_ns is None else now_ns
+    job_id = _job_id(spec.name, now)
+    family = registry.job_family_id("sweep", job_id)
+    registry.ensure_family(family, spec.objective)
+    folder = paths.research_path(job_id)
+    store.create_research_job({
+        "job_id": job_id, "kind": "sweep", "name": spec.name, "family_id": family, "status": "running",
+        "created_ns": now, "folder": str(folder),
+        "spec_json": json.dumps({"name": spec.name, "objective": spec.objective, "search": spec.search,
+                                 "axes": spec.axes, "workers": spec.workers, "trials": len(points),
+                                 "base": {k: v for k, v in spec.base.items() if k != "unlock_holdout"},
+                                 "unlock_given": unlock_reason is not None},
+                                sort_keys=True, allow_nan=False)})
+    try:
+        jobs = []
+        for p in points:
+            cfg = copy.deepcopy(p.config)
+            cfg["family_id"] = family
+            cfg.pop("unlock_holdout", None)
+            if unlock_reason is not None:
+                cfg["unlock_holdout"] = unlock_reason
+            cfg = runconfig.validate(cfg)
+            holdout.enforce(cfg)                                   # fails closed before any run is made
+            jobs.append(pool.PoolJob(cfg, role="trial", job_id=job_id))
+        outcomes = (pool_run or pool.run_all)(jobs, workers=workers if workers is not None else spec.workers)
+        if len(outcomes) != len(jobs):
+            raise SweepSpecError(f"the pool returned {len(outcomes)} outcomes for {len(jobs)} runs")
+        rows = []
+        for p, o in zip(points, outcomes):
+            row = {"index": p.index, "params": p.params, "run_id": o.run_id, "status": o.status,
+                   "objective_value": None, "sharpe": None, "net_pnl_paise": None, "trades": None,
+                   "max_drawdown": None, "error": o.error}
+            if o.status == "done" and o.run_id:
+                row.update(_metrics(o.run_id))
+                row["objective_value"] = registry.objective_value(store.get_run(o.run_id) or {}, spec.objective)
+            elif o.status == "done":
+                row.update(status="failed", error="the run did not report its folder")
+            elif row["error"] is None:
+                row["error"] = "the run failed"
+            rows.append(row)
+        best = registry.select_best(rows, spec.objective)
+        res = SweepResult(job_id, spec.name, family, spec.objective, spec.axes, rows,
+                          best["run_id"] if best else None)
+        doc = json.dumps({"schema": RESULT_SCHEMA, "job_id": job_id, "name": spec.name, "family_id": family,
+                          "objective": spec.objective, "axes": spec.axes, "best_run_id": res.best_run_id,
+                          "rows": rows}, sort_keys=True, indent=2, allow_nan=False)
+        folder.mkdir(parents=True, exist_ok=True)
+        fileio.atomic_write_text(folder / "sweep.json", doc + "\n")
+        fileio.atomic_write_text(folder / "results.csv", _csv(spec.axes, rows))
+    except BaseException as e:
+        try:
+            store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
+                                      error=f"{type(e).__name__}: {e}"[:500])
+        except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
+            pass
+        raise
+    store.update_research_job(job_id, status="done", finished_ns=timeutil.now_ns(), state_json=doc)
+    return res
+
+
+def ranked(res: SweepResult) -> list[dict]:
+    """Rows best first: eligible rows by objective (ties by grid index), then the rest by grid index."""
+    ok = [r for r in res.rows if r["status"] == "done" and r["objective_value"] is not None]
+    taken = {id(r) for r in ok}
+    rest = [r for r in res.rows if id(r) not in taken]
+    return sorted(ok, key=lambda r: (-r["objective_value"], r["index"])) + sorted(rest, key=lambda r: r["index"])
+
+
+def format_table(res: SweepResult) -> str:
+    axes = list(res.axes)
+    head = ["Trial", *axes, "Objective", "Sharpe", "Net P&L", "Trades", "Max drawdown", "Status"]
+    body = []
+    for r in ranked(res):
+        status = "best" if r["run_id"] and r["run_id"] == res.best_run_id else r["status"]
+        if r["status"] == "failed":
+            status = f"failed: {r['error']}"
+        ov = r["objective_value"]
+        body.append([str(r["index"]), *(str(r["params"][a]) for a in axes),
+                     "-" if ov is None else f"{ov:.4g}",
+                     "-" if r["sharpe"] is None else f"{r['sharpe']:.2f}",
+                     "-" if r["net_pnl_paise"] is None else plain.rupees(r["net_pnl_paise"] / 100),
+                     "-" if r["trades"] is None else str(r["trades"]),
+                     "-" if r["max_drawdown"] is None else f"{r['max_drawdown'] * 100:.1f}%", status])
+    widths = [max(len(row[i]) for row in [head, *body]) for i in range(len(head))]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip() for row in [head, *body]]
+    return "\n".join([f"Sweep {res.name}: {len(res.rows)} trials, objective {res.objective}", *lines,
+                      f"Job: {res.job_id}", f"Family: {res.family_id}"])

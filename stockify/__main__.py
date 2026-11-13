@@ -15,7 +15,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "sweep": ("M6", "parameter sweep"),
     "walkforward": ("M6", "walk-forward analysis"),
 }
 
@@ -626,6 +625,40 @@ def _cmd_sensitivity(args) -> int:
     return 1 if res.verdict == "inconclusive" or any(r.status == "failed" for r in res.rows) else 0
 
 
+def _cmd_sweep(args) -> int:
+    """M6.10: run a sweep.yaml in parallel as its own family. Exit 0 all trials ran, 1 a trial failed or none could
+    be ranked, 2 for a bad spec, a refused confirmation or a locked holdout."""
+    from pathlib import Path
+    from stockify import runconfig
+    from stockify.research import sweep
+    if args.workers is not None and args.workers < 1:
+        print(f"--workers must be a whole number of 1 or more, not {args.workers}", file=sys.stderr)
+        return 2
+    try:
+        spec = sweep.load_spec(Path(args.config))
+        count = len(sweep.expand(spec))
+        print(f"sweep {spec.name}: {count} trials")
+        if count > sweep.CONFIRM_ABOVE and not args.yes:
+            if not sys.stdin.isatty():
+                print(f"{count} trials is more than {sweep.CONFIRM_ABOVE}: pass --yes to run without being asked "
+                      "(there is no terminal to ask on)", file=sys.stderr)
+                return 2
+            try:
+                answer = input(f"Run {count} trials? [y/N] ").strip().lower()
+            except EOFError:
+                print("no answer was given: pass --yes to run without being asked", file=sys.stderr)
+                return 2
+            if answer not in ("y", "yes"):
+                print("not run", file=sys.stderr)
+                return 2
+        res = sweep.run_sweep(spec, unlock_reason=args.unlock_holdout, workers=args.workers)
+    except (sweep.SweepSpecError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    _print_console(sweep.format_table(res))
+    return 1 if res.best_run_id is None or any(r["status"] == "failed" for r in res.rows) else 0
+
+
 def _cmd_margin_check(args) -> int:
     """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
     from datetime import date
@@ -1154,6 +1187,14 @@ def main(argv: list[str] | None = None) -> int:
     sn.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
     sn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
     sn.set_defaults(func=_cmd_sensitivity)
+
+    sw = sub.add_parser("sweep", help="run a sweep.yaml (grid or random search) in parallel as its own family and "
+                                      "print the results, best first (M6.10)")
+    sw.add_argument("--config", required=True, help="the sweep.yaml file")
+    sw.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
+    sw.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    sw.add_argument("--yes", action="store_true", help="do not ask before running more than 50 trials")
+    sw.set_defaults(func=_cmd_sweep)
 
     se = sub.add_parser("session", help="paper session maintenance")
     sesub = se.add_subparsers(dest="session_command", required=True)
