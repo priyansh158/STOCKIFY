@@ -309,7 +309,7 @@ class RunTests(SandboxedDBTest):
         from stockify.research import plain
         self.assertFalse(hasattr(wf, "_PLAIN_FAILURES"))
         for raw, line in (("SensitivityRunError: /x/y bad", "the run pool returned the wrong number of results"),
-                          ("SweepSpecError: C:/p", "the run pool returned the wrong number of results"),
+                          ("SweepSpecError: C:/p", "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it"),
                           ("RunConfigError: v=7", "the settings were not accepted"),
                           ("HoldoutLocked: C:/x", "the holdout is locked")):
             self.assertEqual(wf.plain_error({"error": raw}), line)
