@@ -3,7 +3,7 @@
 /**
  * The candlestick chart of a run, a walk-forward job or a paper session (CH 6.15): candles, volume, the buy and sell
  * markers (B 50, S 50, X 50), the strategy's own lines, and a card with the strategy's own note for the marker that was
- * clicked. TradingView Lightweight Charts 5.2.1; its attribution logo stays on (licence). Load it through
+ * clicked. TradingView Lightweight Charts 5.3.0; its attribution logo stays on (licence). Load it through
  * PriceChartLazy: the library needs the browser.
  *
  * Text: the note and every other string from the API reaches the page only as React text, never as markup.
