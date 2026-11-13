@@ -9,6 +9,7 @@ import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDeta
 import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
 import { LabelChips, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
+import ResearchPanel from "./ResearchPanel";
 
 const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 30_000;  // after errors the poll waits longer each time, up to this
@@ -38,6 +39,16 @@ type Extra = {
 const NO_EXTRA: Extra = { fills: [], equity: [], margin: [], settlements: [], greeks: [], logs: null };
 // pending: poll again soon; terminal: the run finished (stop); missing: 404 (stop); error: retry with back-off
 type Outcome = "pending" | "terminal" | "missing" | "error";
+
+/** The run's cost multiplier when it is not 1 (config costs.scale, a decimal string), else null. */
+function costScale(config: Record<string, unknown> | undefined): string | null {
+  const costs = config?.costs;
+  const raw = costs && typeof costs === "object" ? (costs as Record<string, unknown>).scale : undefined;
+  if (raw === undefined || raw === null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n === 1) return null;
+  return String(n);
+}
 
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -163,6 +174,15 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
             <LabelChips run={run} />
           </div>
 
+          {costScale(detail?.config) && (
+            <Panel tone="amber">
+              <p role="status">
+                <strong>Costs ×{costScale(detail?.config)}.</strong> Every trading cost in this test was multiplied by {costScale(detail?.config)}, so
+                its results are not what real costs would give.
+              </p>
+            </Panel>
+          )}
+
           {(run.status === "queued" || run.status === "running") && (
             <Panel>
               <div className="stk-row-between">
@@ -203,6 +223,8 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   <Stat label="Costs paid" value={rupees(run.costs_total_paise)} />
                 </StatGrid>
               </Panel>
+
+              <ResearchPanel runId={id} />
 
               <Panel>
                 <h2>Money over time</h2>

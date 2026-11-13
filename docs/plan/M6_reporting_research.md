@@ -25,6 +25,7 @@ Concepts: C-4, C-14, C-16, C-17.
 - [x] `GET /api/data/coverage?from=&to=` returns the matrix (Task 28, LCM 6.2, D-121); `GET /api/data/gaps?date=` the day's gaps.
 - [x] (Task 27, LCM 6.1) The quality report writes `coverage_full_pct` and `coverage_quote_pct` as day rows; older days get them when `data report --date D` is re-run (owner step, RECON).
 - [x] (Task 29, RCM 6.1) Web foundation: `web/src/components/charts.tsx` (LineChart, IntervalBar, HeatGrid, hand-written SVG and tables), `web/src/lib/research.ts` (fetchers) and `researchHelpers.ts` (pure helpers, checked by `tests/stockify/research_check.ts`), and the Research and Data nav links; the pages follow in Tasks 30 to 36.
+- [x] (Task 30, RCM 6.2) The run page's "How much to trust this result" panel (`web/src/app/tests/[id]/ResearchPanel.tsx`): tries and deflated Sharpe from the server's sentence, three interval bars, the five regime tables with thin groups marked "few days", the sensitivity table (or the command to run it), the holdout-look count, and an amber banner when the run's costs were scaled.
 
 ## M6.4 Trial registry and deflated Sharpe (M)
 
