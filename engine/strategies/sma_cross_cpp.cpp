@@ -38,7 +38,7 @@ class SmaCrossCpp final : public Strategy {
         ctx.subscribe_bars(iid_, isec_);
     }
 
-    // A paper session's day-to-day state (A2 ง4.1): the attributes of the Python original (its parameters; it keeps
+    // A paper session's day-to-day state (A2 ยง4.1): the attributes of the Python original (its parameters; it keeps
     // nothing else). "{}" is a state written before this existed, or a twin never started: the defaults.
     std::string save_state() const override {
         if (!configured_) {

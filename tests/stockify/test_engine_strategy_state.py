@@ -109,8 +109,8 @@ class ResumeThroughTheTwins(unittest.TestCase):
             g, params = next(make(s) for s in range(7500, 7600) if len(make(s)[0]["bundle"]["dates"]) > 1)
             with tempfile.TemporaryDirectory(prefix="strat-keys-", dir=str(tests.support.SANDBOX_ROOT)) as tmp:
                 bundle, pack = _inputs(g, params, Path(tmp))
-                want = json.loads(run_mix(bundle, pack, ref, cpp, ["py"], Path(tmp) / "a")[0])["strategy"]
-                got = json.loads(run_mix(bundle, pack, ref, cpp, ["cpp"], Path(tmp) / "b")[0])["strategy"]
+                want = json.loads(run_mix(bundle, pack, ref, cpp, ["py"] * len(bundle["days"]), Path(tmp) / "a")[0])["strategy"]
+                got = json.loads(run_mix(bundle, pack, ref, cpp, ["cpp"] * len(bundle["days"]), Path(tmp) / "b")[0])["strategy"]
                 self.assertEqual(got, want)
                 self.assertIn("symbol", got)
 

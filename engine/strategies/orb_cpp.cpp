@@ -109,7 +109,7 @@ class OrbCpp final : public Strategy {
         }
     }
 
-    // A paper session's day-to-day state (A2 ง4.1): the attributes of the Python original, as it saves them. Before
+    // A paper session's day-to-day state (A2 ยง4.1): the attributes of the Python original, as it saves them. Before
     // the first bar of a day it has no range keys; "{}" (a state written before this existed, or a twin that was
     // never started) is the fresh-day defaults.
     std::string save_state() const override {
@@ -151,10 +151,8 @@ class OrbCpp final : public Strategy {
             *this = OrbCpp{};  // the fresh-day defaults
             return;
         }
-        constexpr std::initializer_list<std::string_view> kHead = {"symbol", "iid", "minutes", "qty", "short",
-                                                                   "exit_hhmm", "day"};
-        constexpr std::initializer_list<std::string_view> kDay = {"open_ns", "hi", "lo", "traded", "closed",
-                                                                  "entry_id", "stop_side", "stop_trigger", "stop_ids"};
+        constexpr std::size_t kHead = 7;  // symbol, iid, minutes, qty, short, exit_hhmm, day
+        constexpr std::size_t kDay = 9;   // open_ns, hi, lo, traded, closed, entry_id, stop_side, stop_trigger, stop_ids
         state::as_object(kOwner, st, {"symbol", "iid", "minutes", "qty", "short", "exit_hhmm", "day", "open_ns", "hi",
                                       "lo", "traded", "closed", "entry_id", "stop_side", "stop_trigger", "stop_ids"});
         OrbCpp n;  // read whole, then taken: a refused state leaves this strategy as it was
@@ -165,7 +163,7 @@ class OrbCpp final : public Strategy {
         n.short_ = state::read_bool(kOwner, st, "short");
         n.exit_hhmm_ = state::read_str(kOwner, st, "exit_hhmm");
         n.day_ = state::read_opt_date(kOwner, st, "day");
-        const std::size_t want = kHead.size() + (n.day_ ? kDay.size() : 0);
+        const std::size_t want = kHead + (n.day_ ? kDay : 0);
         if (st.size() != want) {
             state::refuse(kOwner, "(range keys)", n.day_ ? "are incomplete" : "are saved only once a day has started");
         }
