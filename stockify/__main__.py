@@ -852,6 +852,9 @@ def _cmd_export(args) -> int:
     except export.ExportError as e:
         print(f"stockify export: {e}", file=sys.stderr)
         return 1
+    except OSError as e:
+        print(f"stockify export: cannot write the zip: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
     print(out)
     return 0
 

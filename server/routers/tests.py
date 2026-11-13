@@ -247,8 +247,8 @@ def get_test(run_id: str) -> TestRunDetailDTO:
 
 @router.get("/api/tests/{run_id}/export")
 def export_test(run_id: str, with_packs: bool = Query(False)) -> Response:
-    """The run as a reproducible zip (DMF 6.2). Loopback only like the whole API. A GET that writes the derived zip
-    into the exports folder. The file name is the checked run id; the refusal text never echoes a match."""
+    """The run as a reproducible zip (DMF 6.2). Loopback only like the whole API. NOTE: this GET writes the derived zip
+    into exports/ (a deterministic overwrite). The file name is the checked run id; the refusal text never echoes a match."""
     from stockify.reporting import export
     try:
         path = export.build(run_id, with_packs=with_packs)

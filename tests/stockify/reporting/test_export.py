@@ -305,3 +305,92 @@ class ExportPropertyTests(ExportBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExportFalseRefusalTests(ExportBase):
+    def test_a_note_with_the_token_files_user_name_is_not_refused_but_the_access_token_is(self):
+        (stockify_paths.state_dir() / "kite_token.json").write_text(
+            json.dumps({"access_token": "ACCESSTOKEN-VALUE-1", "user_name": "Testy Person", "broker": "ZERODHA",
+                        "login_time": "2026-01-01 09:00:00"}), encoding="utf-8")
+        add_files("r1", note="Testy Person via ZERODHA at 2026-01-01 09:00:00")
+        export.build("r1")
+        add_files("r1", note="x ACCESSTOKEN-VALUE-1 y")
+        with self.assertRaises(export.ExportError):
+            export.build("r1")
+
+    def test_token_file_needles_are_secret_keys_of_eight_or_more_characters(self):
+        (stockify_paths.state_dir() / "kite_token.json").write_text(
+            json.dumps({"access_token": "short", "public_token": "PUBLIC-TOKEN-9", "my_secret_x": "SECRETX-VALUE",
+                        "user_name": "UserNameLong"}), encoding="utf-8")
+        lits = export.secret_literals()
+        self.assertIn("PUBLIC-TOKEN-9", lits)
+        self.assertIn("SECRETX-VALUE", lits)
+        self.assertNotIn("short", lits)
+        self.assertNotIn("UserNameLong", lits)
+
+
+class ExportPersonalDataTests(ExportBase):
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        p = mock.patch.object(export.getpass, "getuser", return_value="zorbax")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def refused(self, note: str, kind: str) -> None:
+        add_files("r1", note=note)
+        with self.assertRaises(export.ExportError) as ctx:
+            export.build("r1")
+        self.assertEqual(ctx.exception.code, "personal")
+        self.assertIn(kind, str(ctx.exception))
+        self.assertIn("orders.csv", str(ctx.exception))
+        self.assertNotIn(note, str(ctx.exception))
+        self.assertEqual(list(paths.exports_dir().iterdir()), [])
+
+    def test_folder_paths_are_refused_in_either_slash_style_and_case(self):
+        home = str(Path.home())
+        for text in (home + "\\x", home.replace("\\", "/") + "/x", home.upper() + "\\x", str(paths.lab_dir()),
+                     str(paths.lab_dir()).replace("\\", "/"), str(Path(export.__file__).resolve().parents[2])):
+            self.refused("see " + text, "a local folder path")
+
+    def test_folder_path_in_json_text_with_doubled_backslashes_is_refused(self):
+        (self.folder / "manifest.json").write_text(
+            json.dumps({"where": str(paths.lab_dir())}), encoding="utf-8")
+        with self.assertRaises(export.ExportError) as ctx:
+            export.build("r1")
+        self.assertIn("manifest.json", str(ctx.exception))
+
+    def test_the_user_name_as_a_word_is_refused(self):
+        self.refused("run by Zorbax today", "your user name")
+        self.refused("path=/zorbax/x", "your user name")
+
+    def test_a_longer_word_containing_it_is_not_refused(self):
+        add_files("r1", note="zorbaxian and unzorbaxed and zorbax2")
+        export.build("r1")
+
+    def test_a_member_name_with_a_folder_is_refused(self):
+        with self.assertRaises(export.ExportError):
+            export.check_personal_data({str(Path.home()) + "/x.csv": b"1"})
+
+    def test_binary_members_are_not_scanned_for_personal_data(self):
+        self.assertIsNone(export.find_personal({"packs/" + "a" * 64 + ".evt": b"zorbax", "equity.png": b"zorbax"}))
+
+    def test_an_oversize_pack_is_refused_with_packs_only(self):
+        from unittest import mock
+        with mock.patch.object(export, "MAX_PACK_BYTES", 10):
+            export.build("r1")
+            with self.assertRaises(export.ExportError) as ctx:
+                export.build("r1", with_packs=True)
+        self.assertEqual(ctx.exception.code, "too_large")
+
+
+class ExportCliOutTests(ExportBase):
+    def test_out_with_a_missing_parent_exits_1_plainly(self):
+        out, err = io.StringIO(), io.StringIO()
+        target = paths.exports_dir() / "nope" / "deeper" / "x.zip"
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["export", "r1", "--out", str(target)])
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertEqual(out.getvalue(), "")

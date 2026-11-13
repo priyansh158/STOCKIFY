@@ -4,9 +4,16 @@ Data leaves the machine here, so three rules hold: only the names in `ALLOWED` (
 on request, the pack files the bundle names) are ever read; every member's bytes and name are scanned for a secret
 before anything is written (`check_no_secret`); and the zip is built in memory and written in one atomic step, so a
 refusal leaves no file. The zip is byte-identical for the same run: members sorted, fixed timestamp, fixed level.
+
+Memory: every member is read whole into memory, scanned, then zipped in memory. Run files are small; with
+`with_packs` a pack larger than MAX_PACK_BYTES is refused (code too_large) instead of read.
+
+A second guard (`check_personal_data`) refuses text members that name the lab folder, the home folder, the repo
+folder or the Windows user name, so a shared zip carries no personal details.
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import re
@@ -27,13 +34,18 @@ ALLOWED = ("bundle.json", "run.json", "manifest.json", "metrics.json", "determin
 _ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _LEVEL = 6
 _SHA = re.compile(r"[0-9a-f]{64}")
-_MIN_LITERAL = 4
+_MIN_LITERAL = 4           # env KITE_API_KEY / KITE_API_SECRET values
+_MIN_TOKEN_LITERAL = 8     # secret-looking values of the token file
+MAX_PACK_BYTES = 512 * 1024 * 1024
+_SECRET_KEYS = frozenset({"access_token", "public_token", "refresh_token", "enctoken", "request_token", "api_key",
+                          "api_secret"})
 _SECRET_RE = re.compile(rb"api[_-]?secret|access[_-]?token|enctoken|request[_-]?token|Bearer\s+\S+", re.IGNORECASE)
 _TOKEN_FILE = "kite_token.json"
 
 
 class ExportError(Exception):
-    """A refusal. `code`: bad_id, not_found, not_done, pack_missing or secret (the API maps them to 404/409)."""
+    """A refusal. `code`: bad_id, not_found, not_done, pack_missing, too_large, secret or personal (the API maps
+    bad_id and not_found to 404, the rest to 409)."""
 
     def __init__(self, message: str, code: str = "refused"):
         super().__init__(message)
@@ -44,7 +56,9 @@ class ExportError(Exception):
 
 def secret_literals() -> tuple[str, ...]:
     """The literal secret values known to this process: KITE_API_KEY and KITE_API_SECRET from the environment and
-    every string value in the token file. Read only to compare; never logged or returned in an error."""
+    the token file's values under secret-looking keys (access_token, public_token, refresh_token, enctoken,
+    request_token, api_key, api_secret, any key containing "token" or "secret"), at least 8 characters. Other
+    fields (user_name, broker, login_time) are not needles. Read only to compare; never logged or returned."""
     found: list[str] = []
     for name in ("KITE_API_KEY", "KITE_API_SECRET"):
         v = os.environ.get(name, "").strip()
@@ -57,22 +71,25 @@ def secret_literals() -> tuple[str, ...]:
         text = ""
     if text.strip():
         try:
-            values = [v for v in _walk_strings(json.loads(text))]
+            values = list(_secret_strings(json.loads(text)))
         except ValueError:
             values = [text.strip()]
-        found.extend(v for v in values if len(v) >= _MIN_LITERAL)
+        found.extend(v for v in values if len(v) >= _MIN_TOKEN_LITERAL)
     return tuple(dict.fromkeys(found))
 
 
-def _walk_strings(node) -> Iterable[str]:  # noqa: ANN001
+def _secret_strings(node, key: str = "") -> Iterable[str]:  # noqa: ANN001
+    """String values under secret-looking keys (a list inherits the key it hangs from)."""
     if isinstance(node, str):
-        yield node.strip()
+        k = key.lower()
+        if k in _SECRET_KEYS or "token" in k or "secret" in k:
+            yield node.strip()
     elif isinstance(node, dict):
-        for v in node.values():
-            yield from _walk_strings(v)
+        for k, v in node.items():
+            yield from _secret_strings(v, str(k))
     elif isinstance(node, list):
         for v in node:
-            yield from _walk_strings(v)
+            yield from _secret_strings(v, key)
 
 
 def find_secret(members: Mapping[str, bytes], *, literals: Iterable[str] | None = None) -> str | None:
@@ -90,6 +107,56 @@ def check_no_secret(members: Mapping[str, bytes], *, literals: Iterable[str] | N
     hit = find_secret(members, literals=literals)
     if hit is not None:
         raise ExportError(f"the export would contain something that looks like a secret: {hit}", "secret")
+
+
+# ── the personal-data guard ──────────────────────────────────────────────────────────────────────────────────────
+
+def _is_text(name: str) -> bool:
+    return not (name == "equity.png" or (name.startswith("packs/") and name.endswith(".evt")))
+
+
+def _folder_needles() -> list[bytes]:
+    """The lab, home and repo folders, lower-cased, in every spelling a file may carry: backslashes, forward
+    slashes, and the doubled backslashes of JSON text."""
+    out: list[bytes] = []
+    for folder in (paths.lab_dir(), Path.home(), Path(__file__).resolve().parents[2]):
+        back = str(folder).rstrip("\\/").lower().replace("/", "\\")
+        if len(back) < 4:
+            continue
+        for v in (back, back.replace("\\", "/"), back.replace("\\", "\\\\")):
+            if v.encode("utf-8") not in out:
+                out.append(v.encode("utf-8"))
+    return out
+
+
+def _user_word() -> re.Pattern | None:
+    try:
+        user = getpass.getuser().strip()
+    except Exception:  # noqa: BLE001  — no user name known: only the folder check applies
+        return None
+    if len(user) < 3:
+        return None
+    return re.compile(rb"(?<![a-z0-9_])" + re.escape(user.lower().encode("utf-8")) + rb"(?![a-z0-9_])")
+
+
+def find_personal(members: Mapping[str, bytes]) -> tuple[str, str] | None:
+    """(member name, kind) of the first member (sorted) that names a local folder or the Windows user name, in its
+    name or, for a text member, its bytes. Never returns the matched text."""
+    folders, word = _folder_needles(), _user_word()
+    for name in sorted(members):
+        for blob in (name.lower().encode("utf-8", "surrogatepass"),
+                     bytes(members[name]).lower() if _is_text(name) else b""):
+            if any(n in blob for n in folders):
+                return name, "a local folder path"
+            if word is not None and word.search(blob):
+                return name, "your user name"
+    return None
+
+
+def check_personal_data(members: Mapping[str, bytes]) -> None:
+    hit = find_personal(members)
+    if hit is not None:
+        raise ExportError(f"the export would contain {hit[1]}: {hit[0]}", "personal")
 
 
 # ── the build ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -145,6 +212,8 @@ def build(run_id: str, *, with_packs: bool = False, out: Path | None = None) -> 
         if with_packs:
             if size is None or pack.is_symlink():
                 raise ExportError(f"pack {sha} named by the run is not in the pack folder", "pack_missing")
+            if size > MAX_PACK_BYTES:
+                raise ExportError(f"pack {sha} is larger than {MAX_PACK_BYTES // (1024 * 1024)} MiB", "too_large")
             members[f"packs/{sha}.evt"] = pack.read_bytes()
 
     summary = {"run_id": run_id, "config": _json(row.get("config_json"), {}), "metrics": _json(row.get("metrics_json"), {}),
@@ -152,7 +221,8 @@ def build(run_id: str, *, with_packs: bool = False, out: Path | None = None) -> 
                "packs": pack_rows}
     members["summary.json"] = numerics.dumps_canonical(summary).encode("utf-8")
 
-    check_no_secret(members)                                 # before a single byte is written anywhere
+    check_personal_data(members)
+    check_no_secret(members)                               # before a single byte is written anywhere
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
