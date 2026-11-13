@@ -25,6 +25,7 @@ t = tq.t
 class MixedModeTest(tq.QualityTest):
     """The planted-problems day, but the index is subscribed in QUOTE mode (option stays FULL)."""
     idx_mode = "quote"
+    logged = True
 
     def record(self):
         landing = LandingDB(DAY)
@@ -32,10 +33,13 @@ class MixedModeTest(tq.QualityTest):
         tokens = {pf.NIFTY_CE: self.opt, pf.NIFTY_INDEX: self.idx}
         rec = Recorder(landing, tokens.get, clock)
         rec.begin()
-        landing.log_subscriptions([(t("09:15:00"), "subscribe", self.opt, pf.NIFTY_CE, "full", "start"),
-                                   (t("09:15:00"), "subscribe", self.idx, pf.NIFTY_INDEX, self.idx_mode, "start"),
-                                   (t("09:25:00"), "unsubscribe", self.opt, pf.NIFTY_CE, "full", "end"),
-                                   (t("09:25:00"), "unsubscribe", self.idx, pf.NIFTY_INDEX, self.idx_mode, "end")])
+        rows = [(t("09:15:00"), "subscribe", self.opt, pf.NIFTY_CE, "full", "start"),
+                (t("09:25:00"), "unsubscribe", self.opt, pf.NIFTY_CE, "full", "end")]
+        if self.idx_mode:                                           # None: an old-style recording, no row for it
+            rows += [(t("09:15:00"), "subscribe", self.idx, pf.NIFTY_INDEX, self.idx_mode, "start"),
+                     (t("09:25:00"), "unsubscribe", self.idx, pf.NIFTY_INDEX, self.idx_mode, "end")]
+        if self.logged:
+            landing.log_subscriptions(rows)
         for s in range(0, 600):
             now = t("09:15:00") + s * SEC
             if t("09:20:00") <= now < t("09:21:00"):
@@ -55,6 +59,14 @@ class AllFullTest(MixedModeTest):
     idx_mode = "full"
 
 
+class OptionOnlyLoggedTest(MixedModeTest):
+    idx_mode = None                                                  # the index has no subscription row
+
+
+class OldRecordingTest(MixedModeTest):
+    logged = False                                                   # no subscription_log at all
+
+
 class CoverageTests(MixedModeTest):
     def test_quality_report_writes_the_two_day_metrics(self):
         r = quality.report(DAY)
@@ -63,6 +75,8 @@ class CoverageTests(MixedModeTest):
         day_rows = quality.stored(DAY)[0]
         self.assertAlmostEqual(day_rows["coverage_full_pct"], 90.0)
         self.assertAlmostEqual(day_rows["coverage_quote_pct"], 45.0)
+        self.assertEqual((day_rows["coverage_full_n"], day_rows["coverage_quote_n"],
+                          day_rows["coverage_unlogged_n"]), (1, 1, 0))
 
     def test_quality_rerun_keeps_the_foreign_metrics(self):
         with refdata.transaction() as c:
@@ -77,6 +91,9 @@ class CoverageTests(MixedModeTest):
         n = conn.execute("SELECT COUNT(*) FROM data_quality WHERE metric IN "
                          "('coverage_full_pct','coverage_quote_pct')").fetchone()[0]
         self.assertEqual(n, 2)                                           # replaced, not duplicated
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM data_quality WHERE metric IN "
+                                      "('coverage_full_n','coverage_quote_n','coverage_unlogged_n')").fetchone()[0], 3)
+        self.assertEqual(quality.stored(DAY)[0]["coverage_full_n"], 1)
 
     def test_existing_metrics_are_unchanged(self):
         r = quality.report(DAY)
@@ -88,7 +105,8 @@ class CoverageTests(MixedModeTest):
         d = r["day"]
         self.assertEqual((d["instruments"], d["packets"], d["silent_minutes"]), (2, 540 + 270, 1))
         self.assertEqual(set(d), {"instruments", "packets", "silent_minutes", "coverage_full_pct",
-                                  "coverage_quote_pct"})
+                                  "coverage_quote_pct", "coverage_full_n", "coverage_quote_n",
+                                  "coverage_unlogged_n"})
         stored = quality.stored(DAY)
         self.assertEqual(set(stored[0]), set(d))
         self.assertEqual(set(stored[self.opt]), {"packets", "coverage_pct", "longest_gap_s", "crossed_books",
@@ -117,7 +135,39 @@ class AllFullCoverageTests(AllFullTest):
         r = quality.report(DAY)
         self.assertIsNone(r["day"]["coverage_quote_pct"])
         self.assertAlmostEqual(r["day"]["coverage_full_pct"], (90.0 + 45.0) / 2)
-        self.assertNotIn("coverage_quote_pct", quality.stored(DAY)[0])   # no row for an empty group
+        day_rows = quality.stored(DAY)[0]
+        self.assertNotIn("coverage_quote_pct", day_rows)                 # no row for an empty group
+        self.assertEqual((day_rows["coverage_full_n"], day_rows["coverage_quote_n"],
+                          day_rows["coverage_unlogged_n"]), (2, 0, 0))     # but the count says 0
+
+
+class UnloggedCoverageTests(OldRecordingTest):
+    def test_all_unlogged_old_style_day(self):
+        r = quality.report(DAY)
+        d = r["day"]
+        self.assertEqual((d["coverage_full_n"], d["coverage_quote_n"], d["coverage_unlogged_n"]), (0, 0, 2))
+        self.assertIsNone(d["coverage_full_pct"])
+        self.assertIsNone(d["coverage_quote_pct"])
+        day_rows = quality.stored(DAY)[0]
+        self.assertNotIn("coverage_full_pct", day_rows)
+        self.assertNotIn("coverage_quote_pct", day_rows)
+        self.assertEqual((day_rows["coverage_full_n"], day_rows["coverage_quote_n"],
+                          day_rows["coverage_unlogged_n"]), (0, 0, 2))
+        self.assertIn("no mode logged for 2", quality.summary_markdown(r))
+
+    def test_rerun_is_idempotent(self):
+        quality.report(DAY)
+        first = quality.stored(DAY)
+        quality.report(DAY)
+        self.assertEqual(quality.stored(DAY), first)
+
+
+class PartlyLoggedCoverageTests(OptionOnlyLoggedTest):
+    def test_unlogged_instrument_is_counted_not_averaged(self):
+        d = quality.report(DAY)["day"]
+        self.assertAlmostEqual(d["coverage_full_pct"], 90.0)             # the option only
+        self.assertIsNone(d["coverage_quote_pct"])                       # the unlogged index is not QUOTE
+        self.assertEqual((d["coverage_full_n"], d["coverage_quote_n"], d["coverage_unlogged_n"]), (1, 0, 1))
 
 
 class _FakeDay:
@@ -159,9 +209,15 @@ class MeansProperty(unittest.TestCase):
         for _ in range(60):
             subs, pkts, expect = [], [], {}
             for iid in range(1, rng.randint(1, 6) + 1):
-                mode = rng.choice(["full", "quote", "ltp"])
-                subs.append({"recv_ns": window[0], "action": "subscribe", "instrument_id": iid,
-                             "instrument_token": iid, "mode": mode, "reason": "start"})
+                mode = rng.choice(["full", "quote", "ltp", None])        # None: no subscription row
+                if mode:
+                    subs.append({"recv_ns": window[0], "action": "subscribe", "instrument_id": iid,
+                                 "instrument_token": iid, "mode": mode, "reason": "start"})
+                    if rng.random() < 0.3:                               # later switched mode: still FULL if ever full
+                        other = rng.choice(["full", "quote"])
+                        subs.append({"recv_ns": window[0] + SEC, "action": "subscribe", "instrument_id": iid,
+                                     "instrument_token": iid, "mode": other, "reason": "mode"})
+                        mode = "full" if "full" in (mode, other) else mode
                 seen = set(rng.sample(range(n), rng.randint(0, 40)))
                 for s in sorted(seen):
                     pkts.append({"instrument_id": iid, "recv_ns": (start_s + s) * SEC + 5, "pkt_len": 8,
@@ -170,7 +226,8 @@ class MeansProperty(unittest.TestCase):
                     expect[iid] = (mode, 100.0 * len(seen) / n)
             pkts.sort(key=lambda p: p["recv_ns"])
             full = [c for m, c in expect.values() if m == "full"]
-            rest = [c for m, c in expect.values() if m != "full"]
+            rest = [c for m, c in expect.values() if m not in ("full", None)]
+            unlogged = sum(1 for m, _ in expect.values() if m is None)
             day = _FakeDay(subs, pkts)
             res = quality._report(DAY, day, write=False)
             got = res["day"]
@@ -179,6 +236,8 @@ class MeansProperty(unittest.TestCase):
                     self.assertAlmostEqual(got[key], sum(group) / len(group), delta=0.0011)   # coverage_pct is rounded to 3 places
                 else:
                     self.assertIsNone(got[key])
+            self.assertEqual((got["coverage_full_n"], got["coverage_quote_n"], got["coverage_unlogged_n"]),
+                             (len(full), len(rest), unlogged))
             self.assertEqual(set(day.calls), {"subscriptions", "packets", "heartbeats", "gaps"})
 
 
