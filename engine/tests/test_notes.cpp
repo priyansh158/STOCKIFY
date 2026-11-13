@@ -34,13 +34,13 @@ TEST_CASE("clean_note hand cases") {
 }
 
 TEST_CASE("clean_note removes bidi controls outright (CH 6.25)") {
-    CHECK(clean_note("aâ®" "b") == "ab");                       // U+202E
-    CHECK(clean_note("aâ¦" "bâ©" "c") == "abc");    // U+2066, U+2069
-    CHECK(clean_note("â x â") == "x");           // U+200E, U+200F, then trimmed
-    CHECK(clean_note("aØ" "b") == "ab");                           // U+061C
-    CHECK(clean_note("âªâ«â¬â­") == "");
+    CHECK(clean_note("a\xE2\x80\xAE" "b") == "ab");                       // U+202E
+    CHECK(clean_note("a\xE2\x81\xA6" "b\xE2\x81\xA9" "c") == "abc");    // U+2066, U+2069
+    CHECK(clean_note("\xE2\x80\x8E x \xE2\x80\x8F") == "x");           // U+200E, U+200F, then trimmed
+    CHECK(clean_note("a\xD8\x9C" "b") == "ab");                           // U+061C
+    CHECK(clean_note("\xE2\x80\xAA\xE2\x80\xAB\xE2\x80\xAC\xE2\x80\xAD") == "");
     CHECK(clean_note("=1+1") == "=1+1");
-    CHECK(clean_note("â®" + std::string(201, 'x')) == std::string(199, 'x') + kEllipsis);
+    CHECK(clean_note("\xE2\x80\xAE" + std::string(201, 'x')) == std::string(199, 'x') + kEllipsis);
 }
 
 TEST_CASE("clean_note replaces invalid UTF-8 with U+FFFD") {

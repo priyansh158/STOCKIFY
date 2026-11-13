@@ -285,7 +285,7 @@ class NoteStateTests(unittest.TestCase):
         cap), so a hand-edited or old state cannot put a raw note into orders.csv."""
         n, st = self._first_state_with_orders()
         dirty = ["  start\x01mid\x7f end\n  ", "z" * 300, "\x00\x1f", "plain note",
-                 "‮evil‬ note ⁦x⁩ ‏؜"]
+                 "\u202eevil\u202c note \u2066x\u2069 \u200f\u061c"]
         want = {}
         for i, o in enumerate(st["pending_orders"]):
             o["note"] = dirty[i % len(dirty)]

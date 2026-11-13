@@ -46,9 +46,9 @@ class CleanNoteTests(unittest.TestCase):
             with self.subTest(cp=hex(cp)):
                 self.assertEqual(clean_note(f"a{chr(cp)}b"), "ab")
                 self.assertEqual(clean_note(f"{chr(cp)}  x {chr(cp)}"), "x")
-        self.assertEqual(clean_note("‮evil‬ ok"), "evil ok")
+        self.assertEqual(clean_note("\u202eevil\u202c ok"), "evil ok")
         self.assertEqual(clean_note("=1+1"), "=1+1")
-        self.assertEqual(len(clean_note("‮" * 300 + "y" * 250)), 200)    # removal comes before the cap
+        self.assertEqual(len(clean_note("\u202e" * 300 + "y" * 250)), 200)    # removal comes before the cap
 
     def test_fmt_price_and_qty_hand_cases(self):
         self.assertEqual(fmt_price(241840), "2,418.40")
@@ -123,8 +123,8 @@ class CleanNoteTests(unittest.TestCase):
 
 
 _ALPHABET = ["a", "Z", "7", " ", "  ", "\t", "\n", "\r", "\x00", "\x1f", "\x7f", "\x85", "\x9f", ",", '"', " ",
-             " ", " ", "‏", "א", "ا", "\U0001F600", "\U0001F468‍\U0001F4BB", "…",
-             "‮", "‬", "⁦", "⁩", "‎", "؜", "<script>", "é", "\ud800", "\udfff"]
+             " ", " ", "\u200f", "א", "ا", "\U0001F600", "\U0001F468‍\U0001F4BB", "…",
+             "\u202e", "\u202c", "\u2066", "\u2069", "\u200e", "\u061c", "<script>", "é", "\ud800", "\udfff"]
 
 
 @unittest.skipUnless(engine.available(), _ENGINE)
@@ -172,7 +172,7 @@ class EngineParityTests(unittest.TestCase):
             for text in (f"a{ch}b", f"{ch} x {ch}", ch * 3, "q" * 199 + ch + "zz"):
                 with self.subTest(cp=hex(ord(ch)), text=text):
                     self.assertEqual(eng.clean_note(text.encode("utf-8")), clean_note(text))
-        self.assertEqual(eng.clean_note("‮evil‬ ok".encode("utf-8")), "evil ok")
+        self.assertEqual(eng.clean_note("\u202eevil\u202c ok".encode("utf-8")), "evil ok")
 
     def test_clean_note_replaces_invalid_utf8_in_the_engine(self):
         eng = engine.load()
