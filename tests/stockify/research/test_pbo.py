@@ -90,6 +90,15 @@ class CscvTests(unittest.TestCase):
             self.assertAlmostEqual(r.median_logit, m, delta=1e-12)
             self.assertAlmostEqual(r.prob_loss, loss, delta=1e-12)
 
+    def test_matches_the_reference_at_sixteen_slices(self):
+        x = noise(32, 3, purpose_seed=11)                      # 16 blocks of 2 days: the chunked path, 12,870 splits
+        r = pbo.cscv(x, slices=16)
+        p, m, loss = reference(x, 16)
+        self.assertEqual(r.combinations, 12_870)
+        self.assertAlmostEqual(r.pbo, p, delta=1e-12)
+        self.assertAlmostEqual(r.median_logit, m, delta=1e-12)
+        self.assertAlmostEqual(r.prob_loss, loss, delta=1e-12)
+
     def test_reference_agrees_on_ties_and_flat_columns(self):
         x = noise(40, 4, purpose_seed=9)
         x[:, 2] = x[:, 1]                       # two identical trials: tied everywhere
@@ -147,22 +156,99 @@ class FamilyTests(SandboxedDBTest):
     def test_trial_matrix_uses_common_dates_only_and_lists_dropped_and_flat(self):
         fam = "sweep/jm"
         registry.ensure_family(fam)
-        days = weekdays("2026-01-05", 30)
+        days = weekdays("2026-01-05", 60)
         rng = random.Random(1)
 
         def rets(n):
             return [rng.uniform(-0.01, 0.01) for _ in range(n)]
-        make_run("a", fam, daily_returns=rets(30), name="a", start=days[0])
-        make_run("b", fam, daily_returns=rets(20), name="b", start=days[10])
-        make_run("c", fam, daily_returns=[0.0] * 25, name="c", start=days[0])      # flat
+        make_run("a", fam, daily_returns=rets(60), name="a", start=days[0])
+        make_run("b", fam, daily_returns=rets(40), name="b", start=days[10])
+        make_run("c", fam, daily_returns=[0.0] * 45, name="c", start=days[0])      # flat
         make_run("d", fam, daily_returns=rets(20), name="d", start="2027-01-04")   # shares no day
         m = pbo.trial_matrix(fam)
         self.assertEqual(m.run_ids, ["a", "b"])
         self.assertEqual(m.dropped, ["d"])
+        self.assertIn("too few days in common", m.reasons["d"])
         self.assertEqual(m.flat, ["c"])
-        self.assertEqual(m.dates, days[10:25])
-        self.assertEqual(m.x.shape, (15, 2))
+        self.assertEqual(m.dates, days[10:45])
+        self.assertEqual(m.x.shape, (35, 2))
         self.assertTrue(np.isfinite(m.x).all())
+
+    def _many(self, fam, count, days, odd=None, shuffle=None, prefix=""):
+        """`count` full-length tries plus the `odd` ones ((run_id, start index, length))."""
+        registry.ensure_family(fam)
+        axis = weekdays("2026-01-05", days + 400)
+        specs = [(f"t{i:02d}", 0, days) for i in range(count)] + list(odd or [])
+        if shuffle is not None:
+            random.Random(shuffle).shuffle(specs)
+        for rid, start, n in specs:
+            rng = random.Random(rid)                         # each try's days depend on its own name only
+            make_run(prefix + rid, fam, daily_returns=[rng.uniform(-0.01, 0.01) for _ in range(n)], name=rid,
+                     start=axis[start])
+
+    def test_a_barely_overlapping_try_is_dropped_and_the_rest_keep_their_days(self):
+        fam = "sweep/near"
+        # a try that starts 3 days before the others end: 3 shared days with all of them
+        self._many(fam, 5, 300, odd=[("zz", 297, 100)])
+        m = pbo.trial_matrix(fam)
+        self.assertEqual(m.dropped, ["zz"])
+        self.assertEqual(len(m.dates), 300)
+        self.assertEqual(m.run_ids, [f"t{i:02d}" for i in range(5)])
+
+    def test_the_longest_try_apart_from_the_majority_is_dropped_not_the_majority(self):
+        fam = "sweep/long"
+        # five tries on days 0-99 and one longer try on days 100-399 that shares none of them
+        self._many(fam, 5, 100, odd=[("zlong", 100, 300)])
+        m = pbo.trial_matrix(fam)
+        self.assertEqual(m.dropped, ["zlong"])
+        self.assertEqual(len(m.run_ids), 5)
+        self.assertEqual(len(m.dates), 100)
+
+    def test_the_result_does_not_depend_on_the_order_tries_arrive_in(self):
+        outs = []
+        for i, shuffle in enumerate((None, 1, 2)):
+            fam = f"sweep/order{i}"
+            self._many(fam, 5, 100, odd=[("zlong", 100, 300), ("zb", 99, 40)], shuffle=shuffle,
+                       prefix=f"o{i}-")
+            m = pbo.trial_matrix(fam)
+            cut = lambda ids: [r.split("-", 1)[1] for r in ids]  # noqa: E731
+            outs.append((cut(m.run_ids), cut(m.dropped), m.dates, m.x.tolist(),
+                         {k.split("-", 1)[1]: v for k, v in m.reasons.items()}))
+        self.assertEqual(outs[0], outs[1])
+        self.assertEqual(outs[0], outs[2])
+
+    def test_identical_tries_tie_to_the_lowest_name(self):
+        fam = "sweep/twins"
+        registry.ensure_family(fam)
+        rets = [random.Random(3).uniform(-0.01, 0.01) for _ in range(40)]
+        other = [random.Random(4).uniform(-0.01, 0.01) for _ in range(40)]
+        make_run("r2", fam, daily_returns=rets, name="b-twin")
+        make_run("r1", fam, daily_returns=rets, name="a-twin")
+        make_run("r3", fam, daily_returns=other, name="c-other")
+        m = pbo.trial_matrix(fam)
+        self.assertEqual(m.run_ids, ["r1", "r2", "r3"])                # by name, whatever the arrival order
+        self.assertTrue(np.array_equal(m.x[:, 0], m.x[:, 1]))
+        self.assertEqual(pbo.cscv(m.x, slices=4), pbo.cscv(m.x[:, [1, 0, 2]], slices=4))
+
+    def test_the_family_report_says_how_many_tries_it_is_based_on(self):
+        fam = "sweep/based"
+        self._many(fam, 5, 100, odd=[("zz", 98, 100)])
+        rep = report.family_report(fam)
+        self.assertIsNotNone(rep.pbo)
+        self.assertEqual(rep.pbo.n_trials, 5)
+        self.assertEqual(rep.pbo_dropped, ["zz"])
+        self.assertEqual(rep.pbo_flat, [])
+        self.assertIn("based on 5 of 6 tries", rep.plain["pbo"])
+        self.assertIn("based on 5 of 6 tries", rep.pbo_note)
+        self.assertIn("zz", rep.pbo_note)
+
+    def test_other_errors_from_the_calculation_are_not_turned_into_notes(self):
+        fam = "sweep/err"
+        self._many(fam, 3, 40)
+        from unittest import mock
+        with mock.patch.object(pbo, "cscv", side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                pbo.family_pbo(fam)
 
     def test_a_sweep_family_has_a_pbo_and_a_walkforward_family_has_a_note(self):
         sweep, wf = registry.job_family_id("sweep", "j1"), registry.job_family_id("walkforward", "j2")
@@ -181,6 +267,7 @@ class FamilyTests(SandboxedDBTest):
         wrep = report.family_report(wf)
         self.assertIsNone(wrep.pbo)
         self.assertIn("different days", wrep.pbo_note)
+        self.assertEqual((wrep.pbo_dropped, wrep.pbo_flat), ([], []))
         self.assertNotIn("pbo", wrep.plain)
         json.dumps(dataclasses.asdict(rep), allow_nan=False)
 
@@ -204,6 +291,9 @@ class SentenceTests(unittest.TestCase):
         self.assertEqual(_bad_tokens(s), [], s)
         self.assertIn("62%", s)
         self.assertIn("20 tries", s)
+        self.assertIn("at or below the middle", s)
+        self.assertIn("based on 18 of 20 tries", plain.pbo_sentence(0.62, 18, 20))
+        self.assertNotIn("of 18 tries", plain.pbo_sentence(0.62, 18))
         self.assertNotIn("\n", s)
         self.assertEqual(plain.pbo_sentence(None, 20), plain.TOO_FEW_DAYS)
         self.assertEqual(plain.pbo_sentence(float("nan"), 20), plain.TOO_FEW_DAYS)

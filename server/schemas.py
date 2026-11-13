@@ -530,4 +530,6 @@ class FamilyDetailDTO(BaseModel):
     plain: dict[str, str]
     pbo: PboDTO | None = None
     pbo_note: str | None = None
+    pbo_dropped: list[str] = []
+    pbo_flat: list[str] = []
 # </block>

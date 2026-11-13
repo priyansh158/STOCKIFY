@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -32,6 +32,7 @@ class TrialMatrix:
     x: np.ndarray                   # T x N excess daily returns
     dropped: list[str]              # tries with no day in common with the rest (or no usable series)
     flat: list[str]                 # tries flat over those days (Sharpe undefined), left out of x
+    reasons: dict[str, str] = field(default_factory=dict)   # why each dropped try was dropped
 
 
 @dataclass(frozen=True)
@@ -54,32 +55,52 @@ def _excess(t: registry.TrialRun, rf_rows: list[dict]) -> dict[str, float] | Non
     return dict(zip(t.dates, x))
 
 
-def trial_matrix(family_id: str, rf_rows: list[dict] | None = None) -> TrialMatrix:
-    """The family's tries on the days they all share. A try that shares no day with the tries already kept is
-    dropped (longest series first, then run id, so the choice never depends on anything else); a kept try that is
-    flat on the shared days is listed in `flat` and left out of `x`."""
+def _key(t: registry.TrialRun) -> tuple[str, str]:
+    return (t.name or "", t.run_id)
+
+
+def trial_matrix(family_id: str, rf_rows: list[dict] | None = None, *, slices: int | None = None,
+                 min_trials: int | None = None) -> TrialMatrix:
+    """The family's tries on the days they all share. Tries with no usable series are dropped. While the shared
+    days number fewer than 2 * slices and more than `min_trials` tries remain, the one try whose removal adds the
+    most shared days is dropped (ties: the lowest name, then run id), so one odd try cannot cut everyone's days
+    and the result never depends on the order the tries came in. A kept try that is flat on the shared days is
+    listed in `flat` and left out of `x`. Columns of `x` are ordered by (name, run id)."""
+    cfg = settings()["pbo"]
+    slices = int(cfg["slices"]) if slices is None else slices
+    min_trials = int(cfg["min_trials"]) if min_trials is None else min_trials
     if rf_rows is None:
         rf_rows = stats.risk_free_rows()
-    tries = registry.trials(family_id)
+    tries = sorted(registry.trials(family_id), key=_key)
     series = {t.run_id: _excess(t, rf_rows) for t in tries}
-    dropped = [t.run_id for t in tries if series[t.run_id] is None]
-    order = sorted((t for t in tries if series[t.run_id] is not None),
-                   key=lambda t: (-len(series[t.run_id]), t.run_id))
-    common: set[str] | None = None
-    kept: set[str] = set()
-    for t in order:
-        days = set(series[t.run_id])
-        nxt = days if common is None else common & days
-        if nxt:
-            common = nxt
-            kept.add(t.run_id)
-        else:
-            dropped.append(t.run_id)
-    dates = sorted(common or ())
+    reasons = {t.run_id: "no usable daily returns" for t in tries if series[t.run_id] is None}
+    active = [t for t in tries if series[t.run_id] is not None]
+    need_days = 2 * slices
+
+    def shared(group) -> set[str]:
+        days = None
+        for t in group:
+            days = set(series[t.run_id]) if days is None else days & set(series[t.run_id])
+        return days or set()
+
+    common = shared(active)
+    while len(common) < need_days and len(active) > min_trials:
+        count: dict[str, int] = {}
+        for t in active:
+            for d in series[t.run_id]:
+                count[d] = count.get(d, 0) + 1
+        n = len(active)
+        near = [d for d, c in count.items() if c == n - 1]
+        gains = [(sum(1 for d in near if d not in series[t.run_id]), i) for i, t in enumerate(active)]
+        gain, i = max(gains, key=lambda g: (g[0], -g[1]))              # the largest gain, then the lowest key
+        if gain == 0:
+            break                                                      # dropping any one try adds no day
+        reasons[active[i].run_id] = "too few days in common with the others"
+        del active[i]
+        common = shared(active)
+    dates = sorted(common)
     run_ids, flat, cols = [], [], []
-    for t in tries:
-        if t.run_id not in kept:
-            continue
+    for t in active:
         col = [series[t.run_id][d] for d in dates]
         if stats.sharpe_per_period(col) is None:
             flat.append(t.run_id)
@@ -87,7 +108,7 @@ def trial_matrix(family_id: str, rf_rows: list[dict] | None = None) -> TrialMatr
             run_ids.append(t.run_id)
             cols.append(col)
     x = np.array(cols, dtype=float).T if cols else np.empty((len(dates), 0))
-    return TrialMatrix(run_ids, dates, x, sorted(dropped), flat)
+    return TrialMatrix(run_ids, dates, x, sorted(reasons), flat, reasons)
 
 
 def _sharpe_from_sums(n, s, ss, lo, hi) -> np.ndarray:
@@ -149,22 +170,45 @@ def cscv(x: np.ndarray, slices: int = 16) -> PboResult:
                      prob_loss=loss / count)
 
 
-def family_pbo(family_id: str, rf_rows: list[dict] | None = None) -> tuple[PboResult | None, str | None]:
-    """(result, None) or (None, why not, in plain words) for a family. A walk-forward family is recognised by its
-    id: its windows cover different days, so its tries cannot be compared day by day."""
+@dataclass(frozen=True)
+class PboOutcome:
+    result: PboResult | None
+    note: str | None                # why there is no result, in plain words (or, with one, what was left out)
+    n_used: int                     # tries in the matrix
+    n_total: int                    # every counted try of the family
+    dropped: list[str]              # names (run id when unnamed) of the tries left out for want of shared days
+    flat: list[str]                 # names of the tries left out for being flat on the shared days
+
+
+def family_pbo(family_id: str, rf_rows: list[dict] | None = None) -> PboOutcome:
+    """The PBO of a family, or why there is none, in plain words. A walk-forward family is recognised by its id:
+    its windows cover different days, so its tries cannot be compared day by day. Only the two refusals that are
+    plain conditions (too few tries, too few common days) become notes; any other error propagates."""
     cfg = settings()["pbo"]
+    slices, need = int(cfg["slices"]), int(cfg["min_trials"])
     if family_id.startswith("walkforward/"):
-        return None, "the windows cover different days, so the tries cannot be compared day by day"
-    m = trial_matrix(family_id, rf_rows)
+        return PboOutcome(None, "the windows cover different days, so the tries cannot be compared day by day",
+                          0, 0, [], [])
+    m = trial_matrix(family_id, rf_rows, slices=slices, min_trials=need)
+    names = {t.run_id: t.name or t.run_id for t in registry.trials(family_id)}
     total = len(m.run_ids) + len(m.flat) + len(m.dropped)
-    need = int(cfg["min_trials"])
+    dropped, flat = [names[r] for r in m.dropped], [names[r] for r in m.flat]
+    used = len(m.run_ids)
+
+    def out(result, note):
+        return PboOutcome(result, note, used, total, dropped, flat)
+
     if total < need:
-        return None, f"fewer than {need} tries"
-    if len(m.run_ids) < need:
-        if m.dropped and len(m.run_ids) + len(m.flat) < need:
-            return None, "the tries cover different days, so they cannot be compared day by day"
-        return None, f"fewer than {need} tries that traded on the shared days"
-    try:
-        return cscv(m.x, int(cfg["slices"])), None
-    except ValueError:
-        return None, "too few common days"
+        return out(None, f"fewer than {need} tries")
+    if used < need:
+        if m.dropped and used + len(m.flat) < need:
+            return out(None, "the tries cover different days, so they cannot be compared day by day")
+        return out(None, f"fewer than {need} tries that traded on the shared days")
+    if len(m.dates) < 2 * slices:
+        return out(None, "too few common days")
+    result = cscv(m.x, slices)
+    note = None
+    if used < total:
+        left = [f"{n} (too few days in common with the others)" for n in dropped] + [f"{n} (flat)" for n in flat]
+        note = f"based on {used} of {total} tries; left out: " + ", ".join(left)
+    return out(result, note)

@@ -243,11 +243,13 @@ def regime_sentence(bucket: "Bucket") -> str:
     return f"{head}: {days}, average {average} a day, up on {_percent_text(bucket.up_share)} of them"
 
 
-def pbo_sentence(pbo: float | None, n_trials: int) -> str:
+def pbo_sentence(pbo: float | None, n_trials: int, n_total: int | None = None) -> str:
     """The chance of overfitting a family of tries, in one line: how often the try that looked best on half of the
-    days fell into the worse half on the other half, over every way of splitting the days in two."""
+    days landed at or below the middle on the other half, over every way of splitting the days in two. When some
+    tries had to be left out, it says "based on N of M tries"."""
     p = _usable(pbo)
     if p is None:
         return TOO_FEW_DAYS
+    tries = f"based on {n_trials} of {n_total} tries" if n_total and n_total > n_trials else f"{n_trials} tries"
     return (f"in {_percent_text(p)} of the ways to split your days in two, the try that looked best on one half "
-            f"landed in the worse half on the other ({n_trials} tries)")
+            f"landed at or below the middle on the other ({tries})")

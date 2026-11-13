@@ -502,5 +502,7 @@ export interface FamilyDetailDTO {
   plain: Record<string, string>;
   pbo: PboDTO | null;
   pbo_note: string | null;
+  pbo_dropped: string[];
+  pbo_flat: string[];
 }
 // </block>

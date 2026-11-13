@@ -19,7 +19,7 @@ import hashlib
 import json
 import math
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -83,6 +83,8 @@ class FamilyReport:
     plain: dict[str, str]
     pbo: PboResult | None = None
     pbo_note: str | None = None
+    pbo_dropped: list[str] = field(default_factory=list)   # tries left out of the PBO for want of shared days
+    pbo_flat: list[str] = field(default_factory=list)      # tries left out of the PBO for being flat
 
 
 @dataclass(frozen=True)
@@ -404,9 +406,10 @@ def family_report(family_id: str) -> FamilyReport:
     if best is not None:
         texts["dsr"] = plain.dsr_sentence(len(tries), 1, dsr.dsr if dsr else None, objective=objective,
                                           flat=dsr is None)
-    overfit, overfit_note = pbo.family_pbo(family_id, rf_rows)
+    outcome = pbo.family_pbo(family_id, rf_rows)
+    overfit = outcome.result
     if overfit is not None:
-        texts["pbo"] = plain.pbo_sentence(overfit.pbo, overfit.n_trials)
+        texts["pbo"] = plain.pbo_sentence(overfit.pbo, overfit.n_trials, outcome.n_total)
     return FamilyReport(family_id=family_id, description=fam.get("description"), objective=objective,
                         named=bool(fam.get("named")), n_trials=len(tries),
                         var_sharpe=var if tries else None, best_run_id=best.run_id if best else None,
@@ -414,7 +417,8 @@ def family_report(family_id: str) -> FamilyReport:
                         others=[_row(r, objective, rf_rows) for r in rows if r["run_id"] not in counted],
                         sessions=_family_sessions(family_id, store.list_sessions()),
                         holdout_unlocks=store.holdout_unlock_rows(family_id), plain=texts,
-                        pbo=overfit, pbo_note=overfit_note)
+                        pbo=overfit, pbo_note=outcome.note, pbo_dropped=outcome.dropped,
+                        pbo_flat=outcome.flat)
 
 
 def list_families() -> list[FamilySummary]:
