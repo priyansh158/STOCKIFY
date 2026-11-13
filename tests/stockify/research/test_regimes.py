@@ -272,6 +272,22 @@ class VixTests(RegimeTest):
             with self.subTest(at=at), mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at=at)):
                 self.assertEqual(regimes.vix_close(date(2026, 1, 27))[1], want)
 
+    def test_the_close_comes_from_the_dated_session_rules_and_the_slack_from_the_setting(self):
+        day = date(2026, 1, 27)
+        early = timeutil.ist_ns(day, "15:00")                          # a (pretend) session that ends at 15:00
+        with mock.patch.object(regimes.calendar, "session_close_ns", return_value=early):
+            for at, want in (("14:54", "bhavcopy"), ("14:55", "recorded")):
+                with self.subTest(at=at), mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at=at)):
+                    self.assertEqual(regimes.vix_close(day)[1], want)
+            cfg = {**regimes.settings(), "regimes": {**regimes.settings()["regimes"], "close_slack_min": 30}}
+            with mock.patch.object(regimes, "settings", return_value=cfg),                     mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at="14:30")):
+                self.assertEqual(regimes.vix_close(day)[1], "recorded")
+        self.assertFalse(hasattr(regimes, "CLOSE_FROM_IST"))             # no clock time hard-coded in the module
+
+    def test_a_day_the_calendar_has_no_session_rule_for_is_not_complete(self):
+        with mock.patch.object(regimes.calendar, "session_close_ns", side_effect=regimes.calendar.CalendarError("x")),                 mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at="15:31")):
+            self.assertEqual(regimes.vix_close(date(2026, 1, 27))[1], "bhavcopy")
+
     def test_vix_falls_back_to_bhavcopy(self):
         with mock.patch.object(ticks, "open_day", return_value=None):
             self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))

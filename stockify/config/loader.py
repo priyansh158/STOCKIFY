@@ -394,12 +394,13 @@ def _check_research(doc: dict) -> None:
     _research_int(sens["fragile_extra_ticks"], "sensitivity.fragile_extra_ticks", 1, 1000)
 
     rg = _research_section(doc, "regimes", ("reference_index", "vix_symbol", "vix_edges", "gap_edges_pct",
-                                            "thin_days"))
+                                            "thin_days", "close_slack_min"))
     _research_text(rg["reference_index"], "regimes.reference_index")
     _research_text(rg["vix_symbol"], "regimes.vix_symbol")
     _research_edges(rg["vix_edges"], "regimes.vix_edges", True, low=0)
     _research_edges(rg["gap_edges_pct"], "regimes.gap_edges_pct", True)
     _research_int(rg["thin_days"], "regimes.thin_days", 1, 100_000)
+    _research_int(rg["close_slack_min"], "regimes.close_slack_min", 0, 240)   # how far before the close the last VIX print may be
 
     pbo = _research_section(doc, "pbo", ("slices", "min_trials"))
     slices = _research_int(pbo["slices"], "pbo.slices", 4, 1000)

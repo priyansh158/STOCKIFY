@@ -40,7 +40,6 @@ WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturd
 DIMENSIONS = ("month", "weekday", "expiry", "vix", "gap")
 _DERIVATIVE_KINDS = ("FUT", "CE", "PE")
 COMPLETE_STATUSES = ("verified", "landing_deleted")   # tick_days statuses of a finished, archived day (compact.ARCHIVED)
-CLOSE_FROM_IST = (15, 25)                             # a recorded day with no tick_days row counts if it ran to here
 
 
 @dataclass(frozen=True)
@@ -148,16 +147,22 @@ def _previous(day: date) -> date:
 
 def _day_is_complete(day: date, last_recv_ns: int | None) -> bool:
     """Whether a recorded day ran the whole session. The `tick_days` status decides when there is a row (verified or
-    landing_deleted); with no row, the last VIX print must be at or after 15:25 IST. A partial day (the recorder
-    started late or stopped early) would give a mid-session value, not the close."""
+    landing_deleted); with no row, the last VIX print must be within `regimes.close_slack_min` minutes of the day's
+    cash-market close, which is the dated session rule of sessions.json (CM, fact X-7: 15:30 IST). A partial day (the
+    recorder started late or stopped early) would give a mid-session value, not the close. A day with no session rule
+    is not complete."""
     row = refdata._connect().execute("SELECT status FROM tick_days WHERE trade_date = ?",
                                      (day.isoformat(),)).fetchone()
     if row is not None:
         return row["status"] in COMPLETE_STATUSES
     if last_recv_ns is None:
         return False
-    t = timeutil.ns_to_ist(last_recv_ns)
-    return (t.hour, t.minute) >= CLOSE_FROM_IST
+    try:
+        close_ns = calendar.session_close_ns(SEGMENT, day)
+    except calendar.CalendarError:
+        return False
+    need_from = timeutil.ns_to_ist(close_ns - int(_cfg()["close_slack_min"]) * 60 * timeutil.NS_PER_S)
+    return timeutil.ns_to_ist(last_recv_ns).time() >= need_from.time()      # both are IST times of this day
 
 
 def _recorded_close(day: date, vix_id: int) -> int | None:

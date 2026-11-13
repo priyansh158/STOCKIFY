@@ -135,6 +135,13 @@ class ResearchConfigTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.refused(changed("sweep", "max_workers", value=bad), "sweep.max_workers")
 
+    def test_regimes_close_slack_is_a_whole_number_of_minutes(self):
+        load(changed("regimes", "close_slack_min", value=0))
+        for bad in (-1, 241, "5", 1.5, True, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("regimes", "close_slack_min", value=bad), "regimes.close_slack_min")
+        self.assertEqual(SHIPPED["regimes"]["close_slack_min"], 5)
+
     def test_export_and_pool_limits_are_whole_numbers_in_range(self):
         load(changed("export", "max_total_mib", value=1))
         load(changed("pool", "max_run_hours", value=1))
