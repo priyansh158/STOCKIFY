@@ -85,6 +85,7 @@ export interface RecorderStatus {
   last_packet_age_ms: Record<string, number | null>;
   bytes_today: number;
   age_s: number;
+  stale?: boolean;
 }
 
 export interface RecorderStatusResponse {

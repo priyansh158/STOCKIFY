@@ -95,6 +95,7 @@ class RecorderStatusDTO(BaseModel):
     last_packet_age_ms: dict[str, int | None] = Field(default_factory=dict)
     bytes_today: int
     age_s: float = Field(..., description="seconds since this row was written")
+    stale: bool = Field(False, description="the row is too old to be current: the recorder is not running; connected is then false")
 
 
 class RecorderStatusResponse(BaseModel):

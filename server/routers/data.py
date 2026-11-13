@@ -14,6 +14,9 @@ from server.schemas import (CoverageMatrixDTO, DataQualityResponse, GapDTO, GapP
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
+# The recorder writes a status row every 5 s; a row older than this is from a recorder that is no longer running.
+RECORDER_STALE_S = 60.0
+
 
 def _finite(x) -> float | None:  # noqa: ANN001
     return x if isinstance(x, (int, float)) and math.isfinite(x) else None
@@ -23,13 +26,15 @@ def _recorder_dto(row: dict) -> RecorderStatusDTO:
     from stockify import timeutil
 
     ages = json.loads(row.get("last_packet_age_ms_json") or "{}")
+    age_s = max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9)
+    stale = age_s > RECORDER_STALE_S
     return RecorderStatusDTO(
-        wall_ns=row["wall_ns"], connected=bool(row["connected"]),
+        wall_ns=row["wall_ns"], connected=bool(row["connected"]) and not stale, stale=stale,
         subs_full=row["subs_full"] or 0, subs_quote=row["subs_quote"] or 0,
         packets_per_s=_finite(row["packets_per_s"]) or 0.0, queue_depth=row["queue_depth"] or 0,
         writer_lag_ms=_finite(row["writer_lag_ms"]), last_packet_age_ms=ages,
         bytes_today=row["bytes_today"] or 0,
-        age_s=max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9),
+        age_s=age_s,
     )
 
 
