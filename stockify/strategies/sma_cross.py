@@ -11,6 +11,17 @@ from stockify.strategy import Strategy
 
 
 class SmaCross(Strategy):
+    # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
+    PARAMS = [
+        {'name': 'symbol', 'label': 'Stock or future', 'type': 'symbol', 'default': None, 'required': True, 'help': 'what to trade, e.g. NSE:RELIANCE'},
+        {'name': 'fast', 'label': 'Fast average (bars)', 'type': 'int', 'default': None, 'required': True, 'help': 'bars in the fast moving average'},
+        {'name': 'slow', 'label': 'Slow average (bars)', 'type': 'int', 'default': None, 'required': True, 'help': 'bars in the slow moving average'},
+        {'name': 'interval_s', 'label': 'Bar length (seconds)', 'type': 'int', 'default': 86400, 'required': False, 'help': 'bar length in seconds: 86400 daily, 60 minute'},
+        {'name': 'long_short', 'label': 'Also go short', 'type': 'bool', 'default': False, 'required': False, 'help': 'go short when fast < slow (needs a future traded NRML)'},
+        {'name': 'product', 'label': 'Product (CNC or NRML)', 'type': 'str', 'default': 'CNC', 'required': False, 'help': 'CNC for stocks, NRML for futures'},
+        {'name': 'lots', 'label': 'Lots per position', 'type': 'int', 'default': 1, 'required': False, 'help': 'futures only: lots per position'},
+    ]
+
     def on_start(self, ctx):  # noqa: ANN001
         p = ctx.params
         self.iid = ctx.resolve(p["symbol"])

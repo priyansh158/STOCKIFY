@@ -29,6 +29,7 @@ from server.routers import (
     kite as kite_router,
     portfolio,
     search,
+    tests as tests_router,
     ticks,
 )
 from server import log_redaction
@@ -57,6 +58,17 @@ async def lifespan(app: FastAPI):
     # Note: the always-on geo monitor runs as `python -m geo_monitor` separately
     # so news watching continues even when this API process is down.
     ticker_bridge.attach()
+    # Strategy tests (M3.14): re-enqueue runs left queued, fail runs a previous API process left running.
+    try:
+        from stockify import store
+        from server.services.test_queue import get_queue
+
+        store.init_db()
+        get_queue().recover()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("test queue recovery failed")
     yield
     try:
         ticker_bridge.detach()
@@ -100,3 +112,4 @@ app.include_router(kite_router.router)
 app.include_router(ticks.router)
 app.include_router(alerts.router)
 app.include_router(data_router.router)
+app.include_router(tests_router.router)

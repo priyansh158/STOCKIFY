@@ -7,6 +7,10 @@ phases), a list of events, a `script` strategy and the expected outputs, with
 `notes` that explain every number. Nothing comes from the live config files,
 so a golden only changes when its author changes it.
 
+`F<seed>.yaml` goldens are saved by the fuzz shrinker (`stockify.tools.fuzz`): their strategy is a
+`ref` with `params` (a recording replayed by `stockify.tools.replay:Replay`) instead of script actions,
+and their expected values are the oracle's artifacts.
+
 Defaults (all overridable in the YAML under `bundle:`):
 
 * sessions: CM PREOPEN 09:00–09:15, CONTINUOUS 09:15–15:30, POSTCLOSE 15:40–16:00;
@@ -122,16 +126,32 @@ def _instruments(g: dict, days: list[dict]) -> list[dict]:
     return out
 
 
+def _bundle_strategy(s: dict) -> dict:
+    if s["kind"] == "python":
+        import importlib
+        import inspect
+        source = inspect.getsource(importlib.import_module(s["ref"].split(":")[0]))
+        return {"kind": "python", "ref": s["ref"], "params": s["params"],
+                "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest()}
+    return {"kind": "script", "actions": s["actions"], "params": {},
+            "source_sha256": hashlib.sha256(numerics.dumps_canonical(s["actions"]).encode()).hexdigest()}
+
+
 def build_bundle(g: dict) -> dict:
     b = g["bundle"]
     run = {"schema": "stockify.run/1", "name": g["id"], "strategy": {"kind": "script", "actions": []},
            "data": {"packs": [{"sha256": "0" * 64}]}, "capital_paise": 10_000_000, "price_basis": "raw",
            "fill_model": {"kind": "bar"}, **copy.deepcopy(g.get("run", {}))}
+    ref = g["strategy"].get("ref")
     actions = copy.deepcopy(g["strategy"].get("actions", []))
     for a in actions:
         if isinstance(a.get("at_ns"), str):
             a["at_ns"] = ts(a["at_ns"])
-    run["strategy"] = {"kind": "script", "actions": actions}
+    if ref:
+        params = copy.deepcopy(g["strategy"].get("params", {}))
+        run["strategy"] = {"kind": "python", "ref": ref, "params": params}
+    else:
+        run["strategy"] = {"kind": "script", "actions": actions}
     cfg = runconfig.load(run)
     days = _days(g)
     policy = {
@@ -163,9 +183,7 @@ def build_bundle(g: dict) -> dict:
     return {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
             "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
             "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
-            "packs": [], "strategy": {"kind": "script", "actions": run["strategy"]["actions"], "params": {},
-                                      "source_sha256": hashlib.sha256(numerics.dumps_canonical(
-                                          run["strategy"]["actions"]).encode()).hexdigest()},
+            "packs": [], "strategy": _bundle_strategy(run["strategy"]),
             "labels": [], "sod_state": None}
 
 
@@ -301,7 +319,7 @@ def load(path: Path) -> dict:
 def goldens(only: list[str] | None = None, include_capture: bool = False) -> list[tuple[Path, dict]]:
     """Simulated goldens; `include_capture` adds G08-style checks against captured Kite data."""
     out = []
-    for path in sorted(GOLDEN_DIR.glob("G*.yaml")):
+    for path in sorted(GOLDEN_DIR.glob("G*.yaml")) + sorted(GOLDEN_DIR.glob("F*.yaml")):
         g = load(path)
         if only and g["id"] not in only:
             continue
@@ -347,9 +365,12 @@ def run_one(g: dict, impl: str = "oracle") -> list[str]:
 
 
 def _run_single(g: dict, impl: str) -> list[str]:
-    if impl != "oracle":
-        raise GoldenError("only the oracle exists before M3")
-    from stockify.oracle import run_bundle
+    if impl == "oracle":
+        from stockify.oracle import run_bundle
+    elif impl == "engine":
+        from stockify.engine import run_bundle  # the C++ engine, same inputs and artifacts (M3.12)
+    else:
+        raise GoldenError(f"unknown implementation {impl!r}")
     with tempfile.TemporaryDirectory(prefix=f"golden-{g['id']}-") as tmp:
         folder = Path(tmp)
         pack = build_pack(g, folder)

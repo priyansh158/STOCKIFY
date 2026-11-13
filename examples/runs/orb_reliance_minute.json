@@ -1,0 +1,19 @@
+{
+  "schema": "stockify.run/1",
+  "name": "orb_reliance_minute",
+  "family_id": "opening_range_breakout/RELIANCE/minute",
+  "strategy": { "kind": "python", "ref": "stockify.strategies.opening_range_breakout:OpeningRangeBreakout",
+                "params": { "symbol": "NSE:RELIANCE", "range_minutes": 15, "qty": 10, "short": true,
+                            "exit_hhmm": "15:10" } },
+  "data": { "packs": [ { "spec": { "dataset": "bars", "interval": "minute",
+            "instruments": ["NSE:RELIANCE"], "from": "2026-11-04", "to": "2026-11-04" } } ] },
+  "price_basis": "adjusted",
+  "capital_paise": 10000000,
+  "fill_model": { "kind": "bar", "limit_touch_policy": "through", "participation": "0.10",
+                  "slippage": { "kind": "bps", "x": "0.0005" } },
+  "latency_ms": 0,
+  "costs": { "broker": "zerodha", "allow_unverified": true, "auto_square_off_fee": true },
+  "margin": { "model": "flat" },
+  "mark": "ltp",
+  "seed": 42
+}

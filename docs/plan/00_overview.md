@@ -149,6 +149,9 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | D-44 | **DAY orders on daily-bar instruments survive SEG_CLOSE until that session's daily bar has been matched**, then are cancelled `EOD`. | Clarified (A4 §1.10 vs §4.0) | A daily Kite candle is knowable only at start + 1 day (A4 §1.1) and a bhavcopy bar at 19:00, both after the 15:30 SEG_CLOSE, so cancelling at the close made A4 §4.0's "an order queued overnight fills on that day's bar" impossible: the first SMA demo filled nothing. Minute bars are unaffected (the bar ending at the close is known at the close, rank 4 before SEG_CLOSE). An `eod_close` fill in a contract expiring that day is settled at the already-published FSP right away. |
 | D-45 | **Expiry settlements close trades in the trade metrics** (A4 §8), matched FIFO like a closing fill at the settlement price (futures: FSP; options: intrinsic value). | Yes (A4 §8 counted closing fills only) | Option strategies that hold to expiry otherwise report almost no trades and a meaningless win rate. Turnover still counts fills only. |
 | D-46 | **Charges are exact; only stamp duty (to the rupee) and the order total (to the paisa) are rounded** (A4 §5.3 amended). | Yes (A4 §5.3 rounded every component to the paisa) | Owner's capture of Kite's virtual contract note, 2026-11-06 (K-10a, G08): components come back unrounded, GST is computed on the unrounded parts, stamp duty is a whole rupee. With per-component rounding G09 was off by 48 paise per day; with D-46 all 11 captured cases match to the millionth of a rupee and every total to the paisa. G09's expected totals changed accordingly (A3). |
+| D-47 | **`load_sod_state` / `eod_state` exist from M3.10 but raise `NotImplementedError` until M5.3 defines a paper session's day-to-day state** (cash, positions, settlement credits, orders queued for the next day, timers, strategy `save_state`, id counters). | Yes (M3.10 listed both as working methods) | Nothing defines that state yet (A1 has only the `sod_state` field) and the oracle has no twin to test it against. A partial state would make a resumed day silently differ from an uninterrupted one, which is what M5.4's E-02 exists to catch. The rest of the M3.10 binding is complete. |
+| D-48 | **The M3.13 benchmark is measured on the only recording so far, six minutes of 2026-11-05 (10:03–10:08 IST, 202 instruments, 61,488 records), and scaled to a session as an estimate; it is re-measured on the first full recorded day.** | Yes (M3.13 said one recorded day, ~300 instruments) | No full day has been recorded yet (going live is pending). The measured rates are per event, so the estimate is a straight scale-up; it cannot show effects that only a full day's book sizes or bar counts would. |
+| D-52 | **A run ends with one final close-out `DAY_END` when its last input comes after the last trading day's `DAY_END`**, at that input's time and dated by its own IST date (A4 §1.2, §1.10). | Yes (A4 had one `DAY_END` per trading day only) | Owner decision, 2026-11-06 (option A). P-06 found that a fill on the last day's daily bar (knowable at the next midnight IST, A4 §1.1; D-44 lets the order wait for it) was in `fills.csv` but in no equity or positions row, so the final NAV and every equity-based metric left out the last day's trades. The extra row carries the next calendar date; that is accepted. |
 
 ### 5a. Roster (D-31)
 
@@ -178,9 +181,21 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | ANC | M2.5 golden scenarios | the anchor: the fixed reference point everything is checked against |
 | RW | M2.6 metrics and run report | the mirror of LW: takes results to the touchline |
 | TM | M2.7 CLI, notebook entry, compare-artifacts | the target man: everything is played into him |
+| HB | M3.0 recon | the half-back drops between the centre-backs to read the play |
+| BPD | M3.1 engine foundations (integers, decimals, RNG, hashing, formats) | the ball-playing defender builds everything from the back |
+| DLF | M3.2 pack reader and event sources | the deep-lying forward drops to receive CAM's final ball and bring it into the engine |
+| DLP | M3.3 event loop, clock, phases, timers | the deep-lying playmaker dictates the tempo |
+| BWM | M3.5 orders | the ball-winning midfielder wins or rejects every order at the gate |
+| POA | M3.6 fill models | the poacher turns chances into fills |
+| NCB | M3.7 costs | the no-nonsense centre-back: exact to the paisa |
+| VOL | M3.8 ledger, T0 margin, MIS, end of day | the volante holds the middle and keeps the books |
+| RD | M3.12 parity and differential fuzzing | the raumdeuter finds the gaps between the oracle and the engine |
+| PF | M3.13 performance | the pressing forward: all speed |
+| WP | M3.14 test-run API and UI | the wide playmaker works the flank the owner watches |
+| ENG | M3.15 strategy how-to | the enganche sets others up to score |
 | XI | team-wide (renames, plan bookkeeping) | the whole team |
 
-M2 positions chosen by the owner on 2026-11-05. Positions for M3 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
+M2 positions chosen by the owner on 2026-11-05; M3 positions on 2026-11-05 (M3.4 keeps CB, M3.9 RW, M3.10 B2B, M3.11 TM: same roles as M1.1, M2.6, M2.3, M2.7). Positions for M4 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
 
 ## 6. Corrections to earlier chat advice
 

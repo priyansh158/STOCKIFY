@@ -113,6 +113,98 @@ class DataQualityResponse(BaseModel):
     instruments: list[InstrumentQualityDTO] = Field(default_factory=list)
 
 
+# ── Strategy tests (M3.14) ───────────────────────────────────────────────────
+# Money is integer paise, times are UTC epoch ns with an ISO IST string beside them (A2 §6).
+
+class StrategyParamDTO(BaseModel):
+    """One parameter of a strategy (stockify.strategies._catalogue)."""
+    name: str
+    label: str = ""
+    type: Literal["int", "bool", "str", "decimal", "symbol", "hhmm", "underlying"]
+    default: Any = None
+    required: bool = False
+    help: str = ""
+
+
+class StrategyDTO(BaseModel):
+    kind: Literal["python", "cpp"]
+    ref: str = Field(..., description="'module:Class' for python, the registered name for cpp")
+    name: str
+    doc: str = ""
+    params: list[StrategyParamDTO] = Field(default_factory=list)
+
+
+class TestRunDTO(BaseModel):
+    """One run as a list card shows it (lab.sqlite runs row plus its headline metrics)."""
+    run_id: str
+    name: str | None = None
+    family_id: str | None = None
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
+    impl: str | None = None
+    strategy_ref: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    price_basis: str | None = None
+    capital_paise: int | None = None
+    created_ns: int | None = None
+    created_ist: str | None = None
+    finished_ns: int | None = None
+    finished_ist: str | None = None
+    nav_start_paise: int | None = None
+    nav_end_paise: int | None = None
+    max_drawdown: float | None = Field(None, description="largest fall from a high, as a fraction (0.12 = 12 %)")
+    trades: int | None = None
+    costs_total_paise: int | None = None
+    labels: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class TestRunDetailDTO(BaseModel):
+    run: TestRunDTO
+    config: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    manifest: dict[str, Any] | None = None
+
+
+class TestFillDTO(BaseModel):
+    fill_id: int
+    order_id: int
+    t_ns: int
+    t_ist: str
+    instrument_id: int
+    tradingsymbol: str | None = None
+    side: str
+    qty: int
+    price_paise: int
+
+
+class TestEquityDTO(BaseModel):
+    trade_date: str
+    nav_paise: int
+    cash_paise: int
+    margin_paise: int | None = None
+
+
+class TestChargeDTO(BaseModel):
+    row_no: int
+    kind: str
+    order_id: int | None = None
+    trade_date: str
+    components: dict[str, int] = Field(default_factory=dict)
+    total_paise: int
+
+
+class TestLogsDTO(BaseModel):
+    events_log: list[str] = Field(default_factory=list)
+    runner_log: list[str] = Field(default_factory=list)
+    offset: int = 0
+    total_lines: int = 0
+
+
+class TestCreatedDTO(BaseModel):
+    run_id: str
+
+
 # ── Ticks (WS payloads) ──────────────────────────────────────────────────────
 
 class TickEvent(BaseModel):

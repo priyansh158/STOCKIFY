@@ -43,7 +43,7 @@ Config files hold rates as decimal strings; loaders convert them **exactly** (Py
 
 Records appended to a live journal get `t_event = max(intended time, last journal t_event)`, so a journal is always non-decreasing (late data such as evening settlement prices never goes back in time).
 
-**1.2 Internal events** created by the engine: `PHASE` (session transitions from the bundle), `BAR_BUILT` (bars aggregated from snapshots, §2.2), `MIS_SQOFF` (the cut-off), `TIMER` (strategy timers), `SEG_CLOSE` (a session group's close), `DAY_END` (23:59:59.999999999 IST of each trading day).
+**1.2 Internal events** created by the engine: `PHASE` (session transitions from the bundle), `BAR_BUILT` (bars aggregated from snapshots, §2.2), `MIS_SQOFF` (the cut-off), `TIMER` (strategy timers), `SEG_CLOSE` (a session group's close), `DAY_END` (23:59:59.999999999 IST of each trading day, plus the final close-out of §1.10).
 
 **1.3 One ordering for everything.** Every event, input or internal, has a key `(t, rank, src, seq)`:
 
@@ -86,7 +86,7 @@ Orders placed during steps 4–5 get `t_submit = t_event(E)`.
 
 **1.9 Sessions.** Phases come only from the bundle: `days[].groups[g]` for each session group `g ∈ {CM, CM_CAS, FO_FUT, FO_OPT}` (A1 §6.2). Any time not inside a listed phase is `CLOSED`. A group's **close** is the end of its last `CONTINUOUS` or `CAS` phase that day. `POSTCLOSE` is informational: for orders it behaves like `CLOSED`.
 
-**1.10 Day processing.** `SEG_CLOSE` at each group's close cancels that group's open DAY orders and makes provisional marks (§6.4). `DAY_END` at 23:59:59.999999999 IST settles expiring contracts that have no settlement price yet (§7.2 fallback), writes `positions_eod` rows and the day's single NAV row, delivers `on_session_end`, and then (paper sessions) calls `save_state()`. Orders placed in `on_session_end` follow §3.10 (they queue for the next trading day).
+**1.10 Day processing.** `SEG_CLOSE` at each group's close cancels that group's open DAY orders and makes provisional marks (§6.4). `DAY_END` at 23:59:59.999999999 IST settles expiring contracts that have no settlement price yet (§7.2 fallback), writes `positions_eod` rows and the day's single NAV row, delivers `on_session_end`, and then (paper sessions) calls `save_state()`. Orders placed in `on_session_end` follow §3.10 (they queue for the next trading day). **Final close-out (D-52):** when a run's last input is knowable after its last trading day's `DAY_END` (that day's daily bar is knowable only at the next midnight IST, §1.1), the input is processed as usual and then one more `DAY_END` runs at that same moment, dated by its own IST date: it writes that date's `positions_eod` rows and NAV row and delivers `on_session_end`, like any other. Nothing after it is processed (orders it leaves pending stay pending; later timers never fire). Live (§1.4), this happens in `finish()`.
 
 ## §2 Market state
 

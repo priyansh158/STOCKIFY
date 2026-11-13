@@ -3,15 +3,39 @@ from __future__ import annotations
 
 import io
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from unittest.mock import patch
 
 import tests.support  # noqa: F401  — must precede project imports
 
+import stockify
 from stockify import __main__ as cli
 from stockify import engine
 from stockify.data import history
+
+_MISSING = object()
+
+
+@contextmanager
+def engine_module(value):
+    """Make `from stockify import _engine` see `value` (None = not built), even when another test has already
+    imported the real module (import finds it as an attribute of the `stockify` package, not in sys.modules)."""
+    saved = stockify.__dict__.get("_engine", _MISSING)
+    engine._module = None
+    with patch.dict("sys.modules", {"stockify._engine": value}):
+        if value is None:
+            stockify.__dict__.pop("_engine", None)
+        else:
+            stockify._engine = value
+        try:
+            yield
+        finally:
+            if saved is _MISSING:
+                stockify.__dict__.pop("_engine", None)
+            else:
+                stockify._engine = saved
+            engine._module = None
 
 
 class CliTests(unittest.TestCase):
@@ -27,9 +51,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("config OK", out)
 
     def test_unimplemented_command_names_its_milestone(self):
-        code, _, err = self.run_cli("run")
+        code, _, err = self.run_cli("margin")
         self.assertEqual(code, 2)
-        self.assertIn("M3", err)
+        self.assertIn("M4", err)
 
     def test_daemon_once_returns(self):
         code, _, _ = self.run_cli("daemon", "--once")
@@ -38,24 +62,18 @@ class CliTests(unittest.TestCase):
 
 class EngineGatewayTests(unittest.TestCase):
     def test_missing_module_raises_engine_unavailable_with_a_fix(self):
-        with patch.dict("sys.modules", {"stockify._engine": None}):
-            engine._module = None
-            with self.assertRaises(engine.EngineUnavailable) as ctx:
-                engine.load()
+        with engine_module(None), self.assertRaises(engine.EngineUnavailable) as ctx:
+            engine.load()
         self.assertIn("-BuildEngine", str(ctx.exception))
-        engine._module = None
 
     def test_python_version_mismatch_is_detected(self):
         class Fake:
             @staticmethod
             def build_info():
                 return {"python_version": "2.7"}
-        with patch.dict("sys.modules", {"stockify._engine": Fake}):
-            engine._module = None
-            with self.assertRaises(engine.EngineUnavailable) as ctx:
-                engine.load()
+        with engine_module(Fake), self.assertRaises(engine.EngineUnavailable) as ctx:
+            engine.load()
         self.assertIn("2.7", str(ctx.exception))
-        engine._module = None
 
 
 class HistoryHelperTests(unittest.TestCase):

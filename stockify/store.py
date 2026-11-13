@@ -147,3 +147,111 @@ def prune_recorder_status(older_than_ns: int) -> int:
         cur = conn.execute("DELETE FROM recorder_status WHERE wall_ns < ?", (older_than_ns,))
         conn.commit()
         return cur.rowcount
+
+
+# ── runs (M3.11; A1 §4 runs, run_orders, run_fills, run_equity, run_charges) ─
+
+RUN_FIELDS = ("run_id", "name", "family_id", "status", "created_ns", "started_ns", "finished_ns", "folder",
+              "bundle_sha256", "engine_build_id", "impl", "config_json", "metrics_json", "labels_json", "error")
+
+_RUN_TABLES = {  # table name in run_rows → (SQL table, primary-key order, columns after run_id)
+    "orders": ("run_orders", "order_id", ("order_id", "row_json")),
+    "fills": ("run_fills", "fill_id", ("fill_id", "order_id", "t_ns", "instrument_id", "side", "qty", "price_paise")),
+    "equity": ("run_equity", "trade_date", ("trade_date", "nav_paise", "cash_paise", "margin_paise")),
+    "charges": ("run_charges", "row_no", ("row_no", "kind", "order_id", "trade_date", "components_json",
+                                          "total_paise")),
+}
+
+
+def create_run(row: dict) -> None:
+    """Insert a `runs` row; keys are column names, missing ones NULL. status defaults to queued, created_ns to
+    now. An unknown key is a ValueError."""
+    from stockify import timeutil
+    unknown = set(row) - set(RUN_FIELDS)
+    if unknown:
+        raise ValueError(f"not runs columns: {sorted(unknown)}")
+    full = {"status": "queued", "created_ns": timeutil.now_ns(), **row}
+    conn = _connect()
+    with _lock:
+        conn.execute(f"INSERT INTO runs ({', '.join(RUN_FIELDS)}) VALUES ({', '.join('?' * len(RUN_FIELDS))})",
+                     tuple(full.get(k) for k in RUN_FIELDS))
+        conn.commit()
+
+
+def update_run(run_id: str, *, only_if_status: str | tuple[str, ...] | None = None, **fields) -> bool:
+    """Update columns of one run. With only_if_status, only when the current status is one of them (a runner
+    must never overwrite a cancelled row). Returns whether a row changed."""
+    unknown = set(fields) - (set(RUN_FIELDS) - {"run_id"})
+    if unknown:
+        raise ValueError(f"not updatable runs columns: {sorted(unknown)}")
+    if not fields:
+        return False
+    sql = f"UPDATE runs SET {', '.join(f'{k} = ?' for k in fields)} WHERE run_id = ?"
+    args: list = [*fields.values(), run_id]
+    if only_if_status is not None:
+        allowed = (only_if_status,) if isinstance(only_if_status, str) else tuple(only_if_status)
+        sql += f" AND status IN ({', '.join('?' * len(allowed))})"
+        args += allowed
+    conn = _connect()
+    with _lock:
+        cur = conn.execute(sql, args)
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_run(run_id: str) -> dict | None:
+    row = _connect().execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_runs(*, status: str | None = None, family_id: str | None = None, offset: int = 0,
+              limit: int = 50) -> list[dict]:
+    """Newest created_ns first."""
+    where, args = [], []
+    if status is not None:
+        where.append("status = ?")
+        args.append(status)
+    if family_id is not None:
+        where.append("family_id = ?")
+        args.append(family_id)
+    sql = "SELECT * FROM runs" + (f" WHERE {' AND '.join(where)}" if where else "")
+    sql += " ORDER BY created_ns DESC, run_id LIMIT ? OFFSET ?"
+    return [dict(r) for r in _connect().execute(sql, (*args, int(limit), int(offset))).fetchall()]
+
+
+def replace_run_rows(run_id: str, *, orders: list[dict], fills: list[dict], equity: list[dict],
+                     charges: list[dict]) -> None:
+    """One transaction: delete the run's child rows, insert the new ones (re-import is idempotent). Derived
+    rows only; tick tables are never touched. `orders` items are the order dicts (stored as row_json, keyed
+    by order_id); the others carry their table's columns."""
+    import json
+    conn = _connect()
+    with _lock:
+        try:
+            for table, _, _ in _RUN_TABLES.values():
+                conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+            conn.executemany("INSERT INTO run_orders (run_id, order_id, row_json) VALUES (?, ?, ?)",
+                             [(run_id, o["order_id"], json.dumps(o, sort_keys=True)) for o in orders])
+            for key, rows in (("fills", fills), ("equity", equity), ("charges", charges)):
+                table, _, cols = _RUN_TABLES[key]
+                conn.executemany(f"INSERT INTO {table} (run_id, {', '.join(cols)}) "
+                                 f"VALUES (?, {', '.join('?' * len(cols))})",
+                                 [(run_id, *(r.get(c) for c in cols)) for r in rows])
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def run_rows(run_id: str, table: str, *, offset: int = 0, limit: int = 500) -> list[dict]:
+    """Child rows of a run in primary-key order; table is orders | fills | equity | charges. For orders the
+    row_json is parsed into the dict."""
+    import json
+    if table not in _RUN_TABLES:
+        raise ValueError(f"unknown run table {table!r}")
+    sql_table, key, cols = _RUN_TABLES[table]
+    rows = _connect().execute(f"SELECT {', '.join(cols)} FROM {sql_table} WHERE run_id = ? ORDER BY {key} "
+                              f"LIMIT ? OFFSET ?", (run_id, int(limit), int(offset))).fetchall()
+    if table == "orders":
+        return [json.loads(r["row_json"]) for r in rows]
+    return [dict(r) for r in rows]
