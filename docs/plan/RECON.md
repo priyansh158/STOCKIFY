@@ -1253,3 +1253,7 @@ Read-only on the real lab (refdata opened `mode=ro`, the tick archive read throu
 ### M6.7 extra slippage ticks (Task 14)
 
 🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.\run.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.
+
+### M6.11 PBO by CSCV (Task 23)
+
+`pbo.cscv` on a 320-day by 100-try matrix (S = 16, 12,870 combinations, numpy gathers in chunks of 1,024): 0.60 s on this machine (the first version, with a Python loop for the complements, took 1.25 s). One noise draw of 320 x 20 gives a PBO anywhere from about 0.15 to 0.75; the mean over 16 seeded draws is 0.41 and over 300 numpy draws 0.52 (standard error 0.012), as theory says (exactly one half for iid noise).

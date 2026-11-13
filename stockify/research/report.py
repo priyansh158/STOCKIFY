@@ -24,8 +24,9 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import paths, store
-from stockify.research import bootstrap, fileio, plain, regimes, registry, settings, stats
+from stockify.research import bootstrap, fileio, pbo, plain, regimes, registry, settings, stats
 from stockify.research.bootstrap import BootstrapResult, Interval
+from stockify.research.pbo import PboResult
 from stockify.research.stats import DsrResult
 
 CODE_VERSION = "1"        # bump when the bootstrap or the way its inputs are built changes: it invalidates the cache
@@ -80,6 +81,8 @@ class FamilyReport:
     sessions: list[dict]
     holdout_unlocks: list[dict]
     plain: dict[str, str]
+    pbo: PboResult | None = None
+    pbo_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -401,13 +404,17 @@ def family_report(family_id: str) -> FamilyReport:
     if best is not None:
         texts["dsr"] = plain.dsr_sentence(len(tries), 1, dsr.dsr if dsr else None, objective=objective,
                                           flat=dsr is None)
+    overfit, overfit_note = pbo.family_pbo(family_id, rf_rows)
+    if overfit is not None:
+        texts["pbo"] = plain.pbo_sentence(overfit.pbo, overfit.n_trials)
     return FamilyReport(family_id=family_id, description=fam.get("description"), objective=objective,
                         named=bool(fam.get("named")), n_trials=len(tries),
                         var_sharpe=var if tries else None, best_run_id=best.run_id if best else None,
                         best=dsr, trials=[_row(r, objective, rf_rows) for r in rows if r["run_id"] in counted],
                         others=[_row(r, objective, rf_rows) for r in rows if r["run_id"] not in counted],
                         sessions=_family_sessions(family_id, store.list_sessions()),
-                        holdout_unlocks=store.holdout_unlock_rows(family_id), plain=texts)
+                        holdout_unlocks=store.holdout_unlock_rows(family_id), plain=texts,
+                        pbo=overfit, pbo_note=overfit_note)
 
 
 def list_families() -> list[FamilySummary]:
@@ -473,6 +480,10 @@ def family_text(rep: FamilyReport) -> str:
              f"{len(rep.sessions)} paper sessions (not counted); holdout looked at {len(rep.holdout_unlocks)} time(s)"]
     if "dsr" in rep.plain:
         lines.append(f"best ({rep.best_run_id}): {rep.plain['dsr']}")
+    if "pbo" in rep.plain:
+        lines.append(f"overfitting check: {rep.plain['pbo']}")
+    elif rep.pbo_note:
+        lines.append(f"overfitting check not made: {rep.pbo_note}")
     for t in rep.trials:
         lines.append(f"  {t.run_id:<24} {t.name or '-':<20} Sharpe {_annual(t.sharpe_per_period):>6}  "
                      f"net {_paise_text(t.net_pnl_paise):>12}  {t.days} days")
