@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 import struct
 import tempfile
 import unittest
@@ -741,6 +742,105 @@ class ReadFromTests(unittest.TestCase):
         got: list[dict] = []
         header, st, torn, restarted = journal.read_from(path or self.path, state, got.append)
         return got, st, torn, restarted
+
+    def _mid_read(self, fn, *, reader=None):
+        """Run `reader` (default read_from) with `fn()` called while the journal is open for reading: the header
+        check runs inside the open, so that is where a daemon's rename would collide."""
+        real, seen = journal._check_header, []
+
+        def hook(data):
+            if not seen:
+                seen.append(fn())
+            return real(data)
+
+        with patch.object(journal, "_check_header", hook):
+            (reader or (lambda: self.take()))()
+        self.assertEqual(len(seen), 1)
+
+    def test_a_daemon_can_rename_delete_and_finalise_a_journal_a_reader_has_open(self):
+        """LCM 6.4 (D-128): readers open with FILE_SHARE_DELETE, so a rename, a delete and the finalising header
+        write never fail while a chart reads. (A replace OVER the open file is refused by Windows whatever the
+        share flags: that is the owner-run salvage adoption, which runs with the daemon stopped.)"""
+        w = writer(self.path)
+        w.append(clock_records(10, 1_000))
+
+        def collide():
+            w.close(finalise=True)                         # the in-place header write
+            moved = Path(self.tmp.name) / "moved.evt"
+            os.rename(self.path, moved)                    # a rename of the open file
+            os.rename(moved, self.path)
+            crc = journal._crc_path(self.path)
+            os.rename(crc, Path(str(crc) + ".aside"))      # the checksum file (adopt moves it aside)
+            os.rename(Path(str(crc) + ".aside"), crc)
+            moved = self.path.with_name("gone.evt")
+            os.rename(self.path, moved)
+            moved.unlink()                                 # a deletion
+
+        self._mid_read(collide)
+
+    def _hold_suffix_mid_read(self, suffix, fn, reader):
+        """Run `reader()` with `fn()` called the moment the file ending `suffix` is read, while its handle is open."""
+        real, seen = journal._open_read, []
+
+        class Held:
+            def __init__(self, f):
+                self._f = f
+
+            def __enter__(self):
+                self._f.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return self._f.__exit__(*a)
+
+            def read(self, *a):
+                if not seen:
+                    seen.append(fn())
+                return self._f.read(*a)
+
+            def __getattr__(self, name):
+                return getattr(self._f, name)
+
+        def opener(path):
+            f = real(path)
+            return Held(f) if str(path).endswith(suffix) else f
+
+        with patch.object(journal, "_open_read", opener):
+            reader()
+        self.assertEqual(len(seen), 1, f"the {suffix} file was never read through _open_read")
+
+    def test_the_daemon_can_rename_and_delete_the_checksum_file_while_read_holds_it(self):
+        """LCM 6.4 (D-128): `read()` takes the checksum file through the same sharing open, and so does the torn file."""
+        self.append(5, 1_000)
+        crc = journal._crc_path(self.path)
+
+        def collide():
+            aside = Path(str(crc) + ".aside")
+            os.rename(crc, aside)
+            os.rename(aside, crc)
+
+        self._hold_suffix_mid_read(".crc", collide, lambda: journal.read(self.path))
+        torn = journal._torn_path(self.path)
+        torn.write_bytes(b"")
+
+        def collide_torn():
+            os.rename(torn, torn.with_name("t.aside"))
+            os.rename(torn.with_name("t.aside"), torn)
+
+        self._hold_suffix_mid_read(".torn", collide_torn, lambda: journal.torn_entries(self.path))
+
+    def test_a_reader_never_creates_the_journal(self):
+        with self.assertRaises(OSError):
+            journal.read_from(Path(self.tmp.name) / "none.evt", None, lambda r: None)
+        with self.assertRaises(OSError):
+            journal.read(Path(self.tmp.name) / "none.evt")
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+
+    def test_a_reader_cannot_write_the_journal(self):
+        self.append(3, 1_000)
+        with journal._open_read(self.path) as f:
+            with self.assertRaises(OSError):
+                f.write(b"x")
 
     def test_reads_only_the_new_records_and_decodes_only_them(self):
         self.append(10, 1_000)

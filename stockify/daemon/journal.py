@@ -51,6 +51,48 @@ TORN_MAGIC = b"STKTORN1"
 TORN_HEAD = struct.Struct("<8sQQI")    # marker, source offset, length, CRC32 of the bytes; the bytes follow
 
 
+def _open_read(path: Path):  # noqa: ANN202
+    """Open `path` for reading only, binary, sharing it fully (LCM 6.4, D-128). Python's `open` on Windows grants
+    FILE_SHARE_READ | FILE_SHARE_WRITE but not FILE_SHARE_DELETE, so while a chart request reads a chunk the daemon
+    could not rename, replace or delete the journal (or its checksum file). This opens with all three, never creates
+    the file (OPEN_EXISTING) and asks for read access only. A missing file is FileNotFoundError, as with `open`."""
+    if os.name != "nt":
+        return open(path, "rb")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                wintypes.DWORD, wintypes.HANDLE]
+    handle = k32.CreateFileW(os.fspath(path), _GENERIC_READ, _FILE_SHARE_ALL, None, _OPEN_EXISTING,
+                             _FILE_ATTRIBUTE_NORMAL, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        code = ctypes.get_last_error()
+        raise OSError(0, ctypes.FormatError(code).strip(), os.fspath(path), code)
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except BaseException:
+        k32.CloseHandle(handle)
+        raise
+    try:
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)                   # closes the handle too
+        raise
+
+
+_GENERIC_READ = 0x80000000
+_FILE_SHARE_ALL = 0x7                  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+_OPEN_EXISTING = 3
+_FILE_ATTRIBUTE_NORMAL = 0x80
+
+
+def _read_bytes(path: Path) -> bytes:
+    with _open_read(path) as f:
+        return f.read()
+
+
 class JournalError(ValueError):
     """A journal that cannot be read or written: a bad record, a foreign header, corruption before the tail, a
     failed writer."""
@@ -94,7 +136,7 @@ def is_finalised(path: Path) -> bool:
     """Whether the journal at `path` was finalised (a day that is over). Raises JournalError if there is no
     readable journal header there."""
     try:
-        with open(path, "rb") as f:
+        with _open_read(path) as f:
             data = f.read(HEADER_SIZE)
     except OSError as e:
         raise JournalError(f"{path}: {e}") from e
@@ -106,7 +148,7 @@ def is_finalised(path: Path) -> bool:
 def _load_crcs(path: Path, header: dict, data: bytes) -> list[int] | None:
     f = _crc_path(path)
     if f.exists():
-        raw = f.read_bytes()
+        raw = _read_bytes(f)
         return list(struct.unpack_from(f"<{len(raw) // 4}I", raw))
     if _final(header) or len(data) == HEADER_SIZE:
         return None                       # finalised (the header's count was synced after the records) or no records
@@ -205,7 +247,7 @@ def read(path: Path) -> tuple[dict, bytes, int]:
     torn tail is reported, never returned and never removed. Raises JournalError for a short or foreign header,
     a missing checksum file on an open journal, and corruption before the tail."""
     path = Path(path)
-    data = path.read_bytes()
+    data = _read_bytes(path)
     if len(data) < HEADER_SIZE:
         raise JournalError(f"{path}: {len(data)} bytes, shorter than the {HEADER_SIZE}-byte header")
     header = _check_header(data)
@@ -246,7 +288,7 @@ def _crcs_from(path: Path, header: dict, data: bytes, slot: int) -> list[int] | 
     record is at least `PREFIX.size` bytes, so `data` holds at most `len(data) // PREFIX.size` of them: that many
     entries (and one to spare) are read, never the rest of the sidecar."""
     try:
-        with open(_crc_path(path), "rb") as h:
+        with _open_read(_crc_path(path)) as h:
             h.seek(4 * slot)
             raw = h.read(4 * (len(data) // PREFIX.size + 1))
     except FileNotFoundError:
@@ -260,7 +302,7 @@ def _crcs_from(path: Path, header: dict, data: bytes, slot: int) -> list[int] | 
 def _read_chunk(path: Path, state: ReadState | None, on_record: Callable[[dict], None],
                 on_restart: Callable[[], None] | None, want: Callable[[int, int], bool] | None) -> tuple[dict, ReadState, int, bool, bool]:
     restarted = False
-    with open(path, "rb") as f:
+    with _open_read(path) as f:
         st = os.fstat(f.fileno())
         head = f.read(HEADER_SIZE)
         if len(head) < HEADER_SIZE:
@@ -334,7 +376,7 @@ def torn_entries(path: Path, *, with_partial: bool = False):
     (entries, pieces) where pieces are [(file offset, bytes)] of entries a crash cut short; they never hide a whole
     entry written after them."""
     f = _torn_path(Path(path))
-    entries, partial = _parse_torn(f.read_bytes() if f.exists() else b"")
+    entries, partial = _parse_torn(_read_bytes(f) if f.exists() else b"")
     return (entries, partial) if with_partial else entries
 
 
@@ -345,7 +387,7 @@ def adopt(path: Path) -> int:
     new one as `.crc.before-adopt` (a numbered copy if that exists). Returns the number of records covered. A torn
     tail, if any, is left for the writer to set aside as usual."""
     path = Path(path)
-    data = path.read_bytes()
+    data = _read_bytes(path)
     if len(data) < HEADER_SIZE:
         raise JournalError(f"{path}: {len(data)} bytes, shorter than the {HEADER_SIZE}-byte header")
     header = _check_header(data)
