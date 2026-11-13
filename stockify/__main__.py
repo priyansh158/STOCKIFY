@@ -806,6 +806,11 @@ def _cmd_bench(args) -> int:
     return 0
 
 
+def _cmd_tools_measure(args) -> int:
+    from stockify.tools import measure
+    return measure.main(as_json=args.json)
+
+
 def _cmd_golden_run(args) -> int:
     from stockify import golden
 
@@ -1167,6 +1172,11 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--config", required=True, help="a stockify.compare/1 JSON file")
     cs.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     cs.set_defaults(func=_cmd_compare_strategies)
+    ms = tsub.add_parser("measure", help="the numbers for the write-up, each with its sample and source; \"not measured "
+                                         "yet\" where there is no sample (reads only; exit 0, 1 if the text fails the "
+                                         "privacy scan)")
+    ms.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    ms.set_defaults(func=_cmd_tools_measure)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)
