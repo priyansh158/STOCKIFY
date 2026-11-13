@@ -72,6 +72,17 @@ class PresentTests(unittest.TestCase):
         zero, why0 = figures.present(metrics(LIMIT, gross_pnl_paise=0, cost_share_of_gross=None))
         self.assertIsNone(zero["cost_share_of_gross"])
 
+    def test_zero_gross_profit_with_costs_says_why(self):
+        shown, why = figures.present(metrics(LIMIT, gross_pnl_paise=0, costs_total_paise=300, cost_share_of_gross=None))
+        self.assertIsNone(shown["cost_share_of_gross"])
+        self.assertEqual(why["cost_share_of_gross"], figures.NO_GROSS)
+        _, none = figures.present(metrics(LIMIT, gross_pnl_paise=0, costs_total_paise=0, cost_share_of_gross=None))
+        self.assertNotIn("cost_share_of_gross", none)       # no costs, no profit: nothing to say
+
+    def test_sortino_without_a_losing_day_says_so(self):
+        shown, why = figures.present(metrics(10, sortino=None, trades=3))
+        self.assertEqual(why["sortino"], figures.NO_LOSING_DAY)
+
     def test_costs_over_a_profit_is_the_exact_ratio(self):
         shown, why = figures.present(metrics(LIMIT, gross_pnl_paise=2000, costs_total_paise=500))
         self.assertEqual(shown["cost_share_of_gross"], 0.25)

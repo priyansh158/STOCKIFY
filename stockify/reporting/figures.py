@@ -22,6 +22,7 @@ from stockify import research
 YEARLY_KEYS = ("cagr", "calmar", "turnover")
 TOO_SHORT = "too short to say"
 NO_TRADES, FEW_DAYS, NO_SWING = "no trades", "too few days", "no day-to-day swing"
+NO_LOSING_DAY = "no losing day"
 NO_GROSS = "no gross profit"
 
 
@@ -64,8 +65,12 @@ def present(m: dict, *, min_days: int | None = None) -> tuple[dict, dict[str, st
                 why[k] = FEW_DAYS
             elif k == "sharpe":
                 why[k] = NO_SWING
+            elif k == "sortino":
+                why[k] = NO_LOSING_DAY
     share = cost_share(m)
-    if m.get("cost_share_of_gross") is not None or share is not None:
+    gross, costs = m.get("gross_pnl_paise"), m.get("costs_total_paise")
+    no_profit = _is_num(gross) and _is_num(costs) and gross <= 0 < costs
+    if m.get("cost_share_of_gross") is not None or share is not None or no_profit:
         if share is None:
             why["cost_share_of_gross"] = NO_GROSS
         out["cost_share_of_gross"] = share
