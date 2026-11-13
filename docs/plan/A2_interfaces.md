@@ -286,7 +286,7 @@ All money fields are integer paise; times are UTC ns plus an ISO IST string for 
 | `GET /api/strategies` | Registered C++ and discovered Python strategies with parameter schemas | M3.14 |
 | `POST /api/tests` | Validate a run config and queue it → `{run_id}` | M3.14 |
 | `GET /api/tests` | Runs (filters: status, family) | M3.14 |
-| `GET /api/tests/compare?ids=` | Side-by-side comparison | M6.1 |
+| `GET /api/tests/compare?ids=a&ids=b` (2 to 6; a comma list also works) | Side-by-side comparison: metrics, equity normalised to 1.0, drawdowns, labels, manifest diff (`ComparisonDTO`); 422 bad count or a run not done, 404 unknown id | M6.1 |
 | `GET /api/tests/{id}` | Config, status, metrics, labels, manifest | M3.14 |
 | `GET /api/tests/{id}/{orders,fills,equity,charges,logs,margin}` | Run artifacts | M3.14 / M4.14 |
 | `POST /api/tests/{id}/cancel` | Kill a queued or running run | M3.14 |

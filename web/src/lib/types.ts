@@ -490,4 +490,36 @@ export interface FamilyDetailDTO {
   holdout_unlocks: Record<string, unknown>[];
   plain: Record<string, string>;
 }
+
+export interface CompareMetricDTO {
+  key: string;
+  label: string;
+  values: (number | null)[];
+  kind: string;
+  plain: string;
+}
+
+export interface CompareDiffDTO {
+  field: string;
+  values: (string | null)[];
+  differs: boolean;
+}
+
+export interface CompareSeriesDTO {
+  run_id: string;
+  dates: string[];
+  values: (number | null)[];
+}
+
+export interface ComparisonDTO {
+  run_ids: string[];
+  names: string[];
+  metrics: CompareMetricDTO[];
+  equity: CompareSeriesDTO[];
+  drawdown: CompareSeriesDTO[];
+  labels: Record<string, boolean[]>;
+  differing_labels: string[];
+  manifest_diff: CompareDiffDTO[];
+  notes: string[];
+}
 // </block>
