@@ -32,7 +32,7 @@ def holdout_from() -> date | None:
         text = research.settings()["holdout_from"]
         return None if text is None else date.fromisoformat(text)
     except (loader.ConfigError, KeyError, TypeError, ValueError, OSError) as e:
-        raise HoldoutLocked(f"research.json could not be read ({e}), so the holdout cannot be checked: "
+        raise HoldoutLocked("research.json could not be read, so the holdout cannot be checked: "
                             "fix the file first") from e
 
 
@@ -126,7 +126,7 @@ def enforce_bundle(cfg: dict, bundle: dict) -> str | None:
         last = max(_iso(d["date"]) for d in bundle["days"])
     except (KeyError, TypeError, ValueError) as e:
         raise HoldoutLocked(f"The holdout starts on {hold.isoformat()}, and the days of this run's data cannot be "
-                            f"read ({e}). To run it anyway, {UNLOCK_HOW}.") from e
+                            f"read. To run it anyway, {UNLOCK_HOW}.") from e
     if last < hold:
         return None
     reason = _reason(cfg)
