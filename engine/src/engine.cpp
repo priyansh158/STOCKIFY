@@ -12,6 +12,7 @@
 #include "stocksim/int128.hpp"
 #include "stocksim/margin/spanlite.hpp"
 #include "stocksim/margin/staircase.hpp"
+#include "stocksim/matcher.hpp"
 #include "stocksim/pricing/black76.hpp"
 #include "stocksim/sod_state.hpp"
 
