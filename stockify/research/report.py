@@ -411,6 +411,10 @@ def family_report(family_id: str) -> FamilyReport:
     if best is not None:
         texts["dsr"] = plain.dsr_sentence(len(tries), 1, dsr.dsr if dsr else None, objective=objective,
                                           flat=dsr is None)
+    texts["objective"] = plain.OBJECTIVE_LABELS[objective]
+    texts["trials"] = plain.meaning("trials")
+    texts["dsr_meaning"] = plain.meaning("dsr")           # `dsr` itself is the best try's sentence
+    texts["holdout_unlocks"] = plain.meaning("holdout_unlocks")
     outcome = pbo.family_pbo(family_id, rf_rows)
     overfit = outcome.result
     if overfit is not None:

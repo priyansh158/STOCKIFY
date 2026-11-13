@@ -121,6 +121,24 @@ class ResearchHelperChecks(unittest.TestCase):
         # only a sweep and a walk-forward have a page; any other kind has no link
         self.assertEqual(self.answers["hrefs"]["job"], ["/research/sweeps/sweep-1", "/research/walkforward/wf%2F1%20x", None, None])
 
+    # ---- /research/family helpers, M6 Task 34 ----
+
+    def test_a_family_id_survives_the_link_and_the_page_reads_it_once(self):
+        # ids with "/", "&", "#", a literal "%" and "%25" all come back as written (a second decode would break "100%25")
+        self.assertEqual(self.answers["familyRoundTrip"], [True] * 6)
+        self.assertEqual(self.answers["familyIdParam"], [None, None, None, "a/b", "x/1", None])
+
+    def test_trial_table_words_and_the_loose_rows_are_read_as_text(self):
+        self.assertEqual(self.answers["objective"], ["₹2,500.00", "12.3%", "1.23", "—", "—"])
+        self.assertEqual(self.answers["roles"], ["sensitivity check", "out-of-sample test", "re-run", "odd"])
+        # the owner's reason stays a plain string (the page renders it as text, never as markup); a non-string becomes empty
+        self.assertEqual(self.answers["unlocks"], [
+            {"when_ns": 1_700_000_000_000_000_000, "run_id": "r1", "reason": "<b>final</b> check"},
+            {"when_ns": None, "run_id": None, "reason": ""}])
+        self.assertEqual(self.answers["sessions"], [
+            {"session_id": "s1", "name": "n", "status": "RUNNING", "created_ns": 5},
+            {"session_id": "s2", "name": None, "status": None, "created_ns": None}])
+
     def test_a_capped_list_says_how_many_are_shown_and_stays_quiet_otherwise(self):
         self.assertEqual(self.answers["capNote"], [
             None,
@@ -133,7 +151,7 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_the_data_page_prints_the_launcher_command_with_its_backslash_and_no_stray_carriage_return(self):
         self.assertIn(".\\run.ps1 -DaemonOnly", self.answers["dataPageCommands"])
         self.assertIn("python -m stockify nse fetch --date YYYY-MM-DD", self.answers["dataPageCommands"])
-        self.assertEqual(self.answers["webSourceHasStrayCR"], [False, False, False])
+        self.assertEqual(self.answers["webSourceHasStrayCR"], [False, False, False, False])
 
 
 if __name__ == "__main__":

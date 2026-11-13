@@ -17,8 +17,8 @@ import type {
   SensitivityDTO,
 } from "./types";
 
-export { bucketTone, costScale, familyHref, heatColourStep, jobHref, listCapNote, sentenceOrDash } from "./researchHelpers";
-export type { BucketTone } from "./researchHelpers";
+export { bucketTone, costScale, familyHref, familyIdParam, heatColourStep, jobHref, listCapNote, objectiveText, roleWords, sentenceOrDash, sessionRows, unlockRows } from "./researchHelpers";
+export type { BucketTone, SessionRow, UnlockRow } from "./researchHelpers";
 
 const enc = encodeURIComponent;
 

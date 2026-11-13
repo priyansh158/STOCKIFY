@@ -122,6 +122,13 @@ class RunResearchTests(ReportTest):
         self.assertIn("only try", res.plain["dsr"])
         self.assertEqual(res.dsr.sr0, 0.0)
 
+    def test_family_report_carries_the_meaning_sentences_the_page_shows(self):
+        family_of(3)
+        rep = report.family_report(FAM)
+        for key in ("trials", "holdout_unlocks", "dsr_meaning"):
+            self.assertEqual(rep.plain[key], plain.meaning({"dsr_meaning": "dsr"}.get(key, key)))
+        self.assertEqual(rep.plain["objective"], plain.OBJECTIVE_LABELS["sharpe"])
+
     def test_variants_do_not_change_n(self):
         family_of(3)
         for i in range(5):

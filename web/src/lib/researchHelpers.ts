@@ -71,3 +71,61 @@ export function listCapNote(shown: number, total: number | null, what: string, o
     order === "first" ? "The rest are not listed here." : "Older ones are not listed here."
   }`;
 }
+
+/**
+ * The family id out of the page's `?id=`. Next hands the query over already decoded once (familyHref encoded it once), so
+ * nothing is decoded again here: a second decode would turn an id like "100%25" into "100%". Repeated parameters take the
+ * first; a missing or blank one is null.
+ */
+export function familyIdParam(raw: string | string[] | undefined): string | null {
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+
+/** What a trial table's "score" column holds, in the family's own objective: paise as rupees, growth as a percent, the rest as a ratio. */
+export function objectiveText(value: number | null | undefined, objective: string): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (objective === "net_pnl") return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(value / 100);
+  if (objective === "cagr") return `${(value * 100).toFixed(1)}%`;
+  return value.toFixed(2);
+}
+
+const ROLE_WORDS: Record<string, string> = {
+  sensitivity: "sensitivity check",
+  oos: "out-of-sample test",
+  rerun: "re-run",
+};
+
+/** A run's role in words; a role nobody has named is shown as it is stored. */
+export function roleWords(role: string): string {
+  return ROLE_WORDS[role] ?? role;
+}
+
+export interface UnlockRow {
+  when_ns: number | null;
+  run_id: string | null;
+  reason: string;
+}
+
+export interface SessionRow {
+  session_id: string;
+  name: string | null;
+  status: string | null;
+  created_ns: number | null;
+}
+
+const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
+const ns = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** The unlock log rows as the page reads them (the API sends loose objects). The reason is owner text and stays a string. */
+export function unlockRows(raw: Record<string, unknown>[] | null | undefined): UnlockRow[] {
+  return (raw ?? []).map((r) => ({ when_ns: ns(r.unlock_ns), run_id: text(r.run_id), reason: text(r.reason) ?? "" }));
+}
+
+/** The family's paper sessions as the page reads them; a row without an id is dropped. */
+export function sessionRows(raw: Record<string, unknown>[] | null | undefined): SessionRow[] {
+  return (raw ?? []).flatMap((r) => {
+    const id = text(r.session_id);
+    return id ? [{ session_id: id, name: text(r.name), status: text(r.status), created_ns: ns(r.created_ns) }] : [];
+  });
+}
