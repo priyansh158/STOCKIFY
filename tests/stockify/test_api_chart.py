@@ -12,6 +12,13 @@ import stockify.store as store
 from stockify import paths
 
 
+def mk(**kw) -> str:
+    """A run folder (C10 helper) plus the lab.sqlite row the sibling routes also require."""
+    rid = make_run(**kw)
+    store.create_run({"run_id": rid, "status": "done"})
+    return rid
+
+
 def plot_rows(price: int = 10001, level: int = 543217) -> list[dict]:
     return [{"t_ns": T(9, 15, 5), "instrument_id": 1, "name": "sma", "kind": "price", "value": price},
             {"t_ns": T(9, 17, 5), "instrument_id": 0, "name": "rsi", "kind": "level", "value": level}]
@@ -31,7 +38,7 @@ class ChartApiTests(SandboxedDBTest):
         return self.client.get(f"/api/tests/{rid}/chart", params=q)
 
     def simple(self, **kw):
-        return make_run(orders=[order(1, note="<b>breakout</b> & more"), order(2, side="SELL")],
+        return mk(orders=[order(1, note="<b>breakout</b> & more"), order(2, side="SELL")],
                         fills=[fill(1, 1, T(9, 16, 5), "BUY", 10, 10010), fill(2, 2, T(9, 18, 5), "SELL", 10, 10050)],
                         **kw)
 
@@ -57,7 +64,7 @@ class ChartApiTests(SandboxedDBTest):
     def test_prices_are_exact_rupee_strings(self):
         ev = [{"kind": "BAR", "instrument": 1, "interval_s": 60, "start": T(9, 15), "o": 241840, "h": 241845,
                "l": 5, "c": 100, "v": 7}]
-        rid = make_run(orders=[order(1)], fills=[fill(1, 1, T(9, 15, 30), "BUY", 1, 241840)],
+        rid = mk(orders=[order(1)], fills=[fill(1, 1, T(9, 15, 30), "BUY", 1, 241840)],
                        world={"id": "px", "events": ev}, plots=plot_rows(price=241840, level=-12345))
         text = self.get(rid).text
         d = json.loads(text)
@@ -80,7 +87,7 @@ class ChartApiTests(SandboxedDBTest):
 
     def test_paging_through_next_from_ns(self):
         from stockify.reporting import chart as model
-        rid = make_run(orders=[order(1)], fills=[fill(1, 1, T(9, 15, 30), "BUY", 1, 10000)], world=bar_world(7))
+        rid = mk(orders=[order(1)], fills=[fill(1, 1, T(9, 15, 30), "BUY", 1, 10000)], world=bar_world(7))
         old = model.MAX_BARS
         model.MAX_BARS = 3
         self.addCleanup(setattr, model, "MAX_BARS", old)
@@ -124,7 +131,7 @@ class ChartApiTests(SandboxedDBTest):
 
     def test_settlement_marker_fields(self):
         log = f"{T(15, 30)} INFO settled 1 MIS at FSP 10100 (settle)\n"
-        rid = make_run(orders=[order(1)], fills=[fill(1, 1, T(9, 15, 30), "BUY", 10, 10000)], log=log, instruments=FUT)
+        rid = mk(orders=[order(1)], fills=[fill(1, 1, T(9, 15, 30), "BUY", 10, 10000)], log=log, instruments=FUT)
         d = self.get(rid).json()
         s = d["markers"][1]
         self.assertEqual((s["kind"], s["side"], s["fill_id"], s["order_id"], s["fsp_paise"], s["price"]),
@@ -135,7 +142,7 @@ class ChartApiTests(SandboxedDBTest):
     def test_instrument_kind_comes_from_the_bundle(self):
         kinds = [("FUT", "future"), ("CE", "option"), ("PE", "option"), ("EQ", "equity"), ("WEIRD", None)]
         for raw, want in kinds:
-            rid = make_run(orders=[order(1)], fills=[fill(1, 1, T(9, 16), "BUY", 1, 10000)],
+            rid = mk(orders=[order(1)], fills=[fill(1, 1, T(9, 16), "BUY", 1, 10000)],
                            instruments=[{"id": 1, "tradingsymbol": "X", "kind": raw}])
             self.assertEqual(self.get(rid).json()["instruments"][0]["kind"], want, raw)
 
@@ -163,10 +170,63 @@ class ChartApiTests(SandboxedDBTest):
         self.assertEqual(m["note"], "<b>breakout</b> & more")
 
     def test_run_id_cannot_escape_the_runs_folder(self):
-        for rid in ("..%5C..%5Cx", "%2E%2E%2F%2E%2E%2Fx", "..", "a%00b"):
+        for rid in ("..%5C..%5Cx", "%2E%2E%2F%2E%2E%2Fx", "%2E%2E", "a%00b", "x%2F..%2F..%2Fy"):
             r = self.client.get(f"/api/tests/{rid}/chart")
-            self.assertIn(r.status_code, (404, 422), rid)
-            self.assertNotIn("Traceback", r.text)
+            self.assertEqual(r.status_code, 404, rid)
+            # an id with an encoded slash matches no route at all (the framework's own 404); the rest reach run_path
+            self.assertIn(r.json()["detail"], ("no such test run", "Not Found"), rid)
+        from stockify import paths
+        for bad in ("..\\..\\x", "../x", "a\x00b"):
+            with self.assertRaises(ValueError):
+                paths.run_path(bad)
+
+    def test_a_folder_without_a_run_row_is_an_unknown_run(self):
+        rid = make_run(orders=[order(1)], fills=[fill(1, 1, T(9, 16), "BUY", 1, 10000)])    # no lab.sqlite row
+        self.assertEqual(self.get(rid).status_code, 404)
+
+    def test_no_pack_state(self):
+        d = self.get(self.simple(sha=None)).json()
+        self.assertEqual((d["data_state"], d["bars"]), ("no_pack", []))
+        self.assertTrue(d["plain"])
+
+    def test_interval_over_a_year_and_ns_over_int64_are_422(self):
+        rid = self.simple()
+        for q in ({"interval_s": 366 * 86400 + 1}, {"from_ns": 2**63}, {"to_ns": 2**63}, {"instrument": 2**63}):
+            self.assertEqual(self.get(rid, **q).status_code, 422, q)
+        self.assertEqual(self.get(rid, interval_s=366 * 86400).status_code, 200)
+
+    def test_a_model_value_error_is_a_plain_422(self):
+        from unittest.mock import patch
+        with patch("stockify.reporting.chart.run_chart", side_effect=ValueError("secret C:\\x\\y")):
+            r = self.get(self.simple())
+        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.json(), {"detail": "the chart request is not valid"})
+
+    def test_an_incomplete_profit_always_has_a_notice(self):
+        from server.routers.tests import _chart_dto
+        from stockify.reporting.chart import run_chart
+        m = run_chart(self.simple())
+        self.assertIsNone(m["notice"])
+        m["pnl_complete"] = False                            # a model that says so but gave no sentence
+        d = _chart_dto(m)
+        self.assertTrue(d.notice)
+        self.assertNotIn("Traceback", d.notice)
+        m["notice"] = "kept as is"
+        self.assertEqual(_chart_dto(m).notice, "kept as is")
+
+    def test_literal_fields_refuse_values_the_types_do_not_list(self):
+        from pydantic import ValidationError
+        from server.schemas import ChartInstrumentDTO, ChartPlotDTO
+        with self.assertRaises(ValidationError):
+            ChartInstrumentDTO(id=1, symbol="X", kind="bond")
+        with self.assertRaises(ValidationError):
+            ChartPlotDTO(name="a", kind="volume", instrument_id=1, points=[])
+        self.assertEqual(ChartInstrumentDTO(id=1, symbol="X").kind, None)
+
+    def test_a_continuous_future_is_a_future(self):
+        rid = mk(orders=[order(1)], fills=[fill(1, 1, T(9, 16), "BUY", 1, 10000)],
+                 instruments=[{"id": 1, "tradingsymbol": "NIFTY-I", "kind": "FUT_CONT"}])
+        self.assertEqual(self.get(rid).json()["instruments"][0]["kind"], "future")
 
     def test_fixed_paths_are_not_shadowed(self):
         r = self.client.get("/api/tests/compare")          # the compare route (needs ids), not a run called "compare"

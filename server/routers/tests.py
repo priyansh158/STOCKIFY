@@ -525,11 +525,14 @@ def _chart_dto(m: dict) -> RunChartDTO:
                                   points=[ChartPointDTO(t=t // _NS, value=fmt(v)) for t, v in p["points"]]))
     bars = [ChartBarDTO(t=b["start_ns"] // _NS, d=day(b["start_ns"]), open=_rupees(b["open"]), high=_rupees(b["high"]),
                         low=_rupees(b["low"]), close=_rupees(b["close"]), volume=b["volume"]) for b in m["bars"]]
+    notice = m["notice"]
+    if not m["pnl_complete"] and not notice:
+        notice = "The profit on some trades of this run is not complete here; its metrics have the whole figure."
     return RunChartDTO(
         instruments=[ChartInstrumentDTO(**i) for i in m["instruments"]], instrument_id=m["instrument_id"],
         basis=m["basis"], interval_s=m["interval_s"], bars=bars, markers=markers, plots=plots,
         truncated=m["truncated"], next_from_ns=m["next_from_ns"], data_state=m["data_state"],
-        omitted_markers=m["omitted_markers"], notice=m["notice"], pnl_complete=m["pnl_complete"],
+        omitted_markers=m["omitted_markers"], notice=notice, pnl_complete=m["pnl_complete"],
         skipped_settlements=m["skipped_settlements"], idle_settlements=m["idle_settlements"],
         plain=_CHART_PLAIN.get(m["data_state"]))
 
@@ -549,10 +552,11 @@ def test_chart(run_id: str, instrument: int | None = Query(None, ge=0, le=_INT64
     if from_ns is not None and to_ns is not None and from_ns >= to_ns:
         raise HTTPException(status_code=422, detail="from_ns must be before to_ns")
     try:
-        folder = paths.run_path(run_id)
+        paths.run_path(run_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="no such test run") from None
-    if not folder.is_dir():
+    from stockify import store
+    if store.get_run(run_id) is None or not paths.run_path(run_id).is_dir():     # as the sibling routes: a known run
         raise HTTPException(status_code=404, detail="no such test run")
     try:
         model = chart.run_chart(run_id, instrument, from_ns, to_ns, interval_s=interval_s)

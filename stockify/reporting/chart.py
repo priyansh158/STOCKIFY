@@ -30,7 +30,7 @@ TAIL_BARS = 5_000                  # the window of a run with no marker and no r
 DEFAULT_INTERVAL_S = chartbars.DEFAULT_INTERVAL_S
 _MINUTE_NS = 60 * 1_000_000_000
 # the bundle's instrument kind to what a card says; any other kind (or none) is None, never guessed
-_KINDS = {"EQ": "equity", "ETF": "equity", "FUT": "future", "CE": "option", "PE": "option", "INDEX": "index"}
+_KINDS = {"EQ": "equity", "ETF": "equity", "FUT": "future", "FUT_CONT": "future", "CE": "option", "PE": "option", "INDEX": "index"}
 
 
 class _Fill(NamedTuple):

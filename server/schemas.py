@@ -773,7 +773,7 @@ class WalkforwardDTO(BaseModel):
 class ChartInstrumentDTO(BaseModel):
     id: int
     symbol: str
-    kind: str | None = None
+    kind: Literal["equity", "future", "option", "index"] | None = None
 
 
 class ChartBarDTO(BaseModel):
@@ -798,7 +798,7 @@ class ChartMarkerDTO(BaseModel):
     t: int
     bar_t: int
     bar_d: str
-    side: str
+    side: Literal["BUY", "SELL"]
     qty: int
     price: str
     price_paise: int
@@ -820,7 +820,7 @@ class ChartPointDTO(BaseModel):
 
 class ChartPlotDTO(BaseModel):
     name: str
-    kind: str
+    kind: Literal["price", "level"]
     instrument_id: int
     points: list[ChartPointDTO]
 
@@ -835,7 +835,7 @@ class RunChartDTO(BaseModel):
     plots: list[ChartPlotDTO]
     truncated: bool
     next_from_ns: int | None = None
-    data_state: str
+    data_state: Literal["ok", "pruned", "no_pack", "pack unreadable"]
     omitted_markers: int
     notice: str | None = None
     pnl_complete: bool
