@@ -490,4 +490,60 @@ export interface FamilyDetailDTO {
   holdout_unlocks: Record<string, unknown>[];
   plain: Record<string, string>;
 }
+
+
+export interface CoverageCellDTO {
+  state: string;
+  value?: number | null;
+  detail?: string | null;
+}
+
+export interface CoverageDayDTO {
+  date: string;
+  trading: boolean;
+  cells: Record<string, CoverageCellDTO>;
+}
+
+export interface BarRangeDTO {
+  instrument_id: number;
+  symbol?: string | null;
+  interval: string;
+  from_ns: number;
+  to_ns: number;
+  from_ist: string;
+  to_ist: string;
+  days: number;
+  rows: number;
+}
+
+export interface StorageDTO {
+  landing_bytes: number;
+  archive_bytes: number;
+  refdata_bytes: number;
+  lab_bytes: number;
+  nse_bytes: number;
+  free_bytes: number;
+  total_bytes: number;
+  warnings: string[];
+}
+
+export interface CoverageMatrixDTO {
+  from_date: string;
+  to_date: string;
+  datasets: Record<string, string>[];
+  days: CoverageDayDTO[];
+  bars: BarRangeDTO[];
+  storage: StorageDTO;
+  recorder?: RecorderStatus | null;
+}
+
+export interface GapDTO {
+  start_ns: number;
+  end_ns?: number | null;
+  start_ist: string;
+  duration_s?: number | null;
+  reason?: string | null;
+  scope?: string | null;
+  frames?: number | null;
+}
 // </block>

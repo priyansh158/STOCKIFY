@@ -2,31 +2,37 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
-from server.schemas import (DataQualityResponse, InstrumentQualityDTO, RecorderStatusDTO,
-                            RecorderStatusResponse)
+from server.schemas import (CoverageMatrixDTO, DataQualityResponse, GapDTO, InstrumentQualityDTO,
+                            RecorderStatusDTO, RecorderStatusResponse)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
 
-@router.get("/recorder", response_model=RecorderStatusResponse)
-async def recorder_status() -> RecorderStatusResponse:
-    from stockify import store, timeutil
+def _recorder_dto(row: dict) -> RecorderStatusDTO:
+    from stockify import timeutil
 
-    row = store.latest_recorder_status()
-    if row is None:
-        return RecorderStatusResponse(status=None)
     ages = json.loads(row.get("last_packet_age_ms_json") or "{}")
-    return RecorderStatusResponse(status=RecorderStatusDTO(
+    return RecorderStatusDTO(
         wall_ns=row["wall_ns"], connected=bool(row["connected"]),
         subs_full=row["subs_full"] or 0, subs_quote=row["subs_quote"] or 0,
         packets_per_s=row["packets_per_s"] or 0.0, queue_depth=row["queue_depth"] or 0,
         writer_lag_ms=row["writer_lag_ms"], last_packet_age_ms=ages,
         bytes_today=row["bytes_today"] or 0,
         age_s=max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9),
-    ))
+    )
+
+
+@router.get("/recorder", response_model=RecorderStatusResponse)
+async def recorder_status() -> RecorderStatusResponse:
+    from stockify import store
+
+    row = store.latest_recorder_status()
+    return RecorderStatusResponse(status=None if row is None else _recorder_dto(row))
 
 
 @router.get("/quality", response_model=DataQualityResponse)
@@ -50,3 +56,48 @@ async def data_quality(date: str = Query(..., description="IST trade date YYYY-M
         items.append(InstrumentQualityDTO(instrument_id=iid, symbol=info.get("tradingsymbol"), metrics=metrics))
     return DataQualityResponse(date=day.isoformat(), day=rows.get(0, {}), instruments=items)
 
+
+
+_ISO_DAY = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
+def _day(text: str, name: str) -> date:
+    """Strict YYYY-MM-DD only: date.fromisoformat also takes 20261001 and 2026-W41-1."""
+    if not _ISO_DAY.fullmatch(text):
+        raise HTTPException(status_code=422, detail=f"{name} must be YYYY-MM-DD")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{name} is not a real date")
+
+
+@router.get("/coverage", response_model=CoverageMatrixDTO)
+async def data_coverage(from_: str | None = Query(None, alias="from", description="IST date YYYY-MM-DD"),
+                        to: str | None = Query(None, description="IST date YYYY-MM-DD")) -> CoverageMatrixDTO:
+    """Per date and dataset: recorded, archived, downloaded; plus bar ranges and storage. Read-only."""
+    from stockify import research, timeutil
+    from stockify.reporting import coverage
+
+    cfg = research.settings()["coverage"]
+    default_days, max_days = int(cfg["default_days"]), int(cfg["max_days"])
+    end = _day(to, "to") if to is not None else timeutil.ist_today()
+    start = _day(from_, "from") if from_ is not None else end - timedelta(days=default_days - 1)
+    if start > end:
+        raise HTTPException(status_code=422, detail="from is after to")
+    if (end - start).days + 1 > max_days:
+        raise HTTPException(status_code=422, detail=f"at most {max_days} days at a time")
+    m = coverage.matrix(start, end)
+    body = coverage.to_dict(m)
+    body["recorder"] = _recorder_dto(m.recorder) if m.recorder else None
+    return CoverageMatrixDTO(**body)
+
+
+@router.get("/gaps", response_model=list[GapDTO])
+async def data_gaps(date: str = Query(..., description="IST trade date YYYY-MM-DD")) -> list[GapDTO]:
+    from stockify.reporting import coverage
+
+    day = _day(date, "date")
+    try:
+        return [GapDTO(**g) for g in coverage.gaps(day)]
+    except coverage.NoRecording:
+        raise HTTPException(status_code=404, detail=f"no recording for {day.isoformat()}")
