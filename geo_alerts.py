@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import stockify_paths
+from stockify import dbconn
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -57,22 +58,26 @@ def _db_path():
     return stockify_paths.state_dir() / "geo_alerts.sqlite"
 
 
+def _open() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _init(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA)
+    conn.commit()
+
+
+_pool = dbconn.Pool(__name__, _open, _init)
+
+
 def _connect() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        _conn = conn
-        return _conn
+    """This thread's connection (D-143); writers still take `_lock`."""
+    return _pool.get()
 
 
 def init_db() -> None:
@@ -92,7 +97,7 @@ def mark_seen(
     if not guid:
         return False
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         cur = conn.execute(
             "INSERT OR IGNORE INTO seen_articles "
             "(guid, title, url, source, published_at, first_seen_at, query) "
@@ -207,7 +212,7 @@ def save_alert(
     if not guid:
         return None
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         try:
             cur = conn.execute(
                 "INSERT INTO geo_alerts ("
@@ -235,12 +240,13 @@ def save_alert(
             conn.commit()
             return int(cur.lastrowid)
         except sqlite3.IntegrityError:
+            conn.rollback()          # the failed INSERT left this thread's transaction open, holding the write lock
             return None
 
 
 def mark_emailed(alert_id: int) -> None:
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         conn.execute(
             "UPDATE geo_alerts SET emailed_at = ? WHERE id = ?",
             (int(time.time()), alert_id),
@@ -250,7 +256,7 @@ def mark_emailed(alert_id: int) -> None:
 
 def acknowledge(alert_id: int) -> bool:
     conn = _connect()
-    with _lock:
+    with dbconn.locked_write(_lock, conn):
         cur = conn.execute(
             "UPDATE geo_alerts SET acknowledged_at = ? WHERE id = ?",
             (int(time.time()), alert_id),

@@ -70,7 +70,10 @@ function sideWord(side: string | null | undefined, past = false): string {
 }
 
 function PositionsTable({ rows, tickOf }: { rows: SessionPositionDTO[]; tickOf: (p: SessionPositionDTO) => number | null }) {
+  const note = rows.find((p) => p.names_note)?.names_note;
   return (
+    <>
+    {note && <p className="stk-warn" role="status">{note}</p>}
     <Table
       caption="Positions held now"
       head={[
@@ -104,6 +107,7 @@ function PositionsTable({ rows, tickOf }: { rows: SessionPositionDTO[]; tickOf: 
         );
       })}
     </Table>
+    </>
   );
 }
 

@@ -271,7 +271,7 @@ class SpanValidateTests(SandboxedDBTest):
         with SV.read_only():
             self.assertEqual(len(store.margin_calibrations("NIFTY")), 1)
             self.assertIsNotNone(instruments.find("NFO", "NIFTY26NOVFUT"))
-            for conn in (store._conn, refdata._conn):
+            for conn in (store._conn, refdata._connect()):
                 with self.assertRaises(sqlite3.OperationalError):
                     conn.execute("CREATE TABLE never_written (x)")
         self.assertIs(store._conn, own_store)                      # the modules' own connections come back

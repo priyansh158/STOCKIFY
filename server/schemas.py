@@ -342,6 +342,7 @@ class SessionPositionDTO(BaseModel):
     mark_paise: int | None = None
     unrealised_paise: int | None = None
     source: Literal["eod", "fills"]
+    names_note: str | None = None
 
 
 class SessionTimelineDTO(BaseModel):
@@ -486,6 +487,7 @@ class RunResearchDTO(BaseModel):
     dsr: DsrDTO | None = None
     bootstrap: BootstrapDTO | None = None
     regimes: RegimeReportDTO | None = None
+    regimes_error: str | None = None
     holdout_unlocks: int
     plain: dict[str, str]
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 from dataclasses import asdict, dataclass, field
@@ -28,6 +29,8 @@ from stockify.research import bootstrap, fileio, pbo, plain, regimes, registry, 
 from stockify.research.bootstrap import BootstrapResult, Interval
 from stockify.research.pbo import PboResult
 from stockify.research.stats import DsrResult
+
+_log = logging.getLogger(__name__)
 
 CODE_VERSION = "1"        # bump when the bootstrap or the way its inputs are built changes: it invalidates the cache
 CACHE_NAME = "research.json"
@@ -49,6 +52,7 @@ class RunResearch:
     dsr: DsrResult | None
     bootstrap: BootstrapResult | None
     regimes: regimes.RegimeReport | None
+    regimes_error: str | None       # set only when the split could not be worked out (not when there is nothing to split)
     holdout_unlocks: int
     plain: dict[str, str]
 
@@ -299,24 +303,32 @@ def _bootstrap(run_id: str, row: dict, dates, navs, use_cache: bool, rf_rows: li
     return result
 
 
-def _regimes(run_id: str, dates, navs, capital: int, use_cache: bool) -> regimes.RegimeReport | None:
-    """The regime split, cached under its own key (NAV series, settings, refdata digest, code version): a late
-    bhavcopy recomputes only this, never the bootstrap. A refdata that cannot be read leaves it out."""
+REGIMES_UNAVAILABLE = ("The split could not be worked out just now (the market data could not be read). "
+                       "This is not a statement about the run: reload the page to try again.")
+
+
+def _regimes(run_id: str, dates, navs, capital: int,
+             use_cache: bool) -> tuple[regimes.RegimeReport | None, str | None]:
+    """The regime split and, if it failed, why, cached under its own key (NAV series, settings, refdata digest,
+    code version): a late bhavcopy recomputes only this, never the bootstrap. No daily results is `(None, None)`
+    (a true statement about the run); a refdata that cannot be read is `(None, REGIMES_UNAVAILABLE)` and is
+    logged, never reported as "no daily results" (D-143)."""
     if not navs:
-        return None
+        return None, None
     try:
         path = _cache_path(run_id) if use_cache else None
         key = regimes.cache_key(list(dates), list(navs), capital)
         if path is not None:
             hit = _read_regimes(path, key)
             if hit is not None:
-                return hit
+                return hit, None
         rep = regimes.build(list(dates), list(navs), capital)
         if path is not None:
             _write_regimes(path, key, rep)
-        return rep
+        return rep, None
     except (sqlite3.Error, OSError):
-        return None
+        _log.exception("regime split for %s could not be worked out", run_id)
+        return None, REGIMES_UNAVAILABLE
 
 
 # ── the run report ────────────────────────────────────────────────────────────────────────────
@@ -386,7 +398,7 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
         texts["bootstrap_mean_return"] = plain.interval_sentence("Mean daily return", boot.mean_daily_return, "%",
                                                                  ci=boot.ci)
         texts["bootstrap_max_drawdown"] = plain.interval_sentence("Max drawdown", boot.max_drawdown, "%", ci=boot.ci)
-    reg = _regimes(run_id, dates, navs, capital, use_cache)
+    reg, reg_error = _regimes(run_id, dates, navs, capital, use_cache)
     if reg is not None:
         texts["regimes_caveat"] = plain.REGIME_CAVEAT
         for dim in ("month", "weekday", "expiry", "vix", "gap"):
@@ -397,7 +409,7 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     return RunResearch(run_id=run_id, family_id=family_id, role=role, objective=objective, n_trials=n,
                        rank=rank, is_best=rank == 1, picked_run_id=picked.run_id if picked else None,
                        picked_name=picked.name if picked else None, dsr=res if is_try and not flat else None,
-                       bootstrap=boot, regimes=reg, holdout_unlocks=_unlock_count(family_id), plain=texts)
+                       bootstrap=boot, regimes=reg, regimes_error=reg_error, holdout_unlocks=_unlock_count(family_id), plain=texts)
 
 
 # ── the family report ─────────────────────────────────────────────────────────────────────────

@@ -142,10 +142,15 @@ def create_session(body: CreateSessionBody, _size: None = Depends(_body_cap)) ->
 
 # ── reading sessions ─────────────────────────────────────────────────────────
 
-def _tokens_symbols(day: str, ids: set[int]) -> tuple[dict[int, int], dict[int, str]]:
-    """instrument id -> the Kite token valid on `day`, and -> tradingsymbol, from refdata (empty if it has none)."""
+NAMES_UNREADABLE = ("The instrument names could not be read, so they are shown as instrument numbers and no live "
+                    "price is matched. Reload the page to try again.")
+
+
+def _tokens_symbols(day: str, ids: set[int]) -> tuple[dict[int, int], dict[int, str], str | None]:
+    """instrument id -> the Kite token valid on `day`, and -> tradingsymbol, from refdata (empty if it has none),
+    and a note when refdata could not be read (the positions are still true, only their names are missing)."""
     if not ids:
-        return {}, {}
+        return {}, {}, None
     from stockify.data import refdata
     marks = ",".join("?" * len(ids))
     try:
@@ -158,9 +163,9 @@ def _tokens_symbols(day: str, ids: set[int]) -> tuple[dict[int, int], dict[int, 
         symbols = {r["instrument_id"]: n for r in conn.execute(
             "SELECT instrument_id, tradingsymbol, underlying, kind, expiry, strike_paise FROM instruments "
             f"WHERE instrument_id IN ({marks})", tuple(sorted(ids))) if (n := display_name(dict(r)))}
-    except sqlite3.Error:
-        return {}, {}
-    return tokens, symbols
+    except sqlite3.Error:        # an unreadable refdata is not "no such instrument": say so (D-143)
+        return {}, {}, NAMES_UNREADABLE
+    return tokens, symbols, None
 
 
 def _all_rows(session_id: str, table: str, day: str) -> list[dict]:
@@ -213,13 +218,13 @@ def _positions(session_id: str, day: str) -> list[SessionPositionDTO]:
             raise HTTPException(status_code=409, detail=f"the stored orders or fills of {day} are malformed: "
                                                         "replay the day")
     rows = [r for r in rows if isinstance(r, dict) and _int(r.get("qty")) and _int(r.get("instrument_id")) is not None]
-    tokens, symbols = _tokens_symbols(day, {int(r["instrument_id"]) for r in rows})
+    tokens, symbols, note = _tokens_symbols(day, {int(r["instrument_id"]) for r in rows})
     out = [SessionPositionDTO(trade_date=day, instrument_id=int(r["instrument_id"]),
                               instrument_token=tokens.get(int(r["instrument_id"])),
                               tradingsymbol=symbols.get(int(r["instrument_id"])), product=r.get("product"),
                               qty=int(r["qty"]), avg_price_paise=_int(r.get("avg_price_paise")),
                               mark_paise=_int(r.get("mark_paise")), unrealised_paise=_int(r.get("unrealised_paise")),
-                              source=source) for r in rows]
+                              source=source, names_note=note) for r in rows]
     return sorted(out, key=lambda p: (p.instrument_id, p.product or ""))
 
 

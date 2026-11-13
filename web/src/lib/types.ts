@@ -321,6 +321,7 @@ export interface SessionPositionDTO {
   mark_paise?: number | null;
   unrealised_paise?: number | null;
   source: "eod" | "fills";
+  names_note?: string | null;
 }
 
 export interface SessionTimelineDTO {
@@ -457,6 +458,7 @@ export interface RunResearchDTO {
   dsr: DsrDTO | null;
   bootstrap: BootstrapDTO | null;
   regimes: RegimeReportDTO | null;
+  regimes_error: string | null;
   holdout_unlocks: number;
   plain: Record<string, string>;
 }

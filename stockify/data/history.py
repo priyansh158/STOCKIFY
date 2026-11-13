@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - kite_client is part of the repo
     KITE_AVAILABLE = False
 
 from india_utils import strip_exchange_suffix
-from stockify import numerics, paths, timeutil
+from stockify import dbconn, numerics, paths, timeutil
 from stockify.data import migrate
 
 log = logging.getLogger("stockify.data.history")
@@ -129,21 +129,21 @@ def _db_path():
     return paths.bars_db()
 
 
+def _open() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=dbconn.BUSY_TIMEOUT_S, check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+_pool = dbconn.Pool(__name__, _open, lambda conn: migrate.apply(conn, STORE))
+
+
 def _connect() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        migrate.apply(conn, STORE)
-        _conn = conn
-        return _conn
+    """This thread's connection (D-143: one per thread; the writers still take `_lock`)."""
+    return _pool.get()
 
 
 class _Tx:
