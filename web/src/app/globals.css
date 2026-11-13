@@ -419,7 +419,11 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
 .stk-pick-bar p { margin: 0; }
 .stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
-.stk-table td.stk-pick + td[data-wrap] { min-width: 20rem; }  /* the test name, after the checkbox column (was td:first-child) */
+.stk-table td.stk-pick + td[data-wrap] { min-width: 14rem; }  /* the test name, after the checkbox column (was td:first-child) */
+/* The tests list has 11 columns: let its headers and the start time wrap so the name column gets the width (no scroll at 1440 px). */
+.stk-table:has(td.stk-pick) th, .stk-table:has(td.stk-pick) th.num { white-space: normal; vertical-align: bottom; }
+.stk-table:has(td.stk-pick) th.stk-pick { white-space: nowrap; }
+.stk-table:has(td.stk-pick) td.stk-label:not([data-wrap]) { white-space: normal; min-width: 5.5rem; }
 .stk-cmp td[data-differs], .stk-cmp th[data-differs] { background: var(--tint-warn); }
 .stk-cmp td.stk-cmp-verdict { white-space: nowrap; color: var(--color-muted); }
 .stk-cmp td.stk-cmp-verdict[data-differs] { color: var(--color-warn); font-weight: 600; }
