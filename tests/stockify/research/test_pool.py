@@ -245,6 +245,91 @@ class DefaultWorkersTests(unittest.TestCase):
                 self.assertEqual(pool.default_workers(req), want)
 
 
+class WallTimeLimitTests(BundleTest):
+    """XI 6.45: a child that runs past research.json `pool.max_run_hours` is killed, with its tree, and failed."""
+
+    def setUp(self):
+        super().setUp()
+        support.reset_sqlite_singleton(store)
+        self.addCleanup(support.reset_sqlite_singleton, store)
+        FakePopen.live = FakePopen.peak = 0
+        FakePopen.calls, FakePopen.script, FakePopen.instances = [], {}, []
+        p = mock.patch.object(pool, "_POLL_SECONDS", 0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def fake_clock(self, step):
+        ticks = iter(range(0, 10 ** 9, step))
+        p = mock.patch.object(pool, "_now", lambda: next(ticks))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_child_past_the_limit_is_killed_and_failed_with_a_plain_reason_and_the_others_go_on(self):
+        FakePopen.script = {"j0": {"polls": 10 ** 9}, "j1": {"polls": 1, "out": rp("r1")}}
+        self.fake_clock(1000)
+        with mock.patch.object(pool, "_max_run_seconds", return_value=5):
+            a, b = pool.run_all([PoolJob({"name": "c0"}, job_id="j0"), PoolJob({"name": "c1"}, job_id="j1")],
+                                workers=2, popen=FakePopen)
+        self.assertEqual((a.status, a.run_id), ("failed", None))
+        self.assertRegex(a.error, r"^stopped after .* hours? \(the pool\.max_run_hours limit in research\.json\)$")
+        self.assertTrue(FakePopen.instances[0].killed)
+        self.assertEqual(b, PoolOutcome("r1", "done", None))
+
+    def test_the_limit_comes_from_the_setting_in_hours(self):
+        cfg = {**research.settings(), "pool": {"max_run_hours": 3}}
+        with mock.patch.object(research, "settings", return_value=cfg):
+            self.assertEqual(pool._max_run_seconds(), 3 * 3600)
+        self.assertEqual(pool._max_run_seconds(), 6 * 3600)
+
+    def test_a_child_inside_the_limit_is_left_alone(self):
+        FakePopen.script = {"j0": {"polls": 3, "out": rp("r0")}}
+        self.fake_clock(1)
+        with mock.patch.object(pool, "_max_run_seconds", return_value=10_000):
+            (o,) = pool.run_all([PoolJob({"name": "c0"}, job_id="j0")], popen=FakePopen)
+        self.assertEqual(o.status, "done")
+        self.assertFalse(FakePopen.instances[0].killed)
+
+    def test_the_runs_row_the_child_had_started_is_marked_failed_too(self):
+        store.create_run({"run_id": "stuck", "name": "c0", "status": "running", "job_id": "j0",
+                          "started_ns": 1, "role": "trial"})
+        (paths.run_dir("stuck") / "runner.pid").write_text("999999 123\n", encoding="utf-8")
+        store.create_run({"run_id": "other", "name": "c9", "status": "running", "started_ns": 1})
+        (paths.run_dir("other") / "runner.pid").write_text("888888 123\n", encoding="utf-8")
+        FakePopen.script = {"j0": {"polls": 10 ** 9}}
+
+        class WithPid(FakePopen):
+            pid = 999999
+        self.fake_clock(1000)
+        with mock.patch.object(pool, "_max_run_seconds", return_value=5), \
+                mock.patch.object(pool, "_kill", side_effect=lambda proc: proc.kill()):
+            pool.run_all([PoolJob({"name": "c0"}, job_id="j0")], popen=WithPid)
+        row = store.get_run("stuck")
+        self.assertEqual(row["status"], "failed")
+        self.assertRegex(row["error"], r"^stopped after .* hours? \(the pool\.max_run_hours limit")
+        self.assertEqual(store.get_run("other")["status"], "running")        # another process's run is untouched
+
+    def test_a_real_sleeping_child_and_its_tree_are_killed_at_a_tiny_limit(self):
+        import subprocess
+        import time
+        children = []
+
+        def sleeper(cmd, *, stdout, stderr, env):
+            code = ("import subprocess, sys, time; "
+                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); time.sleep(120)")
+            proc = subprocess.Popen([sys.executable, "-c", code], stdout=stdout, stderr=stderr, env=env)
+            children.append(proc)
+            return proc
+
+        started = time.monotonic()
+        with mock.patch.object(pool, "_max_run_seconds", return_value=1.5), \
+                mock.patch.object(pool, "_POLL_SECONDS", 0.05):
+            (o,) = pool.run_all([PoolJob({"name": "c0"}, job_id="j0")], popen=sleeper)
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(o.status, "failed")
+        self.assertTrue(o.error.startswith("stopped after"), o.error)
+        self.assertIsNotNone(children[0].poll())                    # the child is gone
+
+
 class VariantNeedsARealJobTests(BundleTest):
     """A role other than trial takes a run out of N, so only a real research job may give one (queue and launch)."""
 

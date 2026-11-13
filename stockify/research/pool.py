@@ -24,6 +24,46 @@ def _sleep() -> None:
     time.sleep(_POLL_SECONDS)
 
 
+def _now() -> float:
+    return time.monotonic()
+
+
+def _max_run_seconds() -> float:
+    """research.json `pool.max_run_hours`, in seconds: the longest one child may run."""
+    from stockify import research
+    return research.settings()["pool"]["max_run_hours"] * 3600
+
+
+def _timeout_reason(seconds: float) -> str:
+    hours = seconds / 3600
+    unit = "hour" if hours == 1 else "hours"
+    return f"stopped after {hours:g} {unit} (the pool.max_run_hours limit in research.json)"
+
+
+def _fail_started_run(job: "PoolJob", pid: object, reason: str) -> None:
+    """The killed child may have left its `runs` row `running`: mark the one whose runner.pid is this child's pid
+    failed. A best effort (a store or folder problem must not stop the pool); another process's run is never touched."""
+    if not isinstance(pid, int):
+        return
+    try:
+        from stockify import paths, proc, store, timeutil
+        offset = 0
+        while True:
+            page = store.list_runs(status="running", offset=offset, limit=200)
+            if not page:
+                return
+            for row in page:
+                if job.job_id is not None and row.get("job_id") != job.job_id:
+                    continue
+                held = proc.read_pidfile(paths.run_path(row["run_id"]))
+                if held is not None and held[0] == pid:
+                    store.update_run(row["run_id"], only_if_status="running", status="failed",
+                                     finished_ns=timeutil.now_ns(), error=reason)
+            offset += len(page)
+    except Exception:  # noqa: BLE001
+        return
+
+
 @dataclass(frozen=True)
 class PoolJob:
     config: dict
@@ -97,6 +137,7 @@ def _kill(proc) -> None:  # noqa: ANN001
 class _Live:
     def __init__(self, index: int, proc, out, err, out_path: Path, err_path: Path) -> None:  # noqa: ANN001
         self.index, self.proc, self.out, self.err, self.out_path, self.err_path = index, proc, out, err, out_path, err_path
+        self.started = _now()
 
     def close(self) -> None:
         for f in (self.out, self.err):
@@ -121,7 +162,8 @@ def _outcome(live: _Live, code: int) -> PoolOutcome:
 def run_all(jobs: list[PoolJob], *, workers: int | None = None, popen=subprocess.Popen,  # noqa: ANN001
             tmp_dir: Path | None = None) -> list[PoolOutcome]:
     """Run every job as `python -m stockify run`, at most `workers` at once (default_workers(workers)); outcomes in
-    input order. Exit 0 is done; 1 (run failed), 2 (config refused, a locked holdout included) and anything else
+    input order. A child that runs longer than `pool.max_run_hours` is killed with its tree and failed (its `runs`
+    row too, when it had made one). Exit 0 is done; 1 (run failed), 2 (config refused, a locked holdout included) and anything else
     (a crash, a negative code) are failed with stderr's last line as the error. KeyboardInterrupt kills every live
     child, waits for it, removes the temp files and re-raises."""
     from stockify import paths
@@ -168,9 +210,17 @@ def run_all(jobs: list[PoolJob], *, workers: int | None = None, popen=subprocess
                     continue
                 live.append(_Live(i, proc, out, err, out_path, err_path))
             still = []
+            max_seconds = _max_run_seconds()
             for item in live:
                 code = item.proc.poll()
-                if code is None:
+                if code is None and _now() - item.started > max_seconds:
+                    reason = _timeout_reason(max_seconds)
+                    pid = getattr(item.proc, "pid", None)
+                    _kill(item.proc)
+                    _fail_started_run(jobs[item.index], pid, reason)
+                    item.close()
+                    results[item.index] = PoolOutcome(None, "failed", reason)
+                elif code is None:
                     still.append(item)
                 else:
                     results[item.index] = _outcome(item, code)
