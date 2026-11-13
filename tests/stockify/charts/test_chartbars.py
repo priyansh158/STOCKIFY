@@ -273,6 +273,24 @@ class ChartBarsTests(unittest.TestCase):
             with self.assertRaises(packs.PackError):
                 records_of_pack("../x")                                  # not a pack hash
 
+    def test_a_torn_journal_tail_is_ignored_and_left_alone(self):
+        import itertools
+        from stockify.daemon import journal
+        from stockify.reporting.chartbars import records_of_journal
+        ticks = itertools.count(0, 10)
+        with tempfile.TemporaryDirectory(prefix="cb10-") as tmp:
+            path = Path(tmp) / "day.journal"
+            w = journal.JournalWriter(path, fsync_every_mono_ns=1_000, mono=lambda: next(ticks))
+            w.append([(1_000 + i, packs.RANK[packs.CLOCK], packs.enc_clock(0)) for i in range(10)])
+            w.close(finalise=False)
+            whole = path.read_bytes()
+            want = records_of_journal(path)
+            self.assertEqual(len(want), 10)
+            path.write_bytes(whole[:-7])                                 # the last record is cut short
+            got = records_of_journal(path)
+            self.assertEqual(got, want[:9])                              # only whole records
+            self.assertEqual(path.read_bytes(), whole[:-7])              # and nothing was repaired or removed
+
 
 def records_of_pack_path(path: Path) -> list[dict]:
     return packs.read(path)[1]

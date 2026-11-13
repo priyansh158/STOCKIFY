@@ -38,6 +38,8 @@ def bars_from_records(records: Iterable[dict], instrument_id: int, *, interval_s
     smallest present when None). Otherwise the bars are built at `interval_s` (60 when None) and the second value
     is None; `anchors` maps an IST date to the CONTINUOUS start (ns) of that day, and a day without one makes no bars.
     """
+    if interval_s is not None and (isinstance(interval_s, bool) or not isinstance(interval_s, int) or interval_s <= 0):
+        raise ValueError(f"interval_s must be a whole number of seconds above 0, not {interval_s!r}")
     real: dict[int, list[Bar]] = {}
     acc: dict[int, list[int]] = {}
     isec = interval_s or DEFAULT_INTERVAL_S

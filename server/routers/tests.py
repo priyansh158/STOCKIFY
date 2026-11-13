@@ -7,7 +7,6 @@ Fixed paths (`/api/tests/compare`, …) are declared before `/api/tests/{run_id}
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +15,9 @@ from fastapi import APIRouter, Body, HTTPException, Query, Response
 from server.routers.research import _clean, run_research_dto
 from server.schemas import (ComparisonDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
+from stockify.reporting.settlements import DELIVERED as _DELIVERED  # noqa: F401  (still importable from here)
+from stockify.reporting.settlements import SETTLED as _SETTLED  # noqa: F401
+from stockify.reporting.settlements import read_settlements
 
 router = APIRouter(tags=["tests"])
 
@@ -340,13 +342,6 @@ def test_charges(run_id: str, offset: int = Query(0, ge=0),
     return out
 
 
-# Expiry settlements and deliveries, as the engines log them (identical lines on both, A4 §7):
-#   "<t_ns> INFO settled <instrument> <product> at FSP <price> (<source>)"
-#   "<t_ns> INFO delivered <stock> CNC <BUY|SELL> <units> at <price> (<source>)"
-_SETTLED = re.compile(r"^(\d+) INFO settled (\d+) (\w+) at FSP (-?\d+) \((\w+)\)$")
-_DELIVERED = re.compile(r"^(\d+) INFO delivered (\d+) (\w+) (BUY|SELL) (\d+) at (-?\d+) \((\w+)\)$")
-
-
 @router.get("/api/tests/{run_id}/margin", response_model=list[TestMarginDTO])
 def test_margin(run_id: str) -> list[TestMarginDTO]:
     """margin_daily.csv: one row per day and underlying (SPAN-lite runs; a flat-margin run writes none)."""
@@ -381,20 +376,18 @@ def test_settlements(run_id: str) -> list[TestSettlementDTO]:
                 key = (c["instrument_id"], c["trade_date"])
                 charges[key] = charges.get(key, 0) + (c["total"] or 0)
     out = []
-    with (folder / "events_log.txt").open(encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.rstrip("\r\n")
-            if m := _SETTLED.match(line):
-                t, iid, product, price, source = int(m[1]), int(m[2]), m[3], int(m[4]), m[5]
-                day = _ist_date(t)
-                out.append(TestSettlementDTO(t_ns=t, t_ist=_ist(t) or "", trade_date=day, kind="cash", instrument_id=iid,
-                                             tradingsymbol=symbols.get(iid), product=product, price_paise=price,
-                                             source=source, charges_paise=charges.get((iid, day))))
-            elif m := _DELIVERED.match(line):
-                t, iid = int(m[1]), int(m[2])
-                out.append(TestSettlementDTO(t_ns=t, t_ist=_ist(t) or "", trade_date=_ist_date(t), kind="delivery",
-                                             instrument_id=iid, tradingsymbol=symbols.get(iid), product=m[3],
-                                             side=m[4], qty=int(m[5]), price_paise=int(m[6]), source=m[7]))
+    for st in read_settlements(folder):
+        day = _ist_date(st.t_ns)
+        if st.kind == "cash":
+            out.append(TestSettlementDTO(t_ns=st.t_ns, t_ist=_ist(st.t_ns) or "", trade_date=day, kind="cash",
+                                         instrument_id=st.instrument_id, tradingsymbol=symbols.get(st.instrument_id),
+                                         product=st.product, price_paise=st.price_paise, source=st.source,
+                                         charges_paise=charges.get((st.instrument_id, day))))
+        else:
+            out.append(TestSettlementDTO(t_ns=st.t_ns, t_ist=_ist(st.t_ns) or "", trade_date=day, kind="delivery",
+                                         instrument_id=st.instrument_id, tradingsymbol=symbols.get(st.instrument_id),
+                                         product=st.product, side=st.side, qty=st.qty, price_paise=st.price_paise,
+                                         source=st.source))
     return out
 
 

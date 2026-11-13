@@ -96,6 +96,7 @@ cd web; npm run lint; npm run build
 - [x] CH 6.6 The shipped Python strategies say why they trade and draw their own lines (`note=` on every order, `ctx.plot` in sma_cross and the opening-range breakout; the exact sentences are D-95, for the C++ twins to copy).
 - [x] CH 6.7 The C++ twins `orb_cpp` and `sma_cross_cpp` write the same notes and plots as their Python originals, byte for byte (the sentences are D-95).
 - [x] CH 6.9 Display bars read back from a run's own pack or journal with the runner's bucketing (`stockify/oracle/bars.py`, `stockify/reporting/chartbars.py`; D-123); `_build_bars` changes no artifact byte.
+- [x] CH 6.10 A run's chart model: its own bars, a marker per fill and per expiry settlement with the note, costs and trade profit, and its plotted lines (`stockify/reporting/chart.py`, `stockify/reporting/settlements.py`; D-124).
 
 ## Definition of done
 
