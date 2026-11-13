@@ -817,6 +817,7 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
         "instruments": instruments_rows,
         "charges": charges, "broker_policy": policy, "margin_params": margin, "pricing": pricing,
         "packs": pack_rows, "strategy": strategy_ref(cfg), "labels": sorted(set(labels)), "sod_state": None,
+        "system_notes": loader.load_json("system_notes.json")["notes"],     # CH 6.2: words for orders the broker makes
     }
     if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
         skipped: dict[str, list[dict]] = {}

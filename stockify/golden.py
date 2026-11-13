@@ -150,6 +150,7 @@ def _bundle_strategy(s: dict) -> dict:
 
 def build_bundle(g: dict) -> dict:
     from stockify import bundle as bundle_mod
+    from stockify.config import loader
     b = g["bundle"]
     run = {"schema": "stockify.run/1", "name": g["id"], "strategy": {"kind": "script", "actions": []},
            "data": {"packs": [{"sha256": "0" * 64}]}, "capital_paise": 10_000_000, "price_basis": "raw",
@@ -219,7 +220,7 @@ def build_bundle(g: dict) -> dict:
            "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
            "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
            "packs": [], "strategy": _bundle_strategy(run["strategy"]),
-           "labels": [], "sod_state": None}
+           "labels": [], "sod_state": None, "system_notes": loader.load_json("system_notes.json")["notes"]}
     for key in ("span", "span_skipped", "elm"):     # NSE SPAN / ELM sections as written (A1 §6.2; MEZ 4.10 fuzz)
         if key in b:
             out[key] = copy.deepcopy(b[key])

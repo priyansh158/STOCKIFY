@@ -7,7 +7,7 @@ derivative traded NRML), `product` (CNC for equities, NRML for futures), `lots`
 """
 from __future__ import annotations
 
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, fmt_price, fmt_qty
 
 
 class SmaCross(Strategy):
@@ -24,7 +24,8 @@ class SmaCross(Strategy):
 
     def on_start(self, ctx):  # noqa: ANN001
         p = ctx.params
-        self.iid = ctx.resolve(p["symbol"])
+        self.symbol = p["symbol"]
+        self.iid = ctx.resolve(self.symbol)
         self.isec = int(p.get("interval_s", 86400))
         self.fast, self.slow = int(p["fast"]), int(p["slow"])
         self.long_short = bool(p.get("long_short", False))
@@ -43,6 +44,8 @@ class SmaCross(Strategy):
         slow = ctx.sma(self.iid, self.isec, self.slow)
         if fast != fast or slow != slow:                        # NaN during warm-up
             return
+        ctx.plot("fast", int(fast), instrument=self.iid)       # the averages are positive paise: int() truncates
+        ctx.plot("slow", int(slow), instrument=self.iid)
         pos = ctx.position(self.iid, self.product)
         held = pos.qty if pos else 0
         if fast > slow:
@@ -52,7 +55,19 @@ class SmaCross(Strategy):
         else:
             want = 0
         delta = want - held
+        if delta == 0:
+            return
+        qty = fmt_qty(abs(delta))
+        near = " just" if int(fast) == int(slow) else ""          # the printed paise are equal, the averages are not
+        move = f"rose{near} above" if fast > slow else f"fell{near} below" if fast < slow else "is level with"
+        why = (f"the {self.fast}-bar average {fmt_price(int(fast))} {move} "
+               f"the {self.slow}-bar average {fmt_price(int(slow))}")
         if delta > 0:
-            ctx.place(self.iid, "BUY", delta, self.product, "MARKET", tag="entry" if held >= 0 else "flip")
-        elif delta < 0:
-            ctx.place(self.iid, "SELL", -delta, self.product, "MARKET", tag="exit" if want >= 0 else "flip")
+            lead = f"Bought {qty} {self.symbol}" if held >= 0 else f"Flipped to long {fmt_qty(want)} {self.symbol}"
+            ctx.place(self.iid, "BUY", delta, self.product, "MARKET", tag="entry" if held >= 0 else "flip",
+                      note=f"{lead}: {why}")
+        else:
+            lead = (f"Sold {qty} {self.symbol}" if want >= 0 else f"Flipped to short {fmt_qty(-want)} {self.symbol}"
+                    if held > 0 else f"Sold short {qty} {self.symbol}")
+            ctx.place(self.iid, "SELL", -delta, self.product, "MARKET", tag="exit" if want >= 0 else "flip",
+                      note=f"{lead}: {why}")

@@ -1,0 +1,8 @@
+{
+  "schema": "stockify.system_notes/1",
+  "notes": {
+    "AUTO_SQOFF": "Closed by the broker's 15:20 auto square-off",
+    "RMS_SQOFF": "Closed by the broker's risk system",
+    "SETTLEMENT": "Settled at expiry at {price}"
+  }
+}

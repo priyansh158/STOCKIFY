@@ -97,7 +97,7 @@ def _rows(db_path, sql: str, args: tuple = ()) -> list:  # noqa: ANN001
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+        conn = sqlite3.connect(paths.readonly_uri(db_path), uri=True, timeout=5.0)
     except sqlite3.Error:
         return []
     try:

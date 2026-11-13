@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
-import tests.support  # noqa: F401  — must precede project imports
+import tests.support as support  # noqa: F401  — must precede project imports
 
 from stockify import runconfig, strategy as S
 
@@ -59,6 +59,39 @@ class HowtoTests(unittest.TestCase):
             return out
         body = source[source.index("from stockify import timeutil"):]
         self.assertEqual(code(shown), code(body))
+
+    def test_the_say_why_examples_pass_the_load_check_and_run(self):
+        """Section 1's two examples (`note=` and `ctx.plot`) are checked, run on a small world, and show their effect."""
+        import csv
+        import tempfile
+        from stockify import golden
+        from stockify.oracle import run_bundle
+        from tests.stockify.test_strategies import DAYS, daily
+        text = HOWTO.read_text(encoding="utf-8")
+        section = text.split("### Say why:", 1)[1].split("\n## ", 1)[0]
+        blocks = [b.split("```", 1)[0] for b in section.split("```python\n")[1:]]
+        self.assertEqual(len(blocks), 2)
+        g = {"id": "T", "bundle": {"dates": DAYS[:4], "instruments": [
+            {"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": [{"from": "2026-01-01", "lot": 1, "tick_paise": 5}]}]},
+             "run": {"fill_model": {"kind": "bar"}, "capital_paise": 10_000_000, "price_basis": "raw"},
+             "events": [daily(d, c) for d, c in zip(DAYS[:4], (10000, 10100, 10200, 10300))], "strategy": {"actions": []}}
+        out = {}
+        for block, params in zip(blocks, ({"symbol": "NSE:TEST", "below": 10100}, {"symbol": "NSE:TEST"})):
+            self.assertEqual(S.check_source(block), [])
+            namespace: dict = {}
+            exec(compile(block, "<howto>", "exec"), namespace)                                  # noqa: S102
+            cls = next(v for v in namespace.values() if isinstance(v, type) and issubclass(v, S.Strategy) and v is not S.Strategy)
+            with tempfile.TemporaryDirectory(dir=str(support.SANDBOX_ROOT)) as tmp:
+                pack = golden.build_pack(g, Path(tmp))
+                b = golden.build_bundle(g)
+                b["strategy"]["params"] = params
+                run_bundle(b, [pack], Path(tmp) / "run", strategy=cls(), report=False)
+                for name in ("orders.csv", "plots.csv"):
+                    with (Path(tmp) / "run" / name).open(encoding="utf-8", newline="") as fh:
+                        out[(cls.__name__, name)] = list(csv.DictReader(fh))
+        self.assertEqual([o["note"] for o in out[("BuyBelow", "orders.csv")]], ["Bought 1: the close 100.00 fell under 101.00"])
+        self.assertEqual([p["value"] for p in out[("DrawAverage", "plots.csv")]], ["10100", "10200"])
+        self.assertEqual({p["name"] for p in out[("DrawAverage", "plots.csv")]}, {"sma3"})
 
 
 if __name__ == "__main__":

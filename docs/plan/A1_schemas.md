@@ -368,6 +368,7 @@ The last two read NSE's SPAN files from the bundle (§6.2); both engines run the
   "broker_policy": { "...": "rows effective in range (§7.5)" },
   "margin_params": { "...": "§7.6" },
   "pricing": { "...": "§7.7" },
+  "system_notes": { "AUTO_SQOFF": "…", "RMS_SQOFF": "…", "SETTLEMENT": "… {price}" },
   "packs": [ { "sha256": "…", "path": "packs/….evt", "price_basis": "adjusted" } ],
   "strategy": { "kind": "python", "ref": "…", "source_sha256": "…", "params": {} },
   "labels": [ "fill:bar", "margin:flat(approx)", "charges:unverified_rows" ],
@@ -458,13 +459,14 @@ yet"), never a fallback to flat.
 | File | Deterministic (A4 §9) | Content |
 |---|---|---|
 | `run.json`, `bundle.json` | input | as above |
-| `orders.csv` | ✔ | `order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason` |
+| `orders.csv` | ✔ | `order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason,note` (`note`: the strategy's own cleaned text, `""` when none; a folder saved before CH 6.2, D-92, has no such column and reads as `""`) |
 | `order_events.csv` | ✔ | `t_ns,order_id,event,detail` |
 | `fills.csv` | ✔ | `fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence` (evidence: `bar_open`, `bar_path`, `vwap_int`, `ltp`, `book_lvl_<k>`, `book_cross`, `trade_through`, `eod_close`) |
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
 | `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,underlying_mark_paise` (the last: a derivative's underlying mark at DAY_END, empty otherwise; D-55) |
 | `equity.csv` | ✔ | `trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise` |
 | `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with F&O legs at DAY_END (NRML ones, and any MIS future or option still open then: one book, A4 §6.5, D-80), none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons. Under `live_with_fallback` (MEZ 5.1, D-69) a journaled Kite margin answer (REFDATA `margin_requirement`, §5) for exactly the book at DAY_END that is at most `margin.live_fresh_s` old at that moment replaces the rows with one: `underlying_id` 0, `step` `L1_kite`, `scan` = `span_paise`, `somc` 0, `elm` = `exposure_paise`, `addons` = `additional_paise`; the premium is not margin (D-62). Otherwise the staircase rows with their B-step. DAY_END is normally hours after the session, so the staircase rows are the usual case) |
+| `plots.csv` | ✔ | `t_ns,instrument_id,name,kind,value` (CH 6.4, D-94: the points a strategy plotted with `ctx.plot(name, value, *, kind="price", instrument=0)`, one per series and event time (the last call wins), sorted by `(t_ns, instrument_id, name)`; `instrument_id` 0 is the whole run; `kind` is `price` (value in paise) or `level` (value in 1/10,000 units); `value` an int64; at most 8 series and 200,000 points per run, the call beyond each ignored with one `events_log.txt` line; header only when nothing was plotted; a folder saved before CH 6.4 has no such file) |
 | `metrics.json` | ✔ (floats; A4 §9.3) | A4 §8 |
 | `events_log.txt` | ✔ | strategy and engine log lines stamped with engine time |
 | `determinism.json` | — | SHA-256 of each deterministic file |
@@ -527,6 +529,7 @@ An **order record** has exactly these fields (A4 §3; the enum spellings are the
 | `validity` | `"DAY"` \| `"IOC"` |
 | `protection` | `"AUTO"` or int bp |
 | `tag`, `reason` | string, `""` when none (never null) |
+| `note` | string, `""` when none (never null): the strategy's words for why, cleaned by `clean_note` (CH 6.2/6.3: carried in `sod_state` like the tag; the one key a reader treats as optional: a state written before CH 6.3 has none and loads with `""`, and both runners always write it) |
 | `status` | `"PENDING"` \| `"OPEN"` \| `"TRIGGER_PENDING"` \| `"COMPLETE"` \| `"CANCELLED"` \| `"REJECTED"` \| `"SLICED"` |
 | `limit`, `protection_bp` | int or null |
 | `from_market`, `triggered`, `first_eligible_done`, `charged` | boolean |
