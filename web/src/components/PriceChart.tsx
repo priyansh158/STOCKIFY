@@ -649,7 +649,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       )}
       {state === "pruned" && (
         <p className="stk-pricechart-notice" role="note">
-          {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge))}
+          {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge), Boolean(meta?.live))}
         </p>
       )}
       {state === "empty" && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}

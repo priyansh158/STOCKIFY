@@ -30,6 +30,8 @@ class DisplayNameTests(unittest.TestCase):
         self.assertEqual(display_name({**OPT, "strike_paise": 2450050}), "NIFTY 24500.50 CE (9 Nov 2026)")
         self.assertEqual(display_name({**FUT, "tradingsymbol": None}), "NIFTY FUT (26 Nov 2026)")
         self.assertIsNone(display_name({"id": 1, "tradingsymbol": None}))
+        self.assertEqual(display_name({"tradingsymbol": None, "underlying": "RELIANCE", "kind": "EQ"}), "RELIANCE")
+        self.assertEqual(display_name({"tradingsymbol": None, "underlying": "NIFTY 50", "kind": "INDEX"}), "NIFTY 50")
         self.assertIsNone(display_name(None))
 
 
@@ -66,6 +68,17 @@ class InstrumentNamesTests(SandboxedDBTest):
         d = self.client.get(f"/api/tests/{rid}/chart").json()
         self.assertEqual(d["instruments"][0]["symbol"], "instrument 1")
 
+
+    def test_a_run_without_an_evidence_column_has_no_close_basis(self):
+        o, f = order(1, iid=707289), fill(1, 1, T(9, 16), "SELL", 65, 18480, iid=707289)
+        rid = make_run(orders=[o], fills=[f], instruments=[OPT])
+        store.create_run({"run_id": rid, "status": "done"})
+        store.replace_run_rows(rid, orders=[o], fills=[f], equity=[], charges=[])
+        from stockify import paths
+        p = paths.run_path(rid) / "fills.csv"
+        p.write_text("fill_id,order_id,t_ns,instrument_id,side,qty,price_paise" + chr(10) + "1,1,1,707289,SELL,65,18480" + chr(10), encoding="utf-8")
+        got = self.client.get(f"/api/tests/{rid}/fills").json()
+        self.assertEqual((got[0]["evidence"], got[0]["at_close"]), ("", False))
 
     def test_fills_carry_their_own_reason_and_close_basis(self):
         o1, o2 = order(1, iid=707289, note="Sell the straddle", tag="entry"), order(2, iid=5, side="BUY", tag="exit")
@@ -106,6 +119,12 @@ class RunViewHelperChecks(unittest.TestCase):
         self.assertEqual(self.r["whyNote"], {"text": "Range broke up", "tag": None})
         self.assertEqual(self.r["whyNone"], {"text": "Sold 65 (no note from the strategy)", "tag": "entry"})
         self.assertEqual(self.r["whyBare"], {"text": "Bought 3 (no note from the strategy)", "tag": None})
+
+    def test_live_session_without_prices_says_they_have_not_arrived(self):
+        live, past, pruned = self.r["pruned"]
+        self.assertIn("No prices have arrived yet", live)
+        self.assertIn("No price data was recorded", past)
+        self.assertIn("no longer on disk", pruned)
 
     def test_chart_hint_only_when_a_chart_is_drawn_and_lacks_the_fill(self):
         none, hint, marked, undrawn = self.r["hints"]

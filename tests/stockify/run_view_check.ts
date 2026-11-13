@@ -26,6 +26,7 @@ out.close = v.fillWhen(fill({ at_close: true }));
 // the same stamp on a fill that is not a close model reads as a time, whatever the clock says
 out.intraday = v.fillWhen(fill({ at_close: false }));
 out.closeOther = v.fillWhen(fill({ at_close: true, t_ist: "2026-10-12T20:30:00+05:30" }));
+out.pruned = [chart.prunedWords("no_pack", true, true), chart.prunedWords("no_pack", true, false), chart.prunedWords("pruned", true, true)];
 out.hints = [v.chartHint(false, null), v.chartHint(true, null), v.chartHint(true, "f1"), v.chartHint(false, "f1")];
 out.whyNote = chart.whyOf(fill({ note: "Range broke up", tag: "orb" }));
 out.whyNone = chart.whyOf(fill({ tag: "entry" }));

@@ -442,7 +442,7 @@ def display_name(info: dict | None) -> str | None:
     if strike is not None:
         rupees, paise = divmod(int(strike), 100)
         parts.append(f"{rupees}" if paise == 0 else f"{rupees}.{paise:02d}")
-    if info.get("kind"):
+    if info.get("kind") and info["kind"] not in ("EQ", "ETF", "INDEX"):
         parts.append(str(info["kind"]))
     name = " ".join(parts)
     exp = info.get("expiry")

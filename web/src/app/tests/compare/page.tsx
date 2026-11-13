@@ -82,7 +82,11 @@ function Value({ v, field }: { v: string | null; field?: string }) {
     );
   }
   // the strategy is shown by its name, as the run page and the list do, not by its import path
-  return <span className="stk-cmp-mono">{field === "strategy.ref" ? strategyName(v) : settingWords(v)}</span>;
+  return (
+    <span className="stk-cmp-mono" title={field === "strategy.ref" ? v : undefined}>
+      {field === "strategy.ref" ? strategyName(v) : settingWords(v)}
+    </span>
+  );
 }
 
 function Verdict({ differs }: { differs: boolean }) {

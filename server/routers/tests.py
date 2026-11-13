@@ -120,27 +120,38 @@ def _symbols(row: dict) -> dict[int, str]:
     return {r["id"]: n for r in rows if isinstance(r, dict) and "id" in r and (n := display_name(r))}
 
 
+_EVIDENCE_CACHE: dict[tuple, dict[int, str]] = {}      # (path, mtime, size) -> fill id -> evidence; a finished run's file never changes
+_EVIDENCE_LOCK = __import__("threading").Lock()
+
+
 def _fill_evidence(row: dict, fill_ids: set[int]) -> dict[int, str]:
     """fill id → how the engine priced it (the `evidence` column of the run folder's fills.csv, A1), for `fill_ids`.
-    The stored fills table does not carry it. Streams the file and stops once every id is found; empty when the
+    The stored fills table does not carry it. Read once per (path, mtime, size) and cached; empty when the
     folder or the column is not there."""
     import csv
     folder = _folder(row)
     path = folder / "fills.csv" if folder else None
     if path is None or not path.exists() or not fill_ids:
         return {}
-    out: dict[int, str] = {}
-    with path.open(encoding="utf-8", newline="") as f:
-        for r in csv.DictReader(f):
-            try:
-                fid = int(r["fill_id"])
-            except (KeyError, ValueError):
-                continue
-            if fid in fill_ids:
-                out[fid] = r.get("evidence") or ""
-                if len(out) == len(fill_ids):
-                    break
-    return out
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    with _EVIDENCE_LOCK:
+        table = _EVIDENCE_CACHE.get(key)
+    if table is None:
+        table = {}
+        with path.open(encoding="utf-8", newline="") as f:
+            rd = csv.DictReader(f)
+            if "evidence" in (rd.fieldnames or ()):     # an older run has no such column: nothing to read
+                for r in rd:
+                    try:
+                        table[int(r["fill_id"])] = r.get("evidence") or ""
+                    except (KeyError, ValueError):
+                        continue
+        with _EVIDENCE_LOCK:
+            if len(_EVIDENCE_CACHE) >= 4:
+                _EVIDENCE_CACHE.clear()
+            _EVIDENCE_CACHE[key] = table
+    return {i: table[i] for i in fill_ids if i in table}
 
 
 _CHUNK = 1 << 20
