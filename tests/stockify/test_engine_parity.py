@@ -183,7 +183,7 @@ def _cases():
 
 
 CSV_AND_LOG = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
-               "margin_daily.csv", "events_log.txt")
+               "margin_daily.csv", "plots.csv", "events_log.txt")
 
 
 def assert_same_artifacts(test: unittest.TestCase, oracle_dir: Path, engine_dir: Path) -> None:

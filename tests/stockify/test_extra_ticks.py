@@ -41,6 +41,14 @@ class ValidationTests(unittest.TestCase):
                         runconfig.RunConfigError, "extra_ticks"):
                     _cfg({**slip, "extra_ticks": bad})
 
+    def test_random_ticks_k_stops_where_the_engine_draw_does(self):
+        """CH 6.8: the engine draws below(k + 1) as a uint32, so a larger k would wrap there; both refuse it."""
+        _cfg({"kind": "random_ticks", "k": 2**32 - 2})
+        for bad in (2**32 - 1, 2**32, 2**63):
+            with self.subTest(k=bad), self.assertRaisesRegex(runconfig.RunConfigError, "slippage.k"):
+                _cfg({"kind": "random_ticks", "k": bad})
+        _cfg({"kind": "fixed_ticks", "k": 2**32})      # fixed_ticks has no draw: the engine's checked_mul bounds it
+
 
 class SlippedTests(unittest.TestCase):
     def test_slipped_adds_extra_ticks_for_each_kind(self):
