@@ -253,3 +253,111 @@ def pbo_sentence(pbo: float | None, n_trials: int, n_total: int | None = None) -
     tries = f"based on {n_trials} of {n_total} tries" if n_total and n_total > n_trials else f"{n_trials} tries"
     return (f"in {_percent_text(p)} of the ways to split your days in two, the try that looked best on one half "
             f"landed at or below the middle on the other ({tries})")
+
+
+# ---- sensitivity (M6.7, FW 6.4) ---------------------------------------------------------------------------------
+
+def _signed(paise: int) -> str:
+    """Rupees with an explicit sign: +₹41,200, -₹3,100, ₹0."""
+    return ("+" if paise > 0 else "") + rupees(paise / 100)
+
+
+def _words_scale(scale: str, kind: str) -> str:
+    """The cost multiplier in words. `kind`: "break" (if all costs ...), "survive" (N times all costs), "run"."""
+    d = Decimal(scale).normalize()
+    text = format(d, "f")
+    if kind == "survive":
+        return f"{text} times all costs"
+    if kind == "run":
+        return f"{text}-times-costs"
+    if d == Decimal("1.5"):
+        return "all costs rise by half"
+    if d == 2:
+        return "all costs double"
+    return f"all costs are {text} times as high"
+
+
+def _words_ticks(ticks: int, kind: str) -> str:
+    one = ticks == 1
+    n = "one" if one else str(ticks)
+    if kind == "run":
+        return f"{n}-extra-tick" if one else f"{n}-extra-ticks"
+    return f"{n} extra tick{'' if one else 's'}" + (" of slippage" if kind in ("break", "survive") else "")
+
+
+def _plain_reason(error: str | None) -> str | None:
+    """A stored error as a short clause, or None when it is empty or looks like a raw log line (code names,
+    paths, a traceback, a long text): better to say nothing than to show that."""
+    text = (error or "").strip().rstrip(".")
+    if not text or len(text) > 120 or any(c in text for c in ("_", "/", chr(92), chr(10), chr(13))) or "Traceback" in text:
+        return None
+    return text
+
+
+def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001
+                     fragile_extra_ticks: int | None = None) -> str:
+    """One plain sentence for a SensitivityResult, true to its verdict (stockify.research.sensitivity._verdict):
+    fragile = the run made money and turns negative with all costs multiplied by the configured scale or with the
+    configured number of extra slippage ticks; robust = both of those held; inconclusive = neither flipped but one
+    could not be run (so it is not called robust); already_losing = nothing to break. The two checks default to the
+    research settings and can be passed (the stored result file carries them)."""
+    from stockify.research import sensitivity as _s
+    if fragile_cost_scale is None or fragile_extra_ticks is None:
+        scale, ticks = _s._fragile_settings(_s._settings())
+        fragile_cost_scale = scale if fragile_cost_scale is None else fragile_cost_scale
+        fragile_extra_ticks = ticks if fragile_extra_ticks is None else fragile_extra_ticks
+    rows = {r.key: r for r in result.rows}
+    base = result.baseline_net_paise
+    verdict = result.verdict
+    if verdict == "already_losing":
+        if base == 0:
+            return f"Made no money ({_signed(base)}), so there is nothing to break; it is not called fragile."
+        return f"Already losing money ({_signed(base)}), so there is nothing to break; it is not called fragile."
+    checks = ((_s.variant_key("costs", fragile_cost_scale), "costs"),
+              (_s.variant_key("slippage", fragile_extra_ticks), "ticks"))
+
+    def phrase(axis: str, kind: str) -> str:
+        return (_words_scale(fragile_cost_scale, kind) if axis == "costs"
+                else _words_ticks(fragile_extra_ticks, kind))
+
+    def outcome(key: str) -> tuple[str, int | None, str | None]:
+        row = rows.get(key)
+        if row is None:                                   # the check is the baseline itself
+            return "done", base, None
+        return (row.status, row.net_pnl_paise if row.status == "done" else None, row.error)
+
+    results = [(axis, *outcome(key)) for key, axis, in checks]
+    if verdict == "fragile":
+        broke = [(axis, net) for axis, status, net, _e in results if status == "done" and net is not None and net < 0]
+        if not broke:
+            raise ValueError("a fragile result has no check below zero")
+        parts = []
+        for n, (axis, net) in enumerate(broke):
+            lead = "Breaks " if n == 0 else "It also breaks "
+            word = phrase(axis, "break")
+            joint = f"if {word}" if axis == "costs" else f"with {word}"
+            parts.append(f"{lead}{joint}: net P&L turns from {_signed(base)} to {_signed(net)}.")
+        return " ".join(parts)
+    if verdict == "robust":
+        nets = [net for _, status, net, _e in results if status == "done" and net is not None]
+        if len(nets) != 2:
+            raise ValueError("a robust result needs both checks")
+        if base < 0 or any(n < 0 for n in nets):
+            raise ValueError("a robust result has a check below zero")
+        return (f"Survives {phrase('costs', 'survive')} and {phrase('ticks', 'survive')}: net P&L does not turn "
+                f"negative ({_signed(nets[0])} and {_signed(nets[1])}, from {_signed(base)}).")
+    if verdict == "inconclusive":
+        clauses = []
+        for axis, status, _net, error in results:
+            if status == "done":
+                continue
+            what = phrase(axis, "survive")
+            if status == "not_applicable":
+                why = _plain_reason(error)
+                clauses.append(f"{what} couldn't be run for this strategy" + (f" ({why})" if why else ""))
+            else:
+                clauses.append(f"the run with {what} didn't finish")
+        if not clauses:
+            raise ValueError("an inconclusive result has every check run")
+        return f"Can't say yet: {'; and '.join(clauses)}, so it isn't called robust."
+    raise ValueError(f"unknown sensitivity verdict {verdict!r}")

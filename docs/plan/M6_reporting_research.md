@@ -51,7 +51,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 > The `costs.scale` run-config key the costs row needs is done (FW 6.1, D-90, `bundle.scale_charges`); the suite itself is Tasks 14 to 16. `fill_model.slippage.extra_ticks` (FW 6.2, D-91) is done on both runners; the engine must be rebuilt before Task 16.
 
-- [x] (suite and CLI done, `stockify/research/sensitivity.py`, FW 6.3; the API and wording are Task 16) `python -m stockify sensitivity --run <id>` re-runs with costs × {0, 1, 1.5, 2}, slippage + {0, 1, 2} ticks, latency {0, 250, 1000} ms, and every applicable fill model; prints a table and flags a strategy as **fragile** if its net P&L turns negative under costs × 1.5 or one extra tick.
+- [x] (suite and CLI done, `stockify/research/sensitivity.py`, FW 6.3; the API and plain sentence done, `GET /api/tests/{id}/sensitivity` and `plain.fragile_sentence`, FW 6.4) `python -m stockify sensitivity --run <id>` re-runs with costs × {0, 1, 1.5, 2}, slippage + {0, 1, 2} ticks, latency {0, 250, 1000} ms, and every applicable fill model; prints a table and flags a strategy as **fragile** if its net P&L turns negative under costs × 1.5 or one extra tick.
 
 ## M6.8 Bootstrap confidence intervals (S)
 

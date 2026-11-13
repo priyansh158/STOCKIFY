@@ -13,8 +13,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query, Response
 
-from server.routers.research import run_research_dto
-from server.schemas import (ComparisonDTO, RunResearchDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
+from server.routers.research import _clean, run_research_dto
+from server.schemas import (ComparisonDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 
 router = APIRouter(tags=["tests"])
@@ -264,6 +264,37 @@ def test_research(run_id: str) -> RunResearchDTO:
     bootstrap is cached in the run folder's research.json, so this GET may write that derived file."""
     _row_or_404(run_id)
     return run_research_dto(run_id)
+
+
+@router.get("/api/tests/{run_id}/sensitivity", response_model=SensitivityDTO)
+def test_sensitivity(run_id: str) -> SensitivityDTO:
+    """The stored sensitivity.json of a finished run, with one plain sentence. Read-only: it never runs the suite.
+    A missing, unreadable or malformed file is the same 404 (a hand-edited file must not become a 500)."""
+    from stockify import paths
+    from stockify.research import plain, sensitivity
+    try:
+        folder = paths.run_path(run_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"no test run {run_id!r}")
+    _row_or_404(run_id)
+    not_run = HTTPException(status_code=404,
+                            detail=f"not run yet; run `python -m stockify sensitivity --run {run_id}`")
+    try:
+        d = _clean(json.loads((folder / "sensitivity.json").read_text(encoding="utf-8")))
+        if d["run_id"] != run_id or d["verdict"] not in sensitivity.VERDICTS:
+            raise ValueError("not this run's result")
+        rows = [sensitivity.SensitivityRow(**{k: r[k] for k in ("key", "axis", "label", "run_id", "status",
+                                                                  "net_pnl_paise", "sharpe", "delta_net_paise",
+                                                                  "error")}) for r in d["rows"]]
+        result = sensitivity.SensitivityResult(run_id, d["job_id"], rows, d["baseline_net_paise"],
+                                               bool(d["fragile"]), d["verdict"], list(d["reasons"]))
+        text = plain.fragile_sentence(result, fragile_cost_scale=d["fragile_cost_scale"],
+                                      fragile_extra_ticks=d["fragile_extra_ticks"])
+        return SensitivityDTO(run_id=run_id, job_id=d["job_id"], rows=[SensitivityRowDTO(**r) for r in d["rows"]],
+                              baseline_net_paise=d["baseline_net_paise"], fragile=result.fragile,
+                              verdict=d["verdict"], reasons=result.reasons, plain=text)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
+        raise not_run
 
 
 @router.get("/api/tests/{run_id}/orders", response_model=list[dict[str, Any]])
