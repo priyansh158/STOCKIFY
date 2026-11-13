@@ -406,7 +406,7 @@ _SESSION_CHART_PLAIN = {
 
 @router.get("/api/trade/sessions/{session_id}/chart", response_model=SessionChartDTO)
 def session_chart(session_id: str, instrument: str | None = Query(None),
-                  trade_date: str | None = Query(None)) -> SessionChartDTO:
+                  trade_date: str | None = Query(None), interval_s: str | None = Query(None)) -> SessionChartDTO:
     """One instrument of one paper-session day as bars (read incrementally from the day's journal), a marker per paper
     fill with the strategy's note, and each closing fill's trade profit (CH 6.13). Same wire format as a run's chart
     (`/api/tests/{run_id}/chart`: times in UTC seconds, prices as exact rupee strings) plus `trade_date`, `days` (for the
@@ -414,6 +414,8 @@ def session_chart(session_id: str, instrument: str | None = Query(None),
     read, is a 200 with `data_state`. Read-only; no id, path or exception text is echoed."""
     from server.routers.tests import _chart_dto
     from stockify.reporting import chart_session
+    if interval_s is not None:                       # the day is drawn at the bars its journal holds: refuse, do not ignore
+        raise HTTPException(status_code=422, detail="this chart does not take interval_s")
     if instrument is not None and not (_INSTRUMENT.fullmatch(instrument) and int(instrument) <= 2**63 - 1):
         raise HTTPException(status_code=422, detail="the chart request is not valid")      # (a typed Query would echo the input)
     try:

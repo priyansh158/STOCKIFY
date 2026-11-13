@@ -12,13 +12,15 @@ import tests.support  # noqa: F401  — must precede project imports
 
 REPO = Path(__file__).resolve().parents[2]
 CHECK = Path(__file__).with_name("research_check.ts")
+HOOK = Path(__file__).with_name("ts_resolve_hook.mjs").as_uri()
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed: the research helper checks need it")
 class ResearchHelperChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        out = subprocess.run(["node", str(CHECK)], capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=REPO)
+        out = subprocess.run(["node", "--import", str(HOOK), str(CHECK)], capture_output=True, text=True, encoding="utf-8",
+                             timeout=60, cwd=REPO)
         assert out.returncode == 0, out.stderr
         cls.answers = json.loads(out.stdout)
 
@@ -121,6 +123,29 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(d["label"], ["Wed 7 Oct", "Thu 1 Jan", "nonsense"])
         self.assertEqual(d["parse"], ["2026-10-07", None, None, None, None, None, None])
         self.assertEqual(d["range"], [60, 30, 60, 180, 60, 60, 60])
+
+    def test_earlier_stops_at_the_earliest_day_the_lab_holds_and_the_links_say_their_size(self):
+        d = self.answers["days"]
+        # the window starts 2026-09-15: a day before it is held -> the previous window ends the day before; none held -> no link
+        self.assertEqual(d["earlier"], ["2026-09-14", None, None, "2026-09-14"])
+        self.assertEqual(d["linkLabels"], ["Earlier 60 days", "Later 30 days"])
+
+    def test_the_data_window_pages_back_by_whole_windows_and_never_into_the_future(self):
+        from datetime import date, timedelta
+        d = self.answers["days"]
+        # no date, a past date, today, a future date, an impossible date and rubbish: today unless the date is a real past day
+        self.assertEqual(d["windowEnd"], ["2026-11-13", "2026-06-30", "2026-11-13", "2026-11-13", "2026-11-13", "2026-11-13"])
+        for n, w in zip((30, 60, 180), d["windows"]):
+            a, b = w["a"], w["b"]
+            span = lambda x: (date.fromisoformat(x["to"]) - date.fromisoformat(x["from"])).days + 1   # noqa: E731
+            self.assertEqual((span(a), span(b)), (n, n))
+            self.assertEqual(a["to"], "2026-11-13")
+            self.assertEqual(date.fromisoformat(a["from"]) - timedelta(days=1), date.fromisoformat(b["to"]))   # no gap, no overlap
+            self.assertEqual(a["earlier"], b["to"])
+            self.assertLessEqual(n, 400)                                                                        # the API's max_days
+            self.assertEqual(w["later"][0], None)                      # the newest window has nothing later
+            self.assertEqual(w["later"][1], a["to"])                   # stepping later from the older one lands on it
+            self.assertEqual(w["later"][2], "2026-11-13")              # a step past today stops at today
         self.assertEqual(self.answers["worst"], [1, 4, 5, 3])  # lowest coverage first, ties by id, no figure last
 
     def test_a_quality_report_with_errors_says_so_and_names_what_is_hidden(self):
@@ -166,7 +191,19 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["apiPath"], [
             "/api/research/families/sweep/j1", "/api/research/families/strat/ds-1m-RELIANCE/sharpe",
             "/api/research/families/100%2525", "/api/research/families/a%20b/c%3Fd%23e",
-            "/api/research/families/a/%2E/b", "/api/research/families/x/%2E%2E/y"])
+            None, None])
+
+    def test_a_dot_segment_is_refused_not_encoded_because_the_url_parser_folds_it(self):
+        by_id = {d["id"]: d for d in self.answers["dotIds"]}
+        for bad in ("a/./b", "x/../y", "..", ".", "%2E%2E", "a/%2e/b", "a/%2E%2E/b"):
+            self.assertTrue(by_id[bad]["refused"], bad)
+        for good in ("ok/id", "a..b/c.d", "100%25", "%E0%A4%A"):
+            d = by_id[good]
+            self.assertFalse(d["refused"], good)
+            self.assertTrue(d["under"], good)
+            self.assertEqual(d["slashes"][0], d["slashes"][1], f"{good}: the parser folded the path {d['path']}")
+        self.assertEqual(self.answers["pathSegs"], [
+            "refused:RangeError", "refused:RangeError", "refused:RangeError", "refused:RangeError", "a%20b", "a.b", "100%2525"])
 
     def test_scores_are_ranked_best_first_with_ties_and_missing_scores_left_unranked(self):
         self.assertEqual(self.answers["ranks"], [1, 5, 2, 2, None, None, 4])

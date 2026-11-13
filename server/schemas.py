@@ -716,6 +716,7 @@ class CoverageMatrixDTO(BaseModel):
     recorder: RecorderStatusDTO | None = None
     errors: list[str] = []
     error_stores: list[str] = []
+    earliest_date: str | None = None
 
 
 class GapDTO(BaseModel):
@@ -870,7 +871,9 @@ class WalkforwardChartWindowDTO(BaseModel):
     """One window's test range: UTC seconds `from_t` (inclusive) to `to_t` (exclusive), the IST dates `from_d` and
     `to_d` (inclusive), and the test run drawn there (None when it has no chart: see `status`). `result` and `no_sharpe`
     are the walk-forward report's own words for the window; `excluded` is the reason a window the summary leaves out
-    (no stitched test) is not drawn, else None."""
+    (no stitched test) is not drawn, else None. `session_open_s`: seconds after IST midnight at which the cash (CM)
+    session opens on the window's first day (sessions.json, dated), where the page puts the shading point of a day with
+    no bars; None when the config has none."""
     index: int
     from_t: int
     to_t: int
@@ -881,6 +884,7 @@ class WalkforwardChartWindowDTO(BaseModel):
     result: str = ""
     no_sharpe: str = ""
     excluded: str | None = None
+    session_open_s: int | None = None
 
 
 class WalkforwardChartDTO(RunChartDTO):

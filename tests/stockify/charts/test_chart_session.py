@@ -453,6 +453,11 @@ class SessionChartApiTests(SandboxedDBTest):
         self.assertEqual((d["trade_date"], d["data_state"], d["bars"]), (DAY2, "no_pack", []))
         self.assertIn("Paper trading: no real orders", d["plain"])
 
+    def test_an_interval_this_chart_cannot_honour_is_refused_not_ignored(self):
+        self.world()
+        for v in ("60", "0", "x"):
+            self.assertEqual(self.get(trade_date=DAY, interval_s=v).status_code, 422, v)
+
     def test_unknown_session_404_and_bad_date_422(self):
         self.world()
         for r in (self.get("nosuch"), self.get(trade_date="2026-03-09"), self.get(instrument=99)):

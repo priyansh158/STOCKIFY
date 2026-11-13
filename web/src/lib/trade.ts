@@ -4,6 +4,7 @@
  * With NEXT_PUBLIC_STOCKIFY_FIXTURES=1 the list page answers from small fixtures so it can be built without the API.
  */
 import { api } from "./api";
+import { pathSegment } from "./pathSeg";
 import type {
   CommandStatusDTO,
   KiteStatus,
@@ -20,7 +21,7 @@ import type {
 } from "./types";
 
 const FIXTURES = process.env.NEXT_PUBLIC_STOCKIFY_FIXTURES === "1";
-const sid = (id: string) => encodeURIComponent(id);
+const sid = pathSegment;
 
 const FIXTURE_SESSIONS: SessionDTO[] = [
   {

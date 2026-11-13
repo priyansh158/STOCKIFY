@@ -137,6 +137,18 @@ class CoverageTest(SandboxedDBTest):
                          ["nse_fo", "nse_cm", "nse_idx"])
         self.assertTrue(all(d["label"] for d in m.datasets))
 
+    def test_the_earliest_date_the_lab_holds_is_the_oldest_of_ticks_files_and_bars(self):
+        self.assertIsNone(coverage.matrix(FROM, TO).earliest_date)
+        put_nse("udiff", date(2026, 9, 20), "ok")
+        self.assertEqual(coverage.matrix(FROM, TO).earliest_date, "2026-09-20")
+        put_day(date(2026, 9, 1))
+        self.assertEqual(coverage.matrix(FROM, TO).earliest_date, "2026-09-01")
+        with history._Tx() as c:
+            c.execute("INSERT INTO bar_fetch_log VALUES (7, 'day', ?, ?, 3, ?, 'ok')", (T0 - 90 * DAY_NS, T0, T0))
+            c.execute("INSERT INTO bar_fetch_log VALUES (8, 'day', ?, ?, 0, ?, 'error')", (T0 - 900 * DAY_NS, T0, T0))
+        self.assertEqual(coverage.matrix(FROM, TO).earliest_date, "2026-06-23")       # the failed fetch does not count
+        self.assertEqual(coverage.to_dict(coverage.matrix(FROM, TO))["earliest_date"], coverage.matrix(FROM, TO).earliest_date)
+
     def test_bar_ranges_per_instrument(self):
         with history._Tx() as c:
             for iid, interval, a, b, rows in ((7, "minute", T0, T0 + 3 * DAY_NS, 100),
@@ -328,7 +340,7 @@ class CoverageApiTests(SandboxedDBTest):
         r = self.client.get("/api/data/coverage?from=2026-10-01&to=2026-10-07")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["from_date", "to_date", "datasets", "days", "bars", "storage", "recorder", "errors", "error_stores"])
+        self.assertEqual(list(j), ["from_date", "to_date", "datasets", "days", "bars", "storage", "recorder", "errors", "error_stores", "earliest_date"])
         self.assertEqual((j["errors"], j["error_stores"]), ([], []))
         self.assertEqual(len(j["days"]), 7)
         self.assertEqual(list(j["days"][0]), ["date", "trading", "cells"])

@@ -1,4 +1,5 @@
 /** Pure helpers for the research pages. No imports of the fetch wrapper, so Node can run them directly in the checks. */
+import { pathSegments } from "./pathSeg";
 import type { RegimeBucketDTO, SweepHeatmapDTO } from "./types";
 
 /** Which of `steps` equal bands of [min, max] a value falls in (0 to steps-1). Out of range clamps; a flat range or NaN is 0. */
@@ -182,12 +183,13 @@ export function sessionRows(raw: Record<string, unknown>[] | null | undefined): 
 }
 
 /**
- * The API path of one family. The id keeps its "/" (the route is a path), every segment is encoded, and a segment that is
- * "." or ".." is written out as %2E so that fetch cannot fold it into a different family's path.
+ * The API path of one family, or null for an id that cannot be asked for. The id keeps its "/" (the route is a path) and
+ * every segment is encoded. A segment that is "." or ".." (or %2E, %2e, %2E%2E, which the URL parser reads the same way)
+ * is refused: no encoding stops fetch folding it into a different path.
  */
-export function familyApiPath(id: string): string {
-  const seg = (s: string) => (s === "." ? "%2E" : s === ".." ? "%2E%2E" : encodeURIComponent(s));
-  return `/api/research/families/${id.split("/").map(seg).join("/")}`;
+export function familyApiPath(id: string): string | null {
+  const path = pathSegments(id);
+  return path === null ? null : `/api/research/families/${path}`;
 }
 
 /** 1 = best. Equal scores share a rank; a missing or non-finite score has none. */

@@ -294,6 +294,10 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(out["markers"][0]["bar_start_ns"], T(9, 16))
 
 
+NOT_RECORDED = ("This run does not record its bar interval, so these bars are rebuilt at 1 minute and may differ from "
+                "what the strategy used.")
+
+
 class G10GoldenTests(unittest.TestCase):
     """Index options held to expiry: a long ITM call, a long OTM call and a short ITM put (G10)."""
 
@@ -435,7 +439,7 @@ class DataStateTests(unittest.TestCase):
         self.assertEqual([chart(rid)["interval_s"], len(chart(rid)["bars"])], [60, 10])
         five = chart(rid, interval_s=300)
         self.assertEqual((five["interval_s"], len(five["bars"])), (300, 2))
-        self.assertIsNone(five["notice"])
+        self.assertEqual(five["notice"], NOT_RECORDED.replace("at 1 minute", "at 5 minutes"))
 
     def test_plots_come_with_their_series_inside_the_window(self):
         plots = [{"t_ns": T(9, 15, 5), "instrument_id": 1, "name": "sma", "kind": "price", "value": 10001},
@@ -507,6 +511,159 @@ class PagingTests(unittest.TestCase):
         rid = self._run(59_000)
         out = chart(rid, 1, self.first, None)                                  # the first page holds no fill
         self.assertEqual((out["markers"], out["omitted_markers"], out["truncated"]), ([], 1, True))
+
+
+SMA = "stockify.strategies.sma_cross:SmaCross"
+ORB = "stockify.strategies.opening_range_breakout:OpeningRangeBreakout"
+EOD = "stockify.strategies.eod_short_straddle:EodShortStraddle"
+
+
+def _tick_run(strategy: dict | None, *, minutes: int = 40) -> tuple[str, dict]:
+    """A tick-dataset run folder whose bundle names `strategy` (None: the bundle's script), built from a pack of
+    TICK_QUOTE events on instrument 1 every 20 s from 09:15. Returns (run id, the world's events)."""
+    ticks = {"id": "TK", "events": [{"kind": "TICK_QUOTE", "instrument": 1, "t": T(9, 15) + s * NS, "ltp": 10000 + s % 97,
+                                     "volume": 10 * s} for s in range(0, minutes * 60, 20)]}
+    spec = [{"from": "2026-01-01", "lot": 1, "tick_paise": 5}]
+    bundle = golden.build_bundle({"id": "TK", "bundle": {"dates": [DAY], "instruments": [
+        {"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": spec}]}, "events": ticks["events"],
+        "strategy": {"actions": []}})
+    extra = {k: bundle[k] for k in ("days", "prev_days", "next_days") if k in bundle}
+    if strategy is not None:
+        extra["strategy"] = strategy
+    return make_run(world=ticks, bundle=extra), ticks
+
+
+class StrategyIntervalTests(unittest.TestCase):
+    """CH 6.2x (U-1, U-2): a tick run's bars are built at the strategy's own bar interval."""
+
+    def test_a_five_minute_strategy_shows_the_runners_own_five_minute_bars(self):
+        from tests.stockify.charts.test_chartbars import _Watcher
+        w = _Watcher()
+        ticks = {"id": "TK", "events": [{"kind": "TICK_QUOTE", "instrument": 1, "t": T(9, 15) + s * NS,
+                                         "ltp": 10000 + (s * 7) % 53, "volume": 10 * s} for s in range(0, 2400, 20)]}
+        spec = [{"from": "2026-01-01", "lot": 1, "tick_paise": 5}]
+        g = {"id": "TK", "bundle": {"dates": [DAY], "instruments": [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST",
+                                                                        "specs": spec}]},
+             "events": ticks["events"], "strategy": {"actions": []}}
+        with tempfile.TemporaryDirectory(prefix="c6-u1-") as tmp:
+            pack = golden.build_pack(g, Path(tmp))
+            sha = install_pack(g)
+            bundle = golden.build_bundle(g)
+            bundle["packs"] = [{"sha256": sha, "path": f"packs/{sha}.evt"}]
+            bundle["strategy"] = {"kind": "python", "ref": SMA, "params": {"interval_s": 300}, "source_sha256": "0" * 64}
+            folder = paths.run_path("c6-u1")
+            oracle_run(bundle, [pack], folder, strategy=w, report=False)
+        out = chart("c6-u1", 1)
+        want = w.seen[(1, 300)]
+        self.assertGreater(len(want), 5)
+        self.assertEqual(out["interval_s"], 300)
+        self.assertEqual([(b["start_ns"], b["open"], b["high"], b["low"], b["close"], b["volume"]) for b in out["bars"]],
+                         want)
+        self.assertIsNone(out["notice"])
+
+    def test_the_interval_is_read_from_the_bundles_params_then_the_strategys_default_then_a_minute(self):
+        from stockify.reporting.chart import strategy_interval
+        self.assertEqual(strategy_interval({"strategy": {"kind": "python", "ref": SMA, "params": {"interval_s": 900}}}), 900)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "python", "ref": SMA, "params": {}}}), 86400)
+        self.assertIsNone(strategy_interval({"strategy": {"kind": "script", "ref": None, "params": {}}}))
+        self.assertIsNone(strategy_interval({"strategy": {"kind": "python", "ref": SMA, "params": {"interval_s": 0}}}))
+        self.assertIsNone(strategy_interval({"strategy": {"kind": "python", "ref": SMA, "params": {"interval_s": True}}}))
+        self.assertIsNone(strategy_interval({}))
+        self.assertIsNone(strategy_interval(None))
+
+    def test_a_run_with_no_strategy_interval_stays_on_minute_bars_and_says_so(self):
+        rid, _ = _tick_run(None)
+        out = chart(rid)
+        self.assertEqual((out["interval_s"], len(out["bars"])), (60, 40))
+        self.assertEqual(out["notice"], NOT_RECORDED)
+
+    def test_a_script_strategy_that_subscribes_to_many_intervals_gets_the_notice(self):
+        rid, _ = _tick_run({"kind": "script", "ref": None, "params": {}, "actions": []})
+        self.assertEqual(chart(rid)["notice"], NOT_RECORDED)
+
+    def test_a_strategy_with_a_fixed_subscription_declares_it(self):
+        from stockify.reporting.chart import strategy_interval
+        self.assertEqual(strategy_interval({"strategy": {"kind": "python", "ref": ORB, "params": {}}}), 60)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "python", "ref": EOD, "params": {}}}), 86400)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "cpp", "ref": "orb_cpp", "params": {}}}), 60)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "cpp", "ref": "sma_cross_cpp", "params": {"interval_s": 300}}}), 300)
+
+    def test_a_fixed_subscription_strategy_is_charted_at_its_interval_without_a_notice(self):
+        rid, _ = _tick_run({"kind": "python", "ref": EOD, "params": {}})
+        out = chart(rid)
+        self.assertEqual((out["interval_s"], out["notice"]), (86400, None))
+        rid, _ = _tick_run({"kind": "python", "ref": ORB, "params": {}})
+        self.assertEqual((chart(rid)["interval_s"], chart(rid)["notice"]), (60, None))
+
+    def test_a_bar_pack_without_the_strategys_interval_says_which_bars_are_shown(self):
+        rid = make_run(world=bar_world(5), bundle={"strategy": {"kind": "python", "ref": SMA, "params": {"interval_s": 300}}})
+        out = chart(rid)
+        self.assertEqual(out["interval_s"], 60)
+        self.assertEqual(out["notice"], "The strategy used 5-minute bars, but this run holds 60-second bars only; they are shown instead.")
+        plain = make_run(world=bar_world(5))
+        self.assertIsNone(chart(plain)["notice"])                       # no strategy interval known: the bars it saw
+
+    def test_a_caller_interval_that_differs_says_the_bars_were_rebuilt(self):
+        rid, _ = _tick_run({"kind": "python", "ref": SMA, "params": {"interval_s": 300}})
+        out = chart(rid, interval_s=60)
+        self.assertEqual(out["interval_s"], 60)
+        self.assertEqual(out["notice"], "These bars were rebuilt at 1 minute; the strategy traded on 5-minute bars.")
+        self.assertEqual(chart(rid, interval_s=900)["notice"],
+                         "These bars were rebuilt at 15 minutes; the strategy traded on 5-minute bars.")
+        self.assertIsNone(chart(rid, interval_s=300)["notice"])
+        self.assertIsNone(chart(rid)["notice"])
+
+    def test_a_caller_interval_with_no_known_strategy_interval_says_the_interval_is_not_recorded(self):
+        rid, _ = _tick_run(None)
+        self.assertEqual(chart(rid, interval_s=300)["notice"], NOT_RECORDED.replace("at 1 minute", "at 5 minutes"))
+
+
+class PageCapTests(unittest.TestCase):
+    """CH 6.2x (L3): markers and plot points in the bar window are capped per response, like the bars."""
+
+    def _run(self, per_bar: int, bars: int = 10, plots=None) -> str:
+        n = per_bar * 4
+        return make_run(world=bar_world(bars),
+                        orders=[order(k) for k in range(1, n + 1)],
+                        fills=[fill(k, k, T(9, 15 + (k - 1) // per_bar, 5 + (k - 1) % per_bar), "BUY", 1, 10000)
+                               for k in range(1, n + 1)], plots=plots)
+
+    def test_markers_past_the_cap_cut_the_page_at_a_bar_and_the_next_page_continues(self):
+        rid = self._run(2)
+        with patch("stockify.reporting.chart.MAX_BARS", 4):
+            one = chart(rid, 1, T(9, 15), None)
+            self.assertEqual((len(one["markers"]), len(one["bars"]), one["truncated"]), (4, 2, True))
+            self.assertEqual(one["next_from_ns"], T(9, 17))
+            self.assertIn("more markers or plotted points than one page", one["notice"])
+            two = chart(rid, 1, one["next_from_ns"], None)
+        ids = [m["fill_id"] for m in one["markers"] + two["markers"]]
+        self.assertEqual(ids, [1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertEqual(one["omitted_markers"], 4)                      # the other page's, as for a bar cut
+
+    def test_more_markers_in_one_bar_than_the_cap_are_counted_not_returned(self):
+        rid = make_run(world=bar_world(3), orders=[order(k) for k in range(1, 7)],
+                       fills=[fill(k, k, T(9, 15, k), "BUY", 1, 10000) for k in range(1, 7)])
+        with patch("stockify.reporting.chart.MAX_BARS", 4):
+            out = chart(rid, 1, T(9, 15), None)
+        self.assertEqual([m["fill_id"] for m in out["markers"]], [1, 2, 3, 4])
+        self.assertEqual(out["omitted_markers"], 2)
+        self.assertIn("more markers or plotted points than one page", out["notice"])
+
+    def test_plot_points_past_the_cap_cut_the_page_too(self):
+        pts = [{"t_ns": T(9, 15 + k // 2, 10 * (k % 2)), "instrument_id": 1, "name": "sma", "kind": "price",
+                "value": 10000 + k} for k in range(8)]
+        rid = make_run(world=bar_world(10), plots=pts)
+        with patch("stockify.reporting.chart.MAX_BARS", 4):
+            one = chart(rid, 1, T(9, 15), None)
+            two = chart(rid, 1, one["next_from_ns"], None)
+        self.assertEqual((len(one["plots"][0]["points"]), len(one["bars"]), one["truncated"]), (4, 2, True))
+        joined = one["plots"][0]["points"] + two["plots"][0]["points"][:4]
+        self.assertEqual([p[1] for p in joined], [10000 + k for k in range(8)])
+
+    def test_a_page_within_the_cap_has_no_notice(self):
+        rid = self._run(2)
+        out = chart(rid, 1, T(9, 15), None)
+        self.assertEqual((len(out["markers"]), out["notice"]), (8, None))
 
 
 class ModelPropertyTests(unittest.TestCase):

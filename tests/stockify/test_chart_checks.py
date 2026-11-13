@@ -204,6 +204,19 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(len(times), len(set(times)))
         self.assertEqual([p["time"] for p in self.r["shadeGapDaily"]], ["2025-11-19", "2025-11-20", "2025-11-21", "2025-11-24", "2025-11-25"])
 
+    def test_the_session_open_of_the_gap_points_is_the_servers(self):
+        a = [p["time"] for p in self.r["shadeGapOpen0930"]]
+        b = [p["time"] for p in self.r["shadeGapNoOpen"]]
+        w0 = 1_762_885_800
+        self.assertEqual(a, [w0 + 7 * 86400 + k * 86400 + 34200 + 19800 for k in (0, 1, 2, 5, 6)])
+        self.assertEqual(b, [w0 + 7 * 86400 + k * 86400 + 19800 for k in (0, 1, 2, 5, 6)])     # no open known: the day's start
+
+    def test_a_window_not_charted_for_its_basis_is_named_without_the_word_excluded(self):
+        self.assertEqual(self.r["notCharted"], "Window 5 (out of sample), not charted: different price basis or interval")
+
+    def test_chart_query_sends_the_interval_when_set(self):
+        self.assertEqual(self.r["queryInterval"], "?interval_s=300")
+
     def test_chart_query_lists_only_what_is_set(self):
         self.assertEqual(self.r["queryAll"], "")
         self.assertEqual(self.r["queryZero"], "?instrument=0")
