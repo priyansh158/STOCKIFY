@@ -22,12 +22,15 @@ The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference st
   forgets, the broker's MIS square-off at the cut-off would do it, with a fee.
 - At most one trade a day.
 
+`BAR_INTERVAL_S` is the bar interval the strategy subscribes to; the chart uses it when the run doesn't record its bar interval (D-112).
+
 ```python
 from stockify import timeutil
 from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class OpeningRangeBreakout(Strategy):
+    BAR_INTERVAL_S = 60                 # the one bar interval it subscribes to (the chart reads it)
     closed = False                      # the day's position is closed (or the time exit passed): no more range lines
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
@@ -47,7 +50,7 @@ class OpeningRangeBreakout(Strategy):
         self.short = bool(p.get("short", False))
         self.exit_hhmm = p.get("exit_hhmm", "15:10")
         self.day = None
-        ctx.subscribe_bars(self.iid, 60)                 # minute bars
+        ctx.subscribe_bars(self.iid, self.BAR_INTERVAL_S)  # minute bars
 
     def _new_day(self, ctx, bar) -> None:
         self.day = ctx.today()
