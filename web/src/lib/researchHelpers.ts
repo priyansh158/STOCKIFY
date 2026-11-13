@@ -35,3 +35,54 @@ export const SERIES_TOKENS = ["accent", "info", "warn"] as const;
 export function heatMoreWord(scheme: "dark" | "light"): "brighter" | "darker" {
   return scheme === "dark" ? "brighter" : "darker";
 }
+
+/** Whole days since 1970-01-01 of an ISO date (YYYY-MM-DD), so dates can sit on a numeric chart axis. */
+export function dayNumber(iso: string): number {
+  return Math.round(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
+}
+
+/** One line segment per run of points: `breaks` lists the x values where a new segment starts, so no line is drawn across the gap. */
+export function splitSegments(points: [number, number][], breaks: number[] = []): [number, number][][] {
+  const sorted = [...points].sort((a, b) => a[0] - b[0]);
+  const starts = new Set(breaks);
+  const out: [number, number][][] = [];
+  for (const p of sorted) {
+    if (out.length === 0 || starts.has(p[0])) out.push([p]);
+    else out[out.length - 1].push(p);
+  }
+  return out;
+}
+
+export interface WfCurve {
+  points: [number, number][];
+  /** x of the first point of every tested window after the first: where a new segment begins. */
+  breaks: number[];
+  /** x of each tested window's first test day (the dotted boundary lines, as in walkforward.png). */
+  starts: number[];
+}
+
+/** The stitched out-of-sample curve as chart points, cut into one segment per tested window by that window's own test
+ * dates, with its test starts. A window with no test result has no segment and no boundary. */
+export function wfCurve(
+  dates: string[],
+  index: number[],
+  windows: { test_from: string; test?: { from?: unknown; to?: unknown } | null }[],
+): WfCurve {
+  const n = Math.min(dates.length, index.length);
+  const points: [number, number][] = [];
+  for (let i = 0; i < n; i++) points.push([dayNumber(dates[i]), index[i]]);
+  const breaks: number[] = [];
+  const starts: number[] = [];
+  let first = true;
+  for (const w of windows) {
+    const t = w.test;
+    if (!t || typeof t.from !== "string" || typeof t.to !== "string") continue;
+    starts.push(dayNumber(w.test_from));
+    const i = dates.findIndex((d, k) => k < n && d >= (t.from as string) && d <= (t.to as string));
+    if (i >= 0) {
+      if (!first) breaks.push(points[i][0]);
+      first = false;
+    }
+  }
+  return { points, breaks, starts };
+}

@@ -6,7 +6,7 @@
  * the SVGs keep their aspect ratio and scale with the column, so the text in them is never stretched.
  */
 import { useState } from "react";
-import { SERIES_TOKENS, heatColourStep, heatMoreWord } from "@/lib/researchHelpers";
+import { SERIES_TOKENS, heatColourStep, heatMoreWord, splitSegments } from "@/lib/researchHelpers";
 
 const MAX_SERIES = 4;
 const HEAT_STEPS = 5;
@@ -31,6 +31,8 @@ function niceTicks(lo: number, hi: number, count = 5): number[] {
 export interface LineSeries {
   label: string;
   points: [number, number][];
+  /** x values where a new segment starts: no line is drawn from the point before to that one (a gap in time stays a gap). */
+  breaks?: number[];
 }
 
 const W = 720;
@@ -46,6 +48,10 @@ export function LineChart({
   baselineLabel,
   xLabel = "Point",
   label,
+  marks,
+  marksLabel,
+  yLabel,
+  describe,
 }: {
   series: LineSeries[];
   yFormat: Fmt;
@@ -58,6 +64,13 @@ export function LineChart({
   xLabel?: string;
   /** What the chart shows, for its accessible name and table caption. */
   label?: string;
+  /** x values for dotted vertical boundary lines (such as where each test window starts); `marksLabel` says what they are. */
+  marks?: number[];
+  marksLabel?: string;
+  /** What y measures, shown above the plot (the axis title), such as "growth of 1 (capital = 1.0)". */
+  yLabel?: string;
+  /** One more sentence for the chart's accessible name, such as that the gaps between windows are not drawn. */
+  describe?: string;
 }) {
   const drawn = series.filter((s) => s.points.length > 0);
   const shown = drawn.slice(0, MAX_SERIES);
@@ -71,8 +84,8 @@ export function LineChart({
   const xs = [...new Set(drawn.flatMap((s) => s.points.map((p) => p[0])))].sort((a, b) => a - b);
   const ys = shown.flatMap((s) => s.points.map((p) => p[1]));
   if (baseline !== undefined) ys.push(baseline);
-  const xLo = xs[0];
-  const xHi = xs[xs.length - 1];
+  const xLo = Math.min(xs[0], ...(marks ?? []));
+  const xHi = Math.max(xs[xs.length - 1], ...(marks ?? []));
   let yLo = Math.min(...ys);
   let yHi = Math.max(...ys);
   if (yHi === yLo) { yLo -= 1; yHi += 1; }
@@ -83,15 +96,15 @@ export function LineChart({
   const py = (y: number) => PAD.t + (1 - (y - yLo) / (yHi - yLo)) * (H - PAD.t - PAD.b);
   const yTicks = niceTicks(yLo, yHi, 5);
   const xTicks = xs.length <= 6 ? xs : niceTicks(xLo, xHi, 6);
-  const path = (s: LineSeries) =>
-    [...s.points].sort((a, b) => a[0] - b[0]).map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
+  const path = (seg: [number, number][]) =>
+    seg.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
 
   const at = cursor === null ? null : (xs[Math.min(cursor, xs.length - 1)] ?? null);
   const valueAt = (s: LineSeries, x: number) => s.points.find((p) => p[0] === x)?.[1];
   const summary = `${label ?? "Line chart"}: ${shown.map((s) => {
     const sorted = [...s.points].sort((a, b) => a[0] - b[0]);
     return `${s.label} from ${yFormat(sorted[0][1])} to ${yFormat(sorted[sorted.length - 1][1])}`;
-  }).join("; ")}. Left and right arrow keys read the values.`;
+  }).join("; ")}.${describe ? ` ${describe}.` : ""} Left and right arrow keys read the values.`;
 
   const move = (to: number) => setCursor(Math.max(0, Math.min(xs.length - 1, to)));
   const onKey = (e: React.KeyboardEvent) => {
@@ -127,6 +140,7 @@ export function LineChart({
           ))}
         </ul>
       )}
+      {yLabel && <p className="stk-fine stk-lc-ytitle">{yLabel}</p>}
       <svg
         viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
         onKeyDown={onKey} onPointerMove={onPointer} onPointerLeave={() => setCursor(null)} onBlur={() => setCursor(null)}
@@ -143,11 +157,14 @@ export function LineChart({
         {baseline !== undefined && (
           <line x1={PAD.l} x2={W - PAD.r} y1={py(baseline)} y2={py(baseline)} className="stk-lc-base" />
         )}
-        {shown.map((s, i) => (
-          s.points.length === 1
-            ? <Marker key={s.label} x={px(s.points[0][0])} y={py(s.points[0][1])} i={i} />
-            : <path key={s.label} d={path(s)} className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
+        {(marks ?? []).map((m) => (
+          <line key={m} x1={px(m)} x2={px(m)} y1={PAD.t} y2={H - PAD.b} className="stk-lc-mark" />
         ))}
+        {shown.map((s, i) => splitSegments(s.points, s.breaks).map((seg) => (
+          seg.length === 1
+            ? <Marker key={`${s.label}-${seg[0][0]}`} x={px(seg[0][0])} y={py(seg[0][1])} i={i} />
+            : <path key={`${s.label}-${seg[0][0]}`} d={path(seg)} className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
+        )))}
         {at !== null && (
           <g>
             <line x1={px(at)} x2={px(at)} y1={PAD.t} y2={H - PAD.b} className="stk-lc-cursor" />
@@ -164,6 +181,7 @@ export function LineChart({
           : `${xFormat(at)}: ${shown.map((s) => { const v = valueAt(s, at); return `${s.label} ${v === undefined ? "—" : yFormat(v)}`; }).join(", ")}`}
       </p>
       {baseline !== undefined && <p className="stk-fine">Dashed line: {baselineLabel ? `${baselineLabel} ` : ""}{yFormat(baseline)}.</p>}
+      {marks !== undefined && marks.length > 0 && marksLabel && <p className="stk-fine">Dotted lines: {marksLabel}.</p>}
       {hidden > 0 && <p className="stk-fine">Showing the first {MAX_SERIES} series; all {drawn.length} are in the table.</p>}
       <details className="stk-lc-table">
         <summary>Show the values as a table</summary>

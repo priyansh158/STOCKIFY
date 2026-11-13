@@ -132,8 +132,9 @@ def detail(job_id: str) -> dict:
     summary, windows = _shown(doc)
     return {"job_id": job_id, "name": doc["name"], "family_id": job["family_id"], "objective": doc["objective"],
             "train": doc["train_days"], "test": doc["test_days"], "step": doc["step_days"], "summary": summary,
-            "windows": windows, "stitched_dates": doc["dates"], "stitched_index": doc["index"],
-            "plain": plain_lines(doc, job["family_id"])}
+            "windows": [{**w, "result": _result_word(w), "no_sharpe": _no_sharpe(w)} for w in windows],
+            "stitched_dates": doc["dates"], "stitched_index": doc["index"],
+            "plain": {**plain_lines(doc, job["family_id"]), **notes(doc)}}
 
 
 def summary_text(job_id: str) -> str:
@@ -183,9 +184,22 @@ def _settings(params: dict | None, short: bool) -> str:
     return ", ".join(parts)
 
 
+NO_SHARPE = "too few days to work one out"
+
+
+def _no_sharpe(w: dict) -> str:
+    """The word for a window whose training or test run exists but has no usable Sharpe; empty when both are fine
+    (or the run is absent: the result word says why)."""
+    for run in (w.get("train"), w.get("test")):
+        if run is not None and not (isinstance(run.get("sharpe"), (int, float)) and math.isfinite(run["sharpe"])):
+            return NO_SHARPE
+    return ""
+
+
 def _result_word(w: dict) -> str:
     if w["test"] is not None:
-        return "tested"
+        word = _no_sharpe(w)
+        return "tested" + (f", no Sharpe: {word}" if word else "")
     if w["chosen_params"] is None:
         return "not tested, no training run gave a usable result"
     why = plain.plain_reason(w.get("error"))
@@ -243,47 +257,78 @@ def _paragraph_for_days(s: walkforward.WalkforwardSummary) -> str | None:
     return None
 
 
-def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
+def notes(doc: dict) -> dict[str, str]:
+    """The report's fixed explanatory lines written once for the report and the page:
+    `objective` (how settings were chosen), `setup` (the window lengths, in calendar days), `flatter`,
+    `ratio_caveat`, `coverage`, `n_note`, `curve` (the chart's caption), `y_label`, `gaps`, the three lead-ins `ratio_lead`, `stability_lead` and `pbo_lead`, `sensitivity` (where the cost check is) and, only when it
+    applies, `few_days`. A line is a clause or whole sentences; the page adds a full stop only where one is missing."""
     s = _summary(doc)
+    raw = doc["summary"]
+    tested = sum(1 for w in doc["windows"] if w["test"] is not None)
+    objective = plain.OBJECTIVE_LABELS.get(doc["objective"], doc["objective"])
+    out = {
+        "objective": objective,
+        "setup": (f"Window lengths are calendar days: {doc['train_days']} days of training, then "
+                  f"{doc['test_days']} days of testing, moving on {doc['step_days']} days each time"
+                  + (f", from {doc['span'][0]} to {doc['span'][1]}" if doc.get("span") else "")
+                  + f". Settings were chosen by {objective}."),
+        "flatter": ("The in-sample figure is the best of the grid on the training days, so choosing flatters it. "
+                    "The out-of-sample figure is on days the choice never saw."),
+        "ratio_caveat": ("The in-sample figure is the average of each window's training Sharpe; the out-of-sample "
+                         "figure is the Sharpe of all the tested days joined together, so the ratio is a rough "
+                         "guide, not like for like."),
+        "coverage": (f"The out-of-sample figure covers {raw['oos_days']} out-of-sample days in {tested} of "
+                     f"{raw['windows']} windows."),
+        "n_note": (f"N = windows x grid = {raw['n_trials']}: every training run of every window is a try, "
+                   "whichever one was picked."),
+        "curve": "Out-of-sample equity, each tested window drawn on its own (growth of 1)",
+        "y_label": "growth of 1 (capital = 1.0)",
+        "gaps": "Each tested window is its own line; the days between windows are left empty",
+        "ratio_lead": "Out-of-sample against in-sample",
+        "stability_lead": "Stability",
+        "pbo_lead": "Overfitting",
+        "sensitivity": ("The cost check isn't stored with a walk-forward job. Run `python -m stockify research report "
+                        f"--walkforward {doc['job_id']} --sensitivity-run RUN_ID` to add it to the report file."),
+    }
+    caution = _paragraph_for_days(s)
+    if caution:
+        out["few_days"] = caution
+    return out
+
+
+def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
     raw = doc["summary"]
     lines = plain_lines(doc, job["family_id"])
     tested = sum(1 for w in doc["windows"] if w["test"] is not None)
+    nt = notes(doc)
     out = [f"# Walk-forward report: {_cell(doc['name'])}", "",
-           f"Job `{job['job_id']}`. Window lengths are calendar days: {doc['train_days']} days of training, then "
-           f"{doc['test_days']} days of testing, moving on {doc['step_days']} days each time"
-           + (f", from {doc['span'][0]} to {doc['span'][1]}" if doc.get("span") else "")
-           + f". Settings were chosen by {plain.OBJECTIVE_LABELS.get(doc['objective'], doc['objective'])}.", "",
+           f"Job `{job['job_id']}`. {nt['setup']}", "",
            "## In-sample against out-of-sample", "",
            *_table(["", "In-sample", "Out-of-sample"],
                    [["Sharpe over a year", *([_not_enough(doc)] * 2 if _few_days(doc) else
                                              [_sharpe(raw["is_sharpe"]), _sharpe(raw["oos_sharpe"])])],
                     ["Windows", raw["is_windows"], tested],
                     ["Days", "-", raw["oos_days"]]]), "",
-           "The in-sample figure is the best of the grid on the training days, so choosing flatters it. "
-           "The out-of-sample figure is on days the choice never saw.", "",
-           f"Out-of-sample against in-sample: {lines['ratio']}.",
-           "The in-sample figure is the average of each window's training Sharpe; the out-of-sample figure is the "
-           "Sharpe of all the tested days joined together, so the ratio is a rough guide, not like for like.",
-           f"The out-of-sample figure covers {raw['oos_days']} out-of-sample days in {tested} of "
-           f"{raw['windows']} windows."]
-    caution = _paragraph_for_days(s)
-    if caution:
-        out += ["", caution]
+           nt["flatter"], "",
+           f"{nt['ratio_lead']}: {lines['ratio']}.",
+           nt["ratio_caveat"],
+           nt["coverage"]]
+    if "few_days" in nt:
+        out += ["", nt["few_days"]]
     out += ["", "## Deflated Sharpe", "",
             f"Out of sample: {lines['dsr']}.",
-            f"N = windows x grid = {raw['n_trials']}: every training run of every window is a try, whichever one "
-            "was picked.", "",
+            nt["n_note"], "",
             "## Settings per window", "",
             *([f"Sharpe figures per window: {_not_enough(doc)}.", ""] if _few_days(doc) else []),
-            *_windows_table(doc), "", f"Stability: {lines['stability']}.", ""]
+            *_windows_table(doc), "", f"{nt['stability_lead']}: {lines['stability']}.", ""]
     out += ["## Out-of-sample equity", ""]
     if (paths.research_path(job["job_id"]) / "walkforward.png").is_file() and doc["dates"]:
-        out += ["![Out-of-sample equity, each tested window drawn on its own (growth of 1)](walkforward.png)"]
+        out += [f"![{nt['curve']}](walkforward.png)"]
     else:
         out += ["no out-of-sample days, so no chart."]
     out += ["", "## Cost sensitivity", "", *_sensitivity_lines(sensitivity_run), "",
             "## Holdout", "", f"{lines['holdout'][:1].upper()}{lines['holdout'][1:]}.", "",
-            "## Chance of overfitting", "", f"Overfitting: {lines['pbo']}.", ""]
+            "## Chance of overfitting", "", f"{nt['pbo_lead']}: {lines['pbo']}.", ""]
     return "\n".join(out)
 
 

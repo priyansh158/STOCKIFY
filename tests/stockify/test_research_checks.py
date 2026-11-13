@@ -40,6 +40,18 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["seriesTokens"], ["accent", "info", "warn"])
         self.assertEqual(self.answers["seriesCss"], [["0", "accent"], ["1", "info"], ["2", "warn"]])
 
+    def test_a_line_is_cut_at_each_break_so_no_segment_bridges_a_gap(self):
+        # unsorted points sort first; a break x starts a new segment; no breaks is one segment; nothing is none.
+        self.assertEqual(self.answers["segments"], [[[1, 2, 3], [5], [9]], [2], 0])
+
+    def test_the_walkforward_curve_is_one_segment_per_tested_window_with_a_boundary_at_each_test_start(self):
+        c = self.answers["curve"]
+        day = 19723                                                    # 2024-01-01 as days since 1970
+        self.assertEqual([p[0] - day for p in c["points"]], [0, 1, 9, 10, 11])
+        self.assertEqual([p[1] for p in c["points"]], [1.01, 1.02, 1.0, 0.99, 1.03])
+        self.assertEqual([b - day for b in c["breaks"]], [9])           # the untested window adds no break
+        self.assertEqual([s - day for s in c["starts"]], [0, 8])        # and no boundary
+
     def test_heat_caption_follows_the_scale_direction(self):
         # Larger values get a stronger accent mix, on a dark surface: so the caption must say brighter.
         mixes = self.answers["heatMixes"]
