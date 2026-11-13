@@ -40,7 +40,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.5 Walk-forward analysis (M)
 
-- [ ] `python -m stockify walkforward --sweep sweep.yaml --train 120d --test 30d --step 30d --objective sharpe`: for each window, run the parameter grid on the training range (parallel subprocesses), pick the best by the objective, run it on the following test range; stitch the test pieces into one out-of-sample equity curve.
+- [ ] (windows, training grids, selection, out-of-sample runs and the persisted state done, `stockify/research/walkforward.py`, D-132; the stitched curve, report and CLI are Task 21) `python -m stockify walkforward --sweep sweep.yaml --train 120d --test 30d --step 30d --objective sharpe`: for each window, run the parameter grid on the training range (parallel subprocesses), pick the best by the objective, run it on the following test range; stitch the test pieces into one out-of-sample equity curve.
 - [ ] Report: in-sample vs out-of-sample metrics and their ratio, the chosen parameters per window (stability), and the stitched curve. Every run joins the family (M6.4).
 
 ## M6.6 Locked holdout (S)
