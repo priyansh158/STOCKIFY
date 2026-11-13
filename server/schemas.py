@@ -587,4 +587,66 @@ class ComparisonDTO(BaseModel):
     differing_labels: list[str]
     manifest_diff: list[CompareDiffDTO]
     notes: list[str]
+
+
+class CoverageCellDTO(BaseModel):
+    state: str
+    value: float | None = None
+    detail: str | None = None
+
+
+class CoverageDayDTO(BaseModel):
+    date: str
+    trading: bool
+    cells: dict[str, CoverageCellDTO]
+
+
+class BarRangeDTO(BaseModel):
+    instrument_id: int
+    symbol: str | None = None
+    interval: str
+    from_ns: int
+    to_ns: int
+    from_ist: str
+    to_ist: str
+    days: int
+    rows: int
+
+
+class StorageDTO(BaseModel):
+    landing_bytes: int
+    archive_bytes: int
+    refdata_bytes: int
+    lab_bytes: int
+    nse_bytes: int
+    free_bytes: int
+    total_bytes: int
+    warnings: list[str]
+
+
+class CoverageMatrixDTO(BaseModel):
+    from_date: str
+    to_date: str
+    datasets: list[dict[str, str]]
+    days: list[CoverageDayDTO]
+    bars: list[BarRangeDTO]
+    storage: StorageDTO
+    recorder: RecorderStatusDTO | None = None
+
+
+class GapDTO(BaseModel):
+    start_ns: int
+    end_ns: int | None = None
+    start_ist: str
+    duration_s: float | None = None
+    reason: str | None = None
+    scope: str | None = None
+    frames: int | None = None
+
+
+class GapPageDTO(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    gaps: list[GapDTO]
 # </block>

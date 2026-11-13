@@ -22,7 +22,7 @@ Concepts: C-4, C-14, C-16, C-17.
 ## M6.3 Data coverage page (M)
 
 - [ ] `/data`: a calendar (date × dataset) showing recorder coverage % (FULL and QUOTE), archive status (landing / archived / verified), NSE files fetched (F&O, CM, index closes), bar-cache ranges per instrument; drill-down to gaps and quality metrics (M1.9); storage used and free; live recorder status (M1.5).
-- [ ] `GET /api/data/coverage?from=&to=` returns the matrix.
+- [x] `GET /api/data/coverage?from=&to=` returns the matrix (Task 28, LCM 6.2, D-121); `GET /api/data/gaps?date=` the day's gaps.
 - [x] (Task 27, LCM 6.1) The quality report writes `coverage_full_pct` and `coverage_quote_pct` as day rows; older days get them when `data report --date D` is re-run (owner step, RECON).
 
 ## M6.4 Trial registry and deflated Sharpe (M)
@@ -88,6 +88,7 @@ cd web; npm run lint; npm run build
 ## Candlestick charts (CH)
 
 - [x] CH 6.1 Note cleaning and Indian-grouped price and quantity text, the same in Python and C++ (`stockify/oracle/notes.py`, `engine/src/notes.cpp`; `fmt_price`, `fmt_qty`, `to_level` exported from `stockify.strategy`).
+- [x] CH 6.5 The FIFO trade loop is a public function, `stockify.oracle.metrics.fifo_trades` (returns `TradeChunk`s and the traded value), shared by `compute` and the chart's trade markers; `metrics.json` is byte-identical on every golden.
 
 ## Definition of done
 
