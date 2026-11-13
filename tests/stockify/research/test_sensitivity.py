@@ -336,6 +336,14 @@ class FragileTests(SuiteBase):
         self.assertIsNone(row.run_id)
         self.assertFalse(any(j.config["fill_model"]["kind"] == "eod_close" for j in fake.jobs))
 
+    def test_the_verdict_reasons_hold_a_plain_reason_never_the_refusal_text(self):
+        cfg = orb(fill_model={**ORB["fill_model"], "slippage": {"kind": "bps", "x": "0.0005", "extra_ticks": 1000}})
+        rid = self.source(5_000, cfg=cfg)
+        res = sensitivity.run_suite(rid, pool_run=FakePool(net_default), now_ns=1)
+        self.assertEqual(res.verdict, "inconclusive")
+        self.assertIn(f"could not be checked ({plain.NOT_RUN_EXTRA_TICKS})", " ".join(res.reasons))
+        self.assertNotIn("1001", " ".join(res.reasons))
+
     def test_a_variant_the_validator_refuses_is_not_applicable_never_a_crash(self):
         cfg = orb(fill_model={**ORB["fill_model"], "slippage": {"kind": "bps", "x": "0.0005", "extra_ticks": 999}})
         rid = self.source(5_000, cfg=cfg)

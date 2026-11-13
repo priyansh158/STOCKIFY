@@ -320,7 +320,7 @@ def _verdict(base_net: int, rows: dict, s: dict) -> tuple[str, list[str]]:
             net = row.net_pnl_paise
         else:
             unrun.append(what)
-            reasons.append(f"The {what} case could not be checked ({row.error or 'it did not run'}).")
+            reasons.append(f"The {what} case could not be checked ({plain.not_run_reason(row.error) or 'it did not run'}).")
             continue
         if net < 0:
             flipped.append(what)

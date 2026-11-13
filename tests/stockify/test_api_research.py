@@ -179,6 +179,38 @@ class SensitivityApiTests(SandboxedDBTest):
         self.assertIsNone(j["rows"][0]["sharpe"])
         self.assertEqual(j["plain"], "Breaks if all costs rise by half: net P&L turns from +₹41,200 to -₹3,100.")
 
+    def test_no_raw_error_text_reaches_the_response_but_a_not_applicable_row_says_why(self):
+        # what the stored file can hold: a path, an exception class name, a validator message with values, a resolver text
+        raw = {"costs_x1.5": ("failed", "ValueError: bad window in C:" + chr(92) + "Users" + chr(92) + "x" + chr(92) + "run.py"),
+               "slip_plus1": ("not_applicable", "fill_model.slippage.extra_ticks: must be at most 1000, got 1001"),
+               "fill_eod_close": ("not_applicable", "price_basis: eod_close runs use NSE files, basis raw"),
+               "fill_bar": ("not_applicable", "data.packs[0]: pack 9f2c not found in D:/lab/packs"),
+               "fill_snapshot_ltp": ("failed", "the run failed")}
+        d = json.loads(self._doc())
+        d["rows"] = [d["rows"][0]] + [
+            {"key": k, "axis": "x", "label": k, "run_id": None, "status": st, "net_pnl_paise": None, "sharpe": None,
+             "delta_net_paise": None, "error": e} for k, (st, e) in raw.items()]
+        d["verdict"], d["fragile"] = "inconclusive", False
+        # an older file: the reasons sentence has the raw text inside it
+        d["reasons"] = ["The 1.5 times all costs case could not be checked (ValueError: bad window in C:" + chr(92) + "x).",
+                        "The 1 extra slippage tick case could not be checked (fill_model.slippage.extra_ticks: got 1001).",
+                        "The other case could not be checked (it did not run).", "Not called robust: x."]
+        self._write(json.dumps(d))
+        r = self.client.get("/api/tests/s0/sensitivity")
+        self.assertEqual(r.status_code, 200)
+        from stockify.research import plain
+        rows = {x["key"]: x["error"] for x in r.json()["rows"]}
+        self.assertEqual(rows, {"baseline": None, "costs_x1.5": plain.GENERIC_FAILURE,
+                                "slip_plus1": plain.NOT_RUN_EXTRA_TICKS, "fill_eod_close": plain.NOT_RUN_RAW_PRICES,
+                                "fill_bar": plain.NOT_RUN_DATA, "fill_snapshot_ltp": "the run failed"})
+        for leak in ("bad window", "ValueError", "run.py", "Users", "1001", "must be at most", "9f2c", "D:/lab", "extra_ticks",
+                     "price_basis"):
+            self.assertNotIn(leak, r.text, leak)
+        self.assertEqual(r.json()["reasons"], [
+            f"The 1.5 times all costs case could not be checked ({plain.GENERIC_FAILURE}).",
+            f"The 1 extra slippage tick case could not be checked ({plain.NOT_RUN_EXTRA_TICKS}).",
+            "The other case could not be checked (it did not run).", "Not called robust: x."])
+
     def test_api_refuses_an_unsafe_run_id(self):
         for rid in ("..", "%2e%2e", "a%5cb", "C%3A", "x" * 200, "..%2f..%2fetc"):
             r = self.client.get(f"/api/tests/{rid}/sensitivity")
