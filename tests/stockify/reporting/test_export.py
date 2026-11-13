@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import hashlib
 import io
 import json
@@ -21,6 +22,7 @@ import stockify_paths
 from stockify import __main__ as cli
 from stockify import paths
 from stockify.reporting import export
+from stockify import research
 
 SECRET_NOTE = "Bearer abc123"
 SECRET_PATTERN = rb"(?i)api[_-]?secret|access[_-]?token|enctoken|request[_-]?token|Bearer\s+\S+"
@@ -150,6 +152,44 @@ class ExportLogicTests(ExportBase):
         out = paths.exports_dir() / "mine.zip"
         self.assertEqual(export.build("r1", out=out), out)
         self.assertTrue(out.exists())
+
+
+class ExportSpreadsheetAndSizeTests(ExportBase):
+    def test_formula_cells_in_free_text_columns_are_neutralised_in_the_copy_only(self):
+        raw = ('order_id,instrument_id,price_paise,tag,reason,note\n'
+               '1,5,-100,plain,,"=HYPERLINK(""http://x"",""y"")"\n'
+               '2,5,-200,+cmd,-2+3,@SUM(A1)\n'
+               '3,5,300,t,,-5\n'
+               '4,5,400,t,,fine = ok\n')
+        (self.folder / "orders.csv").write_text(raw, encoding="utf-8", newline="")
+        with zipfile.ZipFile(export.build("r1")) as z:
+            got = z.read("orders.csv").decode("utf-8")
+        rows = list(csv.DictReader(io.StringIO(got)))
+        self.assertEqual([r["note"] for r in rows],
+                         ["'=HYPERLINK(\"http://x\",\"y\")", "'@SUM(A1)", "-5", "fine = ok"])
+        self.assertEqual((rows[1]["tag"], rows[1]["reason"]), ("'+cmd", "'-2+3"))
+        self.assertEqual([r["price_paise"] for r in rows], ["-100", "-200", "300", "400"])   # numbers are untouched
+        self.assertEqual((self.folder / "orders.csv").read_bytes(), raw.encode("utf-8"))   # stored raw
+
+    def test_a_csv_with_nothing_to_neutralise_keeps_its_bytes(self):
+        add_files("r1", note="harmless")
+        raw = (self.folder / "orders.csv").read_bytes()
+        with zipfile.ZipFile(export.build("r1")) as z:
+            self.assertEqual(z.read("orders.csv"), raw)
+
+    def test_total_size_over_the_setting_is_refused_with_a_plain_message(self):
+        big = _sha("big")
+        (paths.packs_dir() / f"{big}.evt").write_bytes(b"x" * (2 * 1024 * 1024))
+        (self.folder / "bundle.json").write_text(json.dumps({"packs": [{"sha256": big}]}), encoding="utf-8")
+        cfg = {**research.settings(), "export": {"max_total_mib": 1}}
+        with mock.patch.object(research, "settings", return_value=cfg):
+            with self.assertRaises(export.ExportError) as ctx:
+                export.build("r1", with_packs=True)
+            self.assertEqual(ctx.exception.code, "too_large")
+            self.assertEqual(str(ctx.exception), "the export would be larger than 1 MiB uncompressed (the "
+                             "export.max_total_mib setting in research.json); leave the packs out")
+            export.build("r1")                                  # without packs it is small and still works
+        self.assertFalse(paths.export_path("r1", True).exists())
 
 
 class ExportCliTests(ExportBase):
