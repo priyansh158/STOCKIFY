@@ -97,6 +97,8 @@ class ResearchApiTests(SandboxedDBTest):
         rows = r.json()
         self.assertEqual([f["family_id"] for f in rows], [FAM, OTHER])
         self.assertEqual(rows[0]["n_trials"], 3)
+        self.assertIn("best of 3 tries", rows[0]["best_plain"])
+        self.assertEqual(rows[1]["best_plain"], "the only try, so nothing to allow for")
         self.assertEqual(len(self.client.get("/api/research/families", params={"limit": 1}).json()), 1)
         self.assertEqual(self.client.get("/api/research/families", params={"offset": 1}).json()[0]["family_id"],
                          OTHER)
@@ -251,7 +253,8 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/jobs")
         self.assertEqual([j["job_id"] for j in r.json()], ["wf-1", "sweep-b", "sweep-a"])
         self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "family_id", "status", "created_ns",
-                                             "finished_ns", "error"])
+                                             "finished_ns", "error", "plain"])
+        self.assertEqual([j["plain"] for j in r.json()], ["still running", "finished", "finished"])
         r = self.client.get("/api/research/jobs", params={"kind": "sweep"})
         self.assertEqual([j["job_id"] for j in r.json()], ["sweep-b", "sweep-a"])
         self.assertEqual(self.client.get("/api/research/jobs", params={"kind": "sweep", "limit": 1,

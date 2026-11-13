@@ -111,6 +111,16 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(d["range"], [60, 30, 60, 180, 60, 60, 60])
         self.assertEqual(self.answers["worst"], [1, 4, 5, 3])  # lowest coverage first, ties by id, no figure last
 
+    # ---- /research overview helpers (web/src/lib/researchHelpers.ts), M6 Task 33 ----
+
+    def test_family_and_job_links_encode_what_the_ids_hold(self):
+        # a family id holds "/" and can hold anything else: it rides in the query, fully encoded
+        self.assertEqual(self.answers["hrefs"]["family"], [
+            "/research/family?id=sweep%2Fab12", "/research/family?id=a%20b%26c%3Dd%3Fe%23f",
+            "/research/family?id=plain", "/research/family?id=100%25"])
+        # only a sweep and a walk-forward have a page; any other kind has no link
+        self.assertEqual(self.answers["hrefs"]["job"], ["/research/sweep/sweep-1", "/research/walkforward/wf%2F1%20x", None, None])
+
 
 if __name__ == "__main__":
     unittest.main()

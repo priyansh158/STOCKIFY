@@ -59,8 +59,10 @@ def run_research_dto(run_id: str) -> RunResearchDTO:
 
 @router.get("/api/research/families", response_model=list[FamilySummaryDTO])
 def list_families(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500)) -> list[FamilySummaryDTO]:
-    from stockify.research import report
-    return [FamilySummaryDTO(**_clean(f)) for f in report.list_families()[offset:offset + limit]]
+    from stockify.research import plain, report
+    rows = [_clean(f) for f in report.list_families()[offset:offset + limit]]
+    return [FamilySummaryDTO(**r, best_plain=plain.family_best_sentence(r["n_trials"], r["best_dsr"], r["objective"]))
+            for r in rows]
 
 
 @router.get("/api/research/families/{family_id:path}", response_model=FamilyDetailDTO)
@@ -93,7 +95,9 @@ _KIND = r"^[a-z0-9_]{1,32}$"
 def list_jobs(kind: str | None = Query(None, pattern=_KIND), offset: int = Query(0, ge=0, le=1_000_000),
               limit: int = Query(50, ge=1, le=500)) -> list[ResearchJobDTO]:
     from stockify import store
-    return [ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields})
+    from stockify.research import plain
+    return [ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"},
+                           plain=plain.job_status_sentence(j["status"], j.get("error")))
             for j in store.list_research_jobs(kind, offset, limit)]
 
 

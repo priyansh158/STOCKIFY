@@ -11,11 +11,12 @@ import type {
   FamilyDetailDTO,
   FamilySummaryDTO,
   GapPageDTO,
+  ResearchJobDTO,
   RunResearchDTO,
   SensitivityDTO,
 } from "./types";
 
-export { bucketTone, costScale, heatColourStep, sentenceOrDash } from "./researchHelpers";
+export { bucketTone, costScale, familyHref, heatColourStep, jobHref, sentenceOrDash } from "./researchHelpers";
 export type { BucketTone } from "./researchHelpers";
 
 const enc = encodeURIComponent;
@@ -42,6 +43,15 @@ export function getSensitivity(id: string): Promise<SensitivityDTO | null> {
 
 export function getFamilies(offset = 0, limit = 50): Promise<FamilySummaryDTO[]> {
   return api<FamilySummaryDTO[]>(`/api/research/families?offset=${offset}&limit=${limit}`);
+}
+
+/** Sweep and walk-forward jobs, newest first (sensitivity jobs belong to a run and are left out). */
+export async function getJobs(limit = 50): Promise<{ sweeps: ResearchJobDTO[]; walkforwards: ResearchJobDTO[] }> {
+  const [sweeps, walkforwards] = await Promise.all([
+    api<ResearchJobDTO[]>(`/api/research/jobs?kind=sweep&limit=${limit}`),
+    api<ResearchJobDTO[]>(`/api/research/jobs?kind=walkforward&limit=${limit}`),
+  ]);
+  return { sweeps, walkforwards };
 }
 
 /** One trial family, or null when there is no such family. */

@@ -352,6 +352,25 @@ def plain_reason(error: str | None) -> str | None:
     return text
 
 
+def family_best_sentence(n_trials: int, dsr: float | None, objective: str) -> str:
+    """The /research overview's line for a family: its best try and how likely its edge is more than luck."""
+    if n_trials < 1:
+        return "no finished tries yet"
+    return dsr_sentence(n_trials, 1, dsr, objective=objective)
+
+
+def job_status_sentence(status: str, error: str | None) -> str:
+    """A research job's state in words: running, finished, or failed with its readable reason."""
+    if status == "running":
+        return "still running"
+    if status == "done":
+        return "finished"
+    if status == "failed":
+        why = plain_reason(error)
+        return f"failed: {why}" if why else "failed, and no readable reason was saved"
+    return "in a state this page does not know"
+
+
 def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001
                      fragile_extra_ticks: int | None = None) -> str:
     """One plain sentence for a SensitivityResult, true to its verdict (stockify.research.sensitivity._verdict):

@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, costScale, heatColourStep, heatMoreWord, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
+import { SERIES_TOKENS, bucketTone, costScale, familyHref, heatColourStep, heatMoreWord, jobHref, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
@@ -70,6 +70,10 @@ const out = {
     { instrument_id: 3, metrics: { coverage_pct: 99 } }, { instrument_id: 1, metrics: { coverage_pct: 40 } },
     { instrument_id: 2, metrics: {} }, { instrument_id: 4, metrics: { coverage_pct: 40 } }, { instrument_id: 5, metrics: { coverage_pct: 70 } },
   ], 4).map((i) => i.instrument_id),
+  hrefs: {
+    family: ["sweep/ab12", "a b&c=d?e#f", "plain", "100%"].map(familyHref),
+    job: [["sweep", "sweep-1"], ["walkforward", "wf/1 x"], ["sensitivity", "s1"], ["", "x"]].map(([k, i]) => jobHref(k, i)),
+  },
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

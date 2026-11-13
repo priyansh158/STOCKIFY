@@ -536,6 +536,7 @@ class FamilySummaryDTO(BaseModel):
     best_run_id: str | None = None
     best_dsr: float | None = None
     unlocks: int
+    best_plain: str = ""
 
 
 class FamilyDetailDTO(BaseModel):
@@ -569,6 +570,7 @@ class ResearchJobDTO(BaseModel):
     created_ns: int
     finished_ns: int | None = None
     error: str | None = None
+    plain: str = ""
 
 
 class SweepAxisDTO(BaseModel):

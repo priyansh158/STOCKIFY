@@ -508,6 +508,7 @@ export interface FamilySummaryDTO {
   best_run_id: string | null;
   best_dsr: number | null;
   unlocks: number;
+  best_plain: string;
 }
 
 export interface FamilyDetailDTO {
@@ -541,6 +542,7 @@ export interface ResearchJobDTO {
   created_ns: number;
   finished_ns: number | null;
   error: string | null;
+  plain: string;
 }
 
 export interface SweepAxisDTO {

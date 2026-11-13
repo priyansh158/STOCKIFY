@@ -48,3 +48,15 @@ export function costScale(config: Record<string, unknown> | null | undefined): s
   if (!Number.isFinite(n) || n < 0 || n === 1) return null;
   return String(n);
 }
+
+/** The overview's link to a trial family. Family ids hold "/", so the id rides fully encoded in the query. */
+export function familyHref(id: string): string {
+  return `/research/family?id=${encodeURIComponent(id)}`;
+}
+
+/** The page of a sweep or walk-forward job; null for any other kind of job (it has no page). */
+export function jobHref(kind: string, id: string): string | null {
+  if (kind === "sweep") return `/research/sweep/${encodeURIComponent(id)}`;
+  if (kind === "walkforward") return `/research/walkforward/${encodeURIComponent(id)}`;
+  return null;
+}
