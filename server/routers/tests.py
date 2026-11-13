@@ -109,13 +109,15 @@ def _folder_totals(folder: Path | None) -> tuple[int | None, dict[str, int]]:
 
 
 def _symbols(row: dict) -> dict[int, str]:
-    """instrument id → tradingsymbol, from the run's archived bundle.json (empty when it is not there)."""
+    """instrument id → display name (the tradingsymbol, or `NIFTY 24500 CE (9 Nov 2026)` for a bhavcopy-only
+    contract that has none), from the run's archived bundle.json (empty when it is not there)."""
+    from stockify.data.instruments import display_name
     folder = _folder(row)
     bundle = folder / "bundle.json" if folder else None
     if bundle is None or not bundle.exists():
         return {}
     rows = _json(bundle.read_text(encoding="utf-8"), {}).get("instruments", [])
-    return {r["id"]: r["tradingsymbol"] for r in rows if isinstance(r, dict) and "id" in r and r.get("tradingsymbol")}
+    return {r["id"]: n for r in rows if isinstance(r, dict) and "id" in r and (n := display_name(r))}
 
 
 _CHUNK = 1 << 20

@@ -220,7 +220,7 @@ def session_chart(session_id: str, trade_date: str | None, instrument_id: int | 
     inst = {i["id"]: i for i in (bundle or {}).get("instruments", []) if isinstance(i, dict) and "id" in i}
     traded = sorted({m["instrument_id"] for m in today})
     listed = sorted(inst) or traded
-    instruments = [{"id": i, "symbol": (inst.get(i) or {}).get("tradingsymbol") or str(i),
+    instruments = [{"id": i, "symbol": chart.instruments_mod.display_name(inst.get(i)) or f"instrument {i}",
                     "kind": chart._KINDS.get((inst.get(i) or {}).get("kind"))} for i in listed]
     if instrument_id is None:
         instrument_id = traded[0] if traded and traded[0] in listed else (listed[0] if listed else None)

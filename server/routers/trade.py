@@ -154,9 +154,10 @@ def _tokens_symbols(day: str, ids: set[int]) -> tuple[dict[int, int], dict[int, 
             f"SELECT instrument_id, instrument_token FROM instrument_tokens WHERE instrument_id IN ({marks}) "
             "AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY valid_from",
             (*sorted(ids), day, day))}
-        symbols = {r[0]: r[1] for r in conn.execute(
-            f"SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN ({marks})", tuple(sorted(ids)))
-            if r[1]}
+        from stockify.data.instruments import display_name
+        symbols = {r["instrument_id"]: n for r in conn.execute(
+            "SELECT instrument_id, tradingsymbol, underlying, kind, expiry, strike_paise FROM instruments "
+            f"WHERE instrument_id IN ({marks})", tuple(sorted(ids))) if (n := display_name(dict(r)))}
     except sqlite3.Error:
         return {}, {}
     return tokens, symbols
