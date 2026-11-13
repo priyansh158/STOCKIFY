@@ -41,7 +41,7 @@ from decimal import ROUND_CEILING, ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from fractions import Fraction
 from pathlib import Path
 
-from stockify import numerics
+from stockify import numerics, paths
 from stockify.fno import span_validate as sv
 from stockify.fno.staircase import STEP_B1, STEP_B2, STEP_B5, STEPS
 from stockify.fno.spanlite import STEP_B3, STEP_B4, UnderlyingMargin
@@ -205,7 +205,7 @@ def check(legs: list[tuple[str, int, str]], day: date | None = None, at: str | N
     now_ns = timeutil.ist_ns(day, at)
     d = day.isoformat()
     try:                                                   # a clean message, not a traceback, without refdata
-        sqlite3.connect(Path(refdata._db_path()).as_uri() + "?mode=ro", uri=True).close()
+        sqlite3.connect(paths.readonly_uri(Path(refdata._db_path())), uri=True).close()
     except sqlite3.OperationalError as exc:
         raise CheckDataError(f"refdata cannot be opened read-only ({exc}); `refdata sync` creates it") from exc
     with sv.read_only(refdata):                            # the check needs refdata only, never the store

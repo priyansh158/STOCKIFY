@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
+from tests.support import SandboxedDBTest
 from tests.stockify.daemon.test_journal import clock_records, writer
 
 from stockify import __main__ as cli, backup, paths
@@ -27,10 +28,12 @@ def sha(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def tree(root: Path) -> dict[str, tuple[int, int]]:
-    """Every file under root: relative path -> (size, mtime_ns)."""
+def tree(root: Path, *, ignore_wal_files: bool = False) -> dict[str, tuple[int, int]]:
+    """Every file under root: relative path -> (size, mtime_ns). `ignore_wal_files` leaves out `*-shm` and `*-wal`:
+    a read-only connection to a WAL store may make them beside it (stockify.paths.readonly_uri), and nothing else."""
     return {p.relative_to(root).as_posix(): (p.stat().st_size, p.stat().st_mtime_ns)
-            for p in sorted(root.rglob("*")) if p.is_file()}
+            for p in sorted(root.rglob("*")) if p.is_file()
+            and not (ignore_wal_files and p.name.endswith(("-shm", "-wal")))}
 
 
 def make_db(path: Path, rows: int = 5, wal: bool = False) -> sqlite3.Connection:
@@ -52,8 +55,12 @@ def count(path: Path) -> int:
         con.close()
 
 
-class BackupCase(unittest.TestCase):
+class BackupCase(SandboxedDBTest):
+    """Starts from a brand-new empty state dir, so no other test's files (a stray `-shm`) are in the lab tree."""
+    db_modules = ()
+
     def setUp(self):
+        super().setUp()
         self.tmp = tempfile.TemporaryDirectory(dir=support.SANDBOX_ROOT, prefix="backup-target-")
         self.addCleanup(self.tmp.cleanup)
         self.target = Path(self.tmp.name) / "bk"
@@ -210,7 +217,7 @@ class SelectionTests(BackupCase):
         make_db(landing, wal=True).close()
         pack = paths.packs_dir() / "abc.evt"
         pack.write_bytes(b"pack")
-        before = tree(self.lab)
+        before = tree(self.lab, ignore_wal_files=True)
         touched = []
         real_open, real_connect = builtins.open, sqlite3.connect
 
@@ -230,7 +237,7 @@ class SelectionTests(BackupCase):
             self.assertNotIn("landing", name)
             self.assertNotIn("packs", name)
         self.assertEqual([n for n in self.backed_up() if "landing" in n or "packs" in n or "abc.evt" in n], [])
-        self.assertEqual(tree(self.lab), before)
+        self.assertEqual(tree(self.lab, ignore_wal_files=True), before)
 
 
 class JournalTests(BackupCase):
