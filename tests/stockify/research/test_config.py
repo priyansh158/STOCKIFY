@@ -124,6 +124,12 @@ class ResearchConfigTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.refused(changed("sweep", "max_workers", value=bad), "sweep.max_workers")
 
+    def test_sweep_max_trials_is_a_positive_whole_number(self):
+        load(changed("sweep", "max_trials", value=50))
+        for bad in (0, -1, "50", 1.5, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("sweep", "max_trials", value=bad), "sweep.max_trials")
+
     def test_walk_forward_and_regimes_basics(self):
         self.refused(changed("walk_forward", "objective", value="luck"), "walk_forward.objective")
         self.refused(changed("walk_forward", "train_days", value=0), "walk_forward.train_days")

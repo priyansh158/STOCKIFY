@@ -1,0 +1,33 @@
+# A 5 x 3 grid over the opening-range breakout: 15 trials, one run each (docs/plan/A1_schemas.md 6.6).
+# The base is inline here because its data dates must stay before the research holdout (research.json
+# holdout_from): a sweep reaching past it is locked. `base:` may instead be a path to a run.json, relative to this file.
+schema: stockify.sweep/1
+name: orb_grid
+base:
+  schema: stockify.run/1
+  name: orb_reliance_minute
+  strategy:
+    kind: python
+    ref: "stockify.strategies.opening_range_breakout:OpeningRangeBreakout"
+    params: {symbol: "NSE:RELIANCE", range_minutes: 15, qty: 10, short: true, exit_hhmm: "15:10"}
+  data:
+    packs:
+      - spec: {dataset: bars, interval: minute, instruments: ["NSE:RELIANCE"], from: "2026-06-01", to: "2026-06-30"}
+  price_basis: adjusted
+  capital_paise: 10000000
+  fill_model:
+    kind: bar
+    limit_touch_policy: through
+    participation: "0.10"
+    slippage: {kind: bps, x: "0.0005"}
+  latency_ms: 0
+  costs: {broker: zerodha, allow_unverified: true, auto_square_off_fee: true}
+  margin: {model: flat}
+  mark: ltp
+  seed: 42
+objective: sharpe
+search: {kind: grid}
+workers: null                              # capped at cpu_count - 1
+axes:
+  strategy.params.range_minutes: [5, 10, 15, 20, 30]
+  strategy.params.exit_hhmm: ["14:30", "15:00", "15:10"]

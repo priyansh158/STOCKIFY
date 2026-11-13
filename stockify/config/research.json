@@ -6,5 +6,5 @@
   "regimes": {"reference_index": "NIFTY 50", "vix_symbol": "INDIA VIX", "vix_edges": ["13", "16", "20"],
               "gap_edges_pct": ["-0.5", "-0.1", "0.1", "0.5"], "thin_days": 10},
   "pbo": {"slices": 16, "min_trials": 2},
-  "sweep": {"max_workers": null},
+  "sweep": {"max_workers": null, "max_trials": 1000},
   "coverage": {"ok_pct": "99", "default_days": 60, "max_days": 400} }

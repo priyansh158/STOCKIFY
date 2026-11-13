@@ -566,6 +566,22 @@ A run config (§6.1) without `data`, plus `universe`; `stockify.sessionconfig.lo
 
 `data` is refused. The normalised form is the run config's normalised form with `schema`, `universe` and `margin.live_fresh_s`; it is validated again to itself. `bundle.resolve_session_day(session_id, cfg, day, sod_state, refdata_stale=False)` makes one day's bundle (§6.2) from it: `packs: []`, `days` `[day]` with its seed, `sod_state` as given, `prev_days` / `next_days`, labels as a run's plus `session:<session_id>` (and `refdata_stale`); SPAN files only those archived by the refdata job's time, the later intraday files being left out and labelled `margin_span:sod_files_only`, and the day's ELM file left out (`margin_elm:sod_files_only`, the day's margin steps from B1 to B2). Instruments the previous `sod_state` names stay in the bundle (a build with an unknown one fails).
 
+### 6.6 `sweep.yaml`: a parameter sweep (WF 6.1, M6.10)
+
+YAML (`yaml.safe_load` rules; anchors, aliases and repeated keys are refused). `stockify.research.sweep.load_spec` validates it and `expand` makes the trial run configs. Schema `"stockify.sweep/1"`; an unknown key is refused naming it and the closest known one (D-76). There is no `family_id` key: a sweep is its own family, `sweep/<job_id>` (`registry.job_family_id`), and the base config's `family_id` is ignored.
+
+| Key | Value |
+|---|---|
+| `schema` | `"stockify.sweep/1"` |
+| `name` | a safe path segment of at most 40 characters; trial `i` is the run named `<name>-t<i:03d>` |
+| `base` | a path to a run.json (relative to this file) or an inline run config; normalised by `runconfig.validate` before the axes are applied |
+| `objective` | one of `registry.OBJECTIVES` (default `sharpe`) |
+| `search` | `{kind: grid}` (default) or `{kind: random, trials: N, seed: S}`: N distinct grid points drawn without replacement on stream 13 (`seeding.stream(S, "random_search")`), returned in grid order; N at or above the grid size gives the whole grid |
+| `workers` | null or a whole number >= 1; the pool caps it at cpu_count - 1 and at `research.json` `sweep.max_workers` |
+| `axes` | non-empty map of dotted path in the run config to a non-empty list of distinct values (decimals as strings, no floats). The path must exist in the base, except a new key directly under `strategy.params` |
+
+The grid is the Cartesian product in file order, the last axis varying fastest. A grid above `research.json` `sweep.max_trials` (and a random search asking for more trials than that) is refused before any config is built. Every expanded config is checked by `runconfig.validate`; one it refuses fails the load, naming the trial and its axis values. The example is `examples/sweeps/orb_grid.yaml` (5 x 3 = 15 trials, dates before the holdout).
+
 ## §7 Config files (`stockify/config/`)
 
 Every dated row carries `effective_from`, `source` (usually a `01_facts.md` ID) and `verified`; `verified_on` is required when `verified` is true (I-1, I-14). `effective_from: "2015-01-01"` is a floor meaning "in force before any data this lab uses", not a claimed start date.
