@@ -815,4 +815,18 @@ export interface RunChartDTO {
   idle_settlements: number;
   plain: string | null;
 }
+
+export interface WalkforwardChartWindowDTO {
+  index: number;
+  from_t: number;
+  to_t: number;
+  from_d: string;
+  to_d: string;
+  run_id: string | null;
+  status: "done" | "failed" | "skipped" | "pending" | "missing" | "unknown";
+}
+
+export interface WalkforwardChartDTO extends RunChartDTO {
+  windows: WalkforwardChartWindowDTO[];
+}
 // </block>

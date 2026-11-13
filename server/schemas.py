@@ -842,4 +842,22 @@ class RunChartDTO(BaseModel):
     skipped_settlements: int
     idle_settlements: int
     plain: str | None = None
+
+
+# ── Walk-forward chart (CH 6.12) ─────────────────────────────────────────────
+
+class WalkforwardChartWindowDTO(BaseModel):
+    """One window's test range: UTC seconds `from_t` (inclusive) to `to_t` (exclusive), the IST dates `from_d` and
+    `to_d` (inclusive), and the test run drawn there (None when it has no chart: see `status`)."""
+    index: int
+    from_t: int
+    to_t: int
+    from_d: str
+    to_d: str
+    run_id: str | None = None
+    status: Literal["done", "failed", "skipped", "pending", "missing", "unknown"]
+
+
+class WalkforwardChartDTO(RunChartDTO):
+    windows: list[WalkforwardChartWindowDTO]
 # </block>

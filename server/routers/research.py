@@ -16,8 +16,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
                             ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
-                            SweepHeatmapDTO, SweepRowDTO, TrialRowDTO, WalkforwardDTO, WalkforwardSummaryDTO,
-                            WalkforwardWindowDTO)
+                            SweepHeatmapDTO, SweepRowDTO, TrialRowDTO, WalkforwardChartDTO, WalkforwardChartWindowDTO,
+                            WalkforwardDTO, WalkforwardSummaryDTO, WalkforwardWindowDTO)
 
 router = APIRouter(tags=["research"])
 
@@ -232,3 +232,33 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     d["summary"] = WalkforwardSummaryDTO(**s)
     d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"))}) for w in d["windows"]]
     return WalkforwardDTO(**d)
+
+
+_INT64 = 2**63 - 1
+_NS = 1_000_000_000
+
+
+@router.get("/api/research/walkforward/{job_id}/chart", response_model=WalkforwardChartDTO)
+def walkforward_chart(job_id: str, instrument: int | None = Query(None, ge=0, le=_INT64),
+                      from_ns: int | None = Query(None, ge=0, le=_INT64),
+                      to_ns: int | None = Query(None, ge=0, le=_INT64)) -> WalkforwardChartDTO:
+    """The out-of-sample chart of a finished walk-forward job (CH 6.12): each window's test run, one after another,
+    as `RunChartDTO` plus `windows`. Marker ids carry their window (`w1-f3`). 404 for an unknown or unsafe job id (the
+    id is never echoed) or an instrument no window has, 409 for a job that is not finished or whose windows are gone,
+    422 for a bad query; every message is fixed words, never stored or exception text. Read-only."""
+    from server.routers.tests import _chart_dto
+    from stockify.reporting import chart_wf
+    if from_ns is not None and to_ns is not None and from_ns >= to_ns:
+        raise HTTPException(status_code=422, detail="from_ns must be before to_ns")
+    try:
+        model = chart_wf.walkforward_chart(job_id, instrument, from_ns, to_ns)
+    except chart_wf.WfChartError as e:
+        code = 409 if e.kind in ("not_done", "missing") else 404
+        raise HTTPException(status_code=code, detail=str(e)) from None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="the chart request is not valid") from None
+    base = _chart_dto(model)
+    windows = [WalkforwardChartWindowDTO(index=w["index"], from_t=w["from_ns"] // _NS, to_t=w["to_ns"] // _NS,
+                                         from_d=w["from_d"], to_d=w["to_d"], run_id=w["run_id"], status=w["status"])
+               for w in model["windows"]]
+    return WalkforwardChartDTO(**base.model_dump(), windows=windows)

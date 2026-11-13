@@ -503,15 +503,16 @@ def _chart_dto(m: dict) -> RunChartDTO:
     def day(t_ns: int) -> str:
         return timeutil.ns_to_ist(t_ns).date().isoformat()
 
-    seen: dict[tuple[int, int], int] = {}
+    seen: dict[tuple, int] = {}
     markers = []
     for k in m["markers"]:
+        pre = f"w{k['window']}-" if k.get("window") is not None else ""     # a walk-forward chart: one run per window
         if k["fill_id"] is not None:
-            mid = f"f{k['fill_id']}"
+            mid = f"{pre}f{k['fill_id']}"
         else:                                      # a settlement: its instant, quantity and nth occurrence (stable per window)
-            key = (k["t_ns"], k["qty"])
+            key = (pre, k["t_ns"], k["qty"])
             seen[key] = seen.get(key, 0) + 1
-            mid = f"x{k['t_ns']}-{k['qty']}-{seen[key] - 1}"
+            mid = f"{pre}x{k['t_ns']}-{k['qty']}-{seen[key] - 1}"
         markers.append(ChartMarkerDTO(
             id=mid, kind=k["kind"], t=k["t_ns"] // _NS, bar_t=k["bar_start_ns"] // _NS, bar_d=day(k["bar_start_ns"]),
             side=k["side"], qty=k["qty"], price=_rupees(k["price_paise"]), price_paise=k["price_paise"],
