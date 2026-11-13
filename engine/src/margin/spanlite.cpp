@@ -76,7 +76,7 @@ std::pair<Paise, Paise> SpanLiteMargin::rule_elm(const Legs& legs,
     const Date day = parse_iso_date(date);
     Int128 elm_raw = 0, addon_raw = 0;  // paise × ppb
     for (const auto& [row, units] : legs) {  // exposure_notionals: futures, then sold options; bought: none
-        const Qty size = units < 0 ? -units : units;
+        const Qty size = units < 0 ? checked_neg(units) : units;
         if (row->kind == "FUT") {
             const std::optional<Paise> own = price(row->id);
             const std::optional<Paise> f = own && *own != 0 ? own : und;  // `price(iid) or underlying`
@@ -89,7 +89,7 @@ std::pair<Paise, Paise> SpanLiteMargin::rule_elm(const Legs& legs,
                 base = *und;
             } else {  // the option's forward: the chain's, else (no underlying) its strike; int() truncates
                 const std::optional<Context::ChainView> chain = chain_of(*row);
-                base = chain && chain->forward ? static_cast<Paise>(*chain->forward) : row->strike.value_or(0);
+                base = chain && chain->forward ? checked_trunc(*chain->forward) : row->strike.value_or(0);
             }
             const Int128 notional = Int128::mul(base, size);
             elm_raw += notional * elm_ppb;
@@ -172,7 +172,7 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const Legs& legs,
     std::vector<Valued> valued;
     std::int64_t somc_lots = 0;
     for (const auto& [row, units] : legs) {
-        const Qty size = units < 0 ? -units : units;
+        const Qty size = units < 0 ? checked_neg(units) : units;
         if (row->kind == "FUT") {
             const std::optional<Paise> own = price(row->id);
             const std::optional<Paise> f = own && *own != 0 ? own : und;  // `price(iid) or underlying`
@@ -244,7 +244,7 @@ UnderlyingMargin SpanLiteMargin::one(InstrumentId uid, const Legs& legs,
     }
     UnderlyingMargin out;
     out.underlying = uid;
-    out.scan = checked_mul(static_cast<std::int64_t>(std::ceil(worst)), 100);
+    out.scan = checked_mul(checked_trunc(std::ceil(worst)), 100);
     out.somc = ceil_to(checked_mul(p.at("somc_per_lot_paise").get<std::int64_t>(), somc_lots), 100);
     std::tie(out.elm, out.addons) = rule_elm(legs, price, date, und);
     // The staircase step (MEZ 4.9, spanlite.step_of): B4 for the shipped placeholder rows, else B3 (adopted).

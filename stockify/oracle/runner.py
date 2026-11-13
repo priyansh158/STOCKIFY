@@ -1026,7 +1026,7 @@ class Engine:
         s0, s1 = m.s0, m.s1
         if s0 is None or s1 is None:
             return None
-        dv = s1["volume"] - s0["volume"]
+        dv = numerics.check_int64(s1["volume"] - s0["volume"])
         if dv < 0:
             self.log("WARN", "day volume decreased; treated as 0")
             dv = 0
@@ -1226,11 +1226,11 @@ class Engine:
             dv = volume_delta(vol, prev_vol)
             if start not in acc:
                 acc[start] = [price, price, price, price, dv, 0]
-                self.push(start + step, BAR_BUILT, "BAR_BUILT", (iid, isec, start))
+                self.push(numerics.check_int64(start + step), BAR_BUILT, "BAR_BUILT", (iid, isec, start))
             else:
                 b = acc[start]
                 b[1], b[2], b[3] = max(b[1], price), min(b[2], price), price
-                b[4] += dv
+                b[4] = numerics.check_int64(b[4] + dv)
 
     def _on_gap(self, rec: dict) -> None:
         targets = [rec["instrument_id"]] if rec["scope"] == 1 else list(self.market)
@@ -1301,10 +1301,10 @@ class Engine:
                 p.q, p.c = 0, 0
             else:
                 k = row["strike_paise"]
-                intrinsic = max(0, fsp - k) if row["kind"] == "CE" else max(0, k - fsp)
+                intrinsic = max(0, numerics.check_int64(fsp - k)) if row["kind"] == "CE" else max(0, numerics.check_int64(k - fsp))
                 self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, intrinsic))
                 led.cash += p.qty * intrinsic
-                p.realised += p.d * (p.q * intrinsic - p.c)
+                p.realised = numerics.traded_pnl(p.realised, p.d, p.q * intrinsic, p.c)
                 # D-59: brokerage on every option open at expiry (exercised, assigned or expired);
                 # exercise STT only on the intrinsic value of a long ITM one
                 exercised = p.q * intrinsic if p.d > 0 else 0
@@ -1461,8 +1461,9 @@ class Engine:
             return
         t, period = spec
         if period:
-            self.timers[timer_id] = (t + period, period)
-            self.push(t + period, TIMER, "TIMER", timer_id)
+            t_next = numerics.check_int64(t + period)
+            self.timers[timer_id] = (t_next, period)
+            self.push(t_next, TIMER, "TIMER", timer_id)
         else:
             del self.timers[timer_id]
         if self._hook_on("on_timer"):
@@ -1558,7 +1559,7 @@ class Engine:
                 else:
                     merged.append([a, b])
             for a, b in merged:
-                total += b - a
+                total = numerics.check_int64(total + numerics.check_int64(b - a))
                 state = False
                 cursor = a
                 for t, flag in self.open_changes:
@@ -1568,10 +1569,10 @@ class Engine:
                     if t >= b:
                         break
                     if state:
-                        held += t - cursor
+                        held = numerics.check_int64(held + numerics.check_int64(t - cursor))
                     cursor, state = t, flag
                 if state:
-                    held += b - cursor
+                    held = numerics.check_int64(held + numerics.check_int64(b - cursor))
         return held / total if total else None
 
     def _dispatch_internal(self, kind: str, payload) -> None:  # noqa: ANN001

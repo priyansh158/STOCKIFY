@@ -66,7 +66,16 @@ def path_points(o: int, h: int, lo: int, c: int, high_first: bool) -> list[int]:
 
 def _value(points: list[int], pos) -> Fraction:  # noqa: ANN001
     k, f = pos
-    return points[k] + (points[k + 1] - points[k]) * f
+    return points[k] + numerics.check_int64(points[k + 1] - points[k]) * f
+
+
+def _frac(num: int, den: int) -> Fraction:
+    """Fraction(num, den) refusing what the engine's Frac::of refuses: a num or den that does not fit int64, or
+    whose sign flip (den < 0) does not."""
+    num, den = numerics.check_int64(num), numerics.check_int64(den)
+    if den < 0:
+        num, den = numerics.check_int64(-num), numerics.check_int64(-den)
+    return Fraction(num, den)
 
 
 def first_reach(points: list[int], x: int, down: bool, after=OPEN_POS):  # noqa: ANN001
@@ -79,7 +88,7 @@ def first_reach(points: list[int], x: int, down: bool, after=OPEN_POS):  # noqa:
             return (k, start)
         a, b = points[k], points[k + 1]
         if a != b and ok(b):
-            f = Fraction(a - x, a - b)
+            f = _frac(a - x, a - b)
             if f >= start:
                 return (k, f)
     return None

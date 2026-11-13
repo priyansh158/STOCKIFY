@@ -20,6 +20,7 @@ from datetime import date as _date_cls
 
 from stockify import numerics
 from stockify.oracle.ledger import Ledger, Position
+from stockify.oracle.notes import clean_note
 from stockify.oracle.orders import FINAL, LIVE, PRODUCTS, REASONS, SIDES, TYPES, VALIDITIES, Order
 
 SCHEMA = "stockify.sod_state/1"
@@ -451,7 +452,7 @@ def _read_order(o, group: str, bundle_ids, next_order: int, seen: set) -> Order:
     _opt(_date, o["trade_date"], w + "trade_date")
     _bool(o["charged"], w + "charged")
     _opt(_date, o["eod_after"], w + "eod_after")
-    return Order(**{f: o[f] for f in ORDER_FIELDS})
+    return Order(**{f: (clean_note(o[f]) if f == "note" else o[f]) for f in ORDER_FIELDS})   # CH 6.22: cleaned on load
 
 
 def _stream(v, name: str) -> list:  # noqa: ANN001

@@ -2,6 +2,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <array>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "stocksim/int128.hpp"
 #include "stocksim/json_bundle.hpp"
 #include "stocksim/json_out.hpp"
+#include "stocksim/matcher.hpp"
 #include "stocksim/pcg32.hpp"
 #include "stocksim/pricing/black76.hpp"
 #include "stocksim/sha256.hpp"
@@ -26,7 +28,15 @@ void bind_engine(py::module_& m);         // engine.cpp
 namespace {
 
 // Python value → JValue, with the oracle's rules (bool before int, str keys only, int64 range).
-stocksim::JValue to_jvalue(const py::handle& obj) {
+// Deeper than this, or a container that holds itself, is the oracle's RecursionError, not a stack overflow that
+// would end the whole process (c-review DOS-001).
+constexpr int kMaxJsonDepth = 200;
+
+stocksim::JValue to_jvalue(const py::handle& obj, int depth = 0) {
+    if (depth > kMaxJsonDepth) {
+        PyErr_SetString(PyExc_RecursionError, "maximum recursion depth exceeded while serialising");
+        throw py::error_already_set();
+    }
     if (obj.is_none()) {
         return stocksim::JValue();
     }
@@ -48,14 +58,14 @@ stocksim::JValue to_jvalue(const py::handle& obj) {
             if (!py::isinstance<py::str>(k)) {
                 throw py::type_error("canonical JSON keys must be strings");
             }
-            out[k.cast<std::string>()] = to_jvalue(v);
+            out[k.cast<std::string>()] = to_jvalue(v, depth + 1);
         }
         return out;
     }
     if (py::isinstance<py::list>(obj) || py::isinstance<py::tuple>(obj)) {
         stocksim::JValue out = stocksim::JValue::array();
         for (const auto& v : obj) {
-            out.push_back(to_jvalue(v));
+            out.push_back(to_jvalue(v, depth + 1));
         }
         return out;
     }
@@ -105,6 +115,17 @@ void bind_testing(py::module_& t) {
     }, py::arg("is_call"), py::arg("target"), py::arg("f"), py::arg("k"), py::arg("t"), py::arg("r"),
        py::arg("tick") = stocksim::pricing::kDefaultTick);
     t.def("b76_year_fraction", &stocksim::pricing::year_fraction);
+    // matcher.first_reach over the four path points from the open: (segment, num, den) or None (the oracle's tuple).
+    t.def("bar_first_reach", [](const std::array<std::int64_t, 4>& points, std::int64_t x, bool down) -> py::object {
+        const auto pos = stocksim::first_reach(points, x, down, stocksim::kOpenPos);
+        return pos ? py::object(py::make_tuple(pos->k, pos->f.n, pos->f.d)) : py::object(py::none());
+    });
+    // ceil then narrow, as spanlite does: NaN -> ValueError, outside int64 (infinity too) -> OverflowError.
+    t.def("ceil_to_int64", [](double x) { return stocksim::checked_trunc(std::ceil(x)); });
+    t.def("frac_of", [](std::int64_t num, std::int64_t den) {
+        const stocksim::Frac f = stocksim::Frac::of(num, den);
+        return py::make_tuple(f.n, f.d);
+    });
     // Many doubles at once (little-endian float64 bytes) → the formatted strings joined by "\n".
     t.def("format_floats", [](const py::bytes& raw) {
         const std::string buf = raw;

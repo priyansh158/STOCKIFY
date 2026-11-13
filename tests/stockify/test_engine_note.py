@@ -280,6 +280,33 @@ class NoteStateTests(unittest.TestCase):
         e_states = engine_day_by_day(self.bundle, self.pack, self.make, self.folder / "e2")
         self.assertTrue(any(o["note"] for s in e_states for o in json.loads(s)["pending_orders"]))
 
+    def test_a_carried_note_with_control_characters_and_over_200_characters_is_cleaned_on_load(self):
+        """CH 6.22: both runners pass a loaded note through clean_note (control characters, U+2028, the 200-character
+        cap), so a hand-edited or old state cannot put a raw note into orders.csv."""
+        n, st = self._first_state_with_orders()
+        dirty = ["  start\x01mid\x7f end\n  ", "z" * 300, "\x00\x1f", "plain note"]
+        want = {}
+        for i, o in enumerate(st["pending_orders"]):
+            o["note"] = dirty[i % len(dirty)]
+            want[o["order_id"]] = clean_note(o["note"])
+        self.assertTrue(any(clean_note(x) != x for x in dirty))
+        days = day_bundles(self.bundle)
+        parts = slice_records(self.records, self.bundle["days"])
+        packs = split_pack(self.pack, self.bundle["days"], self.folder)
+        d = days[n + 1]
+        d["sod_state"] = st
+        o_state = oracle_day_run(copy.deepcopy(d), parts[n + 1], self.make(), self.folder / "oc").eod_state()
+        e_state = engine_run(copy.deepcopy(d), packs[n + 1], self.make(), self.folder / "ec")
+        self.assertEqual(o_state, e_state)
+        seen = 0
+        for s in (o_state, e_state):
+            for group in ("pending_orders", "final_orders"):
+                for o in json.loads(s)[group]:
+                    if o["order_id"] in want:
+                        seen += 1
+                        self.assertEqual(o["note"], want[o["order_id"]])
+        self.assertGreater(seen, 0)
+
     def test_state_without_note_loads_as_empty_note_in_both_runners(self):
         n, st = self._first_state_with_orders()
         for group in ("pending_orders", "final_orders"):

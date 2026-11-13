@@ -46,7 +46,7 @@ class Position:
         return numerics.floor_div(self.c, self.q) if self.q else 0
 
     def pnl(self, price: int) -> int:
-        return self.realised + self.d * (self.q * price - self.c)
+        return numerics.traded_pnl(self.realised, self.d, self.q * price, self.c)
 
     def copy(self) -> "Position":
         return Position(**self.__dict__)
@@ -85,7 +85,7 @@ class Ledger:
         if p.q and p.d != sign:                        # reducing (and maybe flipping)
             k = min(remaining, p.q)
             removed = p.c if k == p.q else numerics.floor_div(p.c * k, p.q)
-            p.realised += p.d * (k * price - removed)
+            p.realised = numerics.traded_pnl(p.realised, p.d, k * price, removed)
             p.c -= removed
             p.q -= k
             remaining -= k
