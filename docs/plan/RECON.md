@@ -1330,3 +1330,60 @@ What the chart code looks like now (integration branch `stockify/m6-integration`
   1. Look at a run, a paper session, a walk-forward and a sweep trial at 1024 px.
   2. Confirm the TradingView attribution reads acceptably.
   3. The durable fix for recording bar intervals (D-112): a run that does not record its bar interval is charted from the strategy's declared `BAR_INTERVAL_S` or its parameter default, and says so; the run config should record it.
+
+## 2026-11-13 — M6 closed: built, reviewed, recorded; live gates listed (XI 6.1)
+
+M6 is "built (open: live gates)" in `00_overview.md` §4. Everything below ran on the integration branch `stockify/m6-integration` at `9d232a9` plus the doc commits `XI 6.38` and `CH 6.20`. Nothing touched the owner's real lab: the transcript used a scratch lab (`LOCALAPPDATA` pointed at a folder under the job's tmp directory), seeded with the fixture instrument dump (RELIANCE) and 97 trading days (2026-02-02 to 2026-06-26) of synthetic minute bars from a fixed generator. The figures are meaningless as results (a random walk loses to costs); they show that every command runs end to end and what it prints.
+
+### Verification transcript (sandboxed fixture lab)
+
+| Command | Result |
+|---|---|
+| `python -m stockify sweep --config orb_fix.yaml` (`orb_grid.yaml` over the fixture days: 3 range lengths x 2 exit times = 6 trials) | exit 0, 3.9 s wall. Best trial `orb_fix-t004` (range 20, exit 15:00): Sharpe -16.57, net -Rs 3,731, 97 trades. One job and one family, `sweep/sweep-orb_fix-...` |
+| `python -m stockify walkforward --sweep orb_fix.yaml --train 40d --test 20d --step 20d --objective sharpe` | exit 0, 10.0 s. 5 of 5 windows tested, 64 out-of-sample days; Sharpe in-sample -17.88, out-of-sample -18.98 ("in-sample was not positive, so there is no ratio"); deflated: 0% over 30 tries; the same settings won 3 of 5 windows. Wrote `report.md`, `walkforward.json`, `walkforward.png` |
+| `python -m stockify sensitivity --run orb_fix-t004-...` | exit 0, 4.4 s. Costs x0 / x1.5 / x2: -Rs 1,157 / -Rs 4,970 / -Rs 6,233 against the baseline -Rs 3,731; slippage +1 and +2 ticks; latency 250 and 1000 ms; verdict "already losing" (a worse case proves nothing). The `snapshot_ltp` and `snapshot_quote` fill models show Rs 0 because the fixture holds bars only, no ticks; `eod_close` is "not applicable" |
+| `python -m stockify research report --walkforward <job> --sensitivity-run orb_fix-t004-...` | exit 0; wrote `research/<job>/report.md` with the cost table |
+| `python -m stockify compare orb_fix-t004 orb_fix-t002 orb_fix-t000` | exit 0; side-by-side table, `*` on every differing row, all three on engine build `ae7ca3654e80` |
+| `python -m stockify export orb_fix-t004 --out export_t004.zip` | exit 0; a 32,754-byte zip of 13 files (bundle, charges, determinism, equity, fills, manifest, margin, metrics, order events, orders, positions, run.json, plots.csv), secret scan passing |
+| `python -m stockify research families --backfill --dry-run` | exit 0, "would give 0 run(s) and 0 session(s) a family (dry run, nothing written)" (every run here was made after M6) |
+
+- 🛑 The same commands on the owner's real minute bars (about 330 days of one liquid stock, so the demo walk-forward has enough out-of-sample days) are not run; they need the owner's Kite fetch. `orb_grid.yaml` points at 2026-06-01 to 2026-06-30 and must be moved to the fetched range, which has to end before `holdout_from` (2026-08-01) or be unlocked with a written reason.
+- The engine was built at this head (`engine_build_id ae7ca3654e80`, `ctest` 2/2).
+
+### Measured timings
+
+- Probability of backtest overfitting: 12,870 combinations x 100 trials = 0.565 s (pbo 0.467), printed by `test_pbo` in full suite 8.
+- Stationary bootstrap: `bootstrap_ci` with `resamples = 2000`, `n = 1500`, `mean_block = 10`: about 2.3 s (Task 6, above), so the run report caches its intervals in `runs/<id>/research.json`.
+- India VIX read (`regimes._recorded_close`, real lab, read-only, Task 10, above): first call 1.2 s (cold start, pyarrow import included), later calls 0.002 to 0.003 s.
+- Fixture lab, above: a sweep of 6 trials 3.9 s, a walk-forward of 5 windows (30 training runs and 5 test runs) 10.0 s, a sensitivity of 11 variants 4.4 s.
+
+### Full suites
+
+- Suite 8 (`9d232a9`): 3402 tests, 3397 passed, 4 tracked defects (expected failures), 1 failure: `test_howto.test_the_code_shown_is_the_reference_strategy` (the HOWTO listing lacked `BAR_INTERVAL_S = 60`). Fixed in `XI 6.38`; the `howto` filter then passed 12 of 12. The four earlier order-dependent flakes passed (their cause, a shared test list, was fixed in `a076c24`). 2334 s.
+- Suite 9: see the follow-up line at the end of this section.
+- Dependencies: `git diff 7368e7f HEAD -- requirements.txt requirements-lock.txt` is empty (no new Python package). `web/package.json` changed in 5 lines since `102dd7c`: `lightweight-charts` 5.3.0 (new), `next` and `eslint-config-next` 16.4.6; the supply-chain reports for those versions are cited in the chart close above, so the M6 task's "supply-chain-risk-auditor skipped" became "run for those three versions".
+
+### Milestone audits (reports in `.superpowers/audits/`)
+
+- `spec-compliance-m6-2026-11-13.json` (the M6 plan and its documents): 1620 requirements extracted, 10 checked, 3 hold, 7 diverge; about 1,610 were not checked, so their status is unknown, not compliant. REQ-30 high (a paper session never got a `family_id`, so family reports showed no sessions): fixed in G1 (session `family_id`; `research families --backfill` covers sessions). REQ-115 medium (no demo report in the lab): an owner step, below. REQ-001 medium (session-time literals): regimes now read the close from config (G1, with `close_slack`); the chart's 09:15 literal now comes from the server's `session_open_s` (G2). REQ-09 medium (CLI export without the Kite literals): fixed in G1 (D-104). REQ-113 medium (`/data` reached only 180 days): fixed in G2 (D-114). REQ-114 and REQ-002 low: documents, plus the loader now refuses an undated row (D-106). The undocumented `run --role/--job-id` hole (a hand try leaving N) is closed by the variant guard (G1); the export cap and the formula-neutralised copy are D-104.
+- `spec-compliance-charts-2026-11-13.json`: see the chart close above.
+- `differential-review-m6-branch-2026-11-13.md`: 0 Critical, 0 High, 1 Medium, 9 Low; all went to G1 to G3 (see the chart close above).
+- `insecure-defaults-server-2026-11-13.json` (`server/`, 108 files, 6 categories, 65 patterns): no finding confirmed; 11 candidates in 7 files, all refuted (loopback-only origin checks, one CORS origin, Origin and Host guards, loopback bind). Nothing to fix.
+- `c-review-engine-2026-11-13.md`: 25 LOW primaries, 3 reported (unchecked int64 subtraction on pack values and in `year_fraction`); fixed in F1 (CH 6.21). `c-review-task14-extra-ticks.md` covers `extra_ticks`.
+- `next-upgrade-2026-11-13.md`, `c14-lockfile-supply-chain.md`, `lightweight-charts-supply-chain.md`: supply chain, see the chart close above.
+- A1, A2 and A3 now carry a row for every new endpoint, file and test class. Each M6 and chart route was grepped against A2: every one had a row except `GET /api/research/counts`, now added (`/api/trade/sessions/{id}/orders` and `/fills` sit in the M5.12 row). A1 gained §6.7 (the research job folder) and the run-folder `sensitivity.json` and `research.json` rows; A3 gained U-14 to U-26.
+- Not done: the optional M6.12 README write-up (its box stays open; its parity and divergence figures need live days, D-122).
+
+### Owner list (all 🛑; none blocks the code)
+
+1. `holdout_from` is set (2026-08-01, D-89); no action beyond keeping the demo's bars before it, or unlocking with a reason.
+2. 🛑 `python -m stockify research families --backfill --dry-run`, read it, then run it without `--dry-run`.
+3. 🛑 `python -m stockify data report --date D` for each recorded day (the coverage page reads the stored rows).
+4. 🛑 Fetch minute bars, about 330 days of the demo stock, so the demo walk-forward has at least `min_oos_days` (60) out-of-sample days (D-102).
+5. 🛑 Run the demo (`sweep`, `walkforward`, `sensitivity`, `research report`) on those bars and read `research/<job>/report.md` (the Definition of done asks for it).
+6. 🛑 Look at each page at 1024 px: a run, a paper session, a walk-forward, a sweep trial, `/data`, `/research`, `/tests/compare`.
+7. 🛑 Confirm the TradingView attribution reads acceptably (the footer notice and the chart logo).
+8. 🛑 Decide the durable fix for recording bar intervals (D-112): the run config does not record the interval a strategy subscribed to; the chart reads the strategy's `BAR_INTERVAL_S` or parameter default and says so.
+9. 🛑 Rebuild the engine on every machine (`.\run.ps1 -BuildEngine`) before comparing runs.
+10. The stuck-process note is resolved: the old `sod` filter process (pid 37796) ended on its own and the worktree's `.pyd` is free. Nothing to do.
+11. 🛑 Push, only on the owner's word. Nothing has been pushed past `102dd7c`.

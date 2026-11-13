@@ -471,6 +471,8 @@ yet"), never a fallback to flat.
 | `events_log.txt` | ✔ | strategy and engine log lines stamped with engine time |
 | `determinism.json` | — | SHA-256 of each deterministic file |
 | `manifest.json` | ✗ | engine build info, Python version, OS, wall-clock start/duration, input hashes, labels |
+| `sensitivity.json` | ✗ | the cost, slippage, latency and fill-model variants of a finished run and the verdict (`fragile`, `robust`, `inconclusive`, `already_losing`; D-100); written by `stockify sensitivity`, read by `GET /api/tests/{id}/sensitivity` |
+| `research.json` | ✗ | the run's cached research figures (deflated Sharpe inputs, bootstrap intervals, regime tables) written by `report.run_research`; a cache, safe to delete. Not the config file of §7.10 |
 | `report.md` (+ `equity.png`) | ✗ | human summary (M2.6) |
 
 <!-- </block> -->
@@ -584,6 +586,16 @@ YAML (`yaml.safe_load` rules; anchors, aliases and repeated keys are refused). `
 | `axes` | non-empty map of dotted path in the run config to a non-empty list of distinct values (decimals as strings, no floats). The path must exist in the base, except a new key directly under `strategy.params` |
 
 The grid is the Cartesian product in file order, the last axis varying fastest. A grid above `research.json` `sweep.max_trials` (and a random search asking for more trials than that) is refused before any config is built. Every expanded config is checked by `runconfig.validate`; one it refuses fails the load, naming the trial and its axis values. The example is `examples/sweeps/orb_grid.yaml` (5 x 3 = 15 trials, dates before the holdout).
+
+### 6.7 `research/<job_id>/`: a research job's folder (M6)
+
+`paths.research_path(job_id)` (one safe segment). Written by the sweep, walk-forward and report code; none of it is deterministic output of the engine.
+
+| File | Job | Content |
+|---|---|---|
+| `sweep.json`, `results.csv` | sweep | the expanded trials with their run ids and objective values; the table the sweep page reads (`GET /api/research/sweeps/{job_id}`) |
+| `walkforward.json` | walk-forward | windows, the stitched out-of-sample index, summary, holdout notes; the only input of `report.md` and `GET /api/research/walkforward/{job_id}` (D-133) |
+| `report.md`, `walkforward.png` | walk-forward | the plain-words report (`wf_report.render`, D-134) and its stitched-curve picture |
 
 ## §7 Config files (`stockify/config/`)
 

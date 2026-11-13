@@ -125,6 +125,19 @@ G17 vectors (r = 6.5%, ACT/365; values from the plan author's reference implemen
 | U-11 | Float format | C++ formatter equals Python `repr` on 10⁶ random doubles plus edge cases (0.0, -0.0, 1e-4, 1e16, subnormals) |
 | U-12 | Interval VWAP | A4 §2.1 validity: volume 9,999,000 → 10,000,000 with ATP 10000 → 10001 paise gives an implausible value that must be discarded, not used |
 | U-13 | Recorder | batching (250 ms / 2,000 rows), `seq` continuing after restart, one gap row per reason, re-centring with hysteresis, pinning, the 3,000 cap, `subscription_log`, the queue-full alarm |
+| U-14 | Deflated Sharpe | `test_stats.DeflatedSharpeTests.test_dsr_matches_the_hand_computed_example` (a worked example done by hand), `SharpeTests`, `PropertyLoopTests`; `MetricsRefactorTests` keeps `metrics.json` unchanged |
+| U-15 | Bootstrap and seeding | `test_bootstrap.PercentileTests`, `IndexTests` (the same seed gives the same indices), `IntervalTests`; `test_seeding.SeedingTests` (streams never collide) |
+| U-16 | Holdout | `test_holdout.EnforceTests`, `ValidateTests`, `QueueTests`, `LaunchTests`, `ImportAndLateTests` (the boundary day is locked, the day before is not; every entry point; an unlock needs a reason and is logged once), `CliTests`, `ApiTests` |
+| U-17 | Export and secrets | `test_export.SecretScanTests`, `ExportSecretsTests`, `ExportFalseRefusalTests`, `ExportPersonalDataTests`, `ExportPropertyTests`, `ExportCliTests`, `ExportApiTests`; `test_compare.CompareLogicTests`, `CompareCliTests`, `CompareApiTests` |
+| U-18 | Probability of backtest overfitting | `test_pbo.CscvTests` (an independent brute-force reference at 4 and 16 slices, ties, flat columns), `FamilyTests`, `SentenceTests`; timing `[pbo] 12,870 combinations x 100 trials` is printed by the suite |
+| U-19 | Sweeps, walk-forward, sensitivity | `test_sweep_spec.SweepSpecTest`, `SweepPropertiesTest`; `test_sweep_run`; `test_walkforward.WindowTests`, `SelectTests`, `RunTests`; `test_walkforward_finish.StitchTests`, `FinishTests`; `test_wf_report`; `test_sensitivity`; `test_pool`; `test_demo_pipeline.DemoPipelineTests` (sweep, walk-forward, sensitivity and report through the real pool on the oracle fixture) |
+| U-20 | Registry, regimes, report | `test_registry`, `test_regimes`, `test_report`, `test_plain`, `test_store_research.ResearchStoreTests`, `test_config.ResearchConfigTests`, `test_costs_scale`, `test_extra_ticks` |
+| U-21 | Coverage and quality | `test_quality_coverage` (`MixedModeTest`, `AllFullCoverageTests`, `UnloggedCoverageTests`, `MeansProperty`), `reporting/test_coverage`, `data/test_readonly_reads` (a store in a folder named with `#` or `%`) |
+| U-22 | Notes and plots (CH 6.1 to 6.7, 6.22, 6.25) | `test_notes.CleanNoteTests` and `EngineParityTests` (bidi controls, D-127), `test_order_note`, `test_engine_note.NoteParityTests`, `test_plot`, `test_strategy_notes`, `test_fifo_trades` |
+| U-23 | Chart bars, model and APIs (CH 6.9 to 6.13) | `charts/test_chartbars`, `charts/test_chart_model` (markers, settlements, the G10 golden, paging, `StrategyIntervalTests` D-112, `PageCapTests` D-115), `charts/test_chart_wf`, `charts/test_chart_session`, `test_api_chart.ChartApiTests`, `test_api_research` |
+| U-24 | Chart web helpers (CH 6.14 to 6.19) | `test_chart_checks.ChartHelperChecks` runs `tests/stockify/chart_check.ts`; `test_research_checks.ResearchHelperChecks` runs `research_check.ts` (Node, no browser) |
+| U-25 | Engine checked arithmetic and carried state (CH 6.21, 6.24) | `test_engine_checked_arithmetic.CheckedWorldTests`, `CheckedHelperParityTests`; `test_engine_strategy_state.ResumeThroughTheTwins`, `StateIsReadChecked` |
+| U-26 | Journal and log sharing (LCM 6.4) | `test_journal` (reads sharing DELETE), `test_log_rotation.SharedRotationTests` |
 
 ## §7 End-to-end
 
