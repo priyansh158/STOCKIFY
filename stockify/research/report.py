@@ -99,6 +99,7 @@ class FamilySummary:
     best_run_id: str | None
     best_dsr: float | None
     unlocks: int
+    n_finished: int = 0
 
 
 # ── shared pieces ─────────────────────────────────────────────────────────────────────────────
@@ -307,6 +308,15 @@ def _ranked(trials: list[registry.TrialRun]) -> list[registry.TrialRun]:
                   key=lambda t: (-t.objective_value, t.name or "", t.run_id))
 
 
+def _unfinished_try(status: str | None) -> str:
+    """What a trial-role run without a result says about itself: only a failed run was tried and so counts (D-85)."""
+    if status == "failed":
+        return "did not finish; it still counts toward the number of tries"
+    if status == "cancelled":
+        return "was cancelled; it does not count"
+    return "has not finished yet; it does not count until it does"
+
+
 def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     row = store.get_run(run_id)
     if row is None:
@@ -334,13 +344,14 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
 
     texts: dict[str, str] = {}
     if not usable:
-        texts["dsr"] = texts["psr"] = _NO_SERIES
+        texts["psr"] = _NO_SERIES
+        texts["dsr"] = _unfinished_try(row.get("status")) if role == "trial" and not is_try else _NO_SERIES
     elif flat:
         texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True, n_finished=len(tries))
         texts["psr"] = texts["dsr"]
     else:
         if not is_try:
-            texts["dsr"] = _NOT_A_TRY if role != "trial" else "did not finish; it still counts toward the number of tries"
+            texts["dsr"] = _NOT_A_TRY if role != "trial" else _unfinished_try(row.get("status"))
         elif rank is None:
             texts["dsr"] = "no value for the family's objective, so it is not ranked among the tries"
         else:
@@ -450,7 +461,7 @@ def list_families() -> list[FamilySummary]:
             n_other_runs=len(store.family_runs(fid, roles=None, status=None)) - len(registry.counted_runs(fid)),
             n_sessions=len(_family_sessions(fid, sessions)),
             best_run_id=best.run_id if best else None, best_dsr=dsr.dsr if dsr else None,
-            unlocks=_unlock_count(fid)))
+            unlocks=_unlock_count(fid), n_finished=len(tries)))
     return out
 
 

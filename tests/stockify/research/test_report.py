@@ -348,6 +348,31 @@ class FamilyReportTests(ReportTest):
         self.assertEqual({s.family_id: s for s in report.list_families()}[fam].n_trials, 4)
         self.assertIn("4 tries (3 finished)", rep.plain["dsr"])
 
+    def test_a_try_row_says_whether_it_counts_by_its_status(self):
+        fam = "sweep/job-d"
+        registry.ensure_family(fam, "sharpe")
+        for i in range(3):
+            make_run(f"r{i}", fam, daily_returns=noisy(i), name=f"t{i}")
+        make_run("bad", fam, navs=[], status="failed", name="t3")
+        make_run("wait", fam, navs=[], status="queued", name="t4")
+        make_run("go", fam, navs=[], status="running", name="t5")
+        make_run("stop", fam, navs=[], status="cancelled", name="t6")
+        say = {rid: report.run_research(rid, use_cache=False).plain["dsr"] for rid in ("bad", "wait", "go", "stop")}
+        self.assertEqual(say["bad"], "did not finish; it still counts toward the number of tries")
+        for rid in ("wait", "go"):
+            self.assertEqual(say[rid], "has not finished yet; it does not count until it does")
+        self.assertEqual(say["stop"], "was cancelled; it does not count")
+        self.assertEqual(report.run_research("r0", use_cache=False).n_trials, 4)
+
+    def test_family_summary_carries_the_finished_count(self):
+        fam = "sweep/job-e"
+        registry.ensure_family(fam, "sharpe")
+        for i in range(3):
+            make_run(f"r{i}", fam, daily_returns=noisy(i), name=f"t{i}")
+        make_run("bad", fam, navs=[], status="failed", name="t3")
+        s = {x.family_id: x for x in report.list_families()}[fam]
+        self.assertEqual((s.n_trials, s.n_finished), (4, 3))
+
     def test_a_point_that_never_made_a_run_still_counts(self):
         fam = "sweep/job-b"
         registry.ensure_family(fam, "sharpe")

@@ -62,7 +62,7 @@ def run_research_dto(run_id: str) -> RunResearchDTO:
 def list_families(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500)) -> list[FamilySummaryDTO]:
     from stockify.research import plain, report
     rows = [_clean(f) for f in report.list_families()[offset:offset + limit]]
-    return [FamilySummaryDTO(**r, best_plain=plain.family_best_sentence(r["n_trials"], r["best_dsr"], r["objective"]))
+    return [FamilySummaryDTO(**r, best_plain=plain.family_best_sentence(r["n_trials"], r["best_dsr"], r["objective"], r["n_finished"]))
             for r in rows]
 
 

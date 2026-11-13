@@ -97,6 +97,7 @@ class ResearchApiTests(SandboxedDBTest):
         rows = r.json()
         self.assertEqual([f["family_id"] for f in rows], [FAM, OTHER])
         self.assertEqual(rows[0]["n_trials"], 3)
+        self.assertEqual(rows[0]["n_finished"], 3)
         self.assertIn("best of 3 tries", rows[0]["best_plain"])
         self.assertEqual(rows[1]["best_plain"], "the only try, so nothing to allow for")
         self.assertEqual(len(self.client.get("/api/research/families", params={"limit": 1}).json()), 1)

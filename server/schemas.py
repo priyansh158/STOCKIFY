@@ -538,6 +538,7 @@ class FamilySummaryDTO(BaseModel):
     best_run_id: str | None = None
     best_dsr: float | None = None
     unlocks: int
+    n_finished: int = 0
     best_plain: str = ""
 
 

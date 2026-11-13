@@ -510,6 +510,7 @@ export interface FamilySummaryDTO {
   best_run_id: string | null;
   best_dsr: number | null;
   unlocks: number;
+  n_finished: number;
   best_plain: string;
 }
 

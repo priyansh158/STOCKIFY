@@ -1,5 +1,6 @@
 """The trial registry (M6.4, AM 6.3): every run and session has a family, every run has a role, and only
-`trial` runs that finished (`done`) count as tries (N, V in the deflated Sharpe).
+`trial` runs that were tried (`done` or `failed`, D-85 as changed 2026-11-13) count toward N in the deflated Sharpe; V and
+the best run use only the ones that finished.
 
     registry.default_family_id(cfg)        # "<strategy>/<dataset>-<interval>-<universe>/<objective>"
     registry.trials(family_id)             # TrialRun list, from the database only (a pruned folder still counts)

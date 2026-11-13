@@ -202,7 +202,9 @@ def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str 
         verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the edge beats luck"
         # the luck allowance is always computed on the picked run's Sharpe, whatever ranked the tries
         scope = "" if objective == "sharpe" else " on its Sharpe"
-        return f"best of {tries} by {label}, after allowing for luck{scope}: {verdict}"
+        partial = n_finished is not None and n_finished < n_trials
+        note = "; the luck allowance uses only the finished tries' results" if partial else ""
+        return f"best of {tries} by {label}, after allowing for luck{scope}: {verdict}{note}"
     head = f"{ordinal(rank)} best of {tries} by {label}"
     if picked_name:
         name = picked_name if len(picked_name) <= _NAME_LIMIT else picked_name[:_NAME_LIMIT - 3] + "..."
@@ -431,11 +433,12 @@ def not_run_reason(error: object) -> str | None:
     return GENERIC_FAILURE
 
 
-def family_best_sentence(n_trials: int, dsr: float | None, objective: str) -> str:
-    """The /research overview's line for a family: its best try and how likely its edge is more than luck."""
-    if n_trials < 1:
+def family_best_sentence(n_trials: int, dsr: float | None, objective: str, n_finished: int | None = None) -> str:
+    """The /research overview's line for a family: its best try and how likely its edge is more than luck. It says
+    "N tries (M finished)" when some tries did not finish (D-85)."""
+    if n_trials < 1 or n_finished == 0:
         return "no finished tries yet"
-    return dsr_sentence(n_trials, 1, dsr, objective=objective)
+    return dsr_sentence(n_trials, 1, dsr, objective=objective, n_finished=n_finished)
 
 
 def job_status_sentence(status: str, error: str | None) -> str:
