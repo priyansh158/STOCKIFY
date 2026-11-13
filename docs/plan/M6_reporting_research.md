@@ -24,6 +24,7 @@ Concepts: C-4, C-14, C-16, C-17.
 - [ ] `/data`: a calendar (date × dataset) showing recorder coverage % (FULL and QUOTE), archive status (landing / archived / verified), NSE files fetched (F&O, CM, index closes), bar-cache ranges per instrument; drill-down to gaps and quality metrics (M1.9); storage used and free; live recorder status (M1.5).
 - [x] `GET /api/data/coverage?from=&to=` returns the matrix (Task 28, LCM 6.2, D-121); `GET /api/data/gaps?date=` the day's gaps.
 - [x] (Task 27, LCM 6.1) The quality report writes `coverage_full_pct` and `coverage_quote_pct` as day rows; older days get them when `data report --date D` is re-run (owner step, RECON).
+- [x] (Task 29, RCM 6.1) Web foundation: `web/src/components/charts.tsx` (LineChart, IntervalBar, HeatGrid, hand-written SVG and tables), `web/src/lib/research.ts` (fetchers) and `researchHelpers.ts` (pure helpers, checked by `tests/stockify/research_check.ts`), and the Research and Data nav links; the pages follow in Tasks 30 to 36.
 
 ## M6.4 Trial registry and deflated Sharpe (M)
 

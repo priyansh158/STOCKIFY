@@ -40,7 +40,7 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
   font-family: var(--font-outlier); font-weight: 700; font-size: var(--text-lg); color: var(--color-accent);
   text-decoration: none; letter-spacing: 0.02em; line-height: 1;
 }
-.stk-nav { display: flex; align-items: center; gap: var(--space-2xs); margin-left: auto; }
+.stk-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); margin-left: auto; }
 .stk-nav a {
   display: inline-flex; align-items: center; min-height: var(--hit); padding-inline: var(--space-sm);
   border-radius: var(--radius-control); color: var(--color-ink-2); font-size: var(--text-sm); text-decoration: none; white-space: nowrap;
@@ -269,3 +269,45 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-skip:focus-visible { transform: none; }
 .stk-main:focus { outline: none; }
 .stk-stat[data-plain] dd { font-family: var(--font-body); font-size: var(--text-lg); }
+
+/* Research charts (components/charts.tsx): tokens only; series differ by colour and dash, shade by value and a printed number */
+.stk-lc, .stk-iv, .stk-heat { margin: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.stk-lc > svg { width: 100%; max-width: 60rem; height: auto; border-radius: var(--radius-control); }
+.stk-lc-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); font-size: var(--text-sm); color: var(--color-ink-2); }
+.stk-lc-legend li { display: inline-flex; align-items: center; gap: var(--space-xs); }
+.stk-lc-grid { stroke: var(--color-rule); stroke-width: 1; }
+.stk-lc-tick { fill: var(--color-muted); font-size: 12px; font-family: var(--font-outlier); }
+.stk-lc-base { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 4 4; }
+.stk-lc-cursor { stroke: var(--color-edge); stroke-width: 1; }
+.stk-lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.stk-lc-line[data-s="0"] { stroke: var(--color-accent); }
+.stk-lc-line[data-s="1"] { stroke: var(--color-info); stroke-dasharray: 8 4; }
+.stk-lc-line[data-s="2"] { stroke: var(--color-warn); stroke-dasharray: 2 4; }
+.stk-lc-line[data-s="3"] { stroke: var(--color-ink-2); stroke-dasharray: 10 3 2 3; }
+.stk-lc-dot { stroke: var(--color-paper-2); stroke-width: 2; }
+.stk-lc-dot[data-s="0"] { fill: var(--color-accent); }
+.stk-lc-dot[data-s="1"] { fill: var(--color-info); }
+.stk-lc-dot[data-s="2"] { fill: var(--color-warn); }
+.stk-lc-dot[data-s="3"] { fill: var(--color-ink-2); }
+.stk-lc-read { margin: 0; min-height: 1.5em; font-size: var(--text-sm); color: var(--color-ink-2); font-variant-numeric: tabular-nums; }
+.stk-lc-table summary { cursor: pointer; font-size: var(--text-sm); color: var(--color-ink-2); min-height: var(--hit); display: flex; align-items: center; }
+.stk-lc-table[open] summary { margin-bottom: var(--space-xs); }
+
+.stk-iv { max-width: 40rem; }
+.stk-iv-name { font-size: var(--text-sm); color: var(--color-ink-2); font-weight: 600; }
+.stk-iv svg { width: 100%; height: auto; }
+.stk-iv-span { stroke: var(--color-accent); stroke-width: 4; stroke-linecap: round; }
+.stk-iv-cap { stroke: var(--color-accent); stroke-width: 2; }
+.stk-iv-point { fill: var(--color-ink); stroke: var(--color-accent); stroke-width: 3; }
+.stk-iv-zero { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.stk-iv-table { border-collapse: collapse; font-size: var(--text-sm); }
+.stk-iv-table th { text-align: right; font-weight: 400; color: var(--color-muted); padding: 0 var(--space-md) var(--space-3xs) 0; }
+.stk-iv-table td { text-align: right; padding: 0 var(--space-md) 0 0; font-family: var(--font-outlier); font-variant-numeric: tabular-nums; }
+
+.stk-heat-cell { border-left: var(--rule-hair) solid var(--color-paper-2); }
+.stk-heat-cell[data-step="0"] { background: color-mix(in oklab, var(--color-accent) 6%, var(--color-paper-2)); }
+.stk-heat-cell[data-step="1"] { background: color-mix(in oklab, var(--color-accent) 18%, var(--color-paper-2)); }
+.stk-heat-cell[data-step="2"] { background: color-mix(in oklab, var(--color-accent) 32%, var(--color-paper-2)); }
+.stk-heat-cell[data-step="3"] { background: color-mix(in oklab, var(--color-accent) 48%, var(--color-paper-2)); }
+.stk-heat-cell[data-step="4"] { background: color-mix(in oklab, var(--color-accent) 72%, var(--color-paper-2)); color: var(--color-accent-ink); }
+.stk-heat-cell[data-best="true"] { outline: 2px solid var(--color-ink); outline-offset: -2px; font-weight: 700; }
