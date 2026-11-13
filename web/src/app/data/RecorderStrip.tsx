@@ -45,8 +45,8 @@ export default function RecorderStrip({ initial }: { initial: RecorderStatus | n
         <Chip tone={w.tone}>
           <span aria-hidden>{w.tone === "up" ? "✓" : w.tone === "down" ? "✕" : w.tone === "info" ? "–" : "~"}</span>&nbsp;{w.headline}
         </Chip>
-        <p>{w.rate}</p>
-        <p>{w.last}</p>
+        {w.rate && <p>{w.rate}</p>}
+        {w.last && <p>{w.last}</p>}
         {stale && <Chip tone="warn">Can&apos;t refresh right now</Chip>}
       </div>
       {w.note && <p className="stk-fine stk-gap-xs">{w.note}</p>}

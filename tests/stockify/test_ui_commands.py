@@ -37,7 +37,7 @@ class UiCommandsTest(unittest.TestCase):
         self.assertIn('EXAMPLE_SWEEP = "examples/sweeps/orb_grid.yaml"', COMMANDS.read_text(encoding="utf-8"))
 
     def test_the_cli_knows_each_command_and_flag_the_ui_names(self):
-        checks = [(["sweep"], "--config"), (["walkforward"], "--sweep"), (["sensitivity"], "--run"), (["nse", "fetch"], "--date")]
+        checks = [(["sweep"], "--config"), (["walkforward"], "--sweep"), (["sensitivity"], "--run"), (["nse", "fetch"], "--date"), (["nse", "backfill"], "--from"), (["nse", "backfill"], "--to")]
         for cmd, flag in checks:
             with self.subTest(cmd=cmd):
                 out = subprocess.run([sys.executable, "-m", "stockify", *cmd, "--help"], capture_output=True, text=True,

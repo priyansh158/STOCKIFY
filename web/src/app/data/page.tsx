@@ -7,7 +7,7 @@ import {
   earlierEnd, gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, silenceSentence, silenceSince, windowBounds, windowEnd, windowLinkLabel,
   worstCoverage,
 } from "@/lib/data";
-import { START_RECORDER, nseFetchCommand } from "@/lib/commands";
+import { START_RECORDER, nseBackfillCommand, nseFetchCommand } from "@/lib/commands";
 import { istWhen } from "@/lib/format";
 import { getCoverage, getGaps, getQuality } from "@/lib/research";
 import type { BarRangeDTO, CoverageCellDTO, CoverageDayDTO, CoverageMatrixDTO, GapPageDTO, StorageDTO } from "@/lib/types";
@@ -335,7 +335,7 @@ function SilenceNote({ matrix, today }: { matrix: CoverageMatrixDTO; today: stri
       )}
       {nseText && nse && (
         <p>
-          {nseText} Download the missing days with <code>{nseFetchCommand(nse.latestMissed)}</code>.
+          {nseText} Download the missing days with <code>{nseBackfillCommand(nse.firstMissed, nse.latestMissed)}</code>.
         </p>
       )}
     </Panel>

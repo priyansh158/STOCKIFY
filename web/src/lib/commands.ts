@@ -21,6 +21,11 @@ export function nseFetchCommand(day: string): string {
   return stockifyCommand(`nse fetch --date ${day}`);
 }
 
+/** Download every NSE trading day from `from` to `to` (inclusive, YYYY-MM-DD); days already fetched are skipped (resumable). */
+export function nseBackfillCommand(from: string, to: string): string {
+  return stockifyCommand(`nse backfill --from ${from} --to ${to}`);
+}
+
 export const SWEEP_COMMAND = stockifyCommand(`sweep --config ${EXAMPLE_SWEEP}`);
 export const WALKFORWARD_COMMAND = stockifyCommand(`walkforward --sweep ${EXAMPLE_SWEEP}`);
 
