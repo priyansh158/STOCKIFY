@@ -54,6 +54,7 @@ import {
   type ChartOpts,
   type ChartPlot,
   type ChartWindow,
+  prunedWords,
 } from "@/lib/chart";
 import { Loading, Panel, Skeleton } from "./ui";
 
@@ -574,9 +575,9 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
           {windows && windows.length > 0 ? `. Shaded bands are the test windows: ${windows.map((w) => w.label).join(", ")}` : ""}
         </p>
       )}
-      {meta?.notice && (
+      {(meta?.notice || meta?.pnl_complete === false) && (
         <p className="stk-pricechart-notice" role="note">
-          {meta.notice}
+          {meta.notice || "Some profit and loss figures are incomplete for this chart."}
         </p>
       )}
 
@@ -600,9 +601,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       )}
       {state === "pruned" && (
         <p className="stk-pricechart-notice" role="note">
-          {meta?.data_state === "no_pack"
-            ? "There is no price recording for this day. The trades are listed below."
-            : "The price data for this run is no longer on disk. The trades are listed below."}
+          {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge))}
         </p>
       )}
       {state === "empty" && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}

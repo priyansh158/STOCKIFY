@@ -237,4 +237,19 @@ out.trialWords = chart.trialWords(
 out.trialHref = chart.trialHref("sw 1", "fast", "slow", "run/1");
 out.trialHrefOneAxis = chart.trialHref("sw1", "fast", null, "r1");
 
+// The paper session page (CH 6.17): polling only while the day is live and the tab visible; the plain states.
+out.pollLive = chart.pollDelay(true, false, 5000);
+out.pollHidden = chart.pollDelay(true, true, 5000);
+out.pollClosed = chart.pollDelay(false, false, 5000);
+out.pollClosedHidden = chart.pollDelay(false, true, 5000);
+out.pollNoMs = chart.pollDelay(true, false, 0);
+const mdl = (data_state: string, markers: unknown[] = []) => ({ data_state, markers });
+out.viewNoPack = chart.chartViewState(mdl("no_pack"));
+out.viewUnreadable = chart.chartViewState(mdl("pack unreadable"));
+out.viewOkEmpty = chart.chartViewState(mdl("ok"));
+out.wordsNoPackPaper = chart.prunedWords("no_pack", true);
+out.wordsNoPackRun = chart.prunedWords("no_pack", false);
+out.wordsUnreadable = chart.prunedWords("pack unreadable", true);
+out.wordsPruned = chart.prunedWords("pruned", false);
+
 process.stdout.write(JSON.stringify(out));

@@ -176,7 +176,7 @@ export type ChartViewState = "loading" | "error" | "pruned" | "empty" | "full";
 export function chartViewState(model: ChartModel | null | "error"): ChartViewState {
   if (model === null) return "loading";
   if (model === "error") return "error";
-  if (model.data_state === "pruned" || model.data_state === "no_pack") return "pruned";
+  if (model.data_state !== "ok") return "pruned"; // pruned, no_pack and pack unreadable are plain states, not "no trades"
   return model.markers.length === 0 ? "empty" : "full";
 }
 
@@ -359,4 +359,20 @@ export function trialWords(axes: { path: string; label: string }[], params: Tria
 export function trialHref(sweepId: string, x: string, y: string | null, runId: string): string {
   const q = [`x=${encodeURIComponent(x)}`, ...(y === null ? [] : [`y=${encodeURIComponent(y)}`]), `trial=${encodeURIComponent(runId)}`];
   return `/research/sweeps/${encodeURIComponent(sweepId)}?${q.join("&")}#trial-chart`;
+}
+
+/** Poll delay in ms for a live chart: only while the day is open and the tab is visible; null means do not poll. */
+export function pollDelay(live: boolean, hidden: boolean, ms: number): number | null {
+  return live && !hidden && ms > 0 ? ms : null;
+}
+
+/** The plain sentence for a chart with no price data (state "pruned"). */
+export function prunedWords(dataState: ChartModel["data_state"], paper: boolean): string {
+  if (dataState === "no_pack") {
+    return paper
+      ? "No recording yet for this day. The trades are listed below."
+      : "There is no price recording for this day. The trades are listed below.";
+  }
+  if (dataState === "pack unreadable") return "The price recording for this day cannot be read right now. The trades are listed below.";
+  return "The price data for this run is no longer on disk. The trades are listed below.";
 }
