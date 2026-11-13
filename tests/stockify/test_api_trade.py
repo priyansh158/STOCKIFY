@@ -169,6 +169,18 @@ class ReadTests(TradeBase):
         self.assertEqual(self.client.get("/api/trade/sessions/nope").status_code, 404)
         self.assertEqual(self.client.get("/api/trade/sessions/nope/fills").status_code, 404)
 
+    def test_unreadable_refdata_is_an_error_not_missing_names(self):
+        # D-143 (M4): an unreadable refdata used to hand back no names at all, which reads as "no such instrument".
+        import sqlite3
+        self.make("a")
+        self.day("a", DAY, 10_000_000, positions=[{"instrument_id": 7, "product": "NRML", "qty": 65,
+                                                  "avg_price_paise": 2_400_000, "mark_paise": 2_410_000,
+                                                  "unrealised_paise": 650_000}])
+        with patch.object(refdata, "_connect", side_effect=sqlite3.OperationalError("disk I/O error")):
+            r = self.client.get("/api/trade/sessions/a/positions")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("cannot be read right now", r.json()["detail"])
+
     def test_stats_twice_all_days_and_full_coverage(self):
         self.make("a")                                   # capital 10,000,000
         self.day("a", "2026-11-12", 10_100_000, cov=(99, 100))      # +100,000   full

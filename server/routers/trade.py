@@ -158,8 +158,8 @@ def _tokens_symbols(day: str, ids: set[int]) -> tuple[dict[int, int], dict[int, 
         symbols = {r["instrument_id"]: n for r in conn.execute(
             "SELECT instrument_id, tradingsymbol, underlying, kind, expiry, strike_paise FROM instruments "
             f"WHERE instrument_id IN ({marks})", tuple(sorted(ids))) if (n := display_name(dict(r)))}
-    except sqlite3.Error:
-        return {}, {}
+    except sqlite3.Error:        # an unreadable refdata is not "no names": say so (D-143), as the other pages do
+        raise HTTPException(status_code=409, detail="the instrument names cannot be read right now") from None
     return tokens, symbols
 
 
