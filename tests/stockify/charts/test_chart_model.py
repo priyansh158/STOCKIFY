@@ -114,6 +114,9 @@ def make_run(*, orders=(), fills=(), charges=(), plots=None, sha: str | None = "
     return run_id
 
 
+FUT = [{"id": 1, "tradingsymbol": "TESTFUT", "kind": "FUT", "session_group": "FO_FUT", "cas_dates": []}]
+
+
 def chart(run_id: str, *a, **kw) -> dict:
     from stockify.reporting.chart import run_chart
     return run_chart(run_id, *a, **kw)
@@ -204,15 +207,17 @@ class SettlementTests(unittest.TestCase):
     def test_settlement_with_nothing_open_is_skipped(self):
         log = f"{T(15, 30)} INFO settled 1 MIS at FSP 10100 (settle)\n"
         rid = make_run(orders=[order(1), order(2, side="SELL")],
-                       fills=[fill(1, 1, T(9, 15), "BUY", 10, 10000), fill(2, 2, T(9, 16), "SELL", 10, 10010)], log=log)
+                       fills=[fill(1, 1, T(9, 15), "BUY", 10, 10000), fill(2, 2, T(9, 16), "SELL", 10, 10010)], log=log,
+                       instruments=FUT)
         out = chart(rid)
+        self.assertEqual((out["skipped_settlements"], out["pnl_complete"], out["notice"]), (0, True, None))
         self.assertEqual([m["kind"] for m in out["markers"]], ["fill", "fill"])
 
     def test_settlement_of_an_open_position_closes_it_in_the_fifo_loop(self):
         log = f"{T(15, 30)} INFO settled 1 MIS at FSP 10100 (settle)\n"
         for side, opening, want in (("BUY", 10000, 10 * (10100 - 10000)), ("SELL", 10200, 10 * (10200 - 10100))):
             rid = make_run(orders=[order(1, side=side)], fills=[fill(1, 1, T(9, 15), side, 10, opening)], log=log,
-                           charges=[charge(1, 1, 5), charge(2, 0, 40, kind="settlement")])
+                           charges=[charge(1, 1, 5), charge(2, 0, 40, kind="settlement")], instruments=FUT)
             out = chart(rid)
             self.assertEqual(out["markers"][0]["trade_pnl_paise"], None)
             s = out["markers"][1]
@@ -225,7 +230,7 @@ class SettlementTests(unittest.TestCase):
 
     def test_settlement_words_are_filled_exactly_and_default_to_the_shipped_ones(self):
         log = f"{T(9, 16, 30)} INFO settled 1 MIS at FSP 123456789 (settle)\n"
-        kw = dict(orders=[order(1)], fills=[fill(1, 1, T(9, 15), "BUY", 10, 10000)], log=log)
+        kw = dict(orders=[order(1)], fills=[fill(1, 1, T(9, 15), "BUY", 10, 10000)], log=log, instruments=FUT)
         text = "{0} {price} {x} {price} <b>%s</b>"
         out = chart(make_run(bundle={"system_notes": {"SETTLEMENT": text}}, **kw))
         self.assertEqual(out["markers"][1]["note"], "{0} 12,34,567.89 {x} 12,34,567.89 <b>%s</b>")
@@ -256,6 +261,37 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual((d["kind"], d["side"], d["qty"], d["price_paise"], d["trade_pnl_paise"], d["chunks"]),
                          ("settlement", "BUY", 40, 10100, None, []))
 
+    def test_physical_delivery_says_the_profit_is_not_complete(self):
+        log = f"{T(15, 30)} INFO delivered 1 CNC BUY 40 at 10100 (settle)\n"
+        out = chart(make_run(orders=[order(1)], fills=[fill(1, 1, T(9, 15), "BUY", 10, 10000)], log=log))
+        self.assertFalse(out["pnl_complete"])
+        self.assertEqual(out["notice"], "Profit for contracts settled by delivery isn't shown per trade; the run's "
+                                        "total in its metrics includes it.")
+        self.assertEqual(out["markers"][1]["fsp_paise"], 10100)
+
+    def test_an_option_without_a_kind_or_strike_is_skipped_and_counted_not_guessed(self):
+        log = f"{T(15, 30)} INFO settled 1 NRML at FSP 2450000 (settle)\n"
+        for row in ({"id": 1, "tradingsymbol": "X", "kind": "CE"},                      # no strike
+                    {"id": 1, "tradingsymbol": "X", "strike_paise": 2400000},            # no kind
+                    {"id": 1, "tradingsymbol": "X", "kind": "PE", "strike_paise": None}):
+            rid = make_run(orders=[order(1, product="NRML")], fills=[fill(1, 1, T(9, 15), "BUY", 65, 10000)], log=log,
+                           instruments=[row])
+            out = chart(rid)
+            self.assertEqual([m["kind"] for m in out["markers"]], ["fill"])
+            self.assertEqual((out["skipped_settlements"], out["pnl_complete"]), (1, False))
+            self.assertIn("1 expiry settlement", out["notice"])
+        ok = make_run(orders=[order(1, product="NRML")], fills=[fill(1, 1, T(9, 15), "BUY", 65, 10000)], log=log,
+                      instruments=[{"id": 1, "tradingsymbol": "X", "kind": "CE", "strike_paise": 2400000}])
+        s = chart(ok)["markers"][1]
+        self.assertEqual((s["price_paise"], s["fsp_paise"], s["trade_pnl_paise"]), (50000, 2450000, 65 * 40000))
+
+    def test_a_corrupt_pack_is_a_data_state_not_an_error(self):
+        sha = "ab" * 32
+        (paths.packs_dir() / f"{sha}.evt").write_bytes(b"not a pack at all" * 10)
+        out = chart(make_run(sha=sha, orders=[order(1)], fills=[fill(1, 1, T(9, 16, 5), "BUY", 10, 10000)]))
+        self.assertEqual((out["data_state"], out["bars"]), ("pack unreadable", []))
+        self.assertEqual(out["markers"][0]["bar_start_ns"], T(9, 16))
+
 
 class G10GoldenTests(unittest.TestCase):
     """Index options held to expiry: a long ITM call, a long OTM call and a short ITM put (G10)."""
@@ -285,6 +321,8 @@ class G10GoldenTests(unittest.TestCase):
         self.assertEqual(settle_m["charges_paise"], 6423)                    # the settlement row of G10's notes
         self.assertEqual(settle_m["bar_start_ns"], T(9, 16, day="2026-03-03"))   # after the last bar: the last bar
         self.assertIsNone(fill_m["trade_pnl_paise"])
+        self.assertEqual(settle_m["fsp_paise"], 2_450_000)                   # the raw log value beside the close used
+        self.assertEqual((out["pnl_complete"], out["skipped_settlements"], out["notice"]), (True, 0, None))
 
     def test_every_chunk_sums_to_the_runs_own_total_profit(self):
         total = 0

@@ -78,27 +78,31 @@ def _ist_date(t_ns: int) -> str:
     return timeutil.ns_to_ist(t_ns).date().isoformat()
 
 
-def _settlement_close(row: dict | None, fsp: int) -> int:
+def _settlement_close(row: dict | None, fsp: int) -> int | None:
     """The price a cash-settled contract closes at: the FSP for a future, the intrinsic value for an option (the
-    runner's own close price, so the profit matches metrics.json)."""
-    if row is None:
+    runner's own close price, so the profit matches metrics.json). None when the bundle cannot say what the
+    contract is (no row, no kind, an option without a strike): the close is never guessed."""
+    kind = (row or {}).get("kind")
+    strike = (row or {}).get("strike_paise")
+    if kind == "FUT":
         return fsp
-    kind, strike = row.get("kind"), row.get("strike_paise")
     if kind == "CE" and strike is not None:
         return max(0, fsp - strike)
     if kind == "PE" and strike is not None:
         return max(0, strike - fsp)
-    return fsp
+    return None
 
 
-def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) -> list[tuple]:
+def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) -> tuple[list[tuple], dict[int, int]]:
     """The runner's `settle_closes` of the cash settlements: (t, iid, product, closing side, units, price). The units
     and side are what is open then in that (instrument, product), by the fills up to the settlement's time; a
-    settlement with nothing open makes none."""
+    settlement with nothing open makes none. A contract that cannot be priced makes none either and is counted per
+    instrument in the second value."""
     by_t = sorted(range(len(fills)), key=lambda n: (fills[n].t_ns, n))
     pos: dict[tuple[int, str], int] = {}
     nxt = 0
     out = []
+    skipped: dict[int, int] = {}
     for st in sorted((s for s in settles if s.kind == "cash"), key=lambda s: s.t_ns):
         while nxt < len(by_t) and fills[by_t[nxt]].t_ns <= st.t_ns:
             f = fills[by_t[nxt]]
@@ -109,10 +113,13 @@ def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) 
         net = pos.get(key, 0)
         if net == 0:
             continue
-        out.append((st.t_ns, st.instrument_id, st.product, "SELL" if net > 0 else "BUY", abs(net),
-                    _settlement_close(inst.get(st.instrument_id), st.price_paise)))
+        close = _settlement_close(inst.get(st.instrument_id), st.price_paise)
+        if close is None:
+            skipped[st.instrument_id] = skipped.get(st.instrument_id, 0) + 1
+            continue
+        out.append((st.t_ns, st.instrument_id, st.product, "SELL" if net > 0 else "BUY", abs(net), close))
         pos[key] = 0
-    return out
+    return out, skipped
 
 
 def _trade(cs: list) -> tuple[int | None, list[dict]]:
@@ -122,16 +129,17 @@ def _trade(cs: list) -> tuple[int | None, list[dict]]:
             [{"qty": c.qty, "open_price_paise": c.open_price, "pnl_paise": c.pnl} for c in cs])
 
 
-def _markers(folder: Path, bundle: dict | None) -> list[dict]:
+def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, int], bool]:
     """Every marker of the run (all instruments), ordered by (t_ns, kind == "settlement", fill_id), each with its
-    FIFO trade profit from the whole run's fills."""
+    FIFO trade profit from the whole run's fills; also the settlements skipped per instrument and whether the run
+    has a physical delivery."""
     orders = {r["order_id"]: r for r in _read(folder, "orders.csv")}
     fills = [_Fill(r["fill_id"], r["order_id"], r["t_ns"], r["instrument_id"], r["side"], r["qty"], r["price_paise"])
              for r in _read(folder, "fills.csv")]
     products = _Products({oid: o.get("product") or "" for oid, o in orders.items()})
     inst = {i["id"]: i for i in (bundle or {}).get("instruments", []) if isinstance(i, dict) and "id" in i}
     settles = read_settlements(folder)
-    closes = _cash_closes(fills, products, settles, inst)
+    closes, skipped = _cash_closes(fills, products, settles, inst)
     chunks, _ = metrics.fifo_trades(fills, closes, products)
     by_fill: dict[int, list] = {}
     by_close: dict[tuple, list] = {}
@@ -160,6 +168,7 @@ def _markers(folder: Path, bundle: dict | None) -> list[dict]:
         return note
 
     out = []
+    delivered = False
     for f in fills:
         order = orders.get(f.order_id)
         note = note_of(order)
@@ -169,6 +178,7 @@ def _markers(folder: Path, bundle: dict | None) -> list[dict]:
                     "price_paise": f.price, "fill_id": f.fill_id, "order_id": f.order_id,
                     "instrument_id": f.instrument_id, "note": note, "tag": tag,
                     "tag_is_code": note == "" and tag in SYSTEM_TAGS,
+                    "fsp_paise": None,
                     "charges_paise": order_cost.get(f.order_id) if last_fill[f.order_id] == f.fill_id else None,
                     "trade_pnl_paise": pnl, "chunks": cks})
     words = _system_notes(bundle).get("SETTLEMENT") or ""
@@ -182,13 +192,14 @@ def _markers(folder: Path, bundle: dict | None) -> list[dict]:
             pnl, cks = _trade(by_close.get((st.t_ns, st.instrument_id, st.product), []))
         else:
             side, qty, price, pnl, cks = st.side, st.qty, st.price_paise, None, []
+            delivered = True
         out.append({"kind": "settlement", "t_ns": st.t_ns, "bar_start_ns": None, "side": side, "qty": qty,
-                    "price_paise": price, "fill_id": None, "order_id": None, "instrument_id": st.instrument_id,
+                    "price_paise": price, "fsp_paise": st.price_paise, "fill_id": None, "order_id": None, "instrument_id": st.instrument_id,
                     "note": words.replace("{price}", fmt_price(price)), "tag": "", "tag_is_code": False,
                     "charges_paise": settle_cost.get((st.instrument_id, _ist_date(st.t_ns))),
                     "trade_pnl_paise": pnl, "chunks": cks})
     out.sort(key=lambda m: (m["t_ns"], m["kind"] == "settlement", m["fill_id"] or 0))
-    return out
+    return out, skipped, delivered
 
 
 def _plots(folder: Path) -> list[dict]:
@@ -207,7 +218,8 @@ def _plots(folder: Path) -> list[dict]:
 
 
 def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str | None, list, int | None, str | None]:
-    """(data_state, basis, bars, interval, notice). A pack that is gone is "pruned"; no pack at all is "no_pack"."""
+    """(data_state, basis, bars, interval, notice). A pack that is gone is "pruned", one that cannot be read
+    "pack unreadable", no pack at all "no_pack"."""
     rows = [p for p in (bundle.get("packs") or []) if isinstance(p, dict) and p.get("sha256")]
     fallback = (bundle.get("run") or {}).get("price_basis")
     if not rows:
@@ -220,7 +232,10 @@ def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str
             return "pruned", fallback, [], interval_s, None
         if not path.is_file():
             return "pruned", fallback, [], interval_s, None
-        header, recs = packs.read(path)
+        try:
+            header, recs = packs.read(path)
+        except (packs.PackError, OSError):
+            return "pack unreadable", fallback, [], interval_s, None
         basis = basis or header["price_basis"]
         records.extend(recs)
     if len(rows) > 1:
@@ -271,7 +286,7 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
         raise LookupError(f"no run {run_id!r}")
     bundle = _bundle(folder)
     inst = {i["id"]: i for i in (bundle or {}).get("instruments", []) if isinstance(i, dict) and "id" in i}
-    everything = _markers(folder, bundle)
+    everything, skipped, delivered = _markers(folder, bundle)
     traded = sorted({m["instrument_id"] for m in everything})
     listed = traded or sorted(inst)
     instruments = [{"id": i, "symbol": (inst.get(i) or {}).get("tradingsymbol") or str(i)} for i in listed]
@@ -316,8 +331,17 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
         pts = [p for p in s["points"] if lo is None or (p[0] >= lo and (hi is None or p[0] < hi))]
         if pts:
             plots.append({**s, "points": pts})
+    here = skipped.get(instrument_id, 0)
+    notes = [notice] if notice else []
+    if delivered:
+        notes.append("Profit for contracts settled by delivery isn't shown per trade; the run's total in its metrics "
+                     "includes it.")
+    if here:
+        notes.append(f"{here} expiry settlement{'s' if here > 1 else ''} of this contract could not be priced from "
+                     "the run's bundle and are not shown; its profit is incomplete.")
     return {"instruments": instruments, "instrument_id": instrument_id, "basis": basis, "interval_s": interval,
             "bars": [{"start_ns": b.start_ns, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
                       "volume": b.volume} for b in shown],
             "markers": out_markers, "omitted_markers": omitted, "plots": plots, "truncated": truncated,
-            "next_from_ns": next_from, "data_state": state, "notice": notice}
+            "next_from_ns": next_from, "data_state": state, "notice": " ".join(notes) or None,
+            "pnl_complete": not delivered and not skipped, "skipped_settlements": here}
