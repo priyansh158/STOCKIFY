@@ -25,9 +25,9 @@ export function sentenceOrDash(s: string | null | undefined): string {
 }
 
 /**
- * The colour tokens of a line chart series, in order. This is the palette the dataviz validator passed on the dark
- * surface (chroma, deutan and normal-vision separation, contrast); a fourth series reuses a colour and differs by dash and
- * marker. globals.css (.stk-lc-line[data-c]) must list the same tokens, which tests/stockify/research_check.ts checks.
+ * The colour tokens of a line chart series, in order. On the dark surface this set passes the dataviz validator's
+ * colour-blind, normal-vision and contrast checks and fails only the lightness band (informational). A fourth to sixth series reuses
+ * a colour, so each line is also named at its end, carries markers and has a dash of its own. globals.css (.stk-lc-line[data-c]) must list the same tokens, which tests/stockify/research_check.ts checks.
  */
 export const SERIES_TOKENS = ["accent", "info", "warn"] as const;
 
@@ -120,4 +120,43 @@ export function runLabels(names: string[], ids: string[]): string[] {
 /** True when the runs do not all agree (a missing value counts as a value, unless every run lacks it). */
 export function valuesDiffer(values: readonly (string | number | boolean | null)[]): boolean {
   return new Set(values).size > 1;
+}
+
+/**
+ * Where to draw each line's end label (a y in the chart, same order as `ys`): each label sits at its line's end height, and
+ * labels too close are pushed apart by `gap`, so six lines that finish together all stay readable. Stays inside [lo, hi].
+ */
+export function spreadLabels(ys: number[], gap: number, lo: number, hi: number): number[] {
+  const order = ys.map((y, i) => i).sort((a, b) => ys[a] - ys[b] || a - b);
+  const pos = new Array<number>(ys.length);
+  let prev = -Infinity;
+  for (const i of order) {
+    prev = Math.max(ys[i], prev + gap, lo);
+    pos[i] = prev;
+  }
+  // anything past the top edge moves down, keeping the gap, from the top label down
+  let top = hi;
+  for (let k = order.length - 1; k >= 0; k--) {
+    const i = order[k];
+    pos[i] = Math.max(lo, Math.min(pos[i], top));
+    top = pos[i] - gap;
+  }
+  return pos;
+}
+
+/** A line's end label: its name cut to `max` characters with an ellipsis (the legend and the table keep the whole name). */
+export function endLabelText(label: string, max = 16): string {
+  const t = label.trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
+}
+
+/** Indices of the points that carry a marker along a line: about `target` of them, evenly spaced, offset by the series so
+ * two lines' markers do not sit on each other, and always the last point (where the end label is). */
+export function markerIndexes(n: number, seriesIndex: number, target = 6): number[] {
+  if (n <= 0) return [];
+  const step = Math.max(1, Math.ceil(n / target));
+  const out: number[] = [];
+  for (let i = seriesIndex % step; i < n; i += step) out.push(i);
+  if (out[out.length - 1] !== n - 1) out.push(n - 1);
+  return out;
 }

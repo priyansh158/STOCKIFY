@@ -16,8 +16,8 @@ import type {
 } from "./types";
 
 export {
-  COMPARE_MAX, COMPARE_MIN, bucketTone, compareHref, compareIds, dayNumber, heatColourStep, runLabels, sentenceOrDash,
-  splitSegments, valuesDiffer, wfCurve,
+  COMPARE_MAX, COMPARE_MIN, bucketTone, compareHref, compareIds, dayNumber, endLabelText, heatColourStep, markerIndexes, runLabels, sentenceOrDash,
+  spreadLabels, splitSegments, valuesDiffer, wfCurve,
 } from "./researchHelpers";
 export type { BucketTone, WfCurve } from "./researchHelpers";
 

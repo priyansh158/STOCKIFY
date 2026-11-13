@@ -94,6 +94,13 @@ class RenderTests(ReportBase):
             self.assertIn(w["test_from"], text)                            # each window's dates are in the table
         self.assertIn("width = 10", text)                                  # the per-window chosen settings
 
+    def test_the_curve_axis_title_names_the_dashed_line_as_the_starting_capital(self):
+        # one wording for every growth-of-1 chart (the compare page uses the same): the start is the dashed line at 1.0
+        # and the first point is the end of the first day
+        job = self.finished()
+        doc = json.loads((paths.research_path(job) / "walkforward.json").read_text(encoding="utf-8"))
+        self.assertEqual(wf_report.notes(doc)["y_label"], "growth of 1 (dashed line = starting capital)")
+
     def test_report_says_how_the_two_sharpes_are_measured_next_to_the_ratio(self):
         text = self.report_text()
         note = ("The in-sample figure is the average of each window's training Sharpe; the out-of-sample figure is "

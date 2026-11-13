@@ -19,9 +19,9 @@ export default function CompareCharts({ equity, drawdown }: { equity: LineSeries
           xFormat={dayText}
           xLabel="Date"
           baseline={1}
-          baselineLabel="each run's start"
+          baselineLabel="starting capital"
           label="Growth of 1 for each run"
-          yLabel="growth of 1 (each run starts at 1.0)"
+          yLabel="growth of 1 (dashed line = starting capital)"
         />
       </section>
       <section className="stk-section" aria-labelledby="cmp-dd">
@@ -32,7 +32,7 @@ export default function CompareCharts({ equity, drawdown }: { equity: LineSeries
           xFormat={dayText}
           xLabel="Date"
           baseline={0}
-          baselineLabel="at a new high"
+          baselineLabel="a new high"
           label="Fall from the highest point so far, for each run"
           yLabel="how far below its own highest value each run was (0 % means at a high)"
         />

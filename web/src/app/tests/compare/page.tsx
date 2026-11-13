@@ -71,14 +71,23 @@ function settingWords(v: string): string {
 /** A long hex fingerprint is cut to its first 12 characters (the whole one is the hover text); anything else in words. */
 function Value({ v }: { v: string | null }) {
   if (v === null || v === "") return <span className="stk-label">not recorded</span>;
-  if (/^[0-9a-f]{32,}$/i.test(v)) return <span className="stk-cmp-mono" title={v}>{v.slice(0, 12)}…</span>;
+  if (/^[0-9a-f]{32,}$/i.test(v)) {
+    // the short form is for the eye; the whole value is in the text for screen readers, selection and copy
+    return (
+      <span className="stk-cmp-mono">
+        <span aria-hidden="true" title={v}>{v.slice(0, 12)}…</span>
+        <span className="sr-only">{v}</span>
+      </span>
+    );
+  }
   return <span className="stk-cmp-mono">{settingWords(v)}</span>;
 }
 
 function Verdict({ differs }: { differs: boolean }) {
   return (
     <td className="stk-cmp-verdict" data-differs={differs ? "" : undefined}>
-      {differs ? "≠ differs" : "= same"}
+      <span aria-hidden="true">{differs ? "≠ " : "= "}</span>
+      {differs ? "differs" : "same"}
     </td>
   );
 }
@@ -104,7 +113,7 @@ function Metrics({ rows, labels }: { rows: CompareMetricDTO[]; labels: string[] 
         return (
           <tr key={m.key}>
             <td data-wrap>
-              {m.label.replace(/\s*\(paise\)$/, "")}
+              {m.label}
               <p className="stk-label">{sentenceOrDash(m.plain)}</p>
             </td>
             <Verdict differs={differs} />

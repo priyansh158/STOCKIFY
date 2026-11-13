@@ -15,7 +15,7 @@ export default function Curve({ curve, yLabel, gaps }: { curve: WfCurve; yLabel:
       xFormat={(n) => DAY.format(new Date(n * 86_400_000))}
       xLabel="Date"
       baseline={1}
-      baselineLabel="starting level"
+      baselineLabel="starting capital"
       marks={curve.starts}
       marksLabel="the first day of each test window"
       label="Out-of-sample equity, growth of 1"

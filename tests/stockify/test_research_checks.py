@@ -80,6 +80,22 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_a_metric_or_setting_differs_only_when_the_runs_do_not_all_agree(self):
         self.assertEqual(self.answers["compare"]["differ"], [False, True, False, True, True, False])
 
+    def test_every_series_gets_an_end_label_and_no_two_labels_overlap(self):
+        e = self.answers["endLabels"]
+        # sorted by height the six are pushed apart by at least 14, in the order of their own heights, and keep their index
+        self.assertEqual(e["spread"], [100, 128, 114, 313, 299, 50])
+        self.assertEqual(len(e["spread"]), 6)
+        # near the top edge they move down together, the last one stopping at the edge
+        self.assertEqual(e["pushedUp"], [372, 386, 400])
+        self.assertEqual(e["none"], [])
+        # a long name is cut to 16 characters ending in an ellipsis; a short one is kept; no name is no text
+        self.assertEqual(e["text"], ["orb30 (orb30b)", "a" * 15 + "…", ""])
+
+    def test_markers_sit_along_the_line_every_few_points_offset_per_series_and_always_at_the_end(self):
+        self.assertEqual(self.answers["endLabels"]["marks"], [
+            [0, 4, 8, 12, 16, 19], [1, 5, 9, 13, 17, 19], [0, 1, 2], [], [0],
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

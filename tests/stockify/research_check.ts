@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { COMPARE_MAX, COMPARE_MIN, SERIES_TOKENS, bucketTone, compareHref, compareIds, runLabels, valuesDiffer, heatColourStep, heatMoreWord, sentenceOrDash, splitSegments, wfCurve } from "../../web/src/lib/researchHelpers.ts";
+import { COMPARE_MAX, COMPARE_MIN, SERIES_TOKENS, bucketTone, compareHref, compareIds, endLabelText, markerIndexes, runLabels, spreadLabels, valuesDiffer, heatColourStep, heatMoreWord, sentenceOrDash, splitSegments, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 const css = readFileSync(new URL("../../web/src/app/globals.css", import.meta.url), "utf-8");
 const colourRules = [...css.matchAll(/\.stk-lc-line\[data-c="(\d)"\]\s*\{\s*stroke:\s*var\(--color-([a-z0-9-]+)\)/g)].map((m) => [m[1], m[2]]);
@@ -52,6 +52,14 @@ const out = {
       runLabels(["x", "y"], ["r1", "r2"]), runLabels(["x", "x", "y"], ["r1", "r2", "r3"]), runLabels(["", "y"], ["r1", "r2"]),
     ],
     differ: [valuesDiffer([1, 1]), valuesDiffer([1, 2]), valuesDiffer([null, null]), valuesDiffer([1, null]), valuesDiffer(["a", "a", "b"]), valuesDiffer([])],
+  },
+  endLabels: {
+    // six series ending at nearly the same height: every one still gets its own text, kept apart by at least the gap
+    spread: spreadLabels([100, 102, 101, 300, 299, 50], 14, 0, 400),
+    pushedUp: spreadLabels([390, 395, 399], 14, 0, 400),
+    none: spreadLabels([], 14, 0, 400),
+    text: [endLabelText("orb30 (orb30b)"), endLabelText("a".repeat(20)), endLabelText("")],
+    marks: [markerIndexes(20, 0), markerIndexes(20, 1), markerIndexes(3, 0), markerIndexes(0, 0), markerIndexes(1, 2)],
   },
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
