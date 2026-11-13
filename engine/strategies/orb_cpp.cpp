@@ -19,7 +19,12 @@ namespace stocksim::strategies {
 
 class OrbCpp final : public Strategy {
  public:
-    void on_start(Context& ctx) override {
+    void on_start(Context& ctx) override { configure(ctx, true); }
+
+    // A paper session resumes without on_start, so a twin loaded from "{}" (a state saved before the twins kept
+    // any) builds itself from the run's params on its first call, as on_start would, minus the subscription: the
+    // engine's own state already holds that.
+    void configure(Context& ctx, bool subscribe) {
         const Json& p = ctx.params();
         const std::string symbol = param_string(p, "symbol");
         const auto iid = ctx.resolve(symbol);
@@ -34,10 +39,13 @@ class OrbCpp final : public Strategy {
         exit_hhmm_ = param_string(p, "exit_hhmm", "15:10");
         day_.reset();
         configured_ = true;
-        ctx.subscribe_bars(iid_, 60);
+        if (subscribe) {
+            ctx.subscribe_bars(iid_, 60);
+        }
     }
 
     void on_bar(Context& ctx, const Bar& bar) override {
+        ensure_configured(ctx);
         if (ctx.today() != day_) {
             new_day(ctx);
         }
@@ -83,6 +91,7 @@ class OrbCpp final : public Strategy {
 
     // The stop exists only for what the entry has filled: one SL-M of exactly each fill's quantity.
     void on_fill(Context& ctx, const FillView& fill) override {
+        ensure_configured(ctx);
         if (entry_id_ && fill.order_id == *entry_id_) {
             const std::string qty = fmt_qty(fill.qty);
             const std::string trigger = fmt_price(stop_trigger_);
@@ -97,6 +106,7 @@ class OrbCpp final : public Strategy {
     }
 
     void on_timer(Context& ctx, std::uint64_t /*timer_id*/) override {
+        ensure_configured(ctx);
         closed_ = true;  // the time exit ends the day's lines
         for (const OrderId id : stop_ids_) {
             ctx.cancel(id);
@@ -207,6 +217,12 @@ class OrbCpp final : public Strategy {
     }
 
  private:
+    void ensure_configured(Context& ctx) {
+        if (!configured_) {
+            configure(ctx, false);
+        }
+    }
+
     void new_day(Context& ctx) {
         day_ = ctx.today();
         open_ns_ = ist_ns(*day_, "09:15");

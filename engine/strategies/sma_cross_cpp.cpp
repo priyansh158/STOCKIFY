@@ -17,7 +17,12 @@ namespace stocksim::strategies {
 
 class SmaCrossCpp final : public Strategy {
  public:
-    void on_start(Context& ctx) override {
+    void on_start(Context& ctx) override { configure(ctx, true); }
+
+    // A paper session resumes without on_start, so a twin loaded from "{}" (a state saved before the twins kept
+    // any) builds itself from the run's params on its first call, as on_start would, minus the subscription: the
+    // engine's own state already holds that.
+    void configure(Context& ctx, bool subscribe) {
         const Json& p = ctx.params();
         const std::string symbol = param_string(p, "symbol");
         const auto iid = ctx.resolve(symbol);
@@ -35,7 +40,9 @@ class SmaCrossCpp final : public Strategy {
             throw std::invalid_argument("long_short needs a derivative traded NRML (no CNC short selling)");
         }
         configured_ = true;
-        ctx.subscribe_bars(iid_, isec_);
+        if (subscribe) {
+            ctx.subscribe_bars(iid_, isec_);
+        }
     }
 
     // A paper session's day-to-day state (A2 §4.1): the attributes of the Python original (its parameters; it keeps
@@ -84,6 +91,9 @@ class SmaCrossCpp final : public Strategy {
     }
 
     void on_bar(Context& ctx, const Bar& bar) override {
+        if (!configured_) {
+            configure(ctx, false);
+        }
         const double fast = ctx.sma(iid_, isec_, fast_);
         const double slow = ctx.sma(iid_, isec_, slow_);
         if (std::isnan(fast) || std::isnan(slow)) {  // NaN during warm-up
