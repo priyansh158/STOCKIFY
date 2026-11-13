@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "stocksim/engine.hpp"
+#include "stocksim/margin_live.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/matcher.hpp"
@@ -76,24 +77,74 @@ std::optional<Paise> Engine::ref_price(InstrumentId iid) const {  // runner._ref
     return it == underlying_last_.end() ? std::nullopt : std::optional<Paise>(it->second);
 }
 
-Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked
-    std::vector<MarginLeg> legs;
-    Paise mis = 0;
-    const std::string date = iso(d);
+namespace {
+
+// Adds `units` to the leg of `iid`, or appends an NRML leg for it: one leg per instrument, in first-seen order
+// (the oracle's dict).
+void add_units(std::vector<MarginLeg>& legs, InstrumentId iid, Qty units) {
+    const auto it = std::ranges::find(legs, iid, &MarginLeg::instrument);
+    if (it != legs.end()) {
+        it->units = checked_add(it->units, units);
+    } else {
+        legs.push_back(MarginLeg{iid, Product::NRML, units});
+    }
+}
+
+void drop_flat_legs(std::vector<MarginLeg>& legs) {
+    std::erase_if(legs, [](const MarginLeg& leg) { return leg.units == 0; });
+}
+
+}  // namespace
+
+// runner._fo_book: the margin model's portfolio (A4 §6.5, D-80). Every NRML position and every MIS future or option,
+// one net leg per instrument in the ledger's order, each handed over as NRML: an MIS future or option is margined
+// exactly as the same NRML position, in one book with the NRML ones, so a hedge across the two products counts.
+// Legs that net to nothing are left out.
+std::vector<MarginLeg> Engine::fo_book(const Ledger& ledger) const {
+    std::vector<MarginLeg> net;
     for (const Position& p : ledger.positions()) {
-        if (p.q == 0) {
-            continue;
-        }
-        if (p.product == Product::MIS) {
-            const std::optional<Paise> m = mark_price(p.instrument);
-            mis = checked_add(mis, margin_->mis(instruments_.at(p.instrument).kind, p.q,
-                                               m && *m != 0 ? *m : p.avg_price(), date));
-        } else {
-            legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
+        if (p.q != 0 && (p.product == Product::NRML ||
+                         (p.product == Product::MIS && instruments_.at(p.instrument).is_derivative()))) {
+            add_units(net, p.instrument, p.qty());
         }
     }
-    return checked_add(margin_->requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
-                       mis);
+    drop_flat_legs(net);
+    return net;
+}
+
+MarginNow Engine::margin_now() const {
+    if (live_margin_ == nullptr) {
+        throw RunError("margin_now: the margin model is not live_with_fallback");
+    }
+    const std::vector<MarginLeg> book = fo_book(book_.ledger);
+    MarginNow out;
+    out.legs = live_margin_->live_legs(book, instruments_);
+    out.portfolio_sha256 = live_portfolio_sha256(out.legs);
+    out.l1 = live_margin_->live(book, instruments_) != nullptr;
+    // The staircase's rows come from a scratch model whose host adds no label and whose step record is thrown away:
+    // reading the book must change nothing a replay would not reproduce.
+    const StaircaseMargin scratch(bundle_.root, margin_host(true), "live_with_fallback", false);
+    out.fallback = scratch.breakdown(book, instruments_, [this](InstrumentId i) { return ref_price(i); },
+                                     iso(date_of(now_)));
+    return out;
+}
+
+Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked
+    Paise mis = 0;  // MIS shares: a share of their value (A4 §6.5)
+    const std::string date = iso(d);
+    for (const Position& p : ledger.positions()) {
+        if (p.q == 0 || p.product != Product::MIS) {
+            continue;
+        }
+        const Instrument& row = instruments_.at(p.instrument);
+        if (!row.is_derivative()) {
+            const std::optional<Paise> m = mark_price(p.instrument);
+            mis = checked_add(mis, margin_->mis(row.kind, p.q, m && *m != 0 ? *m : p.avg_price(), date));
+        }
+    }
+    return checked_add(
+        margin_->requirement(fo_book(ledger), instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
+        mis);
 }
 
 Funds Engine::funds(const Ledger& ledger) const {  // runner.funds
@@ -119,33 +170,18 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
     if (o.product == Product::CNC) {
         return o.side == Side::Buy ? checked_mul(o.qty, px) : 0;
     }
-    if (o.product == Product::MIS) {
+    if (o.product == Product::MIS && !row.is_derivative()) {
         return margin_->mis(row.kind, o.qty, px, date);
     }
+    // NRML, and MIS futures and options, which need what the same NRML order needs (D-80)
     if (row.is_option() && o.side == Side::Buy) {
         return checked_mul(o.qty, px);
     }
-    std::vector<MarginLeg> legs;
-    for (const Position& p : book_.ledger.positions()) {
-        if (p.q != 0 && p.product == Product::NRML) {
-            legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
-        }
-    }
-    // after_legs = legs + [(o, NRML, signed qty)], combined per (instrument, product) in first-seen order
-    std::vector<MarginLeg> combined;
-    auto add = [&](const MarginLeg& leg) {
-        for (MarginLeg& c : combined) {
-            if (c.instrument == leg.instrument && c.product == leg.product) {
-                c.units += leg.units;
-                return;
-            }
-        }
-        combined.push_back(leg);
-    };
-    for (const MarginLeg& leg : legs) {
-        add(leg);
-    }
-    add(MarginLeg{o.instrument, Product::NRML, o.qty * o.sign()});
+    const std::vector<MarginLeg> legs = fo_book(book_.ledger);
+    // the book with the order in it: its instrument's leg changed, or a new last leg
+    std::vector<MarginLeg> combined = legs;
+    add_units(combined, o.instrument, o.qty * o.sign());
+    drop_flat_legs(combined);
     // before and after (the staircase prices each underlying at one step for both, MEZ 4.9)
     const auto [before, after] = margin_->pair(
         legs, combined, instruments_, [this](InstrumentId i) { return ref_price(i); },
@@ -209,6 +245,7 @@ OrderId Engine::place(const PlaceRequest& r, OrderId parent, bool system) {  // 
     o.t_submit = now_;
     const OrderId id = o.order_id;
     Order& ord = book_.orders.emplace(id, std::move(o)).first->second;
+    live_ids_.push_back(id);
     event(book_, ord, "SUBMIT", r.side + " " + std::to_string(r.qty) + " " + r.product + " " + r.type);
     if (const auto code = validate(ord, system, Reason::Instrument, Reason::Freeze)) {
         return reject(ord, *code).order_id;
@@ -390,8 +427,8 @@ Paise Engine::order_px(const Order& o) const {  // runner._order_px
 void Engine::accept(Order& o) {  // runner._accept
     const std::string g(group_of(o.instrument));
     o.t_activate = o.t_submit + latency_ns_;
-    if (phase_at(g, o.t_activate) != "CONTINUOUS") {
-        const std::optional<TimeNs> nxt = calendar_.next_continuous_start(
+    if (phase_at(g, o.t_activate) != "CONTINUOUS") {  // queued for the next session, next_days included (A4 §3.10)
+        const std::optional<TimeNs> nxt = cal_all_.next_continuous_start(
             [&](Date d) { return instruments_.group_of(o.instrument, d); }, o.t_submit);
         if (!nxt) {
             reject(o, Reason::Session);
@@ -404,14 +441,16 @@ void Engine::accept(Order& o) {  // runner._accept
 }
 
 std::vector<OrderId> Engine::live_orders() {  // runner.live_orders
-    while (min_live_ < next_order_ && book_.orders.at(min_live_).final()) {
-        ++min_live_;
-    }
     std::vector<OrderId> out;
-    for (OrderId i = min_live_; i < next_order_; ++i) {
-        if (!book_.orders.at(i).final()) {
-            out.push_back(i);
+    out.reserve(live_ids_.size());
+    for (const OrderId id : live_ids_) {
+        const auto it = book_.orders.find(id);
+        if (it != book_.orders.end() && !it->second.final()) {
+            out.push_back(id);
         }
+    }
+    if (out.size() != live_ids_.size()) {  // some finished since the last call: drop them (once)
+        live_ids_ = out;
     }
     return out;
 }
@@ -698,7 +737,7 @@ void Engine::simulate_bar(Book& book, InstrumentId iid, const BarFields& bar, Ti
 
 void Engine::match_bar(InstrumentId iid, const BarFields& bar, TimeNs t) {  // runner._match_bar
     const Date d = date_of(bar.start_ns);
-    const std::optional<TimeNs> cs = calendar_.continuous_start(group_of(iid, d), d);
+    const std::optional<TimeNs> cs = continuous_start(group_of(iid, d), d);  // the bar's own session (prev_days too)
     const TimeNs eff_start = cs ? std::max(bar.start_ns, *cs) : bar.start_ns;
     const std::vector<OrderId> ids = eligible(iid, eff_start);
     if (ids.empty()) {
@@ -739,7 +778,7 @@ void Engine::adopt(Book& sim) {  // runner._adopt
 
 void Engine::match_eod(InstrumentId iid, const BarFields& bar, TimeNs t) {  // runner._match_eod
     const Date d = date_of(bar.start_ns);
-    const std::optional<TimeNs> cs = calendar_.continuous_start(group_of(iid, d), d);
+    const std::optional<TimeNs> cs = continuous_start(group_of(iid, d), d);  // the bar's own session (prev_days too)
     const TimeNs eff_start = cs ? std::max(bar.start_ns, *cs) : bar.start_ns;
     const std::vector<OrderId> ids = eligible(iid, eff_start);
     if (ids.empty()) {

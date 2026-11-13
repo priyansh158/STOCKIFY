@@ -11,7 +11,13 @@ Wire protocol:
 Multiple tokens per tick batch are flushed one frame per event to keep the
 client-side parser dumb. The server doesn't enforce auth on the WS itself —
 if Kite isn't authenticated, the very first response is an error event and
-the socket is closed.
+the socket is closed. The handshake itself is refused for a foreign Origin or
+Host before this code runs (server/local_only.py).
+
+One client may hold at most MAX_TOKENS_PER_CLIENT distinct tokens. A request
+that would go over is refused whole, with an error event and nothing
+subscribed: an over-long `?tokens=` list also closes the socket (1008), an
+over-long subscribe message leaves it open.
 """
 from __future__ import annotations
 
@@ -27,6 +33,24 @@ from server.services import ticker_bridge
 log = logging.getLogger("stockify.ticks")
 
 router = APIRouter(prefix="/api/ws", tags=["ticks"])
+
+# The UI opens one socket per portfolio page with one token per holding, all in `?tokens=`
+# (web/src/lib/useTicks.ts, HoldingsList.tsx), and sends no subscribe messages. 200 is several
+# times a large retail portfolio, and small next to Kite's own limit per connection (3000).
+# Every subscribed token is also written to the tick buffer's subscription table, so an
+# unbounded list would be an unbounded write.
+MAX_TOKENS_PER_CLIENT = 200
+
+
+def _over_cap_event() -> dict:
+    return {
+        "type": "error",
+        "message": f"Too many instruments: one connection may subscribe at most {MAX_TOKENS_PER_CLIENT}.",
+    }
+
+
+def _tokens_in(items: list) -> list[int]:
+    return [int(t) for t in items if isinstance(t, (int, str)) and str(t).isdigit()]
 
 
 @router.websocket("/ticks")
@@ -51,6 +75,13 @@ async def ticks_ws(websocket: WebSocket) -> None:
             except ValueError:
                 continue
 
+    # What this client holds; the cap counts distinct tokens.
+    held: set[int] = set(qs_tokens)
+    if len(held) > MAX_TOKENS_PER_CLIENT:
+        await websocket.send_json(_over_cap_event())
+        await websocket.close(code=1008)
+        return
+
     loop = asyncio.get_running_loop()
     queue = ticker_bridge.register_client(loop)
 
@@ -70,14 +101,25 @@ async def ticks_ws(websocket: WebSocket) -> None:
                 if not isinstance(msg, dict):
                     continue
                 if "subscribe" in msg and isinstance(msg["subscribe"], list):
-                    toks = [int(t) for t in msg["subscribe"] if isinstance(t, (int, str)) and str(t).isdigit()]
-                    if toks:
+                    toks = _tokens_in(msg["subscribe"])
+                    if len(held | set(toks)) > MAX_TOKENS_PER_CLIENT:
+                        # Refused whole. The writer below is the only sender on this socket,
+                        # so the answer goes through the client's own queue.
+                        try:
+                            queue.put_nowait([_over_cap_event()])
+                        except asyncio.QueueFull:
+                            pass
+                    elif toks:
+                        held.update(toks)
                         ticker_bridge.ensure_subscribed(toks, mode="ltp")
                 if "unsubscribe" in msg and isinstance(msg["unsubscribe"], list):
                     import kite_ticker_worker
-                    toks = [int(t) for t in msg["unsubscribe"] if isinstance(t, (int, str)) and str(t).isdigit()]
-                    if toks:
-                        kite_ticker_worker.unsubscribe(set(toks))
+                    # Only what this client holds: another socket's tokens are not its to drop,
+                    # and give it no room under the cap.
+                    gone = set(_tokens_in(msg["unsubscribe"])) & held
+                    if gone:
+                        held.difference_update(gone)
+                        kite_ticker_worker.unsubscribe(gone)
         except WebSocketDisconnect:
             pass
 

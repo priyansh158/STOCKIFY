@@ -14,10 +14,17 @@ and talks to the outside world:
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import logging
 import os
+import traceback
 import unittest
 from unittest.mock import MagicMock, patch
+
+import requests
+import requests.adapters
 
 import tests.support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest, isolated_env
@@ -402,7 +409,9 @@ class ClassifyBatchTests(unittest.TestCase):
         _, post = self.classify([{"id": 0}], model="gemini-custom")
         url = post.call_args[0][0]
         self.assertIn("gemini-custom", url)
-        self.assertIn("key=test-key", url)
+        self.assertEqual(post.call_args.kwargs["headers"], {"x-goog-api-key": "test-key"})
+        self.assertNotIn("test-key", url)
+        self.assertNotIn("key=", url)
 
     def test_model_environment_is_resolved_at_call_time(self):
         with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-from-env"}):
@@ -413,7 +422,8 @@ class ClassifyBatchTests(unittest.TestCase):
         with patch.object(gemini_classifier.requests, "post",
                           return_value=gemini_response([{"id": 0}])) as post:
             classify_batch([dict(ARTICLE)], api_key="explicit")
-        self.assertIn("key=explicit", post.call_args[0][0])
+        self.assertEqual(post.call_args.kwargs["headers"], {"x-goog-api-key": "explicit"})
+        self.assertNotIn("explicit", post.call_args[0][0])
 
     def test_descriptions_are_truncated_before_sending(self):
         long_article = dict(ARTICLE, description="x" * 5000)
@@ -426,6 +436,250 @@ class ClassifyBatchTests(unittest.TestCase):
         cfg = post.call_args.kwargs["json"]["generationConfig"]
         self.assertEqual(cfg["responseMimeType"], "application/json")
         self.assertLessEqual(cfg["temperature"], 0.3)
+
+
+# ── The Gemini key never reaches a URL, a log line or an error text ──────────
+
+SECRET = "not-a-real-key-7f3c9a51"          # a fake; nothing here reaches the network
+
+
+@contextlib.contextmanager
+def _every_log_line():
+    """Capture every log line of the process, tracebacks included.
+
+    The suite runner switches logging off (`logging.disable`), so `assertLogs` sees nothing there;
+    this turns it on for the block and puts everything back.
+    """
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    root = logging.getLogger()
+    was_disabled, was_level = root.manager.disable, root.level
+    logging.disable(logging.NOTSET)
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        yield stream
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(was_level)
+        logging.disable(was_disabled)
+
+
+def _formatted(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    seen: list[BaseException] = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        exc = exc.__cause__ or exc.__context__
+    return seen
+
+
+class _Wire:
+    """Stands in for the socket: `requests` prepares the real request, nothing is sent."""
+
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.requests = []
+
+    def __call__(self, request, **kwargs):
+        self.requests.append(request)
+        return self.outcome(request)
+
+
+def _refused_like_urllib3(request):
+    # The text urllib3 and requests really produce: it carries the request's path and query.
+    raise requests.exceptions.ConnectionError(
+        f"HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443): Max retries exceeded "
+        f"with url: {request.path_url} (Caused by NewConnectionError('Failed to establish a new connection'))",
+        request=request)
+
+
+def _answer(status: int, text: str):
+    def outcome(request):
+        resp = requests.Response()
+        resp.status_code = status
+        resp._content = text.encode("utf-8")
+        resp.encoding = "utf-8"
+        resp.request = request
+        return resp
+    return outcome
+
+
+class GeminiKeySecrecyTests(unittest.TestCase):
+    def setUp(self):
+        self._env = isolated_env({"GEMINI_API_KEY": SECRET})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def call(self, outcome, **kw):
+        wire = _Wire(outcome)
+        with patch.object(requests.adapters.HTTPAdapter, "send", wire), _every_log_line() as logs:
+            logging.getLogger("geo_monitor.test").debug("capture started")
+            try:
+                out = classify_batch([dict(ARTICLE)], **kw)
+                err = None
+            except Exception as e:  # noqa: BLE001 — the test inspects whatever comes out
+                out, err = None, e
+        self.assertIn("capture started", logs.getvalue())
+        return out, err, wire, logs.getvalue()
+
+    def assert_clean(self, err, logs, secret=SECRET):
+        self.assertIsNotNone(err)
+        for e in _chain(err):
+            self.assertNotIn(secret, str(e))
+            self.assertNotIn(secret, repr(e))
+            self.assertIsNone(getattr(e, "request", None), "the failed request (and its headers) is kept alive")
+        self.assertNotIn(secret, _formatted(err))
+        self.assertNotIn(secret, logs)
+
+    def test_the_key_travels_in_the_header_and_never_in_the_url(self):
+        ok = json.dumps({"candidates": [{"content": {"parts": [{"text": '[{"id": 0, "severity": "HIGH"}]'}]}}]})
+        out, err, wire, logs = self.call(_answer(200, ok))
+        self.assertIsNone(err)
+        self.assertEqual(out[0]["severity"], "HIGH")
+        (sent,) = wire.requests
+        self.assertEqual(sent.headers["x-goog-api-key"], SECRET)
+        self.assertNotIn(SECRET, sent.url)
+        self.assertNotIn("key=", sent.url)
+        self.assertNotIn("?", sent.url)
+        self.assertNotIn(SECRET.encode(), sent.body)
+        self.assertNotIn(SECRET, logs)
+
+    def test_a_connection_error_does_not_carry_the_key(self):
+        _, err, wire, logs = self.call(_refused_like_urllib3)
+        self.assertEqual(len(wire.requests), 1)
+        self.assertIsInstance(err, RuntimeError)
+        self.assertIn("ConnectionError", str(err))
+        self.assertIn("generativelanguage.googleapis.com", str(err))      # still says what failed
+        self.assert_clean(err, logs)
+
+    def test_an_explicit_key_is_kept_out_of_a_connection_error_too(self):
+        explicit = "explicit-fake-key-55aa"
+        _, err, wire, logs = self.call(_refused_like_urllib3, api_key=explicit)
+        self.assertEqual(wire.requests[0].headers["x-goog-api-key"], explicit)
+        self.assert_clean(err, logs, secret=explicit)
+
+    def test_an_error_text_that_names_the_key_is_scrubbed(self):
+        def echo(request):
+            raise requests.exceptions.ConnectionError(
+                f"proxy refused: x-goog-api-key: {request.headers['x-goog-api-key']} at /generateContent?key="
+                f"{request.headers['x-goog-api-key']}", request=request)
+        _, err, _, logs = self.call(echo)
+        self.assert_clean(err, logs)
+        self.assertIn("[redacted]", str(err))
+
+    def test_an_error_body_that_echoes_the_key_is_scrubbed_before_it_is_cut(self):
+        for pad in (0, 290, 300 - len(SECRET) // 2):          # the cut at 300 must not leave half a key
+            with self.subTest(pad=pad):
+                _, err, _, logs = self.call(_answer(400, "x" * pad + f"API key {SECRET} is not valid" + "y" * 400))
+                self.assertIn("400", str(err))
+                self.assert_clean(err, logs)
+                for n in range(8, len(SECRET) + 1):
+                    self.assertNotIn(SECRET[:n], str(err))
+
+    def test_a_redirect_is_not_followed_so_the_key_stays_with_the_host_it_was_meant_for(self):
+        # `requests` drops only `Authorization` on a cross-host redirect; a custom header would be
+        # re-sent to wherever a 30x points (review m-1).
+        def elsewhere(request):
+            resp = _answer(302, "")(request)
+            resp.url = request.url
+            resp.headers["Location"] = "https://elsewhere.example/collect"
+            return resp
+        _, err, wire, logs = self.call(elsewhere)
+        self.assertEqual(len(wire.requests), 1, "the redirect was followed")
+        self.assertEqual(wire.requests[0].url.split("/")[2], "generativelanguage.googleapis.com")
+        self.assertIsInstance(err, RuntimeError)
+        self.assertIn("302", str(err))
+        self.assertNotIn("elsewhere.example", str(err))
+        self.assert_clean(err, logs)
+
+    def test_a_key_that_cannot_be_a_header_is_refused_without_being_shown(self):
+        for bad in ("line\nbreak-fake-key", "has space fake key", "tab\tfake-key", "clé-fake-key", "nul\x00fake-key"):
+            with self.subTest(bad=bad):
+                _, err, wire, logs = self.call(_refused_like_urllib3, api_key=bad)
+                self.assertEqual(wire.requests, [], "nothing may be sent")
+                self.assertIsInstance(err, RuntimeError)
+                for piece in (bad, repr(bad)[1:-1], "break-fake-key", "fake key", "fake-key"):
+                    self.assertNotIn(piece, str(err))
+                    self.assertNotIn(piece, _formatted(err))
+                    self.assertNotIn(piece, logs)
+
+    def test_scrub_removes_every_configured_key_in_every_spelling(self):
+        with isolated_env({"GOOGLE_AI_API_KEY": "first-fake/+key", "GEMINI_API_KEY": "second-fake-key",
+                           "GOOGLE_API_KEY": "  third-fake-key  "}):
+            text = gemini_classifier.scrub(
+                "a first-fake/+key b second-fake-key c third-fake-key d first-fake%2F%2Bkey e extra-fake-key",
+                "extra-fake-key")
+        self.assertEqual(text, "a [redacted] b [redacted] c [redacted] d [redacted] e [redacted]")
+
+    def test_scrub_without_a_key_changes_nothing(self):
+        with isolated_env():
+            self.assertEqual(gemini_classifier.scrub("nothing to hide"), "nothing to hide")
+            self.assertEqual(gemini_classifier.scrub("nothing to hide", "", None), "nothing to hide")
+
+
+class WorkerKeySecrecyTests(SandboxedDBTest):
+    db_modules = (geo_alerts,)
+
+    def setUp(self):
+        super().setUp()
+        p = patch.object(worker, "load_env", lambda: None)      # never the developer's real env file
+        p.start()
+        self.addCleanup(p.stop)
+        self._env = isolated_env({"GOOGLE_AI_API_KEY": SECRET})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def cycle(self, target, name, value):
+        client = FakeNewsClient(FakeSearchResult([FakeArticle("g1", "RBI hikes repo rate")]))
+        with patch.object(worker, "_holdings_for_queries", return_value=([], [])), \
+             patch.object(worker, "try_send_alert_email", return_value="email not configured"), \
+             patch.object(target, name, value), \
+             _every_log_line() as logs:
+            stats = worker.run_once(client=client)
+            logging.getLogger("geo_monitor.worker").info("Cycle done: %s", stats)      # what run_forever logs
+        return stats, logs.getvalue()
+
+    def test_a_failed_gemini_call_leaves_no_key_in_the_log_or_the_stats(self):
+        wire = _Wire(_refused_like_urllib3)
+        stats, logs = self.cycle(requests.adapters.HTTPAdapter, "send", wire)
+        self.assertEqual(len(wire.requests), 1)
+        self.assertEqual(wire.requests[0].headers["x-goog-api-key"], SECRET)
+        self.assertEqual(stats["classified"], 0)
+        self.assertEqual(len(stats["errors"]), 1)
+        self.assertIn("ConnectionError", stats["errors"][0])
+        self.assertIn("Gemini classification failed", logs)
+        self.assertNotIn(SECRET, logs)
+        self.assertNotIn(SECRET, repr(stats))
+
+    def test_an_error_that_names_the_key_is_scrubbed_by_the_worker_as_well(self):
+        def boom(*_a, **_k):
+            try:
+                raise ValueError(f"inner {SECRET}")
+            except ValueError as inner:
+                raise RuntimeError(f"outer {SECRET}") from inner
+        stats, logs = self.cycle(worker, "classify_batch", boom)
+        self.assertEqual(stats["errors"], ["outer [redacted]"])
+        self.assertIn("Gemini classification failed", logs)
+        self.assertIn("Traceback", logs)                     # the trace is still there to debug with
+        self.assertIn("inner [redacted]", logs)
+        self.assertNotIn(SECRET, logs)
+        self.assertNotIn(SECRET, repr(stats))
+
+    def test_a_crashed_cycle_is_logged_without_the_key(self):
+        def crash(*_a, **_k):
+            raise RuntimeError(f"cycle broke near {SECRET}")
+        with patch.object(worker, "run_once", crash), _every_log_line() as logs:
+            worker.run_forever(once=True)
+        text = logs.getvalue()
+        self.assertIn("Monitor cycle crashed", text)
+        self.assertIn("Traceback", text)
+        self.assertIn("cycle broke near [redacted]", text)
+        self.assertNotIn(SECRET, text)
 
 
 class ShouldAlertTests(unittest.TestCase):

@@ -72,7 +72,7 @@ class LaterExpiryGreeksTests(SandboxedDBTest):
         folder = paths.run_path("later")
         oracle_run(golden.build_bundle(g), [golden.build_pack(g, scratch)], folder, report=False)
         runs.import_run(folder)
-        ce = next(r for r in TestClient(app).get("/api/tests/later/greeks").json()
+        ce = next(r for r in TestClient(app, base_url=tests.support.API_BASE_URL).get("/api/tests/later/greeks").json()
                   if r["kind"] == "CE" and r["trade_date"] == "2026-03-03")
         self.assertIsNone(ce["iv_reason"])
         self.assertFalse(ce["expiry_close_estimated"])                  # the bundle has it now

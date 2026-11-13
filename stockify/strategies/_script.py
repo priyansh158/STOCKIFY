@@ -11,7 +11,7 @@ a given engine time. Goldens therefore test the engine, not strategy logic.
 """
 from __future__ import annotations
 
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, encode_state
 
 
 class Script(Strategy):
@@ -31,6 +31,14 @@ class Script(Strategy):
                 by_time.setdefault(int(a["at_ns"]), []).append(a)
         for t, acts in sorted(by_time.items()):
             self.timers[ctx.schedule_at(t)] = acts
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the int-keyed `timers` as [id, actions] pairs.
+    def save_state(self) -> dict:
+        return encode_state(self, {**self.state_attrs(), "timers": [[k, v] for k, v in self.timers.items()]})
+
+    def load_state(self, state: dict) -> None:
+        super().load_state(state)
+        self.timers = {k: v for k, v in self.timers}
 
     def _do(self, ctx, a: dict) -> None:  # noqa: ANN001
         if "place" in a:

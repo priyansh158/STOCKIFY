@@ -54,6 +54,14 @@ class Pcg32 {
     std::uint64_t state() const { return state_; }
     std::uint64_t inc() const { return inc_; }
 
+    // A stream exactly where another left it (a paper session's next day, A1 §6.4 `rng`).
+    static Pcg32 at(std::uint64_t state, std::uint64_t inc) {
+        Pcg32 g(0, 0);
+        g.state_ = state;
+        g.inc_ = inc;
+        return g;
+    }
+
  private:
     std::uint64_t state_;
     std::uint64_t inc_;

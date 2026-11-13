@@ -221,6 +221,14 @@ class ReferenceStrategyTests(unittest.TestCase):
                 fills += self._same(REFS["orb"], g, params, cpp="orb_cpp")
         self.assertGreater(fills, 40)
 
+    def test_orb_partial_and_rejected_entries_agree_on_all_three_implementations(self):
+        from tests.stockify.test_strategies import StrategyTests
+        helper = StrategyTests("test_sources_pass_the_load_check")
+        params = {"symbol": "NSE:TEST", "range_minutes": 2, "qty": 10}
+        for label, kw in (("partial", {"breakout_volume": 40}), ("rejected", {"capital_paise": 1_000})):
+            with self.subTest(case=label):
+                self._same(REFS["orb"], helper._orb_world(**kw), params, cpp="orb_cpp")
+
     def test_eod_short_straddle(self):
         fills = 0
         for seed in range(5400, 5425):
@@ -307,18 +315,7 @@ class FailureTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "strategy param 'fast' is not an integer"):
             go()
 
-    def test_day_state_waits_for_m5(self):
-        g, p = daily_world(5502)
-        with tempfile.TemporaryDirectory(prefix="strategies-fail-") as tmp:
-            pack, b = _materialise(g, p, Path(tmp))
-            from stockify import bundle as bundle_mod
-            bundle_mod.write(b, Path(tmp))
-            e = engine.load().Engine(str(Path(tmp) / "bundle.json"))
-            with self.assertRaisesRegex(NotImplementedError, r"eod_state: .*\(M5\.3, D-47\)"):
-                e.eod_state()
-            with self.assertRaisesRegex(NotImplementedError, r"load_sod_state: "):
-                e.load_sod_state("{}")
-            del e
+    # The day-to-day state (eod_state / load_sod_state, VOL 5.3, D-47 closed) is covered by test_engine_sod_state.
 
     def test_an_unknown_cpp_strategy(self):
         g, p = daily_world(5501)

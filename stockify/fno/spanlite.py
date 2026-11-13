@@ -78,12 +78,12 @@ class SpanLiteMargin:
         params = bundle["margin_params"]
         self.rows = params.get("spanlite", []) or []
         self.addon_rows = params.get("expiry_day_short_index_option_addon", []) or []
-        self._flat = FlatMargin(bundle)               # MIS is the same rule under every model (A4 §6.5)
+        self._flat = FlatMargin(bundle)               # MIS shares: the same rule under every model (A4 §6.5)
         self._e = engine
         self._last_iv: dict[int, tuple[str, float]] = {}   # iid → (date, last valid mid IV that day)
         self.labels: set[str] = set()                 # labels this model used, merged into the run's (as FlatMargin)
 
-    # MIS and the label are the flat model's / the bundle's.
+    # MIS shares and the label are the flat model's / the bundle's (MIS futures and options arrive as NRML legs, D-80).
     def mis_rate(self, segment: str, date: str) -> int:
         return self._flat.mis_rate(segment, date)
 

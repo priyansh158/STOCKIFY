@@ -47,6 +47,7 @@ export interface PortfolioSnapshot {
 export interface KiteStatus {
   configured: boolean;
   authenticated: boolean;
+  daemon_waiting_for_login: boolean;
   error?: string | null;
 }
 
@@ -244,6 +245,131 @@ export interface TestLogs {
 
 export interface TestCreated {
   run_id: string;
+}
+
+export interface SessionDTO {
+  session_id: string;
+  name: string;
+  status: string;
+  pause_reasons: string[];
+  today_pnl_paise?: number | null;
+  open_positions?: number | null;
+  coverage_today?: number | null;
+  parity_last?: string | null;
+  labels: string[];
+  created_ist: string;
+}
+
+export interface SessionStatsDTO {
+  days: number;
+  pnl_paise: number;
+  win_days: number;
+  loss_days: number;
+  best_day_paise?: number | null;
+  worst_day_paise?: number | null;
+  max_drawdown_paise: number;
+}
+
+export interface SessionDetailDTO {
+  session: SessionDTO;
+  config: Record<string, unknown>;
+  trade_date?: string | null;
+  stats_all: SessionStatsDTO;
+  stats_full_coverage: SessionStatsDTO;
+  coverage_threshold: string;
+  has_coverage_holes: boolean;
+}
+
+export interface SessionCreatedDTO {
+  session_id: string;
+}
+
+export interface SessionCommandDTO {
+  cmd_id: number;
+}
+
+export interface CommandStatusDTO {
+  cmd_id: number;
+  session_id?: string | null;
+  command: string;
+  status: "pending" | "applied" | "failed";
+  created_ns: number;
+  created_ist: string;
+  applied_ns?: number | null;
+  applied_ist?: string | null;
+  error?: string | null;
+}
+
+export interface SessionPositionDTO {
+  trade_date: string;
+  instrument_id: number;
+  instrument_token?: number | null;
+  tradingsymbol?: string | null;
+  product?: string | null;
+  qty: number;
+  avg_price_paise?: number | null;
+  mark_paise?: number | null;
+  unrealised_paise?: number | null;
+  source: "eod" | "fills";
+}
+
+export interface SessionTimelineDTO {
+  engine_ns?: number | null;
+  wall_ns: number;
+  wall_ist: string;
+  kind: string;
+  detail?: unknown;
+}
+
+export interface SessionMarginDTO {
+  wall_ns: number;
+  wall_ist: string;
+  trade_date?: string | null;
+  step?: string | null;
+  kite_total_paise?: number | null;
+  ours_total_paise?: number | null;
+  gap_paise?: number | null;
+  gap_ppm?: number | null;
+  error?: string | null;
+}
+
+export interface SessionOrderDTO {
+  order_id: number;
+  parent_id?: number | null;
+  instrument_id?: number | null;
+  side?: string | null;
+  product?: string | null;
+  type?: string | null;
+  validity?: string | null;
+  qty?: number | null;
+  price_paise?: number | null;
+  trigger_paise?: number | null;
+  tag?: string | null;
+  t_submit_ns?: number | null;
+  t_activate_ns?: number | null;
+  status?: string | null;
+  filled_qty?: number | null;
+  avg_price_paise?: number | null;
+  reason?: string | null;
+}
+
+export interface SessionFillDTO {
+  fill_id: number;
+  order_id?: number | null;
+  t_ns?: number | null;
+  instrument_id?: number | null;
+  side?: string | null;
+  qty?: number | null;
+  price_paise?: number | null;
+  evidence?: string | null;
+}
+
+export interface TradeLoginDTO {
+  waiting_for_login: boolean;
+  day: string;
+  window_local: string[];
+  last_usable_local: string;
+  market_open_local: string;
 }
 
 // ── Live ticks (WS) ──────────────────────────────────────────────────────────

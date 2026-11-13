@@ -45,8 +45,10 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
     const auto into = [](CsvWriter& w) { return [&w](std::initializer_list<CsvCell> cells) { w.add_row(cells); }; };
 
     CsvWriter orders{std::string(kOrdersHeader)};
-    for (const auto& [id, o] : b.orders) {  // std::map: order_id order
-        order_row(o, into(orders));
+    for (const auto& [id, o] : b.orders) {  // std::map: order_id order; this day's orders (runner.day_orders)
+        if (e.prior_final().count(id) == 0) {
+            order_row(o, into(orders));
+        }
     }
     orders.write(folder / "orders.csv");
 
@@ -63,7 +65,7 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
     fills.write(folder / "fills.csv");
 
     CsvWriter charges{std::string(kChargesHeader)};
-    std::int64_t n = 0;
+    std::int64_t n = e.charge_row_base();  // rows continue across a paper session's days (VOL 5.2)
     for (const ChargeRow& c : b.charges) {
         charge_row(++n, c, into(charges));
     }

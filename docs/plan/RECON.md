@@ -277,7 +277,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
 - Indicators (`indicators.hpp/.cpp`): `sma`, `ema`, `rsi`, `atr` exactly as `stockify.strategy` computes them (exact integer sums, then one rounding to `double`, in the same expression order). U-05: on 3,000 random price series × 8 window lengths (penny stocks to 10¹⁵ paise, flat stretches, jumps, sums beyond 2⁶³) every result has the same float64 bit pattern as the oracle's, NaN during warm-up included. A step Python would compute with a bigger int (a change wider than int64) raises `OverflowError` instead of wrapping. The context methods `sma/ema/rsi/atr/session_vwap`, `expiries`, `futures_chain`, `chain` mirror `oracle.context`; the Recorder parity strategy now logs them on every bar and phase change (134 non-empty chains, 75 VWAP values across the golden worlds), and the logs stay identical.
 - `session_vwap` is bars only on both implementations, as the oracle's docstring says; A2 §4.3's tick variant (interval VWAP values, falling back to `ltp`) is still to come, in the oracle first.
 - Registry: `STOCKSIM_STRATEGY(Class, "name")`, written inside the class's namespace. The strategies are an OBJECT library (`stocksim_strategies`) linked into the module, `stocksim_run` and the tests, so the linker cannot drop a registration. `sma_cross_cpp` and `orb_cpp` are line-for-line ports; `param_int` / `param_bool` / `param_string` read params the way the Python strategies do (`int("3")`, `int(3.0)`, Python truthiness), so a config spelling `"fast": "3"` behaves the same on both.
-- Binding: `set_strategy_cpp(name)` (a run with a C++ strategy releases the GIL), `strategies()`, `drain_outputs()` (new orders as they are now; order events, fills, charges and log lines since the last call, as dicts keyed by the CSV column names, built by the same row functions as the CSVs), `load_sod_state` / `eod_state` (D-47). `stockify.engine.run_bundle` runs a `kind: cpp` bundle with its registered strategy.
+- Binding: `set_strategy_cpp(name)` (a run with a C++ strategy releases the GIL), `strategies()`, `drain_outputs()` (new orders as they are now; order events, fills, charges and log lines since the last call, as dicts keyed by the CSV column names, built by the same row functions as the CSVs), `load_sod_state` / `eod_state` (D-47 closed by D-66: they carry a session's day-to-day state, A1 §6.4; the state file is untrusted input, checked whole before anything is applied, the same refusals as the oracle's, ST 5.1). `stockify.engine.run_bundle` runs a `kind: cpp` bundle with its registered strategy.
 - Failure: a Python exception in a hook (or an engine error) stops the run. The binding writes `ERROR the strategy raised an exception; the run stops` and the traceback, one ERROR line each, into the log at the failing moment; `run_bundle` writes `events_log.txt`, writes no other artifact, and re-raises the original exception. Marking the run `failed` in `lab.sqlite` is the M3.11 runner's job (the `runs` table arrives there).
 - Tests (`test_engine_strategies`): every M2 reference strategy unchanged on oracle and engine on seeded random worlds, with identical run folders: buy_and_hold (20 daily worlds), sma_cross (60, a third of them on an index future traded NRML long/short in lots, with flips both ways), opening_range_breakout (40 minute-bar worlds, longs and shorts, stops triggered and cancelled, MIS square-offs, margin rejects), eod_short_straddle (25 option-chain worlds with two expiries, stops, settlements). `sma_cross_cpp` and `orb_cpp` give the same run folders as the Python originals on the same worlds. Half the worlds use the shipped Zerodha charge rows. A mutation check (a different strategy on one side) fails on the first differing `orders.csv` line, as it should. Drain: pushing the records in random batches and draining after each one adds up to exactly the final CSVs and log.
 - Found while porting ORB: `timeutil.parse_hhmm` is `int()` per `:`-separated part, so `" 9:15"`, `"9:15"` and `"+09:015"` are all 09:15. The C++ `ist_ns` now parses the same way (`decimal.hpp` `python_int`, shared with the param readers), checked against the Python values in `test_session.cpp`.
@@ -805,6 +805,192 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
   ~0.9 GB with five a day, written into every run and re-run folder and loaded whole by the C++ engine. Owner
   decision: de-duplicate entries by SHA, or keep only strikes near the money.
 
+## 2026-11-09 — M5.0 recon (FB 5.1)
+
+**BASE.** `4719ebe7c323c0864eeaadbc5fbd5dafe10aa2b7` "XI 5.0: plan: the M5 paper-trading daemon, task by task".
+BASE = merge commit of stockify/margin-staircase into stockify/m4-fno (bd66c37 "CAM 4.5: the SPAN cache key
+covers the parser's own code"), plus the M5 plan commit on top. Working tree clean: no uncommitted files (CLAUDE.md is
+git-ignored; the `.venv` and `web/node_modules` entries are junctions).
+
+**M5.0 box 1: token store (verified by reading code only; neither the token file nor the repo's env file was
+opened).** One store: `kite_client._token_file()` = `<cache dir>/kite_token.json` (kite_client.py:50), i.e.
+`%LOCALAPPDATA%\STOCKIFY\kite\` (kite_client.py:14). `save_token` (:124) writes `<file>.tmp` then `replace`s it
+(atomic); `load_cached_token` (:132), `is_authenticated` (:179). `GET /api/kite/callback` ends in `save_token`
+(kite_client.py:120, in the login exchange). The launcher reads only the file's mtime
+(`scripts/run_stockify_daemon.ps1`: `$TokenFile` :32, `Wait-FreshToken` :94, called :140). The daemon reads it through
+`kite_client` (`stockify/daemon/__init__.py:162,297,301`). Confirmed.
+
+**M5.0 box 2: recordings. 🛑 live pending (owner/controller).** The real lab is `%LOCALAPPDATA%\STOCKIFY\kite\lab` (`stockify.paths.lab_dir()` resolves under `state_dir()`, which is `...\STOCKIFY\kite`). One recorded day exists, 2026-11-05 (about 19 MB): `ticks/archive/date=2026-11-05` and `ticks/landing/ticks_20261105.sqlite` (plus its -shm and -wal files). Controller's sandboxed replay (LOCALAPPDATA redirected to a copy of the lab): 2026-11-05 replayed with 16 instruments, 7,440 packets in 1,293 frames and 99 heartbeats; dropped 0, exit 0. The replay path works, but the day is a short session (about 20 minutes), not a full one. Box 2 stays 🛑 until a full live day is recorded and replayed. Replays must always run in a sandboxed copy of the lab, never against the real one, because a replay recorder could write into the irreplaceable tick store. The sqlite files were not opened, `ticks.available_days()` was not run against the real lab (the function only reads, but `paths.ticks_*_dir()` create directories on call), and `stockify daemon` was never run. Every offline test uses fixture days.
+
+### Verified mismatch table (provisional: controller ruling under owner autonomy, for owner review)
+
+All 23 rows of the plan's table were checked against BASE; none is contradicted by the code. Locations:
+
+| # | Verified at BASE | Decision |
+|---|---|---|
+| 1 | `scripts/run_stockify_daemon.ps1:8` (exit 76 = wait for a fresh token, restart), `Wait-FreshToken` :94/:140; `stockify/daemon/ticker.py:9` (403 stops with a gap); reactor limit per RECON M1.0 | D-65 |
+| 2 | `engine/bindings/engine.cpp:187,447-448` (`not_until_m5`; `load_sod_state`/`eod_state` raise `NotImplementedError`); `stockify/bundle.py:647` `"sod_state": None`; `stockify/runconfig.py:34,150` plain `seed`, no per-day seed | D-66 |
+| 3 | `stockify/bundle.py:608` `resolve_bundle(cfg)`; `stockify/runconfig.py:85-86,136` requires non-empty `data.packs` | Task 8 |
+| 4 | `engine/src/engine.cpp:562,571` handle only `price_band` and `SETTLE`; `stockify/oracle/runner.py:41` REFDATA is rank-only; `instrument_add` is only produced by `stockify/data/packs.py:84,352` and read by `bundle.py:356` | D-67 |
+| 5 | `engine/src/source.cpp:86-100` `LiveBatchSource::push` throws `FormatError("pushed record out of order ...")` when `key < last` | D-68 |
+| 6 | `engine/include/stocksim/event.hpp:72` subtype 3 `margin_requirement` exists but nothing in `engine/` or `stockify/` consumes it; `stockify/fno/calibrate.py:545` already passes `consider_positions=False` | D-69 |
+| 7 | `stockify/store.py:19,22-24,81` inline `_SCHEMA` incl. `margin_live` and `parity_results`; `stockify/data/migrations/` holds `bars`, `landing`, `refdata` only (no `lab`) | Task 2 |
+| 8 | no `server/routers/trade.py`, no `web/src/app/trade`; no commands table | Tasks 2, 28 |
+| 9 | `engine/include/stocksim/event.hpp:72` has only subtypes 1-4 (no `strategy_control`); `stockify/store.py:43` `sessions.pause_reason` is a single column | D-70 |
+| 10 | `stockify/daemon/replay_ticker.py:39,87,217-240` `kill` only sets `self.killed`; `Fault.duration_ns` at :89 is used for `disconnect` (:233) | D-71 |
+| 11 | `stockify/daemon/scheduler.py:39-41` `CATCH_UP = ("nse_fetch", "margin_files")`, `CATCH_UP_DAYS = 7`; D-32 hibernate in `scripts/check_power.ps1` | Task 27 |
+| 12 | `stockify/config/notify.json` = `{"schema": "stockify.notify/1", "channels": [], "events": {}}` (the plan says `{"channels": []}`; the file already has `schema` and `events`, minor); `stockify/daemon/reminder.py:39` imports `geo_monitor.email_notify` | Task 25 |
+| 13 | `scripts/check_power.ps1`; no backup module in `stockify/` | Task 26 |
+| 14 | `kite_client.py:191` `get_client()` returns a `KiteConnect`; no stripping | Task 3 |
+| 15 | `stockify/daemon/ticker.py:85` `ticker.on_message = recorder.on_message`; `stockify/daemon/recorder.py:107,142-143` stamps `frame_no, recv_ns, mono_ns` | Task 11 |
+| 16 | `engine/bindings/engine.cpp:410-413` `drain_outputs` | Tasks 12, 16 |
+| 17 | `web/src/lib/useTicks.ts:18` `useTicks(tokens: number[])`; `server/schemas.py:26,42,268` token fields | Task 28 |
+| 18 | `tests/` has `test_log_redaction.py` only; no U-10 secrets test | Task 3 |
+| 19 | no CLOCK source for the daemon; `stockify/oracle/runner.py:39,41` CLOCK is an event kind only | D-72 |
+| 20 | bundle/oracle carry no bar history in a state (`bundle.py:647`) | D-66 |
+| 21 | as row 9 | D-70 |
+| 22 | as row 10 | D-71 |
+| 23 | `stockify/daemon/ticker.py:59,75-76` `RecorderSession` keeps `_disconnect_gap`/`_stall_gaps` for the landing file; no `gap_taps` | Task 13 |
+
+Note on row 6: the staircase default and L1-L5 naming come from D-64 and the staircase spec (§5.2-§5.3); the code has
+no L2.
+
+### Provisional decisions D-65 to D-72 (provisional: controller ruling under owner autonomy, for owner review)
+
+No D-rows are added to `00_overview.md` here; each task writes its own row when it implements the decision.
+- **D-65** (row 1; Tasks 19, 27): wait in-process only before the first connect, running catch-up jobs meanwhile;
+  after a live 403 journal the pause, record the rejected token file's mtime, exit 76; the launcher restarts at once and
+  the new process waits for a newer token file.
+- **D-66** (rows 2, 20; Tasks 4-6): full day-to-day state (ledger, subscriptions, pause flag, full bar history; size
+  warning, no trimming); `seed_mode: per_day`; day by day equals the whole run on both engines.
+- **D-67** (row 4; Tasks 8, 15): the start-of-day bundle holds the whole reachable universe; strikes listed mid-day get
+  a timeline row and label `unbundled_instrument`, not a journal record.
+- **D-68** (row 5; Task 10; amends A4 §1.1): a record that would sort before its predecessor gets `t = last_t + 1 ns`.
+- **D-69** (row 6; Tasks 3, 20, 21): Kite answers always `consider_positions=False` (enforced by `ReadOnlyKite`); a
+  fresh journaled L1 answer prices the current book's blocked margin; the pre-trade increment always uses the
+  staircase; fallback L3 = B1/B2, L4 = B3/B4, L5 = B5; L2 deferred (log only).
+- **D-70** (rows 9, 21; Tasks 7, 9, 12): REFDATA subtype 5 `strategy_control {enabled, reasons}`, journaled;
+  `pause_reasons` is a set and carries across days in the start-of-day state.
+- **D-71** (rows 10, 22; Task 18): replay `kill` drains then `TerminateProcess` on itself; the restart resumes after
+  each session's last dispatched frame; faults with a duration resume at `at + duration`; live restarts journal
+  `GAP(process_stop)`.
+- **D-72** (row 19; Task 13): `CLOCK` derived from the stamps of dequeued frames and heartbeats; every injected record
+  enters the FIFO with an enqueue stamp.
+
+### Provisional roster (controller ruling; owner reviews)
+
+FB recon · GK supervision, recovery and host · LCB Kite access and login · VOL day state (as M3.8) · BWM pause gate
+(as M3.5) · REG day bundles (as M2.1) · HOL session lifecycle · DM journal and dispatcher · RM pins (as M1.5) · MEZ
+live margin model · IWB Kite margin log (as M4.9) · CDM scheduler · RD parity · LW coverage · RW notifications and
+summary · WP API and UI · XI bookkeeping.
+
+### Provisional per-session stop rule (controller ruling; owner reviews)
+
+`stop` journals `strategy_control(false, ["stopped"])`. Resting orders follow their validity to day end, and open
+positions are held into the final EOD state, labelled `stopped_with_positions`. The day is finalised, the status
+becomes STOPPED, and no further day bundles are made.
+
+### T-1 login note
+
+The owner is on PST since 2026-11-01. The login window is 16:30-19:00 PST; a login still works until 19:40 PST (the
+daemon's retries cover it); the market opens at 19:45 PST. Nothing to do on NSE holidays. The first possible live day
+is Wed 2026-11-11 IST; M5 is "built" until a live day passes, "done" after.
+
+### Owner-only and live-gated items (none blocks a code task)
+
+1. Review D-65 to D-72, the roster and the stop rule (this section).
+2. Daily Kite login before each NSE trading day (window above).
+3. A full live recorded day, replayed in a sandboxed lab, for M5.0 box 2 (2026-11-05 replays with dropped 0, but it is a ~20-minute session), and the real-data demo (the recorder going live, an open M1 item).
+4. One real token expiry handled through the login flow (Task 19 step 6).
+5. Live Kite margin answers journaled, `margin_live` rows, `margin check --live` (Task 21 step 6).
+6. Notification channel and its secret in the repo's env file (Task 25 step 6).
+7. Backup target; `retention_days` after a week of backups (Task 26 step 6).
+8. D-32 power settings (`check_power.ps1`, may need elevation), `-SleepTest`, Windows Update active hours,
+   `manage_stockify_daemon.ps1 Install` (Task 26 step 6).
+9. Two live KiteTicker connections observed, a third refused (Task 30 step 5).
+10. Five live trading days with journal parity passing (DoD, Task 30 step 5).
+11. A journal parity failure on a real day (M5.10, E-01), if it happens.
+12. Adopting the pending SPAN-lite calibration rows (M4.9, existing).
+13. Push to the remote, only on the owner's "push".
+
+## 2026-11-09 — Kite access rules: order routes stripped, budget, secrets scan (LCB 5.1, M5.14, D-73)
+
+**SDK.** The venv has kiteconnect **5.2.2** (`kiteconnect/__version__.py`; checked by import only, no request). Its
+`KiteConnect._routes` has 44 keys. The deny-list `kite_client.ORDER_ROUTE_KEYS` built from it has 21:
+`orders`, `order.info`, `order.place`, `order.modify`, `order.cancel`, `order.trades`, `gtt`, `gtt.place`, `gtt.info`,
+`gtt.modify`, `gtt.delete`, `mf.orders`, `mf.order.info`, `mf.order.place`, `mf.order.cancel`, `mf.sips`,
+`mf.sip.info`, `mf.sip.place`, `mf.sip.modify`, `mf.sip.cancel`, `portfolio.positions.convert`. Kept although
+order-named: `order.margins`, `order.margins.basket`, `order.contract_note` (read-only calculators, K-10). The 14 order
+methods of 5.2.2 bound to refuse: `place_order`, `modify_order`, `cancel_order`, `exit_order`, `place_autoslice_order`,
+`place_gtt`, `modify_gtt`, `delete_gtt`, `place_mf_order`, `cancel_mf_order`, `place_mf_sip`, `modify_mf_sip`,
+`cancel_mf_sip`, `convert_position`.
+
+**On a kiteconnect upgrade, re-check the deny-list.** Importing `kite_client` raises when the SDK's table lacks a
+required writer key; `tests/stockify/test_kite_readonly.py` (`RealSdkTest`) pins the 5.2.2 table, the 21-key list and
+the method names, and skips with a "re-check" message on any other version. Update `tests/stockify/kite_fakes.py`
+from the new SDK after reviewing its new routes.
+
+**Where.** `kite_client.strip_order_routes` (every client `get_client()` builds, and the login exchange's);
+`stockify/kite_readonly.py` (`ReadOnlyKite`, `client()`), used by the daemon's price-band snapshotter;
+`stockify/daemon/conn_budget.py` (tickets in `$LAB/ticker_connections/`, limit `kite_limits.json` →
+`ws_max_connections` = 3, so at most two live): the daemon (`daemon`, exit 78 when refused), the API's ticker worker
+(`api`), `kite check` (`dev`). Close and error reasons go through `stockify.log.redact` (URLs and token parameters
+blanked) in the daemon, the API worker's status errors and `kite check`.
+
+**Fix round 1 (LCB 5.2): allowlist on the prepared request.** The review found that a percent-encoded or
+`..` path (`url_args={"exchange": "../%6Frders/regular"}`) passed every check above and reached the transport,
+because `requests` decodes `%6F` when it prepares the URL. Now `kite_client._mount_guard` mounts a checking adapter on
+`https://` and `http://` of the client's session; `check_prepared_request` decodes the prepared URL's path until it is
+stable, resolves `.`/`..`, and lets through GET and only POST `/margins/orders`, `/margins/basket`, `/charges/orders`
+and `/session/token` (the login exchange; logout and token renewal are not used and are refused). A write must also
+be in its plain form (no `%`, no `..`). The earlier guards also resolve `url_args` and decode. Both margin calculators
+send the literal `consider_positions=false`; with the SDK's own basket call `requests` would send `False`. The source
+scans were widened (absolute and composed order paths, `kite.trade` outside kite_client.py, `kiteconnect` imports
+other than `KiteTicker` and `__version__`, `type(...)(`, private `_post`/`_put`/`_delete`/`_request` outside the two
+Kite modules, `KiteTicker(` only at the three budgeted sites, calls inside the deny-list block). They are a backstop;
+the adapter is the guard.
+
+**Limits of the guarantee.** Python cannot hide an object from introspection: code that mounts its own adapter on the
+session, builds its own `requests.Session` with a token, or reads closure cells can still reach Kite. The scans flag the
+obvious forms (`reqsession`, `kite.trade`, `KiteConnect`); strategies are checked before they are imported (LCB 5.3).
+Whether `/margins/orders` honours `consider_positions` is unverified (Kite documents it for the basket only; live item
+for Task 21).
+
+**Live pending (owner).** Two live KiteTicker connections observed and a third refused (item 9 above, Task 30).
+
+## 2026-11-09 — VOL 5.2 recon (Task 5, oracle day-to-day state)
+
+**BASE** `513ace1`. What the oracle held across days, and so what `sod_state` (A1 §6.4) had to carry, found by reading
+`stockify/oracle/runner.py` and proved by mutation (each removed part breaks the split-equals-whole tests):
+- Internal events after the last `DAY_END` were popped and dropped (`runner.py` main loop), so a timer due overnight,
+  on a weekend, or a daily bar built from ticks (bucket end = next day 09:15) was lost in a one-day run. They are now
+  kept (`Engine.carried`) and handed over in firing order.
+- `next_continuous_start` and the D-60 delivery schedule (`FlatMargin._offset`) look at days after the current one; a
+  one-day bundle rejected every order queued overnight (`R_SESSION`). Hence `bundle.next_days`.
+- `ctx.order(id)` sees every order of the run, final ones too (`book.orders`); `live_orders()` indexed every id from
+  `min_live`, which a hostile `next_order` turned into a hang; it now keeps the ascending ids of the orders that are not
+  final (`live_ids`), so nothing walks an id range (ST 5.1). Final orders are carried (`final_orders`).
+- `charges.csv` numbered rows from 1 per run (`artifacts.py`); it now continues from `counters.charge_row`.
+- `underlying_last` (reference prices, §7.2 fallback), `fsp_seen`, `dp_done`, the market's `s0`/`s1`, book and band,
+  and the positions' insertion order (iteration order of settlement and margin legs) all affect later days.
+- The weekend timer of the Task 4 review (M3) draws from the previous day's stream position in a whole run; carrying
+  both PCG32 states reproduces it without changing any whole run (goldens 17/17, oracle/engine parity unchanged).
+
+**Size note.** One bar row is 69.9 bytes of canonical JSON (measured: 8,085 realistic NIFTY-future minute rows,
+565,002 bytes). One minute-bar series on an F&O instrument (385 bars a day, 21 days) is about **0.57 MB per
+instrument-month**; a 5-second series about 6.8 MB; 20 minute-bar instruments about 11 MB a month, so the 64 MB
+warning (`paper.json` → `sod_state_warn_mb`) comes after about 6 months. Nothing is trimmed (C-2).
+
+**Fix round 1 (review of cb18bdb).**
+- No shipped strategy implemented `save_state` / `load_state`, and the base returned `{}`. With `on_start` skipped on
+  day 2, `sma_cross` raised `AttributeError` on its first bar. The base now saves every attribute (A2 §4.1).
+- A one-day bundle also needs the previous trading day: a daily bar published at the next midnight is matched against
+  its own date's `CONTINUOUS` start (`runner._match_bar` / `_match_eod` → `continuous_start(d)`). Without it the order
+  was cancelled EOD unfilled (buy_and_hold, eod fills). Hence `bundle.prev_days`.
+- `dp_done` and `fsp_seen` are needed only in narrow cases, each now with a world: a part-filled CNC sell resting past
+  its close on daily bars (D-44) and charged at the next midnight; an `eod_close` fill of an expiring contract
+  published after midnight. `cnc_releases` (always empty after `DAY_END`), last prices (the market LTPs) and
+  `event_no` (never read) are no longer carried.
 ## 2026-11-09 - the engine is built with Control Flow Guard and SDL checks (ST 4.1)
 - `engine/CMakeLists.txt`: compile flags gain `/guard:cf /sdl` (in `STOCKSIM_CXX_FLAGS`, so every target and the
   `flags_hash`); `add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA)` for the link. `/fp:precise` and `/W4 /WX` unchanged.
@@ -940,3 +1126,46 @@ B3 was unscored when this table was taken: no calibrated row was adopted yet. It
     `test_a_calendar_holiday_with_no_file_is_passed_to_the_session_before_it`, with a docstring, and the class
     docstring says which test passes a holiday and which step over empty trading days.
   - F7: the archive starts 2009-01-01 (`nsccl.20090101.s.zip`); the ENG 4.3 entry above said 2009-01-02.
+
+## 2026-11-12 - M5 demo, E-03 and the live gate (XI 5.12)
+
+(The brief's number XI 5.2 is taken; XI 5.0 to 5.11 are used.)
+
+**What ran.** E-03 (`tests/stockify/daemon/test_e03_faults.py`) and the demo, both as real daemon subprocesses with
+`--replay-sandbox` pointing at a throwaway copy of the test sandbox, on the fixture day (2026-11-17; no recorded day was
+copied: the one recorded day is a 20-minute session and the real lab is never touched). Kite is never contacted; the
+"fresh token" is a fake `kite_token.json` inside the sandbox, written after exit 76. The faults are
+`disconnect@09:20:00+90s`, `token_expiry@09:25:00+60s`, `kill@09:30:00`, with a twin that has the first two only.
+
+**Bug found by the test, fixed in `stockify/daemon/replay_ticker.py`.** A restart given the same `--inject` list fired
+every fault whose time had already passed on the first delivered frame, so the restarted daemon disconnected and
+expired its token again at once (exit 76 a second time). `ReplayTicker.run` now drops a fault at or before the resume
+point (the process mark, or a token expiry's `T + N`); the kill is always after the mark, so it stays armed. Test:
+`test_a_restart_given_the_same_faults_skips_the_ones_already_passed`.
+
+**Demo transcript (10x, fixture day; the same faults on every run).**
+
+| Run | Exit |
+|---|---|
+| 1: disconnect, token expiry, kill | 76 (token expired, sessions paused, gap journaled) |
+| 2: after a fresh fake token file | 137 (kill) |
+| 3: after the kill, no kill | 0 |
+
+Then `finalise`. `parity journal`: exit 0, `identical: s1 2026-11-17 (15761 journal records)` (orders 2, order events 7,
+fills 1, charges 2, equity 1, eod state 1). Coverage: continuous 23,100 s, covered 22,950 s (153/154), not below the
+threshold, gaps `disconnect` 90 s and `token_expired` 60 s only (the kill leaves no gap).
+`parity recorder`: exit 0, "reported": fills 1 live, 1 recorder, 0 matched; NAV differs by 9,689 paise (recorder less
+live); first divergence fill #0, 12,421 live against 12,272 recorder paise; explained by `strategy_control` (the pause
+the token expiry journaled). E-03 asserts gap reasons `["disconnect", "token_expired"]`, coverage
+`(continuous - 150 s) / continuous`, parity pass and orders, fills, charges and journal bytes equal to the twin.
+
+**Open: the live Definition of Done (owner, real trading days; Task 30 step 5). M5 is built, not done.** First possible
+live day: Wed 2026-11-11 IST. Record each day here:
+- (a) five live trading days, every journal parity passing; (b) coverage reported each day; (c) one real token expiry
+  handled (Task 19 step 6); (d) live margins logged (Task 21 step 6); (e) the backup and host steps done (Task 26 step 6);
+  (f) the API and the daemon on two ticker connections, a third refused. Also M5.0 box 2 (a full recorded day).
+
+| Live day | Journal parity | Coverage | Notes |
+|---|---|---|---|
+| (none recorded yet) | | | |
+

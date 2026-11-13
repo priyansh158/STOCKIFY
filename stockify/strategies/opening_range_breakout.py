@@ -2,16 +2,16 @@
 
 The range is the high and low of the first `range_minutes` minute bars after
 09:15. A later bar closing above the high buys (below the low sells short, if
-`short` is true) with a protected market order and a stop at the other side of
-the range. The position is closed at `exit_hhmm` (default 15:10), or by the MIS
-square-off at the cut-off. At most one trade per day.
+`short` is true) with a protected market order; each fill of that order gets a stop (SL-M) of exactly its
+quantity at the other side of the range, so a rejected or cancelled entry has no stop. The position is closed at
+`exit_hhmm` (default 15:10), or by the MIS square-off at the cut-off. At most one trade per day.
 
 Params: `symbol`, `range_minutes` (15), `qty` (units), `short` (false), `exit_hhmm` ("15:10").
 """
 from __future__ import annotations
 
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, encode_state
 
 
 class OpeningRangeBreakout(Strategy):
@@ -39,7 +39,10 @@ class OpeningRangeBreakout(Strategy):
         self.open_ns = timeutil.ist_ns(self.day, "09:15")
         self.hi = self.lo = None
         self.traded = False
-        self.stop_id = None
+        self.entry_id = None
+        self.stop_side = None
+        self.stop_trigger = 0
+        self.stop_ids = []
         exit_ns = timeutil.ist_ns(self.day, self.exit_hhmm)
         if exit_ns > ctx.now():
             ctx.schedule_at(exit_ns)
@@ -57,19 +60,33 @@ class OpeningRangeBreakout(Strategy):
             return
         tick = ctx.spec(self.iid)["tick_paise"]
         if bar.close > self.hi:
-            ctx.place(self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long")
-            self.stop_id = ctx.place(self.iid, "SELL", self.qty, "MIS", "SL-M", trigger=self.lo // tick * tick,
-                                     tag="orb_stop")
+            self.entry_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long")
+            self.stop_side, self.stop_trigger = "SELL", self.lo // tick * tick
             self.traded = True
         elif self.short and bar.close < self.lo:
-            ctx.place(self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short")
-            self.stop_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "SL-M", trigger=-(-self.hi // tick) * tick,
-                                     tag="orb_stop")
+            self.entry_id = ctx.place(self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short")
+            self.stop_side, self.stop_trigger = "BUY", -(-self.hi // tick) * tick
             self.traded = True
 
+    def on_fill(self, ctx, fill):  # noqa: ANN001
+        # The stop exists only for what the entry has filled: one SL-M of exactly each fill's quantity. A rejected or
+        # cancelled entry fills nothing, so it never gets a stop (and cannot open a reverse position).
+        if self.entry_id is not None and fill.order_id == self.entry_id:
+            self.stop_ids.append(ctx.place(self.iid, self.stop_side, fill.qty, "MIS", "SL-M",
+                                           trigger=self.stop_trigger, tag="orb_stop"))
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
+    def save_state(self) -> dict:
+        return encode_state(self, {**self.state_attrs(), "day": self.day.isoformat() if self.day else None})
+
+    def load_state(self, state: dict) -> None:
+        from datetime import date
+        super().load_state(state)
+        self.day = date.fromisoformat(self.day) if self.day else None
+
     def on_timer(self, ctx, timer_id):  # noqa: ANN001
-        if self.stop_id is not None:
-            ctx.cancel(self.stop_id)
+        for stop_id in self.stop_ids:
+            ctx.cancel(stop_id)
         pos = ctx.position(self.iid, "MIS")
         if pos and pos.qty:
             side = "SELL" if pos.qty > 0 else "BUY"

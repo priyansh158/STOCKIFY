@@ -2,8 +2,9 @@
 
 Requirement of a portfolio = Σ over its NRML futures and short NRML options
 of |units| × reference price × flat rate (`margin_params.json` → `flat`:
-`index_pct` for index underlyings, `stock_pct` for stocks). MIS uses its own
-rule (`mis`, A4 §6.5: `round_half_up_div(units·price·mis_ppb, 10⁹)`). Reference price: futures → their mark;
+`index_pct` for index underlyings, `stock_pct` for stocks). MIS shares use their own
+rule (`mis`, A4 §6.5: `round_half_up_div(units·price·mis_ppb, 10⁹)`); MIS futures and options are margined as
+NRML (D-80): the runner hands them over as NRML legs. Reference price: futures → their mark;
 short options → the underlying's last price, else the strike. Long options
 need no margin (their premium is paid, X-10). On its expiry day a short index option adds the
 expiry-day ELM (X-9, M4.7): |units| × the same reference × `expiry_day_short_index_option_addon`.
@@ -20,6 +21,7 @@ from stockify import numerics
 
 PPB = 1_000_000_000
 E18 = PPB * PPB
+DERIVATIVES = ("FUT", "CE", "PE")
 
 
 def _in_force(rows: list[dict], key: str, date: str, applies: dict | None = None) -> int:
@@ -38,7 +40,10 @@ class FlatMargin:
         self.flat = bundle["margin_params"].get("flat", [])
         self.addon = bundle["margin_params"].get("expiry_day_short_index_option_addon", [])
         self.schedule = bundle["broker_policy"].get("delivery_margin_schedule", [])
-        self.days = [d["date"] for d in bundle["days"]]
+        # the bundle's days with its prev_days and next_days (VOL 5.2): a one-day paper bundle counts trading days as
+        # the whole run does
+        self.days = [d["date"] for d in list(bundle.get("prev_days") or []) + bundle["days"]
+                     + list(bundle.get("next_days") or [])]
         self.labels: set[str] = set()               # added to the run's labels (D-60: delivery_margin_approx)
         self.mis_rows = bundle["broker_policy"].get("mis_margin_pct", [])
 
@@ -145,6 +150,8 @@ class FlatMargin:
         return cv * pct * PPB
 
     def mis(self, kind: str, units: int, price: int, date: str) -> int:
-        """MIS requirement (A4 §6.5): round_half_up_div(|units|·price·mis_ppb, 10⁹)."""
-        seg = "FO" if kind in ("FUT", "CE", "PE") else "CM"
-        return numerics.round_half_up_div(abs(units) * price * self.mis_rate(seg, date), PPB)
+        """MIS shares (A4 §6.5): round_half_up_div(|units|·price·mis_ppb, 10⁹), a share of the traded value. A future
+        or an option never comes here: as MIS it needs the NRML margin (D-80), which is `requirement`."""
+        if kind in DERIVATIVES:
+            raise RuntimeError(f"mis: a {kind} is margined as NRML, not as a share of its value (D-80)")
+        return numerics.round_half_up_div(abs(units) * price * self.mis_rate("CM", date), PPB)

@@ -134,6 +134,15 @@ class MechanicsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _run(_world(6100), bad, ref, Path(tmp), "oracle")
 
+    def test_a_stop_above_one_is_refused_by_the_strategy_itself(self):
+        """REG 5.3: the schema's bound, held by the strategy too (a run reaching it without the run-config check,
+        e.g. wrapped in another strategy): "30" was meant as 30 % and would have put the stops 30 times away."""
+        for ref in (REFS["straddle"], REFS["fly"]):
+            with self.subTest(ref=ref), tempfile.TemporaryDirectory(prefix="ifly-") as tmp:
+                with self.assertRaisesRegex(ValueError, r'stop_pct 30 is above 1: it is a fraction \("0.3" = 30 %\)'):
+                    _run(_world(6100), {"stop_pct": "30", "wing_strikes": 2} if ref == REFS["fly"]
+                         else {"stop_pct": "30"}, ref, Path(tmp), "oracle")
+
 
 if __name__ == "__main__":
     unittest.main()

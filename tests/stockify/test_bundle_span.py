@@ -484,6 +484,21 @@ class ResolveBundleSpanTests(SandboxedDBTest):
         self.assertIn("margin:staircase", b["labels"])
         self.assertFalse(any(x.endswith("(approx)") and x.startswith("margin:staircase") for x in b["labels"]))
 
+    def test_live_with_fallback_reads_span_files_and_is_labelled_exact(self):
+        """MEZ 5.1: the live model is the staircase underneath, so its bundle carries the SPAN and ELM sections and its
+        model label has no `(approx)`; `live_fresh_s` is accepted in the run's margin."""
+        b = bundle.resolve_bundle(runconfig.load({
+            "schema": "stockify.run/1", "name": "t", "strategy": {"kind": "script", "actions": []},
+            "data": {"packs": [{"spec": {"dataset": "bars", "interval": "day",
+                                         "instruments": [{"ids": [self.index]}],
+                                         "from": "2026-11-09", "to": "2026-11-09"}}]},
+            "price_basis": "adjusted", "capital_paise": 10_000_000, "fill_model": {"kind": "bar"},
+            "margin": {"model": "live_with_fallback", "live_fresh_s": 90}, "costs": {"allow_unverified": True}}))
+        self.assertEqual((b["span"], b["elm"]), ({}, {}))
+        self.assertIn("margin:live_with_fallback", b["labels"])
+        self.assertNotIn("margin:live_with_fallback(approx)", b["labels"])
+        self.assertEqual(b["run"]["margin"], {"model": "live_with_fallback", "live_fresh_s": 90})
+
     def test_an_unreadable_elm_file_labels_the_run(self):
         (paths.nse_margin_dir("elm") / "2026" / "F_AEL_OPT_CONTRACTS_09112026.csv.gz").write_bytes(b"\x1f\x8bjunk")
         b = self.resolve("staircase")

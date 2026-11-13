@@ -58,7 +58,7 @@
       },
       "effective_from": "2015-01-01",
       "pct": "1",
-      "source": "Z-5 (F&O MIS = full NRML; modelled as 100% of the NRML requirement)",
+      "source": "Z-5 (F&O MIS = full NRML): a share of the NRML margin, not of traded value; only 1 is accepted (D-80)",
       "verified": false
     }
   ],

@@ -48,7 +48,8 @@ class MarginModel {
     virtual Paise requirement(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
                               const std::function<std::optional<Paise>(InstrumentId)>& price,
                               const std::string& date) const = 0;
-    // The requirement of an MIS position or order.
+    // The requirement of an MIS position or order in shares. Never a future or an option: as MIS those need the
+    // NRML margin (A4 §6.5, D-80), so the engine hands them to `requirement` as NRML legs.
     virtual Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const = 0;
     virtual std::string label() const = 0;  // drives the run's labels (I-14)
     // Per-underlying rows for margin_daily.csv at DAY_END; models without a breakdown (flat) write none.
@@ -87,7 +88,8 @@ class FlatMargin final : public MarginModel {
     Paise requirement(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
                       const std::function<std::optional<Paise>(InstrumentId)>& price,
                       const std::string& date) const override;
-    // MIS: round_half_up_div(|units| · price · mis_ppb, 10⁹).
+    // MIS shares: round_half_up_div(|units| · price · mis_ppb, 10⁹), a share of the traded value. Throws for a
+    // future or an option (D-80).
     Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const override;
     std::string label() const override { return "margin:flat(approx)"; }
     // Labels the model used (D-60: delivery_margin_approx), merged into the run's.

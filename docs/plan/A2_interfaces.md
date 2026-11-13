@@ -181,16 +181,40 @@ The same API is implemented by the oracle (M2) and the engine (M3). A strategy w
 ```python
 class Strategy:
     def on_start(self, ctx): ...
-    def on_bar(self, ctx, bar): ...                 # bar.instrument, .interval_s, .start_ns, .t_ns, .open/.high/.low/.close (paise), .volume, .oi
+    def on_bar(self, ctx, bar): ...                 # bar.instrument, .interval_s, .start_ns, .t_ns, .open/.high/.low/.close (paise), .volume (units, never contracts: D-79), .oi (units)
     def on_tick(self, ctx, tick): ...               # tick.instrument, .t_ns, .ltp, .volume, .atp, .bid/.ask (FULL only), .stale
     def on_timer(self, ctx, timer_id): ...
     def on_fill(self, ctx, fill): ...               # fill.order_id, .instrument, .side, .qty, .price, .t_ns, .evidence
     def on_order_update(self, ctx, order): ...      # order.status, .reason, .filled_qty, .avg_price
     def on_session_phase(self, ctx, change): ...    # change.group, .phase, .t_ns
     def on_session_end(self, ctx): ...              # at DAY_END (A4 §1.10)
-    def save_state(self) -> dict: return {}
-    def load_state(self, state: dict) -> None: ...
+    def save_state(self) -> dict: ...              # default: every attribute, encoded (below)
+    def load_state(self, state: dict) -> None: ... # default: every saved attribute set back
 ```
+
+**Day-to-day state (paper sessions, D-66, VOL 5.2).** A paper session runs one engine per trading day; `on_start`
+runs only on its first day. Each later day starts from `load_state(state)` with what `save_state()` returned at the
+previous day's `DAY_END` (A4 §1.10; the subscriptions, timers and orders come back from the engine's own state). So
+**everything a strategy sets in `on_start` or changes later must round-trip through `save_state` / `load_state`**,
+or the strategy breaks (or silently differs) on day 2.
+- The default `save_state()` snapshots the instance's own attributes (`self.state_attrs()`, sorted by name) with
+  `stockify.strategy.encode_state`: int, bool, str and None as they are; `Decimal` exactly, as `{"$decimal": "<text>"}`;
+  a tuple as `{"$tuple": [...]}` (restored as a tuple); lists and dicts with string keys (not starting with `$`) of
+  these. Any other value (a float, a `date`, an int-keyed dict, an object) raises `StrategyStateError` naming the class
+  and the attribute: implement `save_state` / `load_state` for it. The default `load_state` decodes and sets each one
+  back (`decode_state`). `state_attrs()` exists because the source guard refuses `vars()`, `setattr()` and
+  `getattr()` in strategy code: an override calls it to extend the default and `super().load_state(state)` to restore it.
+- An override may return any JSON object of JSON-typed values: null, bool, int, finite floats (canonical JSON gives
+  them back exactly), str, lists, objects with string keys. The engine checks it at each `DAY_END` of a paper day and
+  fails the day there, naming the strategy and the bad value (NaN, Infinity, a tuple, a non-string key, any other type).
+  An exception raised inside `save_state` or `load_state` fails the run as `RunError` naming the strategy, the
+  exception type and its message.
+- Shipped strategies: the default covers `sma_cross`, `buy_and_hold` (a `Decimal`) and `fuzz.RandomTrader`.
+  `opening_range_breakout` and `eod_short_straddle` override it to store a `date` as ISO text; `_option_legs`
+  (`short_straddle_stop`, `iron_fly`) and `_script` to store int-keyed dicts as `[key, value]` pairs; `_margin_watch`
+  to re-load its wrapped strategy by ref and hand it its own state. Each is tested split against whole
+  (`tests/stockify/test_sod_state.py`).
+- A C++ strategy's `save_state()` returns JSON text for an object; `load_state` gets the same text back.
 
 ### 4.2 Context (snake_case mirror of §2)
 
@@ -272,7 +296,11 @@ All money fields are integer paise; times are UTC ns plus an ISO IST string for 
 | `GET /api/trade/sessions/{id}` (+ `/positions`, `/orders`, `/fills`, `/timeline`, `/margin`) | Session detail | M5.12 |
 | `POST /api/trade/sessions/{id}/{pause,resume,stop}` | Controls | M5.12 |
 | `POST /api/trade/stop-all` | Kill switch | M5.12 |
+| `GET /api/trade/commands/{cmd_id}` | A queued command: pending, applied or failed, its times and error | M5.12 |
+| `GET /api/trade/login` | The Kite login window of the next session on the owner's clock, and whether the daemon is waiting for a login | M5.12 |
 | `GET /api/data/recorder` | Latest recorder status | M1.5 |
 | `GET /api/data/quality?date=` | Quality metrics for a day | M1.9 |
 | `GET /api/data/coverage?from=&to=` | Coverage matrix | M6.3 |
 | `GET /api/research/families` (+ `/{id}`) | Trial families, trial counts, DSR | M6.4 |
+
+`/api/trade` (M5.12, `server/routers/trade.py`) reads the lab and writes **commands**: pause, resume, stop and stop-all are rows in `session_commands` (answer 202 `{cmd_id}`), which the daemon journals and then applies through `lifecycle` (D-68, D-72); the API never changes a session's state, and 409 means the session is STOPPED. The only thing it creates is a CREATED session (`POST` body `{session_id?, config}`, a `stockify.session/1` object whose strategy must be in the catalogue; 201 `{session_id}`, 409 for a duplicate id, 422 with a list of problems). It has no route that places, modifies or cancels an order. `today_pnl_paise` is the latest recorded day's NAV less the day before's (the capital for a first day). A session's detail gives its statistics twice: `stats_all` and `stats_full_coverage` (days whose coverage reached `paper.json` `coverage_threshold`; a day with unknown coverage is not full), with `has_coverage_holes` (I-14). `/positions` of a day that has ended are its stored end-of-day book; before that they are the previous end-of-day book with the day's fills applied (`source` `eod` or `fills`); each carries the `instrument_token` valid on that day. `GET /api/trade/login` returns `{waiting_for_login, day, window_local, last_usable_local, market_open_local}`: the window, its last usable moment (the window's end) and the 09:15 open, as `HH:MM TZ` in `schedule.json` `owner_tz`. Free text from the daemon (timeline details, margin errors) has absolute paths replaced by `<path>`. Bounds (WP 5.2): a create body is at most 64 KiB (413), a universe at most 500 instruments and at most 50 sessions that are not STOPPED (422). A command identical to one still pending (same session, kind and args) returns that command's `cmd_id` instead of queueing again; a pending command has no expiry, it is applied when the daemon next runs, and `GET /api/trade/commands/{cmd_id}` shows whether it has been. Orders and fills are scrubbed like the timeline; stored rows that are malformed give a 409 on `/positions` and no position count on the card, never a 500.

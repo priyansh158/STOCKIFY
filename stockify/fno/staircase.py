@@ -112,7 +112,7 @@ class StaircaseMargin:
         self._cc: dict[tuple, CombinedCommodity | None] = {}   # (day, entry no, underlying) -> commodity
         self._step_days: dict[str, set[str]] = {}
 
-    # MIS is the same rule under every model (A4 §6.5).
+    # MIS shares: the same rule under every model (A4 §6.5); MIS futures and options arrive as NRML legs (D-80).
     def mis_rate(self, segment: str, date: str) -> int:
         return self._flat.mis_rate(segment, date)
 

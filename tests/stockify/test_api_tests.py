@@ -81,7 +81,7 @@ class ApiTestBase(SandboxedDBTest):
         test_queue.set_queue(self.queue)
         self.addCleanup(test_queue.set_queue, None)
         self.addCleanup(self._release)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
 
     def _release(self):
         for p in self.launcher.procs.values():
@@ -143,6 +143,15 @@ class CreateTests(ApiTestBase):
         self.assertEqual(r.json()["detail"], ["strategy.params.colour: unknown parameter",
                                               "strategy.params.fast: is not a whole number",
                                               "strategy.params.slow: required"])
+
+        # REG 5.3: the check now lives in runconfig; the API still answers with one line per problem
+        bound = copy.deepcopy(EXAMPLE)
+        bound["strategy"] = {"kind": "python", "ref": "stockify.strategies.short_straddle_stop:ShortStraddleStop",
+                             "params": {"stop_pct": "30", "colour": "red"}}
+        r = self.post(bound)
+        self.assertEqual((r.status_code, r.json()["detail"]), (422, [
+            "strategy.params.colour: unknown parameter",
+            """strategy.params.stop_pct: '30' is above 1: it is a fraction ("0.3" = 30 %)"""]))
 
         script = copy.deepcopy(EXAMPLE)
         script["strategy"] = {"kind": "script", "actions": []}
@@ -370,7 +379,7 @@ class CppFromTheFormTests(SandboxedDBTest):
         self.queue = test_queue.TestQueue(launcher=test_queue.subprocess_launcher, cap=2)
         test_queue.set_queue(self.queue)
         self.addCleanup(test_queue.set_queue, None)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
 
     def test_sma_cross_cpp_and_orb_cpp_launch_from_the_form(self):
         from tests.stockify.test_bundle import run

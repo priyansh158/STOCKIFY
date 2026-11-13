@@ -19,6 +19,7 @@
 #include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
 #include "stocksim/pack_reader.hpp"
+#include "stocksim/sod_state.hpp"
 
 namespace py = pybind11;
 
@@ -42,6 +43,46 @@ struct OracleTypes {
 py::object opt(const std::optional<std::int64_t>& v) { return v ? py::object(py::int_(*v)) : py::object(py::none()); }
 
 py::object to_python(const stocksim::Json& j, const OracleTypes& t) { return t.json_loads(j.dump()); }
+
+// B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place are a Python int and nothing else. A float, a
+// bool, a str or a Decimal is refused, never rounded (py::int_(1.5) used to place 1). The rule and the words are
+// the oracle's (stockify/oracle/context.py, `_whole`).
+template <typename T>
+T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
+    if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
+        throw py::type_error(std::string(fn) + ": " + name + " must be an int, not " +
+                             std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
+                             std::string(py::repr(v)) +
+                             "): money is whole paise and quantity is whole units");
+    }
+    return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
+}
+
+// B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 10000 basis points; anything else is
+// refused, never taken as AUTO. The rule and the words are the oracle's (`_protection`).
+std::optional<stocksim::Bp> protection_arg(const py::object& v) {
+    const std::string what = "ctx.place: protection must be \"AUTO\" or an int from 1 to 10000 (basis points)";
+    const auto tail = [&] {
+        return what + ", not " + std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
+               std::string(py::repr(v)) + ")";
+    };
+    if (py::isinstance<py::str>(v) && v.cast<std::string>() == "AUTO") {
+        return std::nullopt;
+    }
+    if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
+        throw py::type_error(tail());
+    }
+    long long bp = 0;
+    try {
+        bp = v.cast<long long>();
+    } catch (const py::cast_error&) {  // beyond int64: out of range all the same
+        throw py::value_error(tail());
+    }
+    if (bp < 1 || bp > 10000) {
+        throw py::value_error(tail());
+    }
+    return static_cast<stocksim::Bp>(bp);
+}
 
 // The Python-visible ctx. It refers to the engine weakly: the engine owns the strategy, and a strong reference
 // back would be a cycle through C++ that Python's collector cannot break (the engine, and its mapped packs,
@@ -103,6 +144,33 @@ class StrategyTrampoline : public stocksim::Strategy {
     }
     void on_fill(stocksim::Context&, const stocksim::FillView& f) override {
         obj_.attr("on_fill")(ctx_obj_, ctx_->fill(f));
+    }
+
+    // The day-to-day state (A1 §6.4, A2 §4.1): save_state() checked by the oracle's own sod_state.strategy_state
+    // (a JSON object of JSON-typed values that canonical JSON gives back exactly) and handed over as canonical
+    // JSON; load_state() gets the saved object back. Both fail as the oracle fails: a RunError naming the strategy.
+    std::string save_state() const override {
+        try {
+            const py::module_ sod = py::module_::import("stockify.oracle.sod_state");
+            const py::object state = sod.attr("strategy_state")(obj_);
+            return py::str(py::module_::import("stockify.numerics").attr("dumps_canonical")(state));
+        } catch (py::error_already_set& err) {
+            if (err.matches(py::module_::import("stockify.oracle.sod_state").attr("StateError"))) {
+                throw stocksim::RunError(std::string(py::str(err.value())));
+            }
+            throw;
+        }
+    }
+    void load_state(std::string_view text) override {
+        const py::object state = py::module_::import("json").attr("loads")(py::str(text.data(), text.size()));
+        try {
+            obj_.attr("load_state")(state);
+        } catch (py::error_already_set& err) {
+            const std::string owner = py::str(py::type::handle_of(obj_).attr("__name__"));
+            const std::string kind = py::str(err.type().attr("__name__"));
+            throw stocksim::RunError("strategy " + owner + ".load_state() raised " + kind + ": " +
+                                     std::string(py::str(err.value())));
+        }
     }
 
  private:
@@ -184,12 +252,6 @@ void guarded(Engine& e, F&& step) {
     }
 }
 
-[[noreturn]] void not_until_m5(const char* what) {
-    PyErr_SetString(PyExc_NotImplementedError,
-                    (std::string(what) + ": the start/end-of-day state arrives with the paper daemon (M5.3, D-47)").c_str());
-    throw py::error_already_set();
-}
-
 }  // namespace
 
 void bind_engine(py::module_& m) {
@@ -269,19 +331,18 @@ void bind_engine(py::module_& m) {
              [](CtxProxy& x, const py::object& instrument, const py::object& side, const py::object& qty,
                 const py::object& product, const py::object& type, const py::object& price, const py::object& trigger,
                 const py::object& validity, const py::object& protection, const py::object& tag) {
-                 // The oracle's Context.place: int() of instrument, qty, price and trigger; the rest as given.
+                 // The oracle's Context.place: int() of instrument; qty, price and trigger are whole numbers,
+                 // checked in that order; the rest as given.
                  stocksim::PlaceRequest r;
                  r.instrument = py::int_(instrument).cast<stocksim::InstrumentId>();
                  r.side = py::str(side);
-                 r.qty = py::int_(qty).cast<stocksim::Qty>();
+                 r.qty = whole<stocksim::Qty>("qty", qty);
                  r.product = py::str(product);
                  r.type = py::str(type);
-                 r.price = py::int_(price).cast<stocksim::Paise>();
-                 r.trigger = py::int_(trigger).cast<stocksim::Paise>();
+                 r.price = whole<stocksim::Paise>("price", price);
+                 r.trigger = whole<stocksim::Paise>("trigger", trigger);
                  r.validity = py::str(validity);
-                 if (py::isinstance<py::int_>(protection)) {  // an int (bool included, as isinstance(…, int))
-                     r.protection = protection.cast<stocksim::Bp>();
-                 }
+                 r.protection = protection_arg(protection);
                  r.tag = py::str(tag);
                  return x.c().place(r);
              },
@@ -290,7 +351,19 @@ void bind_engine(py::module_& m) {
              py::arg("tag") = "")
         .def("modify",
              [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
+                 // B2B 5.4: the oracle's Context.modify. qty, price and trigger are whole ints, checked in that order,
+                 // and a quantity of 0 or less is refused: an order of no units cannot be saved at the day's end.
                  stocksim::ModifyRequest m;
+                 for (const char* name : {"qty", "price", "trigger"}) {
+                     if (!changes.contains(name)) {
+                         continue;
+                     }
+                     const py::object v = changes[name];
+                     const auto n = whole<std::int64_t>(name, v, "ctx.modify");
+                     if (std::string_view(name) == "qty" && n <= 0) {
+                         throw py::value_error("ctx.modify: qty must be positive, not " + std::to_string(n));
+                     }
+                 }
                  std::vector<std::pair<std::string, std::string>> parts;
                  for (const auto& [k, h] : changes) {
                      const py::object v = py::reinterpret_borrow<py::object>(h);
@@ -399,7 +472,7 @@ void bind_engine(py::module_& m) {
             ctx->params = to_python(e->bundle().strategy.params, ctx->types);
             e->set_strategy(std::make_shared<StrategyTrampoline>(std::move(strategy), ctx));
         })
-        .def("set_strategy_cpp", [](Engine& e, const std::string& name) { e.set_strategy(stocksim::make_strategy(name)); },
+        .def("set_strategy_cpp", [](Engine& e, const std::string& name) { e.set_strategy(stocksim::make_strategy(name), name); },
              "A registered C++ strategy (STOCKSIM_STRATEGY); its params come from the bundle.")
         .def("run", [](Engine& e) { guarded(e, [&] { e.run(); }); })
         .def("push", [](Engine& e, const py::bytes& batch) {
@@ -423,8 +496,8 @@ void bind_engine(py::module_& m) {
             for (std::size_t i = o.fills_from; i < o.fills_to; ++i) {
                 stocksim::fill_row(b.fills[i], fills);
             }
-            for (std::size_t i = o.charges_from; i < o.charges_to; ++i) {
-                stocksim::charge_row(static_cast<std::int64_t>(i) + 1, b.charges[i], charges);
+            for (std::size_t i = o.charges_from; i < o.charges_to; ++i) {  // row_no continues across days (VOL 5.2)
+                stocksim::charge_row(e.charge_row_base() + static_cast<std::int64_t>(i) + 1, b.charges[i], charges);
             }
             py::dict out;
             out["orders"] = orders.rows;
@@ -442,12 +515,68 @@ void bind_engine(py::module_& m) {
             return stocksim::write_artifacts(e, std::filesystem::path(folder));
         })
         .def("labels", &Engine::labels)
-        // A paper session's day-to-day state (A1 `sod_state`, M5.3) is defined with the daemon that carries it,
-        // against an oracle twin; until then both refuse loudly rather than hand back a partial state (D-47).
-        .def("load_sod_state", [](Engine&, const std::string&) { not_until_m5("load_sod_state"); })
-        .def("eod_state", [](const Engine&) -> std::string { not_until_m5("eod_state"); });
+        // A paper session's day-to-day state (A1 §6.4, VOL 5.3): the same bytes as the oracle's eod_state().
+        .def("load_sod_state", [](Engine& e, const py::object& text) {
+            // A str whose characters cannot be UTF-8 (a lone surrogate) is a refusal, not a Python error.
+            if (!PyUnicode_Check(text.ptr())) {
+                throw py::type_error("load_sod_state: the text must be a str");
+            }
+            Py_ssize_t size = 0;
+            const char* data = PyUnicode_AsUTF8AndSize(text.ptr(), &size);
+            if (data == nullptr) {
+                PyErr_Clear();
+                throw stocksim::RunError("sod_state: the text is not valid Unicode");
+            }
+            e.load_state_text(std::string_view(data, static_cast<std::size_t>(size)));
+        }, "A start-of-day state (eod_state() of the previous day); before the first event only, at most once. "
+           "All of it is checked first: a refused load leaves the engine as it was.")
+        .def("eod_state", [](const Engine& e) { return e.eod_state(); },
+             "The state for the next day's sod_state, as canonical JSON.")
+        .def("margin_now", [](const Engine& e) {
+            // The live margin model's view of the book (MEZ 5.1): the staircase legs the hash covers, the hash, the
+            // staircase's per-underlying rows, and whether a fresh journaled answer prices the book now. Between
+            // pushes only, on the engine thread; RunError under any other margin model.
+            e.ensure_idle("margin_now");
+            const stocksim::MarginNow now = e.margin_now();
+            py::list legs;
+            for (const auto& [iid, units] : now.legs) {
+                legs.append(py::make_tuple(iid, units).cast<py::list>());
+            }
+            py::list rows;
+            for (const stocksim::UnderlyingMargin& b : now.fallback) {
+                py::dict row;
+                row["underlying_id"] = b.underlying;
+                row["step"] = b.step;
+                row["scan"] = b.scan;
+                row["somc"] = b.somc;
+                row["elm"] = b.elm;
+                row["addons"] = b.addons;
+                row["total"] = b.total();
+                rows.append(row);
+            }
+            py::dict out;
+            out["legs"] = legs;
+            out["portfolio_sha256"] = now.portfolio_sha256;
+            out["fallback"] = rows;
+            out["l1"] = now.l1;
+            return out;
+        })
+        .def("book", [](const Engine& e) {
+            // Open positions as (instrument_id, product, signed units), in the order they were first opened; between
+            // pushes only (the M5 daemon keeps them pinned, Task 15).
+            e.ensure_idle("book");
+            py::list out;
+            for (const stocksim::Position& p : e.book().ledger.positions()) {
+                if (p.q != 0) {
+                    out.append(py::make_tuple(p.instrument, std::string(stocksim::to_string(p.product)), p.qty()));
+                }
+            }
+            return out;
+        });
 
     m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");
+
+    m.attr("SOD_STATE_MAX_BYTES") = py::int_(stocksim::kSodStateMaxBytes);
 
     py::register_exception<stocksim::RunError>(m, "RunError", PyExc_RuntimeError);
 }

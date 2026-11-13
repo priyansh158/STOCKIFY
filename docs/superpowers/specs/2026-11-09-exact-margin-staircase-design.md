@@ -136,7 +136,7 @@ portfolio type, underlying, time of day, age of the in-force SPAN file. It feeds
 - SPAN: `https://nsearchives.nseindia.com/archives/nsccl/span/nsccl.<YYYYMMDD>.s.zip` (end of day), intraday
   `.i1.zip` …, a zip of `nsccl.<YYYYMMDD>.s.spn`. CME SPAN 4.00 XML, about 10 MB zipped / 54 MB raw. Per contract: price, delta,
   volatility and a risk array (16 scenario values plus a composite delta). Per combined commodity: price/volatility
-  scan ranges, short-option-minimum tiers, intra- and inter-commodity spread tiers. EOD present back to 2009-01-02.
+  scan ranges, short-option-minimum tiers, intra- and inter-commodity spread tiers. EOD present back to 2009-01-01 (RECON is the source for the start date).
 - ELM: NSE reports API, "F&O-Contract wise ELM file", returns gzipped `F_AEL_OPT_CONTRACTS_<DDMMYYYY>.csv`
   (instrument, symbol, expiry, strike, CE/PE, 0, ELM %; 147,472 rows on 6 Nov 2026). Rolling window only (1 Oct
   2026 ✔, 1 Jul 2026 ✗). Needs a cookie warm-up on all-reports-derivatives.

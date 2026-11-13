@@ -259,6 +259,21 @@ class SandboxIntegrityTests(unittest.TestCase):
                     "TEST_ORIGIN", "http://127.0.0.1:1"
                 )
 
+    def test_loopback_origin_is_the_origin_a_browser_sends(self):
+        import stockify_paths
+        # lower-case host, no default port, no trailing slash (review m-5)
+        for given, expected in (("http://127.0.0.1:80/", "http://127.0.0.1"), ("http://LOCALHOST:3000", "http://localhost:3000"),
+                                ("http://localhost:80", "http://localhost"), ("http://127.0.0.1:8080", "http://127.0.0.1:8080")):
+            with self.subTest(given=given), support.isolated_env({"TEST_ORIGIN": given}, clear=False):
+                self.assertEqual(stockify_paths.loopback_origin("TEST_ORIGIN", "http://127.0.0.1:1"), expected)
+        for bad in ("http://127.0.0.1:abc", "http://127.0.0.1:99999", "http://127.0.0.1:443", "http://127.0.0.1:"):
+            with self.subTest(bad=bad), support.isolated_env({"TEST_ORIGIN": bad}, clear=False):
+                if bad.endswith(":443"):
+                    self.assertEqual(stockify_paths.loopback_origin("TEST_ORIGIN", "http://127.0.0.1:1"), bad)
+                else:
+                    with self.assertRaises(RuntimeError):
+                        stockify_paths.loopback_origin("TEST_ORIGIN", "http://127.0.0.1:1")
+
     def test_kiteconnect_is_not_stubbed(self):
         # Leaving it absent is what keeps the suite offline by construction.
         self.assertNotIn("kiteconnect", support.STUBBED)

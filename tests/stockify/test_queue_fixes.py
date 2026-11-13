@@ -324,7 +324,7 @@ class CancelOutsideTheApiTests(SandboxedDBTest):
         from server.services import test_queue
         test_queue.set_queue(TestQueue(launcher=Launcher(), cap=1))
         self.addCleanup(test_queue.set_queue, None)
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=tests.support.API_BASE_URL)
 
     def test_a_cli_started_running_run(self):
         store.create_run({"run_id": "cli-run", "status": "running", "name": "n"})

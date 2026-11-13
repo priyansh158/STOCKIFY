@@ -338,6 +338,45 @@ def fuzz_world(seed: int) -> dict:
             "fuzz": {"seed": seed, "p_act": random.Random(seed + 1).choice([5, 15, 40])}}
 
 
+def long_history_world(seed: int = 5200, bars_per_day: int = 2000, interval_s: int = 10) -> dict:
+    """VOL 5.2's long-history world (D-66): a stock AAA and its future AAAFUT (expiring after the run) over three
+    trading days around a weekend (Fri 2026-03-06, Mon 03-09, Tue 03-10), `bars_per_day` bars of `interval_s`
+    seconds each from 09:15 for both (2,000 one-minute bars do not fit in one session, so the bars are 10-second
+    ones), a daily settlement price for the future, random-tick slippage, `seed_mode: per_day`. Indicators over the
+    full history (ema(50), rsi(14), atr(14)) and positions carried overnight are what it exercises."""
+    rng = random.Random(seed)
+    iso = ["2026-03-06", "2026-03-09", "2026-03-10"]
+    instruments = [
+        {"id": 1, "kind": "EQ", "tradingsymbol": "AAA", "specs": [{"from": "2015-01-01", "lot": 1, "tick_paise": 5}]},
+        {"id": 2, "kind": "FUT", "tradingsymbol": "AAAFUT", "underlying": "AAA", "underlying_id": 1,
+         "expiry": "2026-03-26", "underlying_class": "STOCK", "settlement": "physical",
+         "specs": [{"from": "2015-01-01", "lot": 250, "tick_paise": 10}]},
+    ]
+    price, tick = {1: 250_000, 2: 251_000}, {1: 5, 2: 10}
+    events: list[dict] = []
+    step = interval_s * 1_000_000_000
+    for d in iso:
+        t0 = timeutil.ist_ns(date.fromisoformat(d), "09:15")
+        for n in range(bars_per_day):
+            drift = rng.randint(-6, 6)
+            for iid in (1, 2):
+                p = price[iid] = max(tick[iid] * 100, price[iid] + tick[iid] * (drift + rng.randint(-2, 2)))
+                hi, lo = p + tick[iid] * rng.randint(0, 4), max(tick[iid], p - tick[iid] * rng.randint(0, 4))
+                o = rng.randint(lo // tick[iid], hi // tick[iid]) * tick[iid]
+                events.append({"kind": "BAR", "instrument": iid, "interval_s": interval_s, "start": t0 + n * step,
+                               "o": o, "h": hi, "l": lo, "c": p, "v": rng.choice([1000, 10_000, 100_000])})
+        events.append({"kind": "SETTLE", "instrument": 2, "t": timeutil.ist_ns(date.fromisoformat(d), "18:00"),
+                       "date": d, "price": price[2], "subtype": "daily"})
+    run = {"fill_model": {"kind": "bar", "participation": "0.5", "limit_touch_policy": "touch",
+                          "slippage": {"kind": "random_ticks", "k": 2}, "half_spread_ticks": 1},
+           "latency_ms": 0, "capital_paise": 10**9, "seed": 9_876_543_210_123, "seed_mode": "per_day",
+           "price_basis": "raw",
+           "costs": {"allow_unverified": True, "auto_square_off_fee": True, "dp_charges": True}}
+    bundle = {"dates": iso, "instruments": instruments, "mis_cutoff": {"CM": "15:20", "FO": "15:25"},
+              "charges": _real_charges()}
+    return {"id": "LONGHIST", "bundle": bundle, "run": run, "events": events, "strategy": {"actions": []}}
+
+
 class RandomTrader(Strategy):
     """Random orders, modifies and cancels from ctx.rng() only, so both implementations act alike."""
 
@@ -378,7 +417,7 @@ class RandomTrader(Strategy):
             price += 1
         trigger = max(0, ref + tick * (r.below(21) - 10)) // tick * tick
         validity = self._pick(r, ["DAY", "DAY", "IOC"] + (["GTC"] if r.below(50) == 0 else []))
-        protection = "AUTO" if r.below(3) else r.below(600)
+        protection = "AUTO" if r.below(3) else 1 + r.below(600)
         tag = self._pick(r, self.TAGS)
         oid = ctx.place(iid, side, qty, product, typ, price=price, trigger=trigger, validity=validity,
                         protection=protection, tag=tag)
@@ -402,7 +441,11 @@ class RandomTrader(Strategy):
                 changes["trigger"] = 5 * r.below(60_000)
             if r.below(4) == 0:
                 changes["type"] = self._pick(r, ["MARKET", "LIMIT", "SL", "SL-M", "WHAT"])
-            ctx.log("info", f"modify {oid} {sorted(changes.items())} -> {ctx.modify(oid, **changes)}")
+            try:
+                done = ctx.modify(oid, **changes)
+            except ValueError as e:     # B2B 5.4: a quantity of 0 is refused; the words are logged, so both runners must agree
+                done = f"refused: {e}"
+            ctx.log("info", f"modify {oid} {sorted(changes.items())} -> {done}")
         elif k < 74 and self.placed:
             oid = self._pick(r, self.placed + [0, max(self.placed) + 3])
             ctx.log("info", f"cancel {oid} -> {ctx.cancel(oid)}")

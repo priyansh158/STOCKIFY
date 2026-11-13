@@ -19,10 +19,24 @@ For one trade date:
 
 The archive is written to a temporary folder and moved into place only after
 verification. Landing files are deleted only by `apply_retention`: once the day is verified
-(and re-verified just before deletion) and at least `storage.json` →
+(and re-verified just before deletion), the landing file still holds exactly the
+archived number of packets, and the day is at least `storage.json` →
 `retention_days` old; 0 means right after the close (D-38), null never.
 After that the archive is the day's only record and every reader uses it
 (`stockify.data.ticks`).
+
+An archive is never made smaller (I-13). A day that is `verified` or
+`landing_deleted` is not compacted again unless `force=True`, and no run, forced
+or not, replaces an archive with one that holds fewer packets, or with one
+whose landing file does not start with the packets the archive holds. A landing
+file that turns up for a `landing_deleted` day is left where it is and reported.
+
+Replacing an archive never deletes it first. The old folder is renamed aside
+(`old.date=YYYY-MM-DD`, next to it), the new one is renamed into place, checked
+there and recorded in `tick_days`, and only then is the old one removed. If a
+step fails the old archive is renamed back and the run reports `failed`. A run
+that was killed part-way is undone by the next `compact()` or `apply_retention`
+for the day, before it does anything else (`_recover`).
 """
 from __future__ import annotations
 
@@ -54,6 +68,8 @@ COMPACT_VERSION = "2"
 LAYOUT = "rowgroup_by_instrument_delta"
 ROW_GROUP = 1_000_000
 FETCH = 100_000
+ARCHIVED = ("verified", "landing_deleted")     # tick_days statuses of a day whose archive is the record
+PACKET_FILES = ("full", "quote", "index")
 
 PACKET_COLS = ["seq", "frame_no", "recv_ns", "mono_ns", "instrument_id", "instrument_token", "mode",
                "pkt_len", "ltp", "last_qty", "atp", "volume", "buy_qty", "sell_qty", "open", "high",
@@ -203,7 +219,7 @@ def iter_rows(path: Path, columns: list[str]):
 def _iter_archive(folder: Path):
     """(seq, frame_no, instrument_id, raw) merged across the three packet files by seq."""
     cols = ["seq", "frame_no", "instrument_id", "raw"]
-    return heapq.merge(*(iter_rows(folder / f"{name}.parquet", cols) for name in ("full", "quote", "index")),
+    return heapq.merge(*(iter_rows(folder / f"{name}.parquet", cols) for name in PACKET_FILES),
                        key=lambda r: r[0])
 
 
@@ -243,34 +259,290 @@ def _record(res: Result, day: date, landing: Path) -> None:
              timeutil.now_ns() if res.status == "verified" else None))
 
 
+def _has_archive(row) -> bool:
+    """True when the day's tick_days row says an archive was made for it, whatever its status is now."""
+    return row is not None and (row["status"] in ARCHIVED or bool(row["archive_path"]))
+
+
+def _tmp(target: Path) -> Path:
+    """Where a run builds the day's archive before it is moved into place."""
+    return target.with_name(f"{target.name}.tmp")
+
+
+def _aside(target: Path) -> Path:
+    """Where the old archive waits while its replacement is moved in, checked and recorded.
+
+    A sibling of the archive folder, so the moves are renames on one volume. The name does not start with
+    `date=`, so no reader takes it for a day's archive.
+    """
+    return target.with_name(f"old.{target.name}")
+
+
+def _archive_state(folder: Path) -> tuple[int, str] | None:
+    """(packets, landing digest) of a complete archive folder; None when it is missing or incomplete.
+
+    Complete: meta.json can be read, every file it lists is there, and the packet files hold the number of
+    packets it states. Contents are not hashed here; `verify` does that.
+    """
+    try:
+        meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+        packets, digest = int(meta["packets"]), str(meta["landing_digest"])
+        if not all((folder / name).is_file() for name in meta["files"]):
+            return None
+        in_files = sum(pq.read_metadata(folder / f"{name}.parquet").num_rows for name in PACKET_FILES)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, pa.ArrowException):
+        return None
+    return (packets, digest) if in_files == packets else None
+
+
+def _recover(target: Path, recorded_digest: str | None) -> str:
+    """Finish or undo a replacement that was interrupted (I-13). Returns what it did, "" for nothing.
+
+    While an archive is replaced the old one waits in `_aside(target)`. When that folder is still there:
+    * the archive in place is complete and is the one tick_days describes: the replacement was recorded and
+      only the removal of the old archive is left, so it is removed now;
+    * otherwise, if the set-aside archive is complete, it is put back as the day's archive, and what stood
+      in its place (an incomplete folder, or a new archive that was never recorded) is removed;
+    * otherwise no complete archive is known: CompactionError naming both folders, and nothing is changed.
+    """
+    aside = _aside(target)
+    if not aside.exists():
+        return ""
+    live = _archive_state(target)
+    if live is not None and recorded_digest and live[1] == recorded_digest:
+        try:                                     # the recorded digest in meta.json is not proof: hash the packets
+            verify(target, recorded_digest, live[0])
+        except CompactionError as e:
+            log.warning("the archive in %s does not hash to its recorded digest (%s); the set-aside copy is kept",
+                        target, e)
+            live = None
+    if live is not None and recorded_digest and live[1] == recorded_digest:
+        try:
+            shutil.rmtree(aside)
+        except OSError as e:
+            return f"the replaced archive could not be removed and is still in {aside}: {e}"
+        log.info("removed the replaced archive left in %s", aside)
+        return ""
+    if _archive_state(aside) is None:
+        raise CompactionError(
+            f"an interrupted replacement left an incomplete archive in {aside}, and the archive in {target} is "
+            f"{'not the one recorded for the day' if live else 'missing or incomplete'}; nothing was changed")
+    tmp = _tmp(target)
+    displaced = target.exists()
+    try:
+        if displaced:
+            shutil.rmtree(tmp, ignore_errors=True)
+            target.rename(tmp)
+        aside.rename(target)
+    except OSError as e:
+        if displaced and tmp.exists() and not target.exists():
+            try:
+                tmp.rename(target)
+            except OSError:
+                pass
+        raise CompactionError(f"the archive set aside in {aside} could not be put back as {target}: {e}; "
+                              "nothing else was changed") from e
+    shutil.rmtree(tmp, ignore_errors=True)
+    return (f"an interrupted replacement was undone: the archive set aside in {aside} was put back as {target}"
+            + (", in place of a folder that was incomplete or never recorded" if displaced else ""))
+
+
+def _put_back(target: Path, replaced: bool) -> str:
+    """Undo a move into place that failed: take the new archive out and rename the old one back.
+
+    Returns "" when the archive folder is as it was before the run, else what is left where; the next run's
+    `_recover` then finishes the job.
+    """
+    tmp, aside = _tmp(target), _aside(target)
+    try:
+        if target.exists():
+            target.rename(tmp)
+        if replaced:
+            aside.rename(target)
+    except OSError as e:
+        return (f"it could not be undone ({e}): the old archive is in {aside} and the next run puts it back"
+                if replaced else f"the new folder could not be taken out again ({e})")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return ""
+
+
 def _landing_size(landing: Path) -> int:
     return sum(p.stat().st_size for p in (landing, Path(str(landing) + "-wal")) if p.exists())
 
 
+def _landing_packets(landing: Path) -> int:
+    """Packets in a landing file, counted through a read-only connection."""
+    conn = sqlite3.connect(f"file:{landing.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    try:
+        return int(conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
+    finally:
+        conn.close()
+
+
+LANDING_PARTS = ("", "-wal", "-shm")            # a landing file and SQLite's companions to it
+
+
+def _retiring(landing: Path) -> Path:
+    """The name a landing file carries while retention counts it and deletes it.
+
+    Renaming fails while any process has the file open, and nothing opens the new name, so the file that is
+    counted is the file that is deleted. The name does not match `ticks_*.sqlite`.
+    """
+    return landing.with_name(f"{landing.name}.retiring")
+
+
+def _move_landing(src: Path, dst: Path) -> None:
+    """Rename a landing file and its -wal/-shm companions, all of them or none. OSError when one is in use."""
+    moved = []
+    try:
+        for part in LANDING_PARTS:
+            a, b = Path(str(src) + part), Path(str(dst) + part)
+            if a.exists():
+                a.rename(b)
+                moved.append((a, b))
+    except OSError:
+        for a, b in reversed(moved):
+            try:
+                b.rename(a)
+            except OSError:
+                log.error("could not rename %s back to %s", b, a)
+        raise
+
+
+def _archived_packets(target: Path, row: sqlite3.Row | None) -> int | None:
+    """The most packets any record says the day's archive holds (I-13: the floor for a replacement).
+
+    The archive on disk decides, whatever the row's status: the count in its meta.json, and the sum of its
+    packet files' Parquet footers when all of them can be read. The row's count is added for a day whose row
+    says an archive was made, so an archive that has gone missing is not papered over by a smaller landing file.
+
+    None when an archive folder exists and neither source gives its count: an unreadable count is never 0.
+    """
+    known = []
+    if _has_archive(row) and row["packets"] is not None:
+        known.append(int(row["packets"]))
+    if target.exists():
+        on_disk = []
+        try:
+            on_disk.append(int(json.loads((target / "meta.json").read_text(encoding="utf-8"))["packets"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        try:
+            on_disk.append(sum(pq.read_metadata(target / f"{name}.parquet").num_rows for name in PACKET_FILES))
+        except (OSError, ValueError, pa.ArrowException):
+            pass
+        if not on_disk:
+            return None
+        known += on_disk
+    return max(known, default=0)
+
+
+def _archive_identity(target: Path, row: sqlite3.Row | None) -> tuple[int, str] | None:
+    """(packets, landing digest) of the archive in `target`: what a landing file must start with to replace it.
+
+    From the archive's meta.json; when that cannot be read, from the tick_days row of a day whose row says an
+    archive was made. None when neither says.
+    """
+    try:
+        meta = json.loads((target / "meta.json").read_text(encoding="utf-8"))
+        return int(meta["packets"]), str(meta["landing_digest"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    if _has_archive(row) and row["packets"] is not None and row["digest"]:
+        return int(row["packets"]), str(row["digest"])
+    return None
+
+
 def compact(day: date, *, landing: Path | None = None, archive_root: Path | None = None,
             force: bool = False) -> Result:
+    """Build and verify the day's archive from its landing file.
+
+    A day already `verified` or `landing_deleted` is left alone and reported as `verified` unless `force` is
+    given. With or without `force`, an archive is never replaced by one holding fewer packets: the result is
+    `failed`, its error names both counts, and only this run's temporary folder is removed (I-13). The count
+    to beat is the one of the archive on disk, whatever the row's status; an archive folder whose count cannot
+    be read is not replaced at all, forced or not. Nor is an archive replaced by another recording: the
+    packets it holds must be the first packets of the landing file (same digest), so only late frames added to
+    the day's own landing file can extend it; otherwise `failed`, naming the landing file and the archive.
+
+    A run that fails on a day that has, or had, an archive leaves its tick_days row exactly as it was; the
+    failure is in the result only.
+
+    An archive is replaced by renames, never by deleting it first (module docstring). A replacement that
+    an earlier run left half done is undone before anything else; `error` then says so, whatever the status.
+    """
     landing = landing or paths.ticks_landing_file(day)
     archive_root = archive_root or paths.ticks_archive_dir()
     target = archive_root / f"date={day:%Y-%m-%d}"
     res = Result(day=day.isoformat(), status="no_landing")
-    if not landing.exists():
-        done = refdata._connect().execute(
-            "SELECT status, digest, packets FROM tick_days WHERE trade_date=?", (day.isoformat(),)).fetchone()
-        if done and done["status"] == "landing_deleted" and (target / "meta.json").exists():
-            res.status, res.digest, res.packets, res.archive_path = "verified", done["digest"], done["packets"], str(target)
-        return res
-    if landing == paths.ticks_landing_file(day) and not session_over(day):
-        res.status, res.error = "session_open", "the day is still being recorded; compact it after the close"
-        return res
-    level = int(loader.load_json("storage.json")["parquet_zstd_level"])
     existing = refdata._connect().execute(
-        "SELECT status, digest FROM tick_days WHERE trade_date=?", (day.isoformat(),)).fetchone()
-    if existing and existing["status"] == "verified" and target.exists() and not force:
-        res.status, res.digest, res.archive_path = "verified", existing["digest"], str(target)
-        log.info("%s already compacted and verified", day)
+        "SELECT status, digest, packets, archive_path FROM tick_days WHERE trade_date=?",
+        (day.isoformat(),)).fetchone()
+    notes: list[str] = []                       # what the owner should know, whatever the status
+
+    def done(status: str, text: str = "") -> Result:
+        res.status, res.error = status, "; ".join(n for n in (*notes, text) if n)
         return res
 
-    tmp = archive_root / f"date={day:%Y-%m-%d}.tmp"
+    try:
+        note = _recover(target, existing["digest"] if existing else None)
+    except CompactionError as e:
+        log.error("%s: %s", day, e)
+        return done("failed", str(e))
+    if note:
+        notes.append(note)
+        log.warning("%s: %s", day, note)
+    if not landing.exists():
+        if existing and existing["status"] == "landing_deleted" and (target / "meta.json").exists():
+            res.digest, res.packets, res.archive_path = existing["digest"], existing["packets"], str(target)
+            return done("verified")
+        return done("no_landing")
+    if landing == paths.ticks_landing_file(day) and not session_over(day):
+        return done("session_open", "the day is still being recorded; compact it after the close")
+    level = int(loader.load_json("storage.json")["parquet_zstd_level"])
+    if existing and existing["status"] in ARCHIVED and target.exists() and not force:
+        res.digest, res.packets, res.archive_path = existing["digest"], existing["packets"], str(target)
+        if existing["status"] == "landing_deleted":
+            # The day's landing file was deleted after verification, yet one is here again. It is not the
+            # day's record: leave it where it is, say so, and keep the archive (I-13).
+            try:
+                found = f"{_landing_packets(landing)} packets"
+            except sqlite3.Error as e:
+                found = f"unreadable: {e}"
+            stray = (f"a landing file is present again ({found}) although the day's landing file was deleted "
+                     f"after its archive was verified ({existing['packets']} packets); the file was left in "
+                     f"place and not compacted, and the archive is unchanged: {landing}")
+            log.warning("%s: %s", day, stray)
+            return done("verified", stray)
+        log.info("%s already compacted and verified", day)
+        return done("verified")
+
+    archived = _archived_packets(target, existing)
+    if archived is None:
+        refusal = (f"refused: the packet count of the archive in {target} cannot be read (neither its meta.json "
+                   "nor its Parquet footers), and an unreadable count is never taken as 0; the archive is not "
+                   "replaced, with or without force, and its tick_days row and the landing file are left as they "
+                   "were")
+        log.error("compaction of %s %s", day, refusal)
+        return done("failed", refusal)
+    held = None                                 # (packets, digest) of the archive this run would replace
+    if target.exists():
+        held = _archive_identity(target, existing)
+        if held is None:
+            refusal = (f"refused: nothing says which packets the archive in {target} holds (its meta.json cannot "
+                       f"be read and tick_days has no digest for it), so the landing file {landing} cannot be "
+                       "shown to start with them; the archive is not replaced and both are left as they were")
+            log.error("compaction of %s %s", day, refusal)
+            return done("failed", refusal)
+    tmp = _tmp(target)
+    if not target.exists() and _has_archive(existing) and _archive_state(tmp) is not None:
+        # Versions before the rename-aside replacement removed the old archive first; one stopped right there
+        # leaves the new archive here and nothing in place. It may be the day's only archive: keep it.
+        refusal = (f"{tmp} holds a complete archive while the day's archive folder {target} is missing; it may be "
+                   "the day's only archive, so it was not deleted: rename it to the archive folder to keep it, or "
+                   "remove it, then run again")
+        log.error("compaction of %s: %s", day, refusal)
+        return done("failed", refusal)
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
     conn = sqlite3.connect(str(landing), timeout=30.0)
@@ -281,6 +553,8 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
             raise CompactionError(f"landing quick_check failed: {check}")
         sinks = {name: _Sink(tmp / f"{name}.parquet", schema, level) for name, schema in SCHEMAS.items()}
         h = hashlib.sha256()
+        seen = 0
+        start = h.hexdigest() if held and held[0] == 0 else None    # digest of the first held[0] landing packets
         cur = conn.execute(f"SELECT {', '.join(PACKET_COLS)} FROM packets ORDER BY seq")
         while True:
             rows = cur.fetchmany(FETCH)
@@ -290,6 +564,9 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
                 kind, values = _route(row)
                 sinks[kind].add(values)
                 _digest_update(h, row["seq"], row["frame_no"], row["instrument_id"], bytes(row["raw"]))
+                seen += 1
+                if held and seen == held[0]:
+                    start = h.copy().hexdigest()
         for s in sinks.values():
             s.close()
         res.counts = {name: s.rows for name, s in sinks.items()}
@@ -301,6 +578,22 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     finally:
         conn.close()
 
+    if res.packets < archived:
+        shutil.rmtree(tmp, ignore_errors=True)
+        refusal = (f"refused: the landing file holds {res.packets} packets and the day's archive holds {archived}; "
+                   "an archive is never replaced by a smaller one, so the archive and the landing file are "
+                   "left as they were")
+        log.error("compaction of %s %s", day, refusal)
+        return done("failed", refusal)
+    if held and start != held[1]:
+        # More packets, but not the same recording: late frames extend an archive, they never rewrite it.
+        shutil.rmtree(tmp, ignore_errors=True)
+        refusal = (f"refused: the first {held[0]} packets of the landing file {landing} (digest {start}) are not "
+                   f"the {held[0]} packets of the archive in {target} (digest {held[1]}); an archive is replaced "
+                   "only by a landing file that starts with the packets it holds, so both are left as they were")
+        log.error("compaction of %s %s", day, refusal)
+        return done("failed", refusal)
+
     files = {p.name: _sha256_file(p) for p in sorted(tmp.glob("*.parquet"))}
     (tmp / "meta.json").write_text(numerics.dumps_canonical({
         "trade_date": day.isoformat(), "compact_version": COMPACT_VERSION, "layout": LAYOUT,
@@ -311,23 +604,61 @@ def compact(day: date, *, landing: Path | None = None, archive_root: Path | None
     try:
         verify(tmp, res.digest, res.packets)
     except CompactionError as e:
-        res.status, res.error = "failed", str(e)
-        res.landing_bytes = _landing_size(landing)
-        _record(res, day, landing)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not target.exists() and not _has_archive(existing):
+            # A first compaction: note the day as still in its landing file. A day that has, or had, an
+            # archive keeps its row exactly as it was (I-13): the failure is reported in the result only.
+            res.status = "failed"
+            res.landing_bytes = _landing_size(landing)
+            _record(res, day, landing)
         log.error("compaction of %s failed verification: %s (landing kept)", day, e)
-        return res
-    if target.exists():
-        shutil.rmtree(target)
-    tmp.rename(target)
-    res.status = "verified"
-    res.archive_path = str(target)
-    res.landing_bytes = _landing_size(landing)
-    res.archive_bytes = sum(p.stat().st_size for p in target.iterdir())
-    _record(res, day, landing)
+        return done("failed", str(e))
+
+    # Into place (I-13). The old archive is never deleted first: it is renamed aside, the new one is renamed
+    # in, checked where it now lives and recorded, and only then is the old one removed. Until the row is
+    # written, any failure puts the old archive back; a run killed in between is undone by _recover.
+    aside = _aside(target)
+    replaced = target.exists()
+    if replaced:
+        try:
+            target.rename(aside)
+        except OSError as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            refusal = (f"the archive in {target} could not be set aside for its replacement (a file in it may be "
+                       f"open): {e}; the archive, its tick_days row and the landing file are left as they were")
+            log.error("compaction of %s: %s", day, refusal)
+            return done("failed", refusal)
+    failure = None
+    try:
+        tmp.rename(target)
+        if replaced:
+            verify(target, res.digest, res.packets)
+        res.status = "verified"
+        res.archive_path = str(target)
+        res.landing_bytes = _landing_size(landing)
+        res.archive_bytes = sum(p.stat().st_size for p in target.iterdir())
+        _record(res, day, landing)
+    except Exception as e:  # noqa: BLE001  whatever went wrong, the old archive goes back
+        failure = str(e) if isinstance(e, CompactionError) else f"{type(e).__name__}: {e}"
+    if failure is not None:                     # outside the handler: the traceback would keep files open
+        res.archive_path, res.archive_bytes = "", 0
+        undone = _put_back(target, replaced)
+        refusal = (f"the new archive could not be put in place: {failure}; "
+                   + (undone or ("the old archive was put back and its tick_days row is unchanged" if replaced
+                                 else "the new folder was removed")) + "; the landing file is kept")
+        log.error("compaction of %s: %s", day, refusal)
+        return done("failed", refusal)
+    if replaced:
+        try:
+            shutil.rmtree(aside)
+        except OSError as e:
+            notes.append(f"the replaced archive could not be removed and is still in {aside}: {e}; "
+                         "the next run removes it")
+            log.warning("%s: %s", day, notes[-1])
     log.info("compacted %s: %d packets, %.1f MB -> %.1f MB (%.1fx), verified",
              day, res.packets, res.landing_bytes / 1e6, res.archive_bytes / 1e6,
              res.landing_bytes / max(1, res.archive_bytes))
-    return res
+    return done("verified")
 
 
 # ── retention and disk space ─────────────────────────────────────────────────
@@ -346,7 +677,14 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
     `retention_days` old (0 = right after verification, once the session is
     over). The archive is re-verified against the digest in tick_days just
     before deleting; if that fails the day drops back to status 'landing' and
-    the file is kept. `retention_days: null` deletes nothing.
+    the file is kept. The landing file is then renamed aside (which fails while
+    any process has it open), the renamed file's packets are counted, and only
+    a file whose count equals the archived count is deleted. Otherwise it is
+    renamed back and kept, a warning is logged and the day is not in the
+    returned list. `retention_days: null` deletes nothing.
+
+    A replacement of the day's archive that was interrupted is undone first
+    (`_recover`), with a warning; if that cannot be done the day is skipped.
     """
     days = loader.load_json("storage.json").get("retention_days")
     if days is None:
@@ -361,6 +699,14 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
         if not session_over(day, now_ns):
             continue                                   # still being recorded
         landing, archive = Path(row["landing_path"]), Path(row["archive_path"] or "")
+        if row["archive_path"]:
+            try:
+                note = _recover(archive, row["digest"])
+            except CompactionError as e:
+                log.error("%s: %s; landing kept", row["trade_date"], e)
+                continue
+            if note:
+                log.warning("%s: %s", row["trade_date"], note)
         try:
             verify(archive, row["digest"], row["packets"])
         except (CompactionError, FileNotFoundError, OSError, ValueError) as e:
@@ -368,8 +714,55 @@ def apply_retention(today: date, now_ns: int | None = None) -> list[str]:
             with refdata.transaction() as conn:
                 conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (row["trade_date"],))
             continue
-        for p in (landing, Path(str(landing) + "-wal"), Path(str(landing) + "-shm")):
-            p.unlink(missing_ok=True)
+        archived, retiring = int(row["packets"]), _retiring(landing)
+        if retiring.exists():                          # an earlier run stopped between its rename and its delete
+            if landing.exists():
+                log.warning("%s: %s was left renamed by an interrupted run and a landing file %s is there as well; "
+                            "both kept (the verified archive holds %d packets)",
+                            row["trade_date"], retiring, landing, archived)
+                continue
+            try:
+                _move_landing(retiring, landing)
+            except OSError as e:
+                log.warning("%s: %s was left renamed by an interrupted run and could not be renamed back to %s "
+                            "(%s); kept", row["trade_date"], retiring, landing, e)
+                continue
+            log.warning("%s: a landing file left renamed by an interrupted run was put back: %s",
+                        row["trade_date"], landing)
+        if landing.exists():
+            # Aside first: the rename fails while any process has the file open, and nothing opens the new
+            # name, so the file that is counted is the file that is deleted.
+            try:
+                _move_landing(landing, retiring)
+            except OSError as e:
+                log.warning("%s: landing file %s is in use (%s); landing kept (the verified archive holds %d "
+                            "packets)", row["trade_date"], landing, e, archived)
+                continue
+            try:
+                found = _landing_packets(retiring)
+                differs = "" if found == archived else f"{found} packets"
+            except sqlite3.Error as e:
+                differs = f"cannot be counted ({e})"
+            if not differs:
+                try:
+                    retiring.unlink()
+                except OSError as e:
+                    differs = f"could not be deleted ({e})"
+            if differs:
+                try:
+                    _move_landing(retiring, landing)
+                    kept = "landing kept"
+                except OSError as e:
+                    kept = f"kept as {retiring}, which could not be renamed back ({e})"
+                log.warning("%s: landing file %s: %s, but the verified archive holds %d packets; %s",
+                            row["trade_date"], landing, differs, archived, kept)
+                continue
+        for p in (retiring, landing):                  # what SQLite left beside a file that is gone
+            for part in LANDING_PARTS[1:]:
+                try:
+                    Path(str(p) + part).unlink(missing_ok=True)
+                except OSError as e:
+                    log.warning("%s: %s%s could not be removed (%s)", row["trade_date"], p, part, e)
         with refdata.transaction() as conn:
             conn.execute("UPDATE tick_days SET status='landing_deleted' WHERE trade_date=?", (row["trade_date"],))
         log.info("%s: landing file deleted; the verified archive is the record", row["trade_date"])

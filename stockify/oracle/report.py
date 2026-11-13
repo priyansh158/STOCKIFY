@@ -66,6 +66,38 @@ def equity_png(folder: Path) -> Path | None:
     return out
 
 
+def _gap_lines(folder: Path) -> list[str]:
+    """The days on which a pack had instruments with no events, and the frames the recorder dropped on a full queue,
+    as listed in the bundle (nothing is filled in)."""
+    path = folder / "bundle.json"
+    if not path.exists():
+        return []
+    days: dict[str, set[int]] = {}
+    spans: list[dict] = []
+    for p in json.loads(path.read_text(encoding="utf-8")).get("packs", []):
+        for day, ids in p.get("gaps", {}).get("days", {}).items():
+            days.setdefault(day, set()).update(ids)
+        spans += p.get("recorder_gaps", {}).get("spans", [])
+    out: list[str] = []
+    if days:
+        out += (["## Data gaps", "",
+                 f"`data:gaps={len(days)}`: on these days some instruments had no data in the packs. Nothing was filled in.", ""]
+                + [f"- {day}: instrument ids {', '.join(str(i) for i in sorted(ids))}" for day, ids in sorted(days.items())]
+                + [""])
+    if spans:
+        known = all(s.get("frames") is not None for s in spans)
+        total = str(sum(s["frames"] for s in spans)) if known else "unknown"
+        out += ["## Dropped frames", "",
+                f"`data:dropped_frames={total}`: the recorder's queue was full and refused these frames, so the packs "
+                "lack them for every instrument. Nothing was filled in.", ""]
+        for s in sorted(spans, key=lambda s: (s["day"], s.get("start_ns") or 0)):
+            first, last = s.get("first_frame_no"), s.get("last_frame_no")
+            frames = "frame numbers unknown" if first is None else f"frames {first}-{last}"
+            out.append(f"- {s['day']}: {frames} ({s.get('frames') if s.get('frames') is not None else 'unknown'} dropped)")
+        out.append("")
+    return out
+
+
 def write(folder: Path) -> Path:
     m = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
@@ -77,6 +109,9 @@ def write(folder: Path) -> Path:
              f"engine {manifest.get('engine')} · run `{manifest['run_id']}`", ""]
     if labels:
         lines += ["**Labels**", ""] + [f"- `{lab}`: {LABEL_TEXT.get(lab, '')}".rstrip(": ") for lab in labels] + [""]
+    gaps = _gap_lines(folder)
+    if gaps:
+        lines += gaps
     lines += ["## Headline", "", "| metric | value |", "|---|---|",
               f"| Start → end NAV | {_rupees(m['nav_start_paise'])} → {_rupees(m['nav_end_paise'])} |",
               f"| CAGR | {_pct(m['cagr'])} |", f"| Volatility | {_pct(m['volatility'])} |",

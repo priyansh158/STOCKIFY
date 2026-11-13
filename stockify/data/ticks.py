@@ -117,10 +117,10 @@ class LandingDay(_Day):
     def close(self) -> None:
         self.db.close()
 
-    def __init__(self, day: date, path: Path | None = None, *, db=None):  # noqa: ANN001
+    def __init__(self, day: date, path: Path | None = None, *, db=None, immutable: bool = False):  # noqa: ANN001
         from stockify.daemon.landing import LandingDB
         self.day = day
-        self.db = db if db is not None else LandingDB(day, path, readonly=True)
+        self.db = db if db is not None else LandingDB(day, path, readonly=True, immutable=immutable)
 
     @classmethod
     def from_db(cls, db) -> "LandingDay":  # noqa: ANN001
@@ -172,10 +172,31 @@ def archive_folder(day: date) -> Path:
     return paths.ticks_archive_dir() / f"date={day:%Y-%m-%d}"
 
 
-def open_day(day: date, *, prefer: str = "archive", landing_path: Path | None = None):
+WRITER_FILES = ("-wal", "-journal")                            # beside a database: not empty while a write is open
+
+
+def landing_busy(day: date) -> str | None:
+    """Why the day's landing file is not to be read now, or None. Only the landing file can be busy: the archive is
+    written once, whole, and never again. A writer has rows outside the main file (its `-wal`), which an immutable
+    read cannot see (D-75: the same rule as the calendar audit)."""
+    if (archive_folder(day) / "meta.json").exists():
+        return None
+    landing = paths.ticks_landing_file(day)
+    for suffix in WRITER_FILES:
+        side = landing.with_name(landing.name + suffix)
+        if side.is_file() and side.stat().st_size > 0:
+            return f"busy, not read (the landing file's {suffix} file is not empty: the recorder may be writing)"
+    # An existing `-shm` (or an empty `-wal`) is NOT taken as busy: any read-only reader (a pack build, replay, the
+    # quality report) leaves both behind, so that rule would refuse every day that was ever read. Only rows waiting in
+    # the `-wal` matter: an immutable read cannot see them, and that is what a writer leaves.
+    return None
+
+
+def open_day(day: date, *, prefer: str = "archive", landing_path: Path | None = None, immutable: bool = False):
     """The day's ticks: the verified archive first, the landing file otherwise.
 
-    Returns None when the day was never recorded.
+    Returns None when the day was never recorded. `immutable` opens a landing file as `mode=ro&immutable=1`: use it
+    only on a file nothing is writing (see `landing_busy`).
     """
     folder = archive_folder(day)
     has_archive = (folder / "meta.json").exists()
@@ -183,7 +204,7 @@ def open_day(day: date, *, prefer: str = "archive", landing_path: Path | None = 
     if prefer == "archive" and has_archive and landing_path is None:
         return ArchiveDay(day, folder)
     if landing.exists():
-        return LandingDay(day, landing_path)
+        return LandingDay(day, landing_path, immutable=immutable)
     if has_archive:
         return ArchiveDay(day, folder)
     return None

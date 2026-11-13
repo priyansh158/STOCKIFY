@@ -3,5 +3,8 @@
   "retention_days": 0,
   "disk_warn_free_gb": 20,
   "disk_warn_free_fraction": "0.10",
-  "parquet_zstd_level": 9
+  "parquet_zstd_level": 9,
+  "log_max_mb": 20,
+  "log_backups": 5,
+  "backup": {"target": null, "include_span": false}
 }

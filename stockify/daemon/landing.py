@@ -24,11 +24,14 @@ _INSERT = (f"INSERT INTO packets ({', '.join(PACKET_COLUMNS)}) "
 
 
 class LandingDB:
-    def __init__(self, day: date, path: Path | None = None, *, readonly: bool = False):
+    def __init__(self, day: date, path: Path | None = None, *, readonly: bool = False, immutable: bool = False):
+        """`immutable` (a read-only open of a file nothing is writing, as the calendar audit does, D-75) makes and
+        touches no `-wal` or `-shm` beside the file; it reads the main file alone."""
         self.day = day
         self.path = path or paths.ticks_landing_file(day)
         if readonly:
-            self.conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True,
+            mode = "mode=ro&immutable=1" if immutable else "mode=ro"
+            self.conn = sqlite3.connect(f"file:{self.path.as_posix()}?{mode}", uri=True,
                                         check_same_thread=False, isolation_level=None)
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +95,16 @@ class LandingDB:
             cur = self.conn.execute("INSERT INTO gaps (start_ns, end_ns, reason, scope) VALUES (?, ?, ?, ?)",
                                     (start_ns, end_ns, reason, scope))
             return int(cur.lastrowid)
+
+    def add_dropped_frames(self, runs: list[tuple[int, int, int, int]]) -> None:
+        """Durable record of frames the writer queue refused (RM 5.3): one `queue_full` gap per run of consecutive
+        frame numbers, `(first_frame_no, last_frame_no, first_recv_ns, last_recv_ns)` each. The gap spans the receive
+        times of the first and last dropped frame, and names the frames so a parity report knows what is missing."""
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO gaps (start_ns, end_ns, reason, scope, first_frame_no, last_frame_no, frames) "
+                "VALUES (?, ?, 'queue_full', 'all', ?, ?, ?)",
+                [(t0, t1, a, b, b - a + 1) for a, b, t0, t1 in runs])
 
     def log_subscriptions(self, rows: list[tuple]) -> None:
         """rows: (recv_ns, action, instrument_id, instrument_token, mode, reason)."""

@@ -5,7 +5,7 @@ each trading day the daemon emails the owner at the times in
 `schedule.json` → `login_reminders_ist` (06:05 and 08:00 IST; 16:35 and 18:30
 in Seattle) while the token is still stale. Each reminder is sent at most once
 per trade date (scheduler state). Email uses the geo monitor's SMTP settings;
-without them the reminder is only logged.
+without them the reminder is only logged. It goes through `stockify.daemon.notify` (RW 5.1).
 """
 from __future__ import annotations
 
@@ -24,28 +24,30 @@ def reminder_times(day: date, cfg: dict) -> list[tuple[str, int]]:
     return sorted((hhmm, timeutil.ist_ns(day, hhmm)) for hhmm in cfg.get("login_reminders_ist", []))
 
 
-def message(day: date, cfg: dict) -> tuple[str, str]:
+def login_window(day: date, cfg: dict) -> tuple[str, str]:
+    """The login window of `day`'s session as the owner's own wall clock shows it (PST or PDT, whichever the owner's
+    zone is on that date: `calendar.owner_tz()`), as `("HH:MM TZ", "HH:MM TZ")`."""
     local = calendar.owner_tz()
-    pre_open = timeutil.ist_ns(day, cfg["kite_login_window_ist"]["until"])
-    deadline = timeutil.ns_to_ist(pre_open).astimezone(local)
+    window = cfg["kite_login_window_ist"]
+    opens, closes = (timeutil.ns_to_ist(timeutil.ist_ns(day, window[k])).astimezone(local) for k in ("from", "until"))
+    return f"{opens:%H:%M %Z}", f"{closes:%H:%M %Z}"
+
+
+def message(day: date, cfg: dict) -> tuple[str, str]:
+    opens, closes = login_window(day, cfg)
+    window = cfg["kite_login_window_ist"]
     subject = f"[STOCKIFY] Kite login needed for the {day:%a %d %b} session"
     body = (f"The STOCKIFY recorder has no fresh Kite login for the NSE session of {day:%A %d %B %Y} (IST).\n\n"
-            f"Log in before {deadline:%H:%M %Z} ({cfg['kite_login_window_ist']['until']} IST): open {LOGIN_URL} "
-            "and click 'Login to Kite'.\n\nWithout a login nothing is recorded today.\n\n— STOCKIFY daemon\n")
+            f"Log in between {opens} and {closes} ({window['from']}-{window['until']} IST): open {LOGIN_URL} "
+            f"and click 'Login to Kite'. Log in before {closes}.\n\nWithout a login nothing is recorded today.\n\n"
+            "— STOCKIFY daemon\n")
     return subject, body
 
 
 def send_default(subject: str, body: str) -> str | None:
-    from geo_monitor import email_notify
-    if not email_notify.email_configured():
-        log.warning("login reminder (email not configured): %s", subject)
-        return "email not configured"
-    try:
-        email_notify.send_email(subject, body)
-        return None
-    except Exception as e:
-        log.error("login reminder email failed: %s", e)
-        return str(e)
+    """Through the notifier: the `login_needed` switch and the email channel apply."""
+    from stockify.daemon import notify
+    return notify.send("login_needed", subject, body)
 
 
 def wait_with_reminders(clock, stop, until_ns: int, day: date, state, cfg: dict, *,  # noqa: ANN001

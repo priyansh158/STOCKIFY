@@ -63,14 +63,14 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
     _csv(folder / "orders.csv", ORDERS, [
         (o.order_id, o.parent_id, o.instrument_id, o.side, o.product, o.type, o.validity, o.qty, o.price, o.trigger,
          o.protection_bp, o.tag, o.t_submit, o.t_activate, o.status, o.filled_qty, o.avg_price, o.reason)
-        for o in sorted(b.orders.values(), key=lambda o: o.order_id)])
+        for o in sorted(engine.day_orders().values(), key=lambda o: o.order_id)])
     _csv(folder / "order_events.csv", ORDER_EVENTS, b.order_events)
     _csv(folder / "fills.csv", FILLS, [(f.fill_id, f.order_id, f.t_ns, f.instrument_id, f.side, f.qty, f.price,
                                         f.evidence) for f in b.fills])
     _csv(folder / "charges.csv", CHARGES, [
         (n, c["kind"], c["order_id"], c["instrument_id"], c["trade_date"], c["turnover"], c["brokerage"], c["stt"],
          c["exchange"], c["sebi"], c["stamp"], c["gst"], c["dp"], c["other"], c["total"])
-        for n, c in enumerate(b.charges, start=1)])
+        for n, c in enumerate(b.charges, start=engine.charge_row_base + 1)])   # rows continue across days (VOL 5.2)
     _csv(folder / "positions_eod.csv", POSITIONS, engine.positions_eod)
     _csv(folder / "equity.csv", EQUITY, engine.equity)
     _csv(folder / "margin_daily.csv", MARGIN, getattr(engine, "margin_daily", []))

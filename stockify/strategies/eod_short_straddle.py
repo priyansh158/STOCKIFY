@@ -24,7 +24,7 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, encode_state
 
 
 class EodShortStraddle(Strategy):
@@ -35,7 +35,7 @@ class EodShortStraddle(Strategy):
         {'name': 'lots', 'label': 'Lots per option', 'type': 'int', 'default': 1, 'required': False, 'help': 'lots of each option sold'},
         {'name': 'stop_multiple', 'label': 'Stop at × premium', 'type': 'decimal', 'default': '1.5', 'required': False, 'help': 'buy back when the options cost this many times the premium'},
         {'name': 'min_days', 'label': 'Skip expiries closer than (days)', 'type': 'int', 'default': 1, 'required': False, 'help': 'skip expiries fewer than this many days away'},
-        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market orders, in basis points (5000 = 50 %)'},
+        {'name': 'protection_bp', 'label': 'Price band (basis points)', 'type': 'int', 'default': 5000, 'required': False, 'help': 'price band for the market orders, in basis points (5000 = 50 %)', 'min': '1', 'max': '10000', 'unit': 'basis points (5000 = 50 %)'},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001
@@ -55,6 +55,15 @@ class EodShortStraddle(Strategy):
         if self.pending_day != ctx.today():
             self.pending_day = ctx.today()
             ctx.schedule_at(ctx.now() + 1)                     # after every bar published at this moment
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the date `pending_day` as ISO text.
+    def save_state(self) -> dict:
+        d = self.pending_day
+        return encode_state(self, {**self.state_attrs(), "pending_day": d.isoformat() if d else None})
+
+    def load_state(self, state: dict) -> None:
+        super().load_state(state)
+        self.pending_day = date.fromisoformat(self.pending_day) if self.pending_day else None
 
     def _close(self, ctx, iid: int) -> int | None:  # noqa: ANN001
         bars = ctx.bars(iid, 86400, 1)

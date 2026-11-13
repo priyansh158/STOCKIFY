@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from stockify import timeutil
+from stockify.log import redact
 
 INDEX_SYMBOL = "NSE:NIFTY 50"
 WS_TIMEOUT_S = 15.0
@@ -38,6 +39,19 @@ def _err(e: BaseException) -> str:
 
 
 def _websocket(api_key: str, access_token: str, token: int) -> Check:
+    """One short-lived live connection, role `dev` in the connection budget (M5.14)."""
+    from stockify.daemon import conn_budget
+    try:
+        ticket = conn_budget.register("dev", limit=conn_budget.limit())
+    except conn_budget.BudgetExceeded as e:
+        return Check("websocket", False, str(e))
+    try:
+        return _websocket_check(api_key, access_token, token)
+    finally:
+        ticket.release()
+
+
+def _websocket_check(api_key: str, access_token: str, token: int) -> Check:
     from kiteconnect import KiteTicker
 
     frames: list[int] = []
@@ -56,12 +70,12 @@ def _websocket(api_key: str, access_token: str, token: int) -> Check:
                 got_tick.set()
 
     def on_error(ws, code, reason):  # noqa: ANN001
-        errors.append(f"{code} {reason}")
+        errors.append(f"{code} {redact(reason)}")
         got_tick.set()
 
     def on_close(ws, code, reason):  # noqa: ANN001
         if code not in (None, 1000):
-            errors.append(f"closed {code} {reason}")
+            errors.append(f"closed {code} {redact(reason)}")
         got_tick.set()
 
     kws.on_connect = on_connect

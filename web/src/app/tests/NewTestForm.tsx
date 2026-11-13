@@ -7,7 +7,7 @@ import { parseRupeesToPaise } from "@/lib/format";
 import { coerceParam, validateParams } from "@/lib/params";
 import { createTest } from "@/lib/tests";
 import type { Strategy, StrategyParam } from "@/lib/types";
-import { buttonStyle, Card } from "./ui";
+import { Field, Panel } from "@/components/ui";
 
 type Source = "day" | "minute" | "bhav" | "ticks";
 
@@ -25,18 +25,7 @@ const FILLS: { value: string; label: string }[] = [
   { value: "snapshot_ltp", label: "From last price (ticks, approximate)" },
 ];
 
-const inputClass = "min-h-11 w-full rounded-md border bg-transparent px-3 py-2 text-sm";
-const inputStyle = { borderColor: "rgba(0,255,65,0.25)", color: "var(--color-fg)", background: "var(--color-bg-soft)" };
-
-function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-sm" style={{ color: "var(--color-fg)" }}>{label}</span>
-      {children}
-      {help && <span className="text-xs" style={{ color: "var(--color-fg-muted)" }}>{help}</span>}
-    </label>
-  );
-}
+const inputClass = "stk-field";
 
 function defaultText(p: StrategyParam): string | boolean {
   if (p.type === "bool") return Boolean(p.default);
@@ -146,112 +135,114 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="stk-mono-tight min-h-11 w-full rounded-md border px-4 py-2" style={buttonStyle}>
-        + New test
-      </button>
+      <div>
+        <button type="button" onClick={() => setOpen(true)} className="stk-btn" data-tone="primary">
+          New test
+        </button>
+      </div>
     );
   }
 
   return (
-    <Card>
-      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-        <div className="flex items-center justify-between">
-          <h2 className="stk-mono-tight" style={{ color: "var(--color-green-soft)" }}>New test</h2>
-          <button type="button" onClick={() => setOpen(false)} className="min-h-11 px-3 text-sm" style={{ color: "var(--color-fg-muted)" }}>
+    <Panel>
+      <form onSubmit={submit} className="stk-stack-s" noValidate aria-label="New test">
+        <div className="stk-row-between">
+          <h2>New test</h2>
+          <button type="button" onClick={() => setOpen(false)} className="stk-btn" data-tone="quiet">
             Close
           </button>
         </div>
 
-        <Field label="Strategy" help={strategy?.doc}>
-          <select className={inputClass} style={inputStyle} value={ref} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
-            {strategies.map((s) => (
-              <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
-                {s.name}{s.kind === "cpp" ? " (C++)" : ""}
-              </option>
-            ))}
-          </select>
-        </Field>
+        <div className="stk-form">
+          <Field label="Strategy" help={strategy?.doc}>
+            <select className={inputClass} value={ref} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
+              {strategies.map((s) => (
+                <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
+                  {s.name}{s.kind === "cpp" ? " (C++)" : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
 
-        {(strategy?.params ?? []).map((p) => {
-          const v = values[p.name] ?? defaultText(p);
-          const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
-          if (p.type === "bool") {
+          {(strategy?.params ?? []).map((p) => {
+            const v = values[p.name] ?? defaultText(p);
+            const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
+            if (p.type === "bool") {
+              return (
+                <label key={p.name} className="stk-checkrow">
+                  <input type="checkbox" className="stk-check" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
+                    onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
+                  <span>{label}<span className="stk-label stk-block">{p.help}</span></span>
+                </label>
+              );
+            }
             return (
-              <label key={p.name} className="flex min-h-11 items-center gap-3">
-                <input type="checkbox" className="h-5 w-5" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
-                  onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
-                <span className="text-sm">{label}<span className="block text-xs" style={{ color: "var(--color-fg-muted)" }}>{p.help}</span></span>
-              </label>
+              <Field key={p.name} label={label} help={p.help}>
+                <input className={inputClass} value={String(v)} aria-invalid={bad.has(p.name)}
+                  inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
+                  placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
+                  onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
+              </Field>
             );
-          }
-          return (
-            <Field key={p.name} label={label} help={p.help}>
-              <input className={inputClass} style={inputStyle} value={String(v)} aria-invalid={bad.has(p.name)}
-                inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
-                placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
-                onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
-            </Field>
-          );
-        })}
+          })}
+        </div>
 
-        <Field label="Market data">
-          <select className={inputClass} style={inputStyle} value={source} onChange={(e) => pickSource(e.target.value as Source)}>
-            {SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
-        </Field>
-        <Field label="Symbols" help="comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
-          <input className={inputClass} style={inputStyle} value={symbols} aria-invalid={bad.has("instruments")} onChange={(e) => setSymbols(e.target.value)} />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="stk-form">
+          <Field label="Market data">
+            <select className={inputClass} value={source} onChange={(e) => pickSource(e.target.value as Source)}>
+              {SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Symbols" help="comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
+            <input className={inputClass} value={symbols} aria-invalid={bad.has("instruments")} onChange={(e) => setSymbols(e.target.value)} />
+          </Field>
+          <Field label="How orders fill">
+            <select className={inputClass} value={fill} aria-invalid={bad.has("fills")} onChange={(e) => setFill(e.target.value)}>
+              {FILLS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+            </select>
+          </Field>
           <Field label="Option chain of" help="e.g. NIFTY (optional)">
-            <input className={inputClass} style={inputStyle} value={chainUnderlying} onChange={(e) => setChainUnderlying(e.target.value)} />
+            <input className={inputClass} value={chainUnderlying} onChange={(e) => setChainUnderlying(e.target.value)} />
           </Field>
           <Field label="Strikes each side">
-            <input className={inputClass} style={inputStyle} inputMode="numeric" value={chainStrikes} aria-invalid={bad.has("strikes")} onChange={(e) => setChainStrikes(e.target.value)} />
+            <input className={inputClass} inputMode="numeric" value={chainStrikes} aria-invalid={bad.has("strikes")} onChange={(e) => setChainStrikes(e.target.value)} />
           </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
+          <Field label="Prices" help="adjusted: corrected for splits and bonuses; actual: as traded">
+            <select className={inputClass} value={basis} aria-invalid={bad.has("prices")} onChange={(e) => setBasis(e.target.value as "raw" | "adjusted")}>
+              <option value="adjusted">Adjusted</option>
+              <option value="raw">Actual (raw)</option>
+            </select>
+          </Field>
           <Field label="First day">
-            <input type="date" className={inputClass} style={inputStyle} value={from} aria-invalid={bad.has("dates")} onChange={(e) => setFrom(e.target.value)} />
+            <input type="date" className={inputClass} value={from} aria-invalid={bad.has("dates")} onChange={(e) => setFrom(e.target.value)} />
           </Field>
           <Field label="Last day">
-            <input type="date" className={inputClass} style={inputStyle} value={to} aria-invalid={bad.has("dates")} onChange={(e) => setTo(e.target.value)} />
+            <input type="date" className={inputClass} value={to} aria-invalid={bad.has("dates")} onChange={(e) => setTo(e.target.value)} />
           </Field>
-        </div>
-        <Field label="How orders fill">
-          <select className={inputClass} style={inputStyle} value={fill} aria-invalid={bad.has("fills")} onChange={(e) => setFill(e.target.value)}>
-            {FILLS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-          </select>
-        </Field>
-        <Field label="Prices" help="adjusted: corrected for splits and bonuses; actual: as traded">
-          <select className={inputClass} style={inputStyle} value={basis} aria-invalid={bad.has("prices")} onChange={(e) => setBasis(e.target.value as "raw" | "adjusted")}>
-            <option value="adjusted">Adjusted</option>
-            <option value="raw">Actual (raw)</option>
-          </select>
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
           <Field label="Starting money (₹)">
-            <input className={inputClass} style={inputStyle} inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
+            <input className={inputClass} data-fig inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
           </Field>
           <Field label="Seed" help="same seed, same result">
-            <input className={inputClass} style={inputStyle} inputMode="numeric" value={seed} aria-invalid={bad.has("seed")} onChange={(e) => setSeed(e.target.value)} />
+            <input className={inputClass} data-fig inputMode="numeric" value={seed} aria-invalid={bad.has("seed")} onChange={(e) => setSeed(e.target.value)} />
           </Field>
+          <label className="stk-checkrow stk-form-wide">
+            <input type="checkbox" className="stk-check" checked={allowUnverified} onChange={(e) => setAllowUnverified(e.target.checked)} />
+            <span>Allow charge rates not yet verified (the result is labelled)</span>
+          </label>
         </div>
-        <label className="flex min-h-11 items-center gap-3">
-          <input type="checkbox" className="h-5 w-5" checked={allowUnverified} onChange={(e) => setAllowUnverified(e.target.checked)} />
-          <span className="text-sm">Allow charge rates not yet verified (the result is labelled)</span>
-        </label>
 
         {problems.length > 0 && (
-          <ul role="alert" className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: "var(--color-red)", color: "var(--color-red-soft)" }}>
+          <ul role="alert" className="stk-problems">
             {problems.map((p) => <li key={p}>{p}</li>)}
           </ul>
         )}
 
-        <button type="submit" disabled={busy} className="stk-mono-tight min-h-11 rounded-md border px-4 py-2" style={buttonStyle}>
-          {busy ? "Starting…" : "Start test"}
-        </button>
+        <div>
+          <button type="submit" disabled={busy} className="stk-btn" data-tone="primary">
+            {busy ? "Starting…" : "Start test"}
+          </button>
+        </div>
       </form>
-    </Card>
+    </Panel>
   );
 }

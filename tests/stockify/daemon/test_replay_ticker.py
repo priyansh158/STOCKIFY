@@ -69,9 +69,9 @@ class ReplayTest(unittest.TestCase):
     def tearDown(self):
         self.source.close()
 
-    def replay_into_recorder(self, *, faults=None, modes=None):
+    def replay_into_recorder(self, *, faults=None, modes=None, **ticker_kw):
         clock = ReplayClock(t("09:14:59"))
-        ticker = ReplayTicker(LandingDB(DAY, readonly=True), clock, faults=faults)
+        ticker = ReplayTicker(LandingDB(DAY, readonly=True), clock, faults=faults, **ticker_kw)
         target = LandingDB(DAY, self.target_path)
         rec = Recorder(target, TOKENS.get, clock)
         rec.begin()
@@ -174,6 +174,72 @@ class FaultTests(ReplayTest):
         target, ticker, events = self.replay_into_recorder(faults=[parse_fault("kill@09:16:00", DAY)])
         self.assertTrue(ticker.killed)
         self.assertNotIn("close", [e[0] for e in events])
+        target.close()
+
+
+class ResumeTests(ReplayTest):
+    """GK 5.3 (D-71): a restarted replay goes on after the last frame the old process dispatched."""
+
+    def recv_times(self, target) -> list[int]:
+        return [r[0] for r in table(target, "SELECT DISTINCT recv_ns FROM packets ORDER BY recv_ns")]
+
+    def test_resume_skips_frames_at_or_below_the_mark(self):
+        mark = t("09:16:00") + 137_000                       # a recorded stamp
+        target, ticker, _ = self.replay_into_recorder(resume_after=(0, mark))
+        times = self.recv_times(target)
+        self.assertTrue(times and min(times) > mark)
+        every = [r[0] for r in table(self.source, "SELECT DISTINCT recv_ns FROM packets ORDER BY recv_ns")]
+        self.assertEqual(times, [x for x in every if x > mark])
+        beats = [r[0] for r in table(target, "SELECT minute_ns FROM heartbeats")]
+        self.assertTrue(all(b + 60 * SEC > mark for b in beats))
+        target.close()
+
+    def test_the_mark_compares_stamps_not_frame_numbers(self):
+        target, _, _ = self.replay_into_recorder(resume_after=(10 ** 9, t("09:16:00") + 137_000))
+        self.assertTrue(self.recv_times(target))               # a huge frame_no does not skip anything by itself
+        target.close()
+
+    def test_a_fault_duration_restart_resumes_at_t_plus_n(self):
+        target, ticker, events = self.replay_into_recorder(resume_not_before_ns=t("09:16:30"))
+        self.assertTrue(min(self.recv_times(target)) >= t("09:16:30"))
+        target.close()
+
+    def test_a_token_expiry_with_a_duration_says_where_the_restart_resumes(self):
+        target, ticker, _ = self.replay_into_recorder(faults=[parse_fault("token_expiry@09:16:00+120s", DAY)])
+        self.assertEqual(ticker.resume_at_ns, t("09:18:00"))
+        target.close()
+
+    def test_a_restart_given_the_same_faults_skips_the_ones_already_passed(self):      # XI 5.12, found by E-03
+        faults = [parse_fault("disconnect@09:16:00+30s", DAY), parse_fault("token_expiry@09:16:50+30s", DAY),
+                  parse_fault("kill@09:17:30", DAY)]
+        target, ticker, events = self.replay_into_recorder(faults=faults, resume_not_before_ns=t("09:17:20"),
+                                                           resume_after=(0, t("09:16:10")))
+        self.assertNotIn(("close", 1006), events)
+        self.assertNotIn(("error", 403), events)
+        self.assertTrue(ticker.killed)                      # the kill is after the resume point, so it stays armed
+        target.close()
+
+    def test_a_disconnect_with_a_duration_still_reconnects_in_process(self):
+        target, ticker, _ = self.replay_into_recorder(faults=[parse_fault("disconnect@09:16:00+30s", DAY)])
+        self.assertIsNone(ticker.resume_at_ns)
+        target.close()
+
+    def test_kill_runs_the_hook_then_terminates_before_the_first_frame_at_or_after_the_time(self):
+        order = []
+        target = LandingDB(DAY, self.target_path)
+        rec = Recorder(target, TOKENS.get, ReplayClock(t("09:14:59")))
+        rec.begin()
+        ticker = ReplayTicker(LandingDB(DAY, readonly=True), ReplayClock(t("09:14:59")),
+                              faults=[parse_fault("kill@09:16:00", DAY)], heartbeats=False)
+        ticker.subscribe([OPT, IDX])
+        ticker.set_mode(MODE_FULL, [OPT, IDX])
+        ticker.on_message = lambda ws, payload, binary: order.append(("frame", ticker.clock.now_ns()))
+        ticker.on_kill = lambda: order.append(("on_kill",))
+        ticker.terminate = lambda code: order.append(("terminate", code))
+        ticker.connect()
+        self.assertEqual(order[-2:], [("on_kill",), ("terminate", 137)])
+        frames = [x[1] for x in order if x[0] == "frame"]
+        self.assertTrue(frames and max(frames) < t("09:16:00"))
         target.close()
 
 

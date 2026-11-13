@@ -18,7 +18,8 @@ Defaults (all overridable in the YAML under `bundle:`):
 * `mis_cutoff`: none (no square-off) unless given, e.g. `{CM: "15:20", FO: "15:25"}`; `CM_CAS`
   (CAS stocks on their CAS days, Z-5) defaults to the CM time.
 * charges `zero`: every component zero; or explicit rows in the A1 §7.2 format.
-* policy: protection 200 bp, MIS margin CM 20 % / FO 100 %, no CNC sale hold-back.
+* policy: protection 200 bp, MIS margin CM 20 % of the value / FO 100 % of the NRML margin (the only
+  FO value the runners accept, D-80), no CNC sale hold-back.
 * margin: flat index 12 %, stock 20 %. Pricing: stale 5000 ms, risk-free 0.
 """
 from __future__ import annotations
@@ -137,9 +138,10 @@ def _instruments(g: dict, days: list[dict]) -> list[dict]:
 
 def _bundle_strategy(s: dict) -> dict:
     if s["kind"] == "python":
-        import importlib
-        import inspect
-        source = inspect.getsource(importlib.import_module(s["ref"].split(":")[0]))
+        # A golden file can name any strategy. Its source goes through the same check as every other way in
+        # (A2 §4.4), and is read without importing the module: none of its code runs here (LCB 5.13).
+        from stockify import strategy as strategy_mod
+        source = strategy_mod.checked_source(s["ref"].split(":")[0])
         return {"kind": "python", "ref": s["ref"], "params": s["params"],
                 "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest()}
     return {"kind": "script", "actions": s["actions"], "params": {},
@@ -147,6 +149,7 @@ def _bundle_strategy(s: dict) -> dict:
 
 
 def build_bundle(g: dict) -> dict:
+    from stockify import bundle as bundle_mod
     b = g["bundle"]
     run = {"schema": "stockify.run/1", "name": g["id"], "strategy": {"kind": "script", "actions": []},
            "data": {"packs": [{"sha256": "0" * 64}]}, "capital_paise": 10_000_000, "price_basis": "raw",
@@ -211,7 +214,8 @@ def build_bundle(g: dict) -> dict:
     if sqoff is not None:
         charges["components"]["auto_square_off_fee"] = [{"applies": {}, "effective_from": "2015-01-01",
                                                          "per_order_paise": sqoff, "plus_gst": b.get("sqoff_plus_gst", True)}]
-    out = {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
+    out = {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"],
+           "days": bundle_mod.apply_seed_mode(cfg, days),
            "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
            "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
            "packs": [], "strategy": _bundle_strategy(run["strategy"]),
@@ -266,6 +270,14 @@ def build_pack(g: dict, folder: Path) -> Path:
             t = ts(e["t"])
             rec = P.enc_refdata(iid, t, "price_band", {"instrument_id": iid, "lower_paise": e["lower"],
                                                        "upper_paise": e["upper"], "source": "golden"})
+            rank = 2
+        elif k == "MARGIN_REQUIREMENT":                  # MEZ 5.1: a journaled Kite margin answer (instrument 0)
+            t = ts(e["t"])
+            rec = P.enc_refdata(iid, t, "margin_requirement", e["payload"])
+            rank = 2
+        elif k == "STRATEGY_CONTROL":                    # D-70: a journaled pause or resume (instrument 0)
+            t = ts(e["t"])
+            rec = P.enc_refdata(0, t, "strategy_control", {"enabled": e["enabled"], "reasons": e.get("reasons", [])})
             rank = 2
         else:
             raise GoldenError(f"{g['id']}: unknown event kind {k}")
@@ -406,11 +418,19 @@ def _run_single(g: dict, impl: str) -> list[str]:
         from stockify.engine import run_bundle  # the C++ engine, same inputs and artifacts (M3.12)
     else:
         raise GoldenError(f"unknown implementation {impl!r}")
+    from stockify.strategy import StrategyCodeError
     with tempfile.TemporaryDirectory(prefix=f"golden-{g['id']}-") as tmp:
         folder = Path(tmp)
         pack = build_pack(g, folder)
-        bundle = build_bundle(g)
         expect_error = g.get("expect", {}).get("error")
+        try:
+            bundle = build_bundle(g)
+        except StrategyCodeError as e:
+            # The strategy's source failed the check (LCB 5.13): this golden fails, the later goldens and
+            # variants still run, and a golden written to document the refusal may expect it (LCB 5.17).
+            if expect_error and expect_error in str(e):
+                return []
+            return [f"strategy refused: {e}"]
         try:
             run_bundle(bundle, [pack], folder / "run", report=False)
         except Exception as e:                       # noqa: BLE001 — goldens may expect a failure

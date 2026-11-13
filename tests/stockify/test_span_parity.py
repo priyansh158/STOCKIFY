@@ -245,7 +245,7 @@ class SpanTrader(OptionTrader):
         if k == 0:                                      # a calendar: near and far futures, opposite sides
             side = "BUY" if rng.below(2) else "SELL"
             for iid, s in ((2, side), (3, "SELL" if side == "BUY" else "BUY")):
-                oid = ctx.place(iid, s, 75, "NRML", "MARKET", protection=5000)
+                oid = ctx.place(iid, s, 75, self.product(iid), "MARKET", protection=5000)
                 ctx.log("info", f"order {oid} {iid} {s} 75 {ctx.order(oid).status} funds {ctx.funds()!r}")
             return
         if k == 1:                                      # a single bought option
@@ -253,7 +253,7 @@ class SpanTrader(OptionTrader):
             if c and c.atm_strike_paise is not None:
                 by = {(r["strike_paise"], r["kind"]): r["instrument_id"] for r in c}
                 iid = by[(STRIKES[rng.below(len(STRIKES))], "CE" if rng.below(2) else "PE")]
-                oid = ctx.place(iid, "BUY", 75, "NRML", "MARKET", protection=5000)
+                oid = ctx.place(iid, "BUY", 75, self.product(iid), "MARKET", protection=5000)
                 ctx.log("info", f"order {oid} {iid} BUY 75 {ctx.order(oid).status} funds {ctx.funds()!r}")
             return
         super().on_tick(ctx, tick)

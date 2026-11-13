@@ -32,7 +32,7 @@
 
 namespace stocksim {
 
-class StaircaseMargin final : public MarginModel {
+class StaircaseMargin : public MarginModel {
  public:
     static constexpr const char* kNoSectionLabel = "margin_span:no_section";
 
@@ -43,7 +43,7 @@ class StaircaseMargin final : public MarginModel {
                       const std::function<std::optional<Paise>(InstrumentId)>& price,
                       const std::string& date) const override;
     Paise mis(std::string_view kind, Qty units, Paise price, const std::string& date) const override {
-        return flat_.mis(kind, units, price, date);  // MIS is the same rule under every model (A4 §6.5)
+        return flat_.mis(kind, units, price, date);  // MIS shares: the same rule under every model (A4 §6.5)
     }
     std::string label() const override { return "margin:" + model_; }
     std::vector<UnderlyingMargin> breakdown(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments,
@@ -57,11 +57,14 @@ class StaircaseMargin final : public MarginModel {
     std::string_view daily_model() const override { return model_; }
     const std::set<std::string>& used_labels() const override;
 
- private:
+ protected:
     using Legs = SpanLiteMargin::Legs;
     using Price = std::function<std::optional<Paise>(InstrumentId)>;
 
+    // The legs the staircase prices, per underlying (NRML FUT/CE/PE with an underlying, units != 0).
     std::map<InstrumentId, Legs> group(const std::vector<MarginLeg>& legs, const InstrumentTable& instruments) const;
+
+ private:
     UnderlyingMargin one(InstrumentId uid, const Legs& legs, const InstrumentTable& instruments, const Price& price,
                          const std::string& date, std::size_t floor = 0) const;
     UnderlyingMargin exact(InstrumentId uid, const Legs& legs, const Price& price, const std::string& date,

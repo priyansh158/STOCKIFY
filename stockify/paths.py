@@ -23,6 +23,16 @@ def lab_dir() -> Path:
     return _dir(stockify_paths.state_dir() / "lab")
 
 
+def daemon_lock_file() -> Path:
+    """The lock one daemon holds for its whole life (GK 5.1): a second daemon on this lab is refused."""
+    return lab_dir() / "daemon.lock"
+
+
+def daemon_status_file() -> Path:
+    """What the daemon last knew when it stopped (GK 5.1): the last frame it recorded, and why it stopped."""
+    return lab_dir() / "daemon_status.json"
+
+
 def refdata_db() -> Path:
     return lab_dir() / "refdata.sqlite"
 
@@ -113,7 +123,26 @@ def run_dir(run_id: str) -> Path:
 
 def journals_dir(session_id: str | None = None) -> Path:
     base = lab_dir() / "journals"
-    return _dir(base / session_id if session_id else base)
+    if session_id is None:
+        return _dir(base)
+    if not safe_segment(session_id, 128):
+        raise ValueError(f"not a valid session id: {session_id!r}")
+    return _dir(base / session_id)
+
+
+def journal_file(session_id: str, day: date) -> Path:
+    """A session's journal for one trading day (DM 5.1): `journals/<sid>/<YYYYMMDD>.evt`."""
+    return journals_dir(session_id) / f"{day:%Y%m%d}.evt"
+
+
+def day_bundle_file(session_id: str, day: date) -> Path:
+    """The bundle that day's engine was started with, beside its journal."""
+    return journals_dir(session_id) / f"{day:%Y%m%d}.bundle.json"
+
+
+def journal_day_dir(session_id: str, day: date) -> Path:
+    """The day's other files (run artifacts of the live engine), `journals/<sid>/<YYYYMMDD>/`."""
+    return _dir(journals_dir(session_id) / f"{day:%Y%m%d}")
 
 
 def logs_dir() -> Path:

@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import random
+import shutil
+import sqlite3
 import unittest
+from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 import pyarrow.parquet as pq
@@ -49,6 +55,104 @@ def record_day() -> LandingDB:
     return landing
 
 
+def record_packets(n: int) -> None:
+    """Add n LTP packets to the day's landing file, creating the file if it is not there."""
+    landing = LandingDB(DAY)
+    clock = ManualClock(timeutil.ist_ns(DAY, "09:15") + landing.max_seq() * SEC, 1_000)
+    rec = Recorder(landing, {EQ: 7}.get, clock)
+    rec.begin()
+    for i in range(n):
+        clock.advance(SEC)
+        rec.on_message(None, kp.build_frame([pf.ltp(EQ, 75_000 + i)]), True)
+        rec.process(rec.queue.get_nowait())
+    rec.flush()
+    landing.close()
+
+
+def drop_landing() -> None:
+    """Remove the day's landing file by hand (in the product only retention does this)."""
+    landing = paths.ticks_landing_file(DAY)
+    for p in (landing, landing.with_name(landing.name + "-wal"), landing.with_name(landing.name + "-shm")):
+        p.unlink(missing_ok=True)
+
+
+def landing_packets() -> int:
+    landing = LandingDB(DAY, readonly=True)
+    try:
+        return landing.packet_count()
+    finally:
+        landing.close()
+
+
+def archive_folder():
+    return paths.ticks_archive_dir() / f"date={DAY:%Y-%m-%d}"
+
+
+def archive_bytes() -> dict[str, bytes]:
+    """Every file of the day's archive: name -> content."""
+    return {p.name: p.read_bytes() for p in sorted(archive_folder().iterdir())}
+
+
+def archived_packets() -> int:
+    """Packets in the day's archive on disk; 0 when there is none."""
+    folder = archive_folder()
+    if not folder.exists():
+        return 0
+    return sum(pq.ParquetFile(folder / f"{name}.parquet").metadata.num_rows for name in ("full", "quote", "index"))
+
+
+def tick_days_row() -> dict | None:
+    row = refdata._connect().execute("SELECT * FROM tick_days WHERE trade_date=?", (DAY.isoformat(),)).fetchone()
+    return None if row is None else dict(row)
+
+
+def archive_rows() -> set:
+    """Every packet in the day's archive as (seq, frame_no, instrument_id, raw); empty when there is none."""
+    folder = archive_folder()
+    if not (folder / "meta.json").exists():
+        return set()
+    return {(seq, frame_no, iid, bytes(raw)) for seq, frame_no, iid, raw in compact._iter_archive(folder)}
+
+
+def landing_rows() -> set:
+    """Every packet in the day's landing file, in the same form; empty when there is no file."""
+    path = paths.ticks_landing_file(DAY)
+    if not path.exists():
+        return set()
+    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        return {(seq, frame_no, iid, bytes(raw)) for seq, frame_no, iid, raw in
+                conn.execute("SELECT seq, frame_no, instrument_id, raw FROM packets")}
+    finally:
+        conn.close()
+
+
+def archive_dir_names() -> list[str]:
+    """Everything in the archive folder: after a run, only the day's archive may be there."""
+    return sorted(p.name for p in paths.ticks_archive_dir().iterdir())
+
+
+def whole(folder) -> bool:
+    """A whole archive: a readable meta.json and every file it lists."""
+    try:
+        meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return all((folder / name).is_file() for name in meta["files"])
+
+
+def failing_rename(fails):
+    """Path.rename that raises, as Windows does for a folder with an open file, when fails(source, target)."""
+    real = Path.rename
+
+    def rename(path, new):
+        if fails(path, Path(new)):
+            raise PermissionError(13, "in use", str(path))
+        return real(path, new)
+
+    return patch.object(Path, "rename", rename)
+
+
 class CompactTest(unittest.TestCase):
     def setUp(self):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
@@ -64,6 +168,17 @@ class CompactTest(unittest.TestCase):
 
     def folder(self):
         return paths.ticks_archive_dir() / f"date={DAY:%Y-%m-%d}"
+
+    @contextmanager
+    def logs(self, level: str):
+        """assertLogs on the compaction logger (tests/run_tests.py silences logging; re-enable it meanwhile)."""
+        previous = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        try:
+            with self.assertLogs("stockify.data.compact", level=level) as captured:
+                yield captured
+        finally:
+            logging.disable(previous)
 
 
 class ArchiveTests(CompactTest):
@@ -117,6 +232,14 @@ class ArchiveTests(CompactTest):
         self.assertEqual(second.counts, {})                           # skipped, not rebuilt
         third = compact.compact(DAY, force=True)
         self.assertEqual((third.status, third.digest), ("verified", first.digest))
+
+    def test_a_temporary_folder_left_by_a_first_compaction_is_cleared(self):
+        tmp = compact._tmp(archive_folder())
+        tmp.mkdir(parents=True)
+        (tmp / "full.parquet").write_bytes(b"cut short")
+        res = compact.compact(DAY)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
 
     def test_no_landing_file(self):
         self.assertEqual(compact.compact(date(2026, 11, 11)).status, "no_landing")
@@ -173,6 +296,582 @@ class VerificationTests(CompactTest):
         self.assertEqual(row["status"], "landing")
 
 
+class ArchiveKeptTests(CompactTest):
+    """I-13: once a day is archived, no later compaction makes the archive smaller."""
+
+    def setUp(self):
+        super().setUp()
+        self.first = compact.compact(DAY)
+        self.assertEqual((self.first.status, self.first.packets), ("verified", 701))
+
+    def retain(self):
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertEqual(tick_days_row()["status"], "landing_deleted")
+
+    def state(self):
+        return archive_bytes(), tick_days_row()
+
+    def assert_no_leftovers(self):
+        self.assertEqual([p.name for p in paths.ticks_archive_dir().iterdir()], [archive_folder().name])
+
+    def test_an_empty_landing_file_after_retention_never_replaces_the_archive(self):
+        self.retain()
+        before = self.state()
+        LandingDB(DAY).close()                       # what a daemon restart after the close left behind
+        with self.logs("WARNING") as logs:
+            again = compact.compact(DAY)
+            self.assertEqual(self.state(), before)                                     # bytes, meta.json, row
+        self.assertEqual((again.status, again.digest, again.packets, again.archive_path),
+                         ("verified", self.first.digest, 701, str(archive_folder())))
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())                        # the stray file is left
+        self.assertIn("landing file", again.error)
+        self.assertTrue(any(str(paths.ticks_landing_file(DAY)) in line for line in logs.output), logs.output)
+        self.assert_no_leftovers()
+        self.assertEqual(compact.apply_retention(DAY), [])                             # retention leaves it too
+        self.assertTrue(paths.ticks_landing_file(DAY).exists())
+        self.assertEqual(self.state(), before)
+
+    def test_a_stray_landing_file_with_packets_is_left_and_reported_too(self):
+        self.retain()
+        before = self.state()
+        record_packets(12)
+        with self.logs("WARNING"):
+            again = compact.compact(DAY)
+        self.assertEqual((again.status, again.packets), ("verified", 701))
+        self.assertIn("12 packets", again.error)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(landing_packets(), 12)
+
+    def test_a_verified_day_is_not_rebuilt_from_a_recreated_landing_file(self):
+        before = self.state()
+        drop_landing()
+        LandingDB(DAY).close()
+        again = compact.compact(DAY)
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", self.first.digest, 701))
+        self.assertEqual(self.state(), before)
+
+    def test_force_never_replaces_the_archive_with_a_smaller_one(self):
+        self.retain()
+        before = self.state()
+        record_packets(12)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+            self.assertEqual(self.state(), before)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertIn("12", res.error)
+        self.assert_no_leftovers()                                                     # its own .tmp is gone
+        self.assertEqual(landing_packets(), 12)                                        # the landing file is kept
+
+    def test_force_on_a_verified_day_refuses_a_smaller_landing_file(self):
+        before = self.state()
+        drop_landing()
+        record_packets(700)
+        res = compact.compact(DAY, force=True)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertIn("700", res.error)
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+
+    def test_force_rebuilds_when_the_landing_file_has_grown(self):
+        record_packets(5)                                                              # late frames
+        res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets), ("verified", 706))
+        self.assertEqual(archived_packets(), 706)
+        self.assertEqual(tick_days_row()["packets"], 706)
+
+    def test_a_day_back_at_status_landing_still_keeps_its_larger_archive(self):
+        # apply_retention puts a day back to 'landing' when re-verification fails; the archive is still on disk.
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        before = self.state()
+        drop_landing()
+        record_packets(3)
+        res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+
+    def test_a_forced_run_that_fails_verification_leaves_the_row_and_the_archive(self):
+        record_packets(5)                                                              # late frames
+        before = self.state()
+        with patch.object(compact, "verify", side_effect=compact.CompactionError("boom")), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("boom", res.error)                                               # reported in the result only
+        self.assertEqual(self.state(), before)                                         # status, packets, digest: all
+        self.assert_no_leftovers()
+        again = compact.compact(DAY)                                                   # the routine run after it
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", self.first.digest, 701))
+        self.assertEqual(self.state(), before)
+        self.assertEqual(landing_packets(), 706)
+
+    def test_a_failed_forced_run_does_not_open_a_retained_day_to_the_routine_run(self):
+        self.retain()
+        before = self.state()
+        record_packets(701)                                    # a stray file: as many packets, none of them the day's
+        with patch.object(compact, "verify", side_effect=compact.CompactionError("boom")), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual(res.status, "failed")
+        self.assertEqual(self.state(), before)
+        with self.logs("WARNING"):
+            again = compact.compact(DAY)
+        self.assertEqual((again.status, again.digest, again.packets), ("verified", self.first.digest, 701))
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), 701)
+
+    def test_a_failed_run_on_a_day_back_at_status_landing_leaves_the_row_too(self):
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        before = self.state()
+        with patch.object(compact, "verify", side_effect=compact.CompactionError("boom")), self.logs("ERROR"):
+            res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertEqual(self.state(), before)                                         # archive_path is still there
+        self.assert_no_leftovers()
+
+    def test_a_forced_run_on_a_landing_file_that_cannot_be_read_leaves_the_row_and_the_archive(self):
+        before = self.state()
+        drop_landing()
+        paths.ticks_landing_file(DAY).write_bytes(b"not a database, " * 300)
+        with self.assertRaises(sqlite3.DatabaseError):
+            compact.compact(DAY, force=True)
+        self.assertEqual(self.state(), before)
+        self.assertEqual(compact.compact(DAY).status, "verified")
+        self.assertEqual(self.state(), before)
+
+    def unreadable_counts(self):
+        """The archive's meta.json is damaged and its Parquet footers cannot be read (a sharing violation)."""
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        return patch.object(compact.pq, "read_metadata", side_effect=OSError("sharing violation"))
+
+    def test_an_archive_whose_packet_count_cannot_be_read_is_never_replaced(self):
+        with refdata.transaction() as conn:                    # what retention sets when re-verification fails
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        drop_landing()
+        LandingDB(DAY).close()                                 # an empty landing file
+        unreadable = self.unreadable_counts()
+        before = self.state()
+        for force in (False, True):
+            with unreadable, self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assertEqual(res.status, "failed", f"force={force}: {res}")
+            self.assertIn(str(archive_folder()), res.error)                            # it names the folder
+            self.assertEqual(self.state(), before)
+            self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), 0)
+
+    def test_it_is_not_replaced_by_a_larger_landing_file_either(self):
+        record_packets(19)
+        unreadable = self.unreadable_counts()
+        before = self.state()
+        for force in (False, True):
+            with refdata.transaction() as conn:
+                conn.execute("UPDATE tick_days SET status=? WHERE trade_date=?",
+                             ("verified" if force else "landing", DAY.isoformat()))
+            row = tick_days_row()
+            with unreadable, self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assertEqual(res.status, "failed", f"force={force}: {res}")
+            self.assertIn(str(archive_folder()), res.error)
+            self.assertEqual((archive_bytes(), tick_days_row()), (before[0], row))
+            self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), 720)
+
+    def test_a_readable_meta_json_is_enough_to_rebuild_a_damaged_archive(self):
+        quote = archive_folder() / "quote.parquet"
+        quote.write_bytes(quote.read_bytes()[:200])                                    # its footer is gone
+        res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        compact.verify(archive_folder(), self.first.digest, 701)
+        self.assert_no_leftovers()
+
+    def test_readable_footers_are_enough_when_meta_json_is_damaged(self):
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        compact.verify(archive_folder(), self.first.digest, 701)
+        self.assert_no_leftovers()
+
+    def test_the_floor_of_a_day_back_at_status_landing_holds_when_its_archive_is_gone(self):
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        row = tick_days_row()
+        shutil.rmtree(archive_folder())
+        drop_landing()
+        record_packets(3)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertEqual(tick_days_row(), row)
+        self.assertEqual(list(paths.ticks_archive_dir().iterdir()), [])
+
+    def assert_another_recording_is_refused(self, res, before, packets):
+        landing = paths.ticks_landing_file(DAY)
+        self.assertEqual(res.status, "failed", res)
+        self.assertIn(str(archive_folder()), res.error)                                # it names both
+        self.assertIn(str(landing), res.error)
+        self.assertEqual(self.state(), before)
+        self.assert_no_leftovers()
+        self.assertEqual(landing_packets(), packets)                                   # and keeps both
+
+    def test_force_refuses_a_landing_file_that_does_not_start_with_the_archived_packets(self):
+        self.retain()
+        before = self.state()
+        record_packets(720)                                    # another recording: more packets, none the day's
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_another_recording_is_refused(res, before, 720)
+        self.assertIn(self.first.digest, res.error)
+
+    def test_force_refuses_another_recording_of_the_same_size(self):
+        before = self.state()
+        drop_landing()
+        record_packets(701)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_another_recording_is_refused(res, before, 701)
+
+    def test_a_day_back_at_status_landing_is_not_rebuilt_from_another_recording(self):
+        with refdata.transaction() as conn:
+            conn.execute("UPDATE tick_days SET status='landing' WHERE trade_date=?", (DAY.isoformat(),))
+        before = self.state()
+        drop_landing()
+        record_packets(720)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY)                                                 # no force is needed here
+        self.assert_another_recording_is_refused(res, before, 720)
+
+    def test_the_row_identifies_the_archive_when_its_meta_json_cannot_be_read(self):
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        before = self.state()
+        drop_landing()
+        record_packets(720)
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_another_recording_is_refused(res, before, 720)
+
+    def test_an_archive_that_nothing_identifies_is_not_replaced(self):
+        (archive_folder() / "meta.json").write_text("{", encoding="utf-8")
+        with refdata.transaction() as conn:
+            conn.execute("DELETE FROM tick_days")
+        before = self.state()
+        for force in (False, True):
+            with self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assert_another_recording_is_refused(res, before, 701)
+
+    def test_a_lost_archive_is_not_papered_over_by_a_smaller_landing_file(self):
+        self.retain()
+        row = tick_days_row()
+        shutil.rmtree(archive_folder())
+        LandingDB(DAY).close()
+        res = compact.compact(DAY)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("701", res.error)
+        self.assertEqual(tick_days_row(), row)                 # the row still says what the day held
+        self.assertEqual(list(paths.ticks_archive_dir().iterdir()), [])
+
+
+class ReplacementTests(CompactTest):
+    """I-13: an archive is replaced by setting the old one aside, moving the new one in, checking it and
+    recording it; only then is the old one removed. A step that fails puts the old archive back."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(compact.compact(DAY).status, "verified")
+        record_packets(19)                                   # late frames: the landing file now holds 720
+        self.before = (archive_bytes(), tick_days_row())
+
+    def assert_the_old_archive_is_still_the_record(self, res):
+        self.assertEqual(res.status, "failed", res)
+        self.assertEqual((archive_bytes(), tick_days_row()), self.before)
+        row = tick_days_row()
+        compact.verify(archive_folder(), row["digest"], row["packets"])            # whole, and it still verifies
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+        self.assertEqual(landing_packets(), 720)
+
+    def test_an_archive_with_a_file_open_in_it_is_neither_replaced_nor_damaged(self):
+        with open(archive_folder() / "quote.parquet", "rb"):                       # a reader: the API, a replay
+            with self.logs("ERROR"):
+                res = compact.compact(DAY, force=True)
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn(str(archive_folder()), res.error)
+        again = compact.compact(DAY, force=True)                                   # the reader is gone
+        self.assertEqual((again.status, again.packets, archived_packets()), ("verified", 720, 720))
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+    def test_a_new_archive_that_cannot_be_moved_into_place_leaves_the_old_one(self):
+        with failing_rename(lambda source, target: source.name.endswith(".tmp")), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn("in use", res.error)
+
+    def test_a_new_archive_that_fails_its_check_in_place_is_taken_out_again(self):
+        real, checked = compact.verify, []
+
+        def verify(folder, digest, rows):
+            checked.append(folder)
+            if len(checked) > 1:
+                raise compact.CompactionError("full.parquet changed after it was written")
+            return real(folder, digest, rows)
+
+        with patch.object(compact, "verify", verify), self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual(checked[1:], [archive_folder()])                          # checked where it now lives
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn("full.parquet changed after it was written", res.error)
+
+    def test_a_new_archive_that_cannot_be_recorded_is_taken_out_again(self):
+        with patch.object(compact, "_record", side_effect=sqlite3.OperationalError("database is locked")), \
+                self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+        self.assert_the_old_archive_is_still_the_record(res)
+        self.assertIn("database is locked", res.error)
+
+    def test_at_every_step_of_a_replacement_a_whole_archive_is_in_place_or_set_aside(self):
+        gaps = []
+        real_rename, real_rmtree = Path.rename, shutil.rmtree
+
+        def check(step):
+            folders = [p for p in paths.ticks_archive_dir().iterdir() if not p.name.endswith(".tmp")]
+            if not any(whole(p) for p in folders):
+                gaps.append(step)
+
+        def rename(path, new):
+            out = real_rename(path, new)
+            check(f"after moving {path.name} to {Path(new).name}")
+            return out
+
+        def rmtree(path, *args, **kwargs):
+            out = real_rmtree(path, *args, **kwargs)
+            check(f"after removing {Path(path).name}")
+            return out
+
+        with patch.object(Path, "rename", rename), patch.object(shutil, "rmtree", rmtree):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 720, ""))
+        self.assertEqual(gaps, [])
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+    def test_an_old_archive_that_cannot_be_removed_stays_aside_and_goes_on_the_next_run(self):
+        real = shutil.rmtree
+
+        def rmtree(path, *args, **kwargs):
+            path = Path(path)
+            if not path.name.endswith(".tmp") and (path / "quote.parquet").exists():
+                for f in sorted(path.iterdir()):                                   # Windows: quote.parquet is open
+                    if f.name == "quote.parquet":
+                        raise PermissionError(32, "in use", str(f))
+                    f.unlink()
+            return real(path, *args, **kwargs)
+
+        with patch.object(shutil, "rmtree", rmtree), self.logs("WARNING"):
+            res = compact.compact(DAY, force=True)
+        self.assertEqual((res.status, res.packets), ("verified", 720), res)
+        row = tick_days_row()
+        self.assertEqual((row["status"], row["packets"], row["digest"]), ("verified", 720, res.digest))
+        compact.verify(archive_folder(), row["digest"], row["packets"])            # the new archive is whole
+        left = [p for p in paths.ticks_archive_dir().iterdir() if p != archive_folder()]
+        self.assertEqual(len(left), 1)
+        self.assertIn(str(left[0]), res.error)                                     # it says where the old one is
+        after = (archive_bytes(), tick_days_row())
+        again = compact.compact(DAY)
+        self.assertEqual((again.status, again.packets), ("verified", 720))
+        self.assertEqual((archive_bytes(), tick_days_row()), after)
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+
+class RecoveryTests(CompactTest):
+    """I-13: a replacement that was interrupted is undone by the next run, before anything else."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(compact.compact(DAY).status, "verified")
+        self.before = (archive_bytes(), tick_days_row())
+        self.aside = compact._aside(archive_folder())
+
+    def assert_restored(self, res):
+        self.assertEqual((res.status, res.packets, res.digest),
+                         ("verified", 701, self.before[1]["digest"]), res)
+        self.assertIn(str(self.aside), res.error)                                  # the result says what it did
+        self.assertIn("put back", res.error)
+        self.assertEqual(archive_bytes(), self.before[0])
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+
+    def test_the_set_aside_name_is_not_read_as_a_day(self):
+        self.assertEqual(self.aside.parent, archive_folder().parent)
+        self.assertFalse(self.aside.name.startswith("date="))                      # ticks.available_days globs date=*
+
+    def test_an_archive_left_set_aside_is_put_back_first(self):
+        archive_folder().rename(self.aside)                                        # stopped before the move in
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+
+    def test_it_is_put_back_for_a_day_whose_landing_file_is_gone_too(self):
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        row = tick_days_row()
+        archive_folder().rename(self.aside)
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), row)
+
+    def test_an_incomplete_archive_folder_gives_way_to_the_set_aside_copy(self):
+        shutil.copytree(archive_folder(), self.aside)
+        for name in ("full.parquet", "meta.json"):                                 # what a part-way removal left
+            (archive_folder() / name).unlink()
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+
+    def test_a_set_aside_copy_is_kept_when_the_archive_in_place_does_not_hash_to_its_digest(self):
+        shutil.copytree(archive_folder(), self.aside)
+        real = compact.verify
+
+        def verify(folder, *args, **kwargs):                                       # meta.json says "verified",
+            if Path(folder) == archive_folder():                                   # the packets say otherwise
+                raise compact.CompactionError("archive digest does not match the landing file")
+            return real(folder, *args, **kwargs)
+
+        with patch.object(compact, "verify", verify), self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+
+    def test_a_replacement_stopped_before_it_was_recorded_is_undone(self):
+        record_packets(19)
+        with patch.object(compact, "_record", side_effect=KeyboardInterrupt):      # the process died right here
+            with self.assertRaises(KeyboardInterrupt):
+                compact.compact(DAY, force=True)
+        self.assertEqual(archived_packets(), 720)                                  # the new one is in place,
+        self.assertTrue(whole(self.aside))                                         # the old one set aside,
+        self.assertEqual(tick_days_row(), self.before[1])                          # and the row describes the old one
+        with self.logs("WARNING"):
+            res = compact.compact(DAY)
+        self.assert_restored(res)
+        self.assertEqual(tick_days_row(), self.before[1])
+        self.assertEqual(landing_packets(), 720)
+
+    def test_retention_puts_a_set_aside_archive_back_before_it_deletes_the_landing_file(self):
+        archive_folder().rename(self.aside)
+        with self.logs("WARNING") as logs:
+            self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertTrue(any(str(self.aside) in line and "put back" in line for line in logs.output), logs.output)
+        self.assertEqual(archive_bytes(), self.before[0])
+        self.assertEqual(archive_dir_names(), [archive_folder().name])
+        self.assertEqual(tick_days_row(), dict(self.before[1], status="landing_deleted"))
+        self.assertFalse(paths.ticks_landing_file(DAY).exists())
+
+    def test_a_whole_archive_in_the_temporary_folder_is_not_deleted_while_the_day_has_none(self):
+        tmp = compact._tmp(archive_folder())
+        archive_folder().rename(tmp)               # an older version stopped between removing the old and moving in
+        left = {p.name: p.read_bytes() for p in tmp.iterdir()}
+        for force in (False, True):
+            with self.logs("ERROR"):
+                res = compact.compact(DAY, force=force)
+            self.assertEqual(res.status, "failed", res)
+            self.assertIn(str(tmp), res.error)
+            self.assertEqual({p.name: p.read_bytes() for p in tmp.iterdir()}, left)
+            self.assertEqual(tick_days_row(), self.before[1])
+        self.assertEqual(landing_packets(), 701)
+        tmp.rename(archive_folder())                                               # what the message asks for
+        res = compact.compact(DAY)
+        self.assertEqual((res.status, res.packets, res.error), ("verified", 701, ""))
+        self.assertEqual(archive_bytes(), self.before[0])
+
+    def test_an_incomplete_set_aside_copy_with_no_archive_is_reported_and_nothing_is_touched(self):
+        archive_folder().rename(self.aside)
+        for name in ("full.parquet", "meta.json"):
+            (self.aside / name).unlink()
+        left = {p.name: p.read_bytes() for p in self.aside.iterdir()}
+        with self.logs("ERROR"):
+            res = compact.compact(DAY, force=True)
+            self.assertEqual(compact.apply_retention(DAY), [])
+        self.assertEqual(res.status, "failed")
+        self.assertIn(str(self.aside), res.error)
+        self.assertEqual({p.name: p.read_bytes() for p in self.aside.iterdir()}, left)
+        self.assertEqual(archive_dir_names(), [self.aside.name])
+        self.assertEqual(tick_days_row(), self.before[1])
+        self.assertEqual(landing_packets(), 701)
+
+
+class NeverShrinksPropertyTests(unittest.TestCase):
+    """Properties (I-13), whatever happens to the landing file:
+
+    * the day's archived packet count never goes down, and no packet that was archived leaves the archive;
+    * once the day is `verified` or `landing_deleted`, only a forced run changes the archive's bytes or its
+      tick_days row (retention alone may move the status from `verified` to `landing_deleted`);
+    * no step but a hand deletion of the landing file (`recreate`) loses a packet: what the landing file held
+      before a step is afterwards in the landing file or in the archive.
+    """
+
+    OPS = ("record", "compact", "retain", "recreate", "compact", "force")
+    SEEDS = 40
+    MOST = 12                                    # packets per step: small, so smaller, equal and larger all occur
+
+    def setUp(self):
+        over = patch.object(compact, "session_over", return_value=True)
+        over.start()
+        self.addCleanup(over.stop)
+        self.addCleanup(support.reset_sqlite_singleton, refdata)
+
+    def step(self, op: str, rng: random.Random) -> str:
+        if op == "record":
+            n = rng.randint(0, self.MOST)
+            record_packets(n)
+            return f"record {n}"
+        if op == "recreate":
+            m = rng.randint(0, self.MOST)
+            drop_landing()
+            record_packets(m) if m else LandingDB(DAY).close()
+            return f"recreate {m}"
+        if op == "retain":
+            return f"retain -> {compact.apply_retention(DAY)}"
+        res = compact.compact(DAY, force=op == "force")
+        return f"{op} -> {res.status} {res.packets}"
+
+    @staticmethod
+    def snapshot() -> dict:
+        return {"packets": archived_packets(), "files": archive_bytes() if archive_folder().exists() else {},
+                "row": tick_days_row(), "archived": archive_rows(), "landing": landing_rows()}
+
+    def test_an_archived_day_only_grows_and_only_under_force(self):
+        for seed in range(self.SEEDS):
+            rng = random.Random(seed)
+            support.fresh_cache_dir(f"never_shrinks_{seed}")
+            support.reset_sqlite_singleton(refdata)
+            trace = []
+            ops = ["record"] + [rng.choice(self.OPS) for _ in range(rng.randint(5, 14))]
+            for op in ops:
+                before = self.snapshot()
+                trace.append(self.step(op, rng))
+                after = self.snapshot()
+                where = f"seed {seed}: {trace}"
+                self.assertGreaterEqual(after["packets"], before["packets"], where)
+                self.assertLessEqual(before["archived"], after["archived"], where)     # nothing leaves the archive
+                if before["packets"]:
+                    self.assertTrue((archive_folder() / "meta.json").exists(), where)
+                if op != "recreate":
+                    self.assertLessEqual(before["landing"], after["landing"] | after["archived"], where)
+                row = before["row"]
+                if op != "force" and row and row["status"] in ("verified", "landing_deleted") and before["files"]:
+                    self.assertEqual(after["files"], before["files"], where)           # not one byte of it
+                    if op == "retain" and row["status"] == "verified":
+                        row = dict(row, status=after["row"]["status"])
+                        self.assertIn(row["status"], ("verified", "landing_deleted"), where)
+                    self.assertEqual(after["row"], row, where)
+            self.assertEqual(archive_dir_names(), [archive_folder().name] if archive_folder().exists() else [],
+                             f"seed {seed}: {trace}")
+
+
 class RetentionTests(CompactTest):
     def storage(self, days):
         return patch.object(compact.loader, "load_json",
@@ -214,6 +913,111 @@ class RetentionTests(CompactTest):
         self.assertTrue(paths.ticks_landing_file(DAY).exists())
         row = refdata._connect().execute("SELECT status FROM tick_days").fetchone()
         self.assertEqual(row["status"], "landing")
+
+    def assert_kept(self):
+        landing = paths.ticks_landing_file(DAY)
+        with self.logs("WARNING") as logs:
+            self.assertEqual(compact.apply_retention(DAY), [])                         # reported as not deleted
+        self.assertTrue(landing.exists())
+        self.assertTrue(any("701" in line and str(landing) in line for line in logs.output), logs.output)
+        row = refdata._connect().execute("SELECT status, packets FROM tick_days").fetchone()
+        self.assertEqual((row["status"], row["packets"]), ("verified", 701))
+        self.assertTrue((self.folder() / "meta.json").exists())
+        self.assert_only_the_landing_file_is_left()
+
+    def assert_only_the_landing_file_is_left(self):
+        """Nothing renamed aside stays behind: the landing folder holds the landing file (and its WAL parts)."""
+        name = paths.ticks_landing_file(DAY).name
+        left = {p.name for p in paths.ticks_landing_dir().iterdir()}
+        self.assertLessEqual(left, {name, name + "-wal", name + "-shm"})
+
+    def test_a_landing_file_with_more_packets_than_the_archive_is_kept(self):
+        compact.compact(DAY)
+        record_packets(3)                                                              # frames after compaction
+        self.assert_kept()
+        self.assertEqual(landing_packets(), 704)
+
+    def test_a_landing_file_with_fewer_packets_than_the_archive_is_kept(self):
+        compact.compact(DAY)
+        drop_landing()
+        LandingDB(DAY).close()
+        self.assert_kept()
+        self.assertEqual(landing_packets(), 0)
+
+    def test_a_landing_file_that_cannot_be_counted_is_kept(self):
+        compact.compact(DAY)
+        drop_landing()
+        junk = b"not a database, " * 300
+        paths.ticks_landing_file(DAY).write_bytes(junk)
+        self.assert_kept()
+        self.assertEqual(paths.ticks_landing_file(DAY).read_bytes(), junk)
+
+    def test_the_packets_are_counted_in_the_file_that_is_then_deleted(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        real, counted = compact._landing_packets, []
+
+        def count(path):
+            counted.append((path, landing.exists()))
+            return real(path)
+
+        with patch.object(compact, "_landing_packets", count):
+            self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertEqual(len(counted), 1)
+        path, landing_was_there = counted[0]
+        self.assertNotEqual(path, landing)                     # renamed aside first: nothing can write to it
+        self.assertEqual(path.parent, landing.parent)
+        self.assertFalse(landing_was_there)
+        self.assertEqual(list(paths.ticks_landing_dir().iterdir()), [])
+
+    def test_a_landing_file_that_another_process_has_open_is_kept(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        other = sqlite3.connect(str(landing))                  # the recorder, still flushing
+        try:
+            self.assertEqual(other.execute("SELECT COUNT(*) FROM packets").fetchone()[0], 701)
+            self.assert_kept()
+            self.assertEqual(other.execute("SELECT COUNT(*) FROM packets").fetchone()[0], 701)
+        finally:
+            other.close()
+        self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])              # it has let go
+        self.assertEqual(list(paths.ticks_landing_dir().iterdir()), [])
+
+    def test_a_landing_file_left_renamed_by_an_interrupted_run_is_put_back_and_judged_again(self):
+        compact.compact(DAY)
+        record_packets(3)
+        landing = paths.ticks_landing_file(DAY)
+        landing.rename(compact._retiring(landing))             # stopped between the rename and the count
+        self.assert_kept()
+        self.assertEqual(landing_packets(), 704)
+
+    def test_a_matching_file_left_renamed_by_an_interrupted_run_is_deleted(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        landing.rename(compact._retiring(landing))
+        with self.logs("WARNING"):
+            self.assertEqual(compact.apply_retention(DAY), [DAY.isoformat()])
+        self.assertEqual(list(paths.ticks_landing_dir().iterdir()), [])
+        self.assertEqual(tick_days_row()["status"], "landing_deleted")
+
+    def test_a_renamed_file_and_a_new_landing_file_are_both_kept(self):
+        compact.compact(DAY)
+        landing = paths.ticks_landing_file(DAY)
+        aside = compact._retiring(landing)
+        landing.rename(aside)
+        LandingDB(DAY).close()                                 # a restart made a new, empty landing file
+        with self.logs("WARNING") as logs:
+            self.assertEqual(compact.apply_retention(DAY), [])
+        self.assertTrue(any(str(aside) in line and str(landing) in line for line in logs.output), logs.output)
+        self.assertTrue(aside.exists())
+        self.assertEqual(landing_packets(), 0)
+        self.assertEqual(tick_days_row()["status"], "verified")
+
+    def test_the_renamed_name_is_not_read_as_a_landing_file(self):
+        landing = paths.ticks_landing_file(DAY)
+        aside = compact._retiring(landing)
+        self.assertEqual(aside.parent, landing.parent)
+        self.assertFalse(aside.match("ticks_*.sqlite"))                                # ticks.available_days
 
     def test_a_day_still_being_recorded_is_never_touched(self):
         with patch.object(compact, "session_over", return_value=False):

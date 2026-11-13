@@ -27,7 +27,7 @@ from datetime import date as _date
 from stockify import numerics, timeutil
 from stockify.oracle import costs as costs_mod
 from stockify.oracle.ledger import Ledger
-from stockify.oracle.margin import FlatMargin
+from stockify.oracle.margin import DERIVATIVES, FlatMargin
 from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, participation_cap, path_points, protection_limit,
                                      slipped)
 from stockify.oracle.orders import ACTIVE, FINAL, SYSTEM_TAGS, Fill, FillView, Order, OrderView
@@ -47,6 +47,30 @@ class RunError(RuntimeError):
     pass
 
 
+def check_strategy_control(payload) -> tuple[bool, list[str]]:  # noqa: ANN001
+    """A strategy_control record's payload (A1 §5, A4 §3.11), or a RunError the engine words the same: exactly
+    {"enabled": bool, "reasons": [str, …]}, the reasons non-empty strings in strictly ascending order, none when
+    enabled and at least one when disabled."""
+    if not isinstance(payload, dict):
+        raise RunError("strategy_control: payload must be an object")
+    if set(payload) != {"enabled", "reasons"}:
+        raise RunError("strategy_control: payload must have exactly the keys 'enabled' and 'reasons'")
+    enabled, reasons = payload["enabled"], payload["reasons"]
+    if type(enabled) is not bool:
+        raise RunError("strategy_control: enabled must be a boolean")
+    if type(reasons) is not list or any(type(r) is not str for r in reasons):
+        raise RunError("strategy_control: reasons must be a list of strings")
+    if any(r == "" for r in reasons):
+        raise RunError("strategy_control: a reason must not be empty")
+    if any(a >= b for a, b in zip(reasons, reasons[1:])):
+        raise RunError("strategy_control: reasons must be sorted and unique")
+    if enabled and reasons:
+        raise RunError("strategy_control: reasons must be empty when enabled")
+    if not enabled and not reasons:
+        raise RunError("strategy_control: reasons must not be empty when disabled")
+    return enabled, reasons
+
+
 # ── State ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -62,9 +86,14 @@ class Book:
     dp_done: set = field(default_factory=set)
     next_fill: int = 1
 
-    def fork(self, iid: int) -> "Book":
-        """A copy for one bar path: the ledger, this instrument's live orders and the RNG."""
-        orders = {k: (o.copy() if o.instrument_id == iid and o.status in ACTIVE else o) for k, o in self.orders.items()}
+    def fork(self, iid: int, live: list) -> "Book":
+        """A copy for one bar path: the ledger, this instrument's live orders (`live`: every order not final) and the
+        RNG. The dict is copied whole (same order) and only those orders are replaced, so a long paper session's many
+        final orders cost a C-level copy, not a Python loop."""
+        orders = dict(self.orders)
+        for o in live:
+            if o.instrument_id == iid and o.status in ACTIVE:
+                orders[o.order_id] = o.copy()
         return Book(self.ledger.copy(), orders, self.rng.copy(), [], [], [], [], set(self.dp_done), self.next_fill)
 
 
@@ -105,10 +134,23 @@ class Engine:
         self._check_instruments(bundle["instruments"])
         self.days = bundle["days"]
         self.day_by_date = {d["date"]: d for d in self.days}
+        # prev_days / next_days (A1 §6.2, VOL 5.2): trading days before and after the bundle's own, never processed;
+        # consulted only for a day's CONTINUOUS start when a bar dated that day arrives later (a daily bar published at
+        # the next midnight), where an order queued after today's session activates (A4 §3.10), and for trading-day
+        # counts (D-60)
+        self.day_bundle = "next_days" in bundle or "prev_days" in bundle   # a paper session's day bundle (A1 §6.2)
+        prev, nxt = bundle.get("prev_days"), bundle.get("next_days")
+        self._check_cal_days("prev_days", prev, None, self.days[0]["date"])
+        self._check_cal_days("next_days", nxt, self.days[-1]["date"], None)
+        self.cal_days = list(prev or []) + self.days + list(nxt or [])
+        self.cal_day_ends = [d["day_end_ns"] for d in self.cal_days]
+        self.cal_by_date = {d["date"]: d for d in self.cal_days}
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
+        self._check_mis_rows(bundle["broker_policy"].get("mis_margin_pct"))
         model = self.run_cfg["margin"]["model"]
+        self.live_answers = None                      # the journaled margin answers (live_with_fallback only)
         if model == "spanlite":
             from stockify.fno.spanlite import SpanLiteMargin
             self.margin = SpanLiteMargin(bundle, self)
@@ -117,6 +159,10 @@ class Engine:
         elif model == "staircase":                     # MEZ 4.9: B1..B5 per underlying per check, steps recorded
             from stockify.fno.staircase import StaircaseMargin
             self.margin = StaircaseMargin(bundle, self)
+        elif model == "live_with_fallback":            # MEZ 5.1: the staircase, a fresh journaled Kite answer prices the book
+            from stockify.fno import live_margin
+            self.live_answers = live_margin.LiveAnswers()
+            self.margin = live_margin.LiveWithFallbackMargin(bundle, self, self.live_answers)
         elif model == "span_exact":                    # exact SPAN only: raises where it cannot price
             from stockify.fno.staircase import SpanExactMargin
             self.margin = SpanExactMargin(bundle, self)
@@ -129,12 +175,14 @@ class Engine:
         capital = self.run_cfg["capital_paise"]
         self.book = Book(Ledger(capital, capital), {}, Pcg32(bundle["seed"], SLIPPAGE_STREAM))
         self.strategy_rng = Pcg32(bundle["seed"], STRATEGY_STREAM)
+        self.day_seeds = self._day_seeds(self.days)     # [(date, seed)] for seed_mode per_day (VOL 5.1)
+        self.next_day_seed = 0
         self.internal: list = []
         self.internal_seq = 0
         self.now = 0
         self.key = (0, -1, 0, 0)
         self.next_order = 1
-        self.min_live = 1                               # orders below this id are all final
+        self.live_ids: list[int] = []                   # ids of the orders that are not final, ascending
         self.day_ends = [d["day_end_ns"] for d in self.days]
         self.sub_ticks: set[int] = set()
         self.sub_bars: dict[int, set[int]] = {}
@@ -153,8 +201,95 @@ class Engine:
         self.event_no = 0
         self.delivering = False
         self.open_changes: list[tuple[int, bool]] = []   # (t, any position open) transitions, for exposure
+        # Day-to-day state (VOL 5.2, A4 §1.10): see stockify.oracle.sod_state
+        self.carried: list = []                        # internal events passed over after the last DAY_END
+        self.prior_final: set[int] = set()             # final orders loaded from sod_state (not this day's output)
+        self.charge_row_base = 0                       # charges.csv rows written on earlier days
+        self.state_date: str | None = None             # the last trading day whose DAY_END ran
+        self.day_end_strategy_state: dict | None = None  # save_state() at DAY_END, checked (day bundles only)
+        self.strategy_enabled = True                   # D-70, A4 §3.11: a journaled switch, carried day to day
+        self.pause_reasons: set[str] = set()
+        self.queued_notifications: list = []           # on_fill / on_order_update held while disabled, in order
+        self.started = False
+        self.resumed = False
+        self.busy: str | None = None                   # the call in progress (run / load_sod_state / eod_state)
+        self.settled = False                           # a day has ended and nothing has been processed since
         from stockify.oracle.context import Context
         self.ctx = Context(self)
+        if bundle.get("sod_state") is not None:        # applied here, so no caller can forget it
+            if not isinstance(bundle["sod_state"], dict):
+                raise RunError("bundle: sod_state must be an object or null")
+            self._load_state(bundle["sod_state"])
+
+    # ── Day-to-day state (A1 §6.4) ────────────────────────────────────────────
+
+    def _enter(self, what: str) -> None:
+        """One call at a time: the engine refuses a call made from inside another one (a strategy callback)."""
+        if self.busy is not None:
+            raise RunError(f"{what}: the engine is busy ({self.busy} is in progress)")
+        self.busy = what
+
+    def _load_state(self, state, text: str | None = None) -> None:  # noqa: ANN001
+        """Apply a state (a parsed object, or the text of one), all or nothing."""
+        from stockify.oracle import sod_state
+        self._enter("load_sod_state")
+        try:
+            if self.started:
+                raise RunError("sod_state must be loaded before the first event")
+            if self.resumed:
+                raise RunError("sod_state is already loaded")
+            try:
+                sod_state.restore(self, sod_state.loads(text) if text is not None else state)
+            except (sod_state.StateError, KeyError, TypeError, ValueError, ArithmeticError, RecursionError) as e:
+                raise RunError(str(e)) from e
+            self.resumed = True
+            self.settled = True
+        finally:
+            self.busy = None
+
+    def load_sod_state(self, text: str) -> None:
+        """A start-of-day state (eod_state() of the previous day); before the first event only."""
+        self._load_state(None, text)
+
+    def eod_state(self) -> str:
+        """The state for the next day's sod_state, as canonical JSON (A1 §6.4)."""
+        from stockify.oracle import sod_state
+        self._enter("eod_state")
+        try:
+            if self.state_date is None or not self.settled:
+                raise RunError("sod_state: no trading day has ended yet" if self.state_date is None else
+                               "sod_state: events were processed after the last day ended")
+            try:
+                return sod_state.dumps(sod_state.capture(self))
+            except sod_state.StateError as e:
+                raise RunError(str(e)) from e
+        finally:
+            self.busy = None
+
+    @staticmethod
+    def _check_cal_days(key: str, rows, after: str | None, before: str | None) -> None:  # noqa: ANN001
+        """prev_days / next_days: day objects in the days[] shape without seed, dates rising, all after `after` (the
+        last day) or all before `before` (the first day)."""
+        if rows is None:
+            return
+        if not isinstance(rows, list):
+            raise RunError(f"bundle: {key} must be a list")
+        last = after
+        for n, d in enumerate(rows):
+            where = f"bundle: {key}[{n}]"
+            if not isinstance(d, dict) or not {"date", "groups", "mis_cutoff_ns", "day_end_ns"} <= set(d):
+                raise RunError(f"{where} must be a day object (date, groups, mis_cutoff_ns, day_end_ns)")
+            if "seed" in d:
+                raise RunError(f"{where} has a seed: these days are never processed")
+            if last is not None and d["date"] <= last:
+                raise RunError(f"{where}: {d['date']} is not after {last}")
+            last = d["date"]
+        if before is not None and rows and last >= before:
+            raise RunError(f"bundle: {key}: {last} is not before {before}")
+
+    def day_orders(self) -> dict:
+        """This day's orders: all but the final ones loaded from sod_state (orders.csv, metrics)."""
+        return {k: o for k, o in self.book.orders.items() if k not in self.prior_final}
 
     # ── Time and phases ──────────────────────────────────────────────────────
 
@@ -178,7 +313,7 @@ class Engine:
         return "CLOSED"
 
     def continuous_start(self, group: str, d: str) -> int | None:
-        day = self.day_by_date.get(d)
+        day = self.cal_by_date.get(d)
         if day is None:
             return None
         starts = [p["start_ns"] for p in day["groups"][group] if p["phase"] == "CONTINUOUS"]
@@ -186,12 +321,25 @@ class Engine:
 
     def next_continuous_start(self, iid: int, t: int) -> int | None:
         import bisect
-        for day in self.days[bisect.bisect_left(self.day_ends, t):]:
+        for day in self.cal_days[bisect.bisect_left(self.cal_day_ends, t):]:
             g = self.group_of(iid, day["date"])
             for p in day["groups"][g]:
                 if p["phase"] == "CONTINUOUS" and p["start_ns"] >= t:
                     return p["start_ns"]
         return None
+
+    @staticmethod
+    def _check_mis_rows(rows) -> None:  # noqa: ANN001
+        """broker_policy.mis_margin_pct: an FO row is a share of the NRML margin, and only the whole of it is modelled
+        (A4 §6.5, D-80): any other value is refused, never scaled silently."""
+        for r in rows or []:
+            if (r.get("applies") or {}).get("segment") != "FO":
+                continue
+            v = r.get("pct_ppb")
+            if type(v) is not int or v != PPB:
+                raise RunError(f"bundle: broker_policy.mis_margin_pct: the FO row from {r['effective_from']} has pct_ppb "
+                               f"{v if type(v) is int else 'missing'}; only {PPB} (the full NRML margin) is "
+                               "accepted: intraday F&O leverage is not modelled (D-80)")
 
     @staticmethod
     def _check_instruments(rows: list[dict]) -> None:
@@ -211,6 +359,33 @@ class Engine:
                     raise RunError(at + f"lot must be positive, got {s['lot']}")
                 if s["tick_paise"] <= 0:
                     raise RunError(at + f"tick_paise must be positive, got {s['tick_paise']}")
+
+    @staticmethod
+    def _day_seeds(days: list[dict]) -> list[tuple[str, int]]:
+        """days[].seed, the only source of a day's seed (A4 §4.5): present when the run's seed_mode is per_day."""
+        out = []
+        for n, d in enumerate(days):
+            if "seed" not in d:
+                continue
+            v = d["seed"]
+            if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < 2 ** 64:
+                raise RunError(f"bundle: days[{n}].seed must be a non-negative 64-bit integer")
+            out.append((d["date"], v))
+        return out
+
+    def _reseed_for(self, t: int) -> None:
+        """Before the first event whose IST date is a seeded day: both streams re-created from that day's seed
+        (stream 1 slippage, stream 2 ctx.rng()), in place, so every holder of them sees the new sequence."""
+        if self.next_day_seed >= len(self.day_seeds):
+            return
+        d = self._date(t)
+        seed = None
+        while self.next_day_seed < len(self.day_seeds) and self.day_seeds[self.next_day_seed][0] <= d:
+            seed = self.day_seeds[self.next_day_seed][1]
+            self.next_day_seed += 1
+        if seed is not None:
+            self.book.rng.reseed(seed, SLIPPAGE_STREAM)
+            self.strategy_rng.reseed(seed, STRATEGY_STREAM)
 
     def spec(self, iid: int, d: str) -> dict | None:
         best = None
@@ -251,7 +426,8 @@ class Engine:
             book.callbacks.append(("order", o.order_id))
 
     def _deliver(self) -> None:
-        """Queued on_order_update / on_fill callbacks, in the order generated (A4 §3.9)."""
+        """Queued on_order_update / on_fill callbacks, in the order generated (A4 §3.9). While the strategy is
+        disabled they are not delivered: each is kept, as the strategy would have seen it, for the enable (A4 §3.11)."""
         if self.delivering:
             return
         self.delivering = True
@@ -259,12 +435,48 @@ class Engine:
             while self.book.callbacks:
                 kind, x = self.book.callbacks.pop(0)
                 if kind == "order":
-                    o = self.book.orders[x]
-                    self.strategy.on_order_update(self.ctx, OrderView.of(o))
+                    view = OrderView.of(self.book.orders[x])
+                    if self.strategy_enabled:
+                        self.strategy.on_order_update(self.ctx, view)
+                    else:
+                        self.queued_notifications.append({"kind": "order", "order": dict(vars(view))})
                 else:
                     f = x
-                    self.strategy.on_fill(self.ctx, FillView(f.order_id, f.instrument_id, f.side, f.qty, f.price,
-                                                              f.t_ns, f.evidence))
+                    view = FillView(f.order_id, f.instrument_id, f.side, f.qty, f.price, f.t_ns, f.evidence)
+                    if self.strategy_enabled:
+                        self.strategy.on_fill(self.ctx, view)
+                    else:
+                        self.queued_notifications.append({"kind": "fill", "fill": dict(vars(view))})
+        finally:
+            self.delivering = False
+
+    def _hook_on(self, hook: str) -> bool:
+        """True when `hook` may run; while the strategy is disabled it is dropped, with a log line (A4 §3.11)."""
+        if self.strategy_enabled:
+            return True
+        self.log("INFO", f"{hook} skipped: strategy disabled ({', '.join(sorted(self.pause_reasons))})")
+        return False
+
+    def _on_strategy_control(self, payload) -> None:  # noqa: ANN001
+        """A journaled pause or resume (D-70). Enabling delivers what was held, in order, before any other hook."""
+        enabled, reasons = check_strategy_control(payload)
+        was = self.strategy_enabled
+        self.strategy_enabled, self.pause_reasons = enabled, set(reasons)
+        if not enabled:
+            if was:
+                self.log("INFO", f"strategy disabled ({', '.join(reasons)})")
+            return
+        if was:
+            return
+        self.log("INFO", "strategy enabled")
+        held, self.queued_notifications = self.queued_notifications, []
+        self.delivering = True
+        try:
+            for n in held:
+                if n["kind"] == "order":
+                    self.strategy.on_order_update(self.ctx, OrderView(**n["order"]))
+                else:
+                    self.strategy.on_fill(self.ctx, FillView(**n["fill"]))
         finally:
             self.delivering = False
 
@@ -278,17 +490,25 @@ class Engine:
             return (m.bid + m.ask) // 2
         return m.ltp
 
-    def blocked(self, ledger: Ledger, d: str) -> int:
-        legs, mis = [], 0
+    def _fo_book(self, ledger: Ledger) -> list[tuple[int, str, int]]:
+        """The margin model's portfolio (A4 §6.5, D-80): every NRML position and every MIS future or option, one net
+        leg per instrument in the ledger's order, each handed over as NRML. An MIS future or option is margined
+        exactly as the same NRML position, in one book with the NRML ones, so a hedge across the two products
+        counts; legs that net to nothing are left out."""
+        net: dict[int, int] = {}
         for p in ledger.positions.values():
-            if not p.q:
-                continue
-            if p.product == "MIS":
-                mis += self.margin.mis(self.inst[p.instrument_id]["kind"], p.q,
-                                       self.mark_price(p.instrument_id) or p.avg_price, d)
-            else:
-                legs.append((p.instrument_id, p.product, p.qty))
-        return self.margin.requirement(legs, self.inst.__getitem__, self._ref_price, d) + mis
+            if p.q and (p.product == "NRML" or
+                        (p.product == "MIS" and self.inst[p.instrument_id]["kind"] in DERIVATIVES)):
+                net[p.instrument_id] = net.get(p.instrument_id, 0) + p.qty
+        return [(iid, "NRML", units) for iid, units in net.items() if units]
+
+    def blocked(self, ledger: Ledger, d: str) -> int:
+        mis = 0                                         # MIS shares: a share of their value (A4 §6.5)
+        for p in ledger.positions.values():
+            kind = self.inst[p.instrument_id]["kind"]
+            if p.q and p.product == "MIS" and kind not in DERIVATIVES:
+                mis += self.margin.mis(kind, p.q, self.mark_price(p.instrument_id) or p.avg_price, d)
+        return self.margin.requirement(self._fo_book(ledger), self.inst.__getitem__, self._ref_price, d) + mis
 
     def _ref_price(self, iid: int) -> int | None:
         return self.mark_price(iid) or self.underlying_last.get(iid)
@@ -315,17 +535,15 @@ class Engine:
             return 0
         if o.product == "CNC":
             return o.qty * px if o.side == "BUY" else 0
-        if o.product == "MIS":
+        if o.product == "MIS" and kind not in DERIVATIVES:
             return self.margin.mis(kind, o.qty, px, d)
+        # NRML, and MIS futures and options, which need what the same NRML order needs (D-80)
         if kind in ("CE", "PE") and o.side == "BUY":
             return o.qty * px
-        legs = [(p.instrument_id, p.product, p.qty) for p in self.book.ledger.positions.values()
-                if p.q and p.product == "NRML"]
-        after_legs = legs + [(o.instrument_id, "NRML", o.qty * o.sign)]
-        combined: dict = {}
-        for iid, prod, units in after_legs:
-            combined[(iid, prod)] = combined.get((iid, prod), 0) + units
-        merged = [(i, p, u) for (i, p), u in combined.items()]
+        legs = self._fo_book(self.book.ledger)
+        combined = {iid: units for iid, _, units in legs}
+        combined[o.instrument_id] = combined.get(o.instrument_id, 0) + o.qty * o.sign
+        merged = [(iid, "NRML", units) for iid, units in combined.items() if units]
         price_after = lambda i: px if i == o.instrument_id else self._ref_price(i)  # noqa: E731
         if hasattr(self.margin, "pair"):            # the staircase: before and after at one step (MEZ 4.9)
             before, after = self.margin.pair(legs, merged, self.inst.__getitem__, self._ref_price, price_after, d)
@@ -364,6 +582,7 @@ class Engine:
                   self.now, 0)
         self.next_order += 1
         self.book.orders[o.order_id] = o
+        self.live_ids.append(o.order_id)
         self._event(self.book, o, "SUBMIT", f"{side} {qty} {product} {type_}")
         code = self._validate(o, system, upto="R_FREEZE")
         if code:
@@ -494,9 +713,10 @@ class Engine:
     def live_orders(self) -> list[Order]:
         """Orders that are not final, in id order (finished ones are skipped once)."""
         orders = self.book.orders
-        while self.min_live < self.next_order and orders[self.min_live].status in FINAL:
-            self.min_live += 1
-        return [orders[i] for i in range(self.min_live, self.next_order) if orders[i].status not in FINAL]
+        out = [o for o in map(orders.get, self.live_ids) if o is not None and o.status not in FINAL]
+        if len(out) != len(self.live_ids):              # some finished since the last call: drop them (once)
+            self.live_ids = [o.order_id for o in out]
+        return out
 
     def _activate_due(self, t: int) -> None:
         due = sorted((o for o in self.live_orders() if o.status == "PENDING" and o.t_activate <= t),
@@ -690,7 +910,7 @@ class Engine:
         tick, lot = spec["tick_paise"], spec["lot"]
         results = []
         for high_first in (True, False):                # P_HL, then P_LH
-            sim = self.book.fork(iid)
+            sim = self.book.fork(iid, self.live_orders())
             self._simulate_bar(sim, iid, bar, high_first, eligible, tick, lot)
             nav = sim.ledger.nav(lambda i: bar["close"] if i == iid else self.mark_price(i))
             results.append((nav, high_first, sim))
@@ -911,7 +1131,7 @@ class Engine:
                         self._cancel(self.book, o, "EOD")
             self._after_market(iid)
             self._deliver()
-            if iid in self.sub_bars and isec in self.sub_bars[iid]:
+            if iid in self.sub_bars and isec in self.sub_bars[iid] and self._hook_on("on_bar"):
                 self.strategy.on_bar(self.ctx, Bar(iid, isec, rec["start_ns"], rec["t_event"], rec["open"], rec["high"],
                                                    rec["low"], rec["close"], rec["volume"], rec["oi"]))
                 self._deliver()
@@ -920,7 +1140,7 @@ class Engine:
             m.ltp, m.t = rec["value"], rec["t_event"]
             self._underlying_seen(iid, rec["value"])
             self._build_bars(iid, rec["t_event"], rec["value"], None, None)
-            if iid in self.sub_ticks:
+            if iid in self.sub_ticks and self._hook_on("on_tick"):
                 self.strategy.on_tick(self.ctx, Tick(iid, rec["t_event"], rec["value"], 0, 0, None, None))
                 self._deliver()
             return
@@ -944,7 +1164,7 @@ class Engine:
         self._build_bars(iid, rec["t_event"], rec["ltp"], rec["volume"], prev_vol)
         self._after_market(iid)
         self._deliver()
-        if iid in self.sub_ticks:
+        if iid in self.sub_ticks and self._hook_on("on_tick"):
             self.strategy.on_tick(self.ctx, Tick(iid, rec["t_event"], rec["ltp"], rec["volume"], rec["atp"], m.bid,
                                                  m.ask))
             self._deliver()
@@ -982,6 +1202,20 @@ class Engine:
         self.log("INFO", f"GAP {rec['reason']} {'start' if rec['phase'] == 0 else 'end'} scope {rec['instrument_id']}")
 
     def _on_refdata(self, rec: dict) -> None:
+        if rec["subtype"] == "strategy_control":
+            self._on_strategy_control(rec["payload"])
+            return
+        if rec["subtype"] == "margin_requirement":     # MEZ 5.1: checked under every model, kept by the live one
+            from stockify.fno import live_margin
+            if rec["instrument_id"] != 0:
+                raise RunError("margin_requirement: the record's instrument must be 0")
+            try:
+                live_margin.check_payload(rec["payload"])
+            except live_margin.PayloadError as exc:
+                raise RunError(f"margin_requirement: {exc}") from exc
+            if self.live_answers is not None:
+                self.live_answers.put(rec["payload"], self.now)
+            return
         if rec["subtype"] == "price_band":
             pl = rec["payload"]
             self.market.setdefault(rec["instrument_id"], Market()).band = (pl["lower_paise"], pl["upper_paise"])
@@ -1094,7 +1328,8 @@ class Engine:
             for o in list(self.book.orders.values()):
                 if o.status in ("PENDING", "OPEN", "TRIGGER_PENDING") and self.group_of(o.instrument_id, d) == "CM_CAS":
                     self._cancel(self.book, o, "R_CAS")
-        self.strategy.on_session_phase(self.ctx, PhaseChange(g, phase, self.now))
+        if self._hook_on("on_session_phase"):
+            self.strategy.on_session_phase(self.ctx, PhaseChange(g, phase, self.now))
         self._deliver()
 
     def _daily_bars(self, iid: int) -> bool:
@@ -1160,13 +1395,22 @@ class Engine:
         blocked = self.blocked(led, d)
         self.equity.append((d, nav, led.cash, blocked, nav - led.capital + led.charges_total, led.charges_total))
         if hasattr(self.margin, "breakdown"):       # per-underlying day rows (M4.8; flat writes none)
-            legs = [(p.instrument_id, p.product, p.qty) for p in led.positions.values() if p.q and p.product == "NRML"]
-            for b in self.margin.breakdown(legs, self.inst.__getitem__, self._ref_price, d):
+            for b in self.margin.breakdown(self._fo_book(led), self.inst.__getitem__, self._ref_price, d):
                 self.margin_daily.append((d, b.underlying_id, self.margin_model, b.step, b.scan, b.somc, b.elm,
                                           b.addons, b.total))
-        self.strategy.on_session_end(self.ctx)
+        if self._hook_on("on_session_end"):
+            self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))
+        if d in self.day_by_date:                     # not the D-52 close-out's own (maybe non-trading) date
+            self.state_date = d
+        if self.day_bundle:                           # paper sessions: save_state() at DAY_END, checked (A4 §1.10)
+            from stockify.oracle import sod_state
+            try:
+                self.day_end_strategy_state = sod_state.strategy_state(self.strategy)
+            except sod_state.StateError as e:
+                raise RunError(str(e)) from e
+        self.settled = True                           # until the next event: eod_state() is the end of this day
 
     def _next_date(self, d: str) -> str:
         return _date.fromordinal(_date.fromisoformat(d).toordinal() + 1).isoformat()
@@ -1181,7 +1425,8 @@ class Engine:
             self.push(t + period, TIMER, "TIMER", timer_id)
         else:
             del self.timers[timer_id]
-        self.strategy.on_timer(self.ctx, timer_id)
+        if self._hook_on("on_timer"):
+            self.strategy.on_timer(self.ctx, timer_id)
         self._deliver()
 
     def _on_built(self, payload: tuple) -> None:
@@ -1189,18 +1434,34 @@ class Engine:
         b = self.built.get((iid, isec), {}).pop(start, None)
         if b is None:
             return
+        if self.market[iid].min_interval is not None:
+            return                                        # real bars arrived while it was building: never both (ST 5.9)
         self.market[iid].bars.setdefault(isec, []).append((start, b[0], b[1], b[2], b[3], b[4], b[5]))
-        self.strategy.on_bar(self.ctx, Bar(iid, isec, start, self.now, b[0], b[1], b[2], b[3], b[4], b[5], built=True))
+        if self._hook_on("on_bar"):
+            self.strategy.on_bar(self.ctx, Bar(iid, isec, start, self.now, b[0], b[1], b[2], b[3], b[4], b[5],
+                                               built=True))
         self._deliver()
 
     # ── Main loop ────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        self._enter("run")
+        try:
+            self._run()
+        finally:
+            self.busy = None
+
+    def _run(self) -> None:
+        self.started = True
+        self.settled = False
+        self.day_end_strategy_state = None            # a loaded state's strategy part stands in only until the run starts
         self._schedule_days()
         first = [self.internal[0][0][0]] + ([self.records[0][0][0]] if self.records else [])
         self.now = min(first)                     # on_start sees the earliest time of the run
-        self.strategy.on_start(self.ctx)
-        self._deliver()
+        self._reseed_for(self.now)
+        if not self.resumed:                      # a resumed day ran strategy.load_state instead (A4 §1.10)
+            self.strategy.on_start(self.ctx)
+            self._deliver()
         i = 0
         last_day_end = self.days[-1]["day_end_ns"]
         while i < len(self.records) or self.internal:
@@ -1208,20 +1469,26 @@ class Engine:
             nxt_int = self.internal[0] if self.internal else None
             if nxt_int is not None and (nxt_in is None or nxt_int[0] < nxt_in[0]):
                 key, kind, payload = heapq.heappop(self.internal)
-                if key[0] > last_day_end:                 # timers after the last day never fire
+                if key[0] > last_day_end:                 # timers after the last day never fire here;
+                    self.carried.append((key, kind, payload))   # a paper session's next day gets them (sod_state)
                     continue
                 self.now, self.key = key[0], key
+                self.settled = False
+                self._reseed_for(self.now)
                 self._activate_due(self.now)
                 self._dispatch_internal(kind, payload)
             else:
                 key, rec = nxt_in
                 i += 1
                 self.now, self.key = key[0], key
+                self.settled = False
+                self._reseed_for(self.now)
                 self._activate_due(self.now)
                 self._dispatch_input(rec)
         if self.now > last_day_end:                     # D-52: the final close-out (A4 §1.10)
             self.internal_seq += 1
             self.key = (self.now, DAY_END, 0, self.internal_seq)
+            self.settled = False
             self._activate_due(self.now)
             self._dispatch_internal("DAY_END", self._date(self.now))
         self.labels |= self.margin.labels                # e.g. delivery_margin_approx (D-60)

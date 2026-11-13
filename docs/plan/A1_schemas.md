@@ -67,6 +67,7 @@ CREATE TABLE fo_eod (
   open_paise INTEGER, high_paise INTEGER, low_paise INTEGER, close_paise INTEGER, last_paise INTEGER,
   prev_close_paise INTEGER, settle_paise INTEGER, underlying_paise INTEGER,
   oi INTEGER, oi_change INTEGER, volume INTEGER, turnover_paise INTEGER, lot_size INTEGER,
+  -- volume: contracts, as published (packs turn it into units, D-79); oi, oi_change: units
   PRIMARY KEY (trade_date, instrument_id)
 );
 CREATE TABLE cm_eod (    -- equities, series EQ (others optional)
@@ -155,6 +156,10 @@ CREATE TABLE packets (
 CREATE INDEX ix_packets_instr ON packets(instrument_id, seq);
 CREATE TABLE gaps (gap_id INTEGER PRIMARY KEY, start_ns INTEGER, end_ns INTEGER, reason TEXT,
   scope TEXT);                                   -- all | tier:<name> | instrument:<id>
+-- migration 0002 (RM 5.3) adds gaps.first_frame_no, last_frame_no, frames: set only for reason `queue_full`, a run of
+-- consecutive frame_nos the writer queue refused (the paper tap still received them); start_ns/end_ns are the receive
+-- times of its first and last frame. NULL on other gaps, and absent from a read-only file older than 0002.
+-- `include_gaps` leaves `queue_full` out of packs (no GAP code); the parity report reads the rows from the landing.
 CREATE TABLE subscription_log (recv_ns INTEGER, action TEXT, instrument_id INTEGER,
   instrument_token INTEGER, mode TEXT, reason TEXT);
 CREATE TABLE heartbeats (minute_ns INTEGER PRIMARY KEY, count INTEGER);   -- 1-byte heartbeats per minute (liveness)
@@ -241,7 +246,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 |---|---|---|
 | 0 | char[8] | magic `"STKEVT01"` |
 | 8 | u16 | version = 1 |
-| 10 | u16 | flags: bit 0 = journal, bit 1 = contains CLOCK |
+| 10 | u16 | flags: bit 0 = journal, bit 1 = contains CLOCK, bit 2 = journal finalised (DM 5.2; readers of packs ignore it) |
 | 12 | u32 | header size = 64 |
 | 16 | u64 | record count (journals: 0 while open; set on finalise) |
 | 24 | i64 | min `t_event` |
@@ -258,7 +263,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 | 1 | `TICK_QUOTE` | 4 | i64 × 10: ltp, last_qty, atp, volume, buy_qty, sell_qty, open, high, low, close | 104 |
 | 2 | `TICK_FULL` | 4 | the 10 quote fields; i64 × 5: last_trade_ts_s, oi, oi_high, oi_low, exch_ts_s; depth 10 × {i64 price, i64 qty, i32 orders, i32 pad} (bids 1–5 then asks 1–5) | 384 |
 | 3 | `INDEX` | 4 | i64 × 7: value, high, low, open, close, change, exch_ts_s (0 if absent) | 80 |
-| 4 | `BAR` | 4 | i32 interval_s, i32 pad, i64 start_ns, i64 × 4 OHLC, i64 volume, i64 oi | 88 |
+| 4 | `BAR` | 4 | i32 interval_s, i32 pad, i64 start_ns, i64 × 4 OHLC, i64 volume (units, see below), i64 oi | 88 |
 | 5 | `CLOCK` | 5 | none | 24 |
 | 6 | `GAP` | 1 | u8 phase (0 start, 1 end), u8 pad, u16 reason, u32 scope (0 all; 1 the instrument in the prefix) | 32 |
 | 7 | `REFDATA` | 2 | u16 subtype, u16 pad, u32 len, then `len` bytes of canonical JSON (sorted keys, no whitespace) | 32 + len |
@@ -267,13 +272,22 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 <!-- </block> -->
 
 <!-- <block name="refdata-subtypes" same-as-pattern='(?P<key>\d) \x60(?P<value>[a-z_]+)\x60'> -->
-- REFDATA subtypes: 1 `instrument_add` (static fields + spec), 2 `price_band`, 3 `margin_requirement` (portfolio hash, amount, components, source), 4 `spec_change`. Because `size` is a u16, a REFDATA JSON payload is at most 65,503 bytes; larger content is split into several records (one instrument per `instrument_add`).
+- REFDATA subtypes: 1 `instrument_add` (static fields + spec), 2 `price_band`, 3 `margin_requirement` (the record's instrument is 0, any other is a run error; payload, integers only, `{"portfolio_sha256": str, "legs": [[iid, units], …] sorted by instrument, "span_paise": int, "exposure_paise": int, "additional_paise": int, "option_premium_paise": int, "requested_ns": int, "source": "kite_basket"}`; the hash is the SHA-256 of the canonical JSON of `legs` and `legs` are exactly the legs the staircase prices; a payload that is not exactly this is a run error `margin_requirement: …` on both runners, under every margin model; only `live_with_fallback` keeps it, MEZ 5.1), 4 `spec_change`, 5 `strategy_control` (the instrument in the prefix is 0; payload `{"enabled": bool, "reasons": [str, …]}`, reasons sorted, empty exactly when enabled; A4 §3.11). Because `size` is a u16, a REFDATA JSON payload is at most 65,503 bytes; larger content is split into several records (one instrument per `instrument_add`).
 <!-- </block> -->
 <!-- <block name="gap-reasons" same-as-pattern='(?P<key>\d) (?P<value>[a-z_]+)'> -->
 - GAP reasons: 1 disconnect, 2 process_stop, 3 token_expired, 4 stall, 5 not_subscribed. Landing gaps scoped to a tier are expanded into one GAP record per affected instrument.
 <!-- </block> -->
 - Sorting inside a file: `(t_event, rank, seq)`. In packs, `seq` is reassigned 1…N after sorting by `(t_event, rank, source seq, instrument_id)`, where bars' source seq is their row order by `(instrument_id, start_ns)`. Several packs in one run are merged by `(t_event, rank, pack index, seq)` (A4 §1.3). In journals, `seq` is the dispatcher's per-day counter.
 - Prices are paise; index values are points × 100. Unknown kinds are an error, never skipped.
+- `BAR.volume` is in **units** for every source (D-79); both runners cap a fill at their share of it (A4 §4.1).
+  Kite candles and `cm_eod` (shares) are in units as stored. NSE's F&O daily file gives volume in contracts
+  (lots) and `fo_eod.volume` keeps it as published, so the pack builder converts it once, where it reads
+  `fo_eod`: contracts × lot, the lot from the row's `lot_size` or, where that is NULL (old-format files), from
+  the dated `contract_specs` row in force on the trade date. A row with no lot from either fails the pack
+  build with an error naming the instrument and the day: a lot is never guessed. `fo_eod.oi` is units already
+  and is copied as it is.
+  Known data hole: 2023-12-28 and 2023-12-29 (old-format files, NULL `lot_size`; `contract_specs` starts
+  2024-01-01) have no sourced lot, so an F&O daily pack over them fails; the lot is never derived from turnover.
 
 ## §6 Runs
 
@@ -298,14 +312,17 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
   "policies": { "preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": false },
   "mark": "ltp",
   "seed": 42,
+  "seed_mode": "run",
   "unlock_holdout": null
 }
 ```
 
+`seed_mode` (VOL 5.1): `run` (the default) seeds both PCG32 streams once from `seed`; `per_day` re-creates them each trading day from that day's seed (A4 §4.5), as paper sessions do. The validated form leaves `run` out, so configs and bundles without it are unchanged byte for byte.
+
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
 
 <!-- <block name="margin-models" same-as-pattern='\x60(?P<value>[a-z_]+)\x60'> -->
-- `margin.model` choices, in this order: `flat`, `spanlite`, `span_exact`, `staircase` (the default, MEZ 4.10).
+- `margin.model` choices, in this order: `flat`, `spanlite`, `span_exact`, `staircase` (the default, MEZ 4.10), `live_with_fallback` (the paper session's default, MEZ 5.1, D-69).
 <!-- </block> -->
 
 The last two read NSE's SPAN files from the bundle (§6.2); both engines run them (the oracle since MEZ 4.9, `stockify/fno/staircase.py`; the C++ engine since MEZ 4.10, `engine/src/margin/staircase.cpp` and `span_exact.cpp`, byte-identical), so the staircase is the default; goldens stay pinned to `flat` (`golden.build_bundle`): `staircase` picks per underlying per check the first step that can price all its legs (B1 exact SPAN + the NSE ELM file's %, no X-9 add-on; B2 exact SPAN + the dated rule ELM and X-9 add-on; B3 / B4 SPAN-lite with an adopted / the placeholder row; B5 flat) and labels the run `margin:<step>` and `margin_steps:<step>=<days>`; `span_exact` is B1/B2 only and fails the run naming the contract it cannot price, in the SPAN file in force or in the day's archived ELM file (a future or sold option without its %; with no ELM file for the day it uses the rule ELM, B2). B1 needs no % for bought options and never substitutes a missing price (the future's own, the index for sold options): that underlying is B2. The pre-trade check prices each underlying before and after the order at one step, the lower of the two. A bundle without a `span` section is labelled `margin_span:no_section`. The run's model label is `margin:staircase` or `margin:span_exact`, without the `(approx)` the other models carry: the `margin:<step>` labels say how exact each day was (CAM 4.4).
@@ -321,7 +338,7 @@ The last two read NSE's SPAN files from the bundle (§6.2); both engines run the
               "groups": { "CM":     [ { "phase": "PREOPEN", "start_ns": 0, "end_ns": 0 }, { "phase": "CONTINUOUS", "start_ns": 0, "end_ns": 0 } ],
                           "CM_CAS": [ "..." ], "FO_FUT": [ "..." ], "FO_OPT": [ "..." ] },
               "mis_cutoff_ns": { "CM": 0, "CM_CAS": 0, "FO": 0 },
-              "day_end_ns": 0 } ],
+              "day_end_ns": 0, "seed": 0 } ],
   "instruments": [ { "id": 1234, "exchange": "NFO", "kind": "CE", "tradingsymbol": "…",
                      "underlying_id": 1, "underlying_class": "INDEX", "session_group": "FO_OPT",
                      "expiry": "2026-11-03", "strike_paise": 2500000, "settlement": "cash",
@@ -412,7 +429,7 @@ that day's underlyings step to B2, and is recorded in `elm_skipped[D]` (`{file, 
 these models (MEZ 4.9 oracle, MEZ 4.10 engine, §6.1); an unknown model is refused ("margin model … is not supported
 yet"), never a fallback to flat.
 
-(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
+(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. A day's `seed` is present only when `run.seed_mode` is `per_day`: derived from the run's `seed` and the date as in A4 §4.5, the only source of that day's seed for both engines. Paper sessions get one bundle per day, `per_day`, with `sod_state` filled. Such a bundle also carries `prev_days` and `next_days` (VOL 5.2): the trading days before and after its own, in the `days[]` shape without `seed`, dates rising (`prev_days` all before `days[0]`, `next_days` all after `days[-1]`; both engines refuse anything else). The key `next_days` (or `prev_days`) being present is what marks a paper session's day bundle. They are never processed (no phases, events or `DAY_END`). Both engines consult them only for: a day's `CONTINUOUS` start when a bar dated that day arrives on a later one (a daily bar published at the next midnight is matched against its own session), where an order queued after the day's session activates (A4 §3.10), and trading-day counts such as the D-60 delivery-margin schedule. So a one-day bundle decides all three as the whole run would. Split equals whole holds when they cover the whole run's other days (the tests); a paper day bundle carries at least the previous trading day, and enough following days to reach every open position's expiry (D-60 counts from E-4), which a backtest ending before an expiry does not see (`bundle.resolve_session_day` carries the previous trading day and as many following ones as the delivery-margin schedule reaches before expiry, §6.5). `sod_state` is §6.4.
 
 ### 6.3 Run folder `runs/<run_id>/`
 
@@ -427,7 +444,7 @@ yet"), never a fallback to flat.
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
 | `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,underlying_mark_paise` (the last: a derivative's underlying mark at DAY_END, empty otherwise; D-55) |
 | `equity.csv` | ✔ | `trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise` |
-| `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with NRML F&O legs at DAY_END, none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons) |
+| `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with F&O legs at DAY_END (NRML ones, and any MIS future or option still open then: one book, A4 §6.5, D-80), none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons. Under `live_with_fallback` (MEZ 5.1, D-69) a journaled Kite margin answer (REFDATA `margin_requirement`, §5) for exactly the book at DAY_END that is at most `margin.live_fresh_s` old at that moment replaces the rows with one: `underlying_id` 0, `step` `L1_kite`, `scan` = `span_paise`, `somc` 0, `elm` = `exposure_paise`, `addons` = `additional_paise`; the premium is not margin (D-62). Otherwise the staircase rows with their B-step. DAY_END is normally hours after the session, so the staircase rows are the usual case) |
 | `metrics.json` | ✔ (floats; A4 §9.3) | A4 §8 |
 | `events_log.txt` | ✔ | strategy and engine log lines stamped with engine time |
 | `determinism.json` | — | SHA-256 of each deterministic file |
@@ -435,6 +452,99 @@ yet"), never a fallback to flat.
 | `report.md` (+ `equity.png`) | ✗ | human summary (M2.6) |
 
 <!-- </block> -->
+
+### 6.4 `sod_state`: a paper session's start-of-day state (D-66, VOL 5.2)
+
+`Engine.eod_state()` after a day's run returns it; the next day's bundle carries it as `sod_state` (a JSON object;
+`null` on a session's first day) and **the engine's constructor applies it**, so no caller can forget it.
+`load_sod_state(text)` does the same from text: only before the first event, at most once, and a missing key or
+another `schema` refuses it (`RunError`). Written by `stockify.oracle.sod_state` (oracle) and, byte for byte, by the
+C++ engine (VOL 5.3).
+
+**Encoding.** Canonical JSON (`numerics.dumps_canonical`): keys sorted by code point, no spaces, integers in decimal.
+Money is int paise, quantities units, times UTC epoch ns, dates `YYYY-MM-DD` (IST trading dates). There are no floats
+outside `strategy`, which is whatever the strategy's `save_state()` returns (floats there in the canonical form,
+A4 §9.2). JSON objects keyed by an instrument id use the id in decimal as the key (`"123"`), so they sort as strings.
+`null` stands for an absent value. Lists keep the order given below.
+
+Each object holds exactly its listed keys: a missing key or one the schema does not have is refused.
+
+<!-- <block name="sod-state-keys" same-as-pattern='^\| \x60(?P<value>[a-z_]+)\x60 \|'> -->
+
+| Key | Value |
+|---|---|
+| `schema` | `"stockify.sod_state/1"` |
+| `trade_date` | the bundle trading day whose `DAY_END` ran last (`null` before any; a D-52 close-out on a later, non-trading date does not change it) |
+| `cash_paise` | the ledger's cash |
+| `ledger` | `{capital_paise, charges_total_paise, reserved_paise, positions}`; `positions` = every position the run has opened, flat ones too, **in the order they were first opened** (that order decides later iteration): `{instrument_id, product, style ("premium" \| "variation"), q (open units ≥ 0), d (+1 long, −1 short), c (exact cost of the open units, Σ price × units), realised, vm (variation already moved to cash), last_mark (paise or null), mark_source ("" \| "fill" \| "ltp" \| "settle" \| "fallback")}` (A4 §6.1); the average price is `floor_div(c, q)` and is not stored |
+| `pending_orders` | every order not final (`PENDING`, `OPEN`, `TRIGGER_PENDING`), by `order_id`, including those queued for the next trading day (A4 §3.10). Each is an order record (below) |
+| `final_orders` | every final order of earlier days (`COMPLETE`, `CANCELLED`, `REJECTED`, `SLICED`), by `order_id`, so `ctx.order(id)` sees them as in a whole run. They are not written to the next day's `orders.csv` |
+| `dp_done` | `[[instrument_id, trade_date], …]` sorted: DP charges already taken (A4 §5) |
+| `timers` | live timers `[[timer_id, t_ns, period_ns], …]` (`period_ns` 0 = one-shot; `t_ns` the next firing) **in firing order**: by time, then by the order their next firing was queued (for a periodic timer, when its last firing re-armed it). A timer due on a date that is not a trading day stays here and fires in the next day's run at its own time (A4 §1.10) |
+| `built_bars` | bars built from snapshots whose `BAR_BUILT` is still to come (a bucket past `DAY_END`, e.g. a daily one): `[[instrument_id, interval_s, start_ns, open, high, low, close, volume, oi], …]` in firing order |
+| `counters` | `{next_order, next_fill, next_timer, charge_row}`: the next order, fill and timer ids, and the number of `charges.csv` rows already written (the next day numbers on from it) |
+| `rng` | `{slippage: [state, inc], strategy: [state, inc]}`: PCG32 stream 1 and stream 2 as they are after the day (unsigned 64-bit, A4 §4.5). With `per_day` a day's first event re-creates both from its `days[].seed` as usual; this is what events before it (a weekend timer) draw, as in a whole run |
+| `subscriptions` | `{ticks: [instrument_id, …] sorted, bars: {"<id>": [interval_s, …] sorted}}` |
+| `strategy_enabled` | `true`; `false` while a `strategy_control` record has paused the strategy (D-70, A4 §3.11), and the pause carries across days |
+| `pause_reasons` | `[]` when enabled; else the sorted, unique, non-empty reasons of the last disable (strictly ascending) |
+| `queued_notifications` | `[]` when enabled; else, in the order generated, the `on_order_update` / `on_fill` calls held while disabled: `{"kind": "order", "order": {order_id, instrument, side, qty, product, type, price, trigger, status, reason, filled_qty, avg_price, tag}}` (the order as the strategy would have seen it) or `{"kind": "fill", "fill": {order_id, instrument, side, qty, price, t_ns, evidence}}`; integers in int64, the rest strings |
+| `fsp_seen` | final settlement prices seen: `[[underlying_id, date, paise], …]` sorted (an `eod_close` fill of an expiring contract published after midnight settles at the FSP seen the day before, A4 §4.9) |
+| `market` | `{"<id>": {ltp, t, s0, s1, bid, ask, book, band, oi, min_interval, day}}` (A4 §2): `s0`/`s1` = `{t, ltp, volume, atp, high, low}` or null; `book` = the last depth `[[price, qty, orders], …]` (5 bids, then 5 asks) or null; `band` = `[lower, upper]` or null; `min_interval` = the smallest bar interval seen (null on tick data); `day` = the IST date of its last event |
+| `bar_history` | `{"<id>:<interval_s>": [[start_ns, open, high, low, close, volume, oi], …]}` in arrival order: **the full history, never trimmed** (C-2), since indicators run over every bar |
+| `strategy` | the strategy's `save_state()`, checked at the day's `DAY_END` (A2 §4.1): a JSON object of JSON-typed values only (null, booleans, integers, finite floats that canonical JSON gives back exactly, strings, lists, objects with string keys). A Python strategy returns a dict; a C++ strategy's `save_state()` string is parsed as JSON, must be an object, and is embedded as that value, so both serialise it canonically |
+
+<!-- </block> -->
+
+An **order record** has exactly these fields (A4 §3; the enum spellings are the `orders.csv` ones):
+
+| Field | Type |
+|---|---|
+| `order_id`, `parent_id` | int (`parent_id` 0 = none; a slice's parent otherwise) |
+| `instrument_id`, `qty`, `price`, `trigger`, `t_submit`, `t_activate`, `filled_qty`, `fill_value` (Σ price × qty), `reserved` (paise) | int |
+| `side` | `"BUY"` \| `"SELL"` |
+| `product` | `"CNC"` \| `"MIS"` \| `"NRML"` |
+| `type` | `"MARKET"` \| `"LIMIT"` \| `"SL"` \| `"SL-M"` (as placed or as modified) |
+| `validity` | `"DAY"` \| `"IOC"` |
+| `protection` | `"AUTO"` or int bp |
+| `tag`, `reason` | string, `""` when none (never null) |
+| `status` | `"PENDING"` \| `"OPEN"` \| `"TRIGGER_PENDING"` \| `"COMPLETE"` \| `"CANCELLED"` \| `"REJECTED"` \| `"SLICED"` |
+| `limit`, `protection_bp` | int or null |
+| `from_market`, `triggered`, `first_eligible_done`, `charged` | boolean |
+| `trade_date`, `eod_after` | date or null |
+
+Not part of it: per-day metrics (`rejects`, `participation_used`, exposure's open/flat changes), labels, the day's
+fills, order events and log lines. A day's `positions_eod`, `equity` and `margin_daily` rows are that day's output.
+Left out because they are implied (VOL 5.2 fix round, proved rather than carried):
+- **CNC releases** (A4 §6.5): `DAY_END` releases every credit dated on or before its day, and no credit can carry a
+  later date then, so there are none at the end of a day. Writing the state checks this and fails otherwise.
+- **Last prices** (`underlying_last`, used for reference prices and the §7.2 fallback): always the instrument's market
+  `ltp`, so they are rebuilt from `market` on load. Writing the state checks they are equal.
+- **The market-data event count** (`event_no`): neither engine reads it. The lab store numbers a session's order
+  events itself (`apply_session_outputs`, `first_event_no`).
+
+**Size.** One bar row is about 70 bytes of canonical JSON. One minute-bar series on an F&O instrument (09:15–15:40,
+385 bars a day, about 21 days) is about **0.57 MB per instrument-month** (measured: 69.9 bytes a row); a 5-second
+series about 12× that, about 6.8 MB. A session with 20 minute-bar instruments grows about 11 MB a month, so 64 MB is
+reached after about 6 months. `sod_state.size_warning(text, warn_bytes)` returns a warning past `paper.json` →
+`sod_state_warn_mb` (64); the daemon logs it and writes a timeline row `sod_state_large` (Task 16). Nothing is
+trimmed; a compact encoding would be a later D-entry for both engines. `final_orders` also grows with the session:
+an order record is about 500 bytes (measured: 503), so a session placing 50 orders a day adds about 0.5 MB a month.
+
+### 6.5 `session.json`: a paper session's configuration (D-67, REG 5.1)
+
+A run config (§6.1) without `data`, plus `universe`; `stockify.sessionconfig.load` validates it through the run config's own checks, so every key not listed here is the run's and an unknown key at any level is refused, naming the key and its section (D-76). Schema `"stockify.session/1"`.
+
+| Key | Value |
+|---|---|
+| `schema` | `"stockify.session/1"` |
+| `universe` | a non-empty list of instrument selectors (§5, the pack spec's `instruments` format): `{"ids": [...]}`, `{"symbols": ["NSE:RELIANCE"]}`, `{"chain": {...}}` or the string `"NSE:RELIANCE"`. Each day's bundle widens a `chain` to every strike of its expiry and every listed future of its underlying (`bundle.session_universe`) |
+| `fill_model.kind` | default `snapshot_quote` (a run has no default) |
+| `margin.model` | default `live_with_fallback` (MEZ 5.1; a run's default stays `staircase`) |
+| `margin.live_fresh_s` | only with `live_with_fallback` (written out, default 360, when that is the model; refused with any other), at most 86,400: the age in seconds past which a live margin answer is not used. A run config accepts it too, only with `margin.model: live_with_fallback` (optional; a whole number of seconds from 1 to 86,400, refused by both validators otherwise and by the engine) |
+| `seed_mode` | `per_day` (the only value; written out in the normalised form) |
+| `price_basis` | `raw` (the only value) |
+
+`data` is refused. The normalised form is the run config's normalised form with `schema`, `universe` and `margin.live_fresh_s`; it is validated again to itself. `bundle.resolve_session_day(session_id, cfg, day, sod_state, refdata_stale=False)` makes one day's bundle (§6.2) from it: `packs: []`, `days` `[day]` with its seed, `sod_state` as given, `prev_days` / `next_days`, labels as a run's plus `session:<session_id>` (and `refdata_stale`); SPAN files only those archived by the refdata job's time, the later intraday files being left out and labelled `margin_span:sod_files_only`, and the day's ELM file left out (`margin_elm:sod_files_only`, the day's margin steps from B1 to B2). Instruments the previous `sod_state` names stay in the bundle (a build with an unknown one fails).
 
 ## §7 Config files (`stockify/config/`)
 
@@ -582,7 +692,7 @@ Times are IST; the resolver converts them to UTC ns per trading day and applies 
 
 ### 7.5 `broker_policy.json`
 
-Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era equity time), `mis_margin_pct` (decimal string, e.g. `"0.20"`), `market_protection_auto_bp` (integer bp, e.g. `200` = 2%; **an assumption**, labelled; D-34), `freeze_policy_default`, `max_slices` (10, R-1), `cnc_sell_credit_same_day` (fraction), `delivery_margin_schedule` (Z-4 rows: `day_offset`, `applies_to`, `basis`, `pct`), `block_new_long_otm_stock_options_expiry_week`, `rms_square_off_time`.
+Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era equity time), `mis_margin_pct` (decimal string per segment: the `CM` row is a share of the traded value, e.g. `"0.20"`; the `FO` row is a share of the NRML margin and must be `"1"`, since intraday F&O leverage is not modelled and any other value is refused; A4 §6.5, D-80), `market_protection_auto_bp` (integer bp, e.g. `200` = 2%; **an assumption**, labelled; D-34), `freeze_policy_default`, `max_slices` (10, R-1), `cnc_sell_credit_same_day` (fraction), `delivery_margin_schedule` (Z-4 rows: `day_offset`, `applies_to`, `basis`, `pct`), `block_new_long_otm_stock_options_expiry_week`, `rms_square_off_time`.
 
 ### 7.6 `margin_params.json`
 
@@ -596,9 +706,14 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
 
 ```json
 { "schema": "stockify.schedule/1",
-  "jobs": { "refdata": "08:30", "subscribe": "08:58", "unsubscribe": "15:45", "compaction": "16:30",
+  "jobs": { "refdata": "08:30", "day_bundles": "08:30", "subscribe": "08:58", "unsubscribe": "15:45",
+            "compaction": "16:30",
             "nse_fetch": { "start": "19:30", "retry_every_min": 15, "until": "23:00" },
             "margin_files": { "start": "17:20", "retry_every_min": 30, "until": "22:00" },
+            "finalise": { "start": "19:30", "retry_every_min": 15 },
+            "parity": { "start": "19:45", "retry_every_min": 15 },
+            "daily_summary": { "start": "19:50", "retry_every_min": 15 },
+            "backup": "05:45",
             "token_dependent_retry": { "every_min": 5, "until": "09:10" },
             "day_end": "23:59:59" } }
 ```
@@ -608,9 +723,18 @@ daemon's clock. `margin_files` also holds sleep on its trade date until the day'
 `until` passes (CAM 4.4), so it runs the same evening; only when the laptop was off does it run the next morning, where
 one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches it later).
 
+The paper day's jobs (CDM 5.1) are catch-up jobs too. Per trading day, oldest first, in this order: `nse_fetch`,
+`margin_files`, `finalise`, `parity`, `daily_summary`; then one `backup` for the latest trading day. `finalise` waits
+for the day's NSE files and is cut off at the next trading day's `day_bundles` time (a holiday in between is skipped);
+`parity` and `daily_summary` run only once `finalise` is done for the day. `day_bundles` for D runs after `refdata` for D:
+`refdata` is retried every `token_dependent_retry.every_min` until `until`, a failure that is not about the login then
+leaves D-1's refdata in use (bundle label `refdata_stale`), and a later login runs it at once. A session whose
+previous trading day is not finalised stays ARMED with the timeline row `blocked_on_finalise`. `backup` is `null`-safe: no
+`storage.json` `backup.target` is a logged skip. Only `compaction` blocks sleep. `backup` given as a plain time retries at 15 minute gaps (scheduler `DEFAULT_RETRY_MIN`).
+
 ### 7.9 `storage.json`
 
-`retention_days` (**null = never delete landing files**; 🛑 the owner sets a number only after M5.13 backups exist), `disk_warn_free_gb` (20), `disk_warn_free_fraction` (`"0.10"`), `parquet_zstd_level` (9).
+`retention_days` (**null = never delete landing files**; 🛑 the owner sets a number only after M5.13 backups exist), `disk_warn_free_gb` (20), `disk_warn_free_fraction` (`"0.10"`), `parquet_zstd_level` (9), `log_max_mb` (20, 1 to 1000) and `log_backups` (5, 0 to 100): the daemon's own log file (`stockify-daemon.log`, written by Python with every line, traceback included, redacted) rotates at that size and keeps that many older files.
 
 ### 7.10 Other files
 
@@ -618,4 +742,5 @@ one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches
 - `kite_limits.json`: `historical_rps` 3, `quote_rps` 1, `quote_max_instruments` 500, `ws_max_instruments` 3000, `ws_max_connections` 3, `historical_max_days` per interval (⚠ defaults), `learned` (written by M1.4).
 - `calendar/nse_holidays.csv`: `date,segments,description,source`. `calendar/special_sessions.csv`: `date,group,phase,start,end,name,source`. Holiday rows from 2024 come from NSE's holiday-master API (but 2024-11-01, a Muhurat-only day its CM and FO lists leave out: D-75); the 2009–2023 rows are the weekdays with no NSE data in the lab, named from NSE's own lists (D-75, X-14). A day with only a Muhurat session is a holiday, its description ending `(Muhurat session only)`. `python -m stockify calendar audit --from D --to D` compares the list with the lab's data.
 - `freeze_limits.json`: index quantity-freeze limits from NSE circulars, dated per `underlying` (`{underlying, effective_from, freeze_qty, source, verified}`, X-5). They decide for the underlyings they list; the refdata `freeze_limits` table (`qtyfreeze.csv` snapshots, S-6) covers the rest and cross-checks them (D-54).
-- `notify.json`: channel type and per-event switches (secrets elsewhere). `research.json`: `holdout_from`, default walk-forward settings.
+- `paper.json` (VOL 5.2, RM 5.3): every key is required, whole numbers are 1 to the bound in `loader.PAPER_BOUNDS`. `clock_every_s` (1, max 3600), `journal.fsync_every_s` (5, max 60), `dispatcher_queue_max` (200000, max 10000000), `dispatch` `{batch_max_items 500 (max 100000), batch_max_ms 50 (max 1000)}`: the dispatcher's micro-batch (one `feed` per session per batch; it changes no journal byte), `margin_poll` `{debounce_s 2 (max 60), every_s 300 (max 86400), max_rps 3 (max 10)}`: Kite's REST limit is 10 requests a second for the whole key, which the ticker's own calls and `margin calibrate` share, so the poller takes a third of it, `token_poll_s` (15, max 3600), `coverage_threshold` ("0.98": a plain decimal string, digits and one dot, in (0, 1]), `coverage_gap_tolerance_s` (5, max 3600: time the session saw no frame or clock record for longer than `clock_every_s` plus this is uncovered too, I-2), `commands_every_s` (1, max 60), `sod_state_warn_mb` (64, max 100000): the start-of-day state size past which the daemon warns (§6.4), `engine_log` `{max_lines_per_min 120 (max 10000), max_line_chars 500 (max 10000)}` (GK 5.2): what reaches the Python log of a session's engine lines, per session per minute of engine time (the rest are counted in one `suppressed` summary line), each line cut to `max_line_chars` with its newlines escaped; the engine's own log and `events_log.txt` are unchanged.
+- `notify.json` (RW 5.1, RW 5.2; M5.8): `{"schema": "stockify.notify/1", "channel": "email" | null, "events": {login_needed, session_error, parity_failure, recorder_stall, disk_low, daily_summary: true | false}}`, exactly those keys (the loader refuses the old `channels` list, and any other channel: the owner chose email only, 2026-11-11). Shipped `channel: "email"` with **every switch `true`**: email is on by default once the SMTP settings are set up (until then each notification is only logged), and each switch can be turned off; `null` makes every notification log only. Email reuses the geo monitor's SMTP settings (`geo_monitor.email_notify`); without them a notification is skipped and `NotConfigured` is logged once per process. A body is cut to 20,000 characters. `stockify.daemon.notify.send` never raises and delivers once per key; `post` is the same from any thread (it only enqueues). `python -m stockify notify test` sends one test message. Routing: a session refused for its subscriptions, a failed session-day, `coverage_low` and `coverage_unavailable` use `session_error`; a parity mismatch and a determinism mismatch use `parity_failure` (their `*_still_open` rows never notify again); a wait for a Kite login and the login reminders use `login_needed`. The daily summary is posted once every session of the day has finalised or failed, names them all, and is tried again on later daemon passes after a failed send (at most 5 a day, then logged once and dropped). **Open gaps (M5.8):** `recorder_stall` and `disk_low` have switches but no sender: nothing raises them yet. `research.json`: `holdout_from`, default walk-forward settings.

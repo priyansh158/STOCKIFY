@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
+import kite_client  # noqa: F401  — first: patches the Kite SDK's client class to paper only (LCB 5.7)
 from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "parity": ("M5", "nightly journal parity"),
     "compare": ("M6", "compare runs"),
     "export": ("M6", "export a run"),
     "sweep": ("M6", "parameter sweep"),
@@ -22,17 +23,68 @@ _STUBS = {
 }
 
 
+def _parse_sessions(text: str) -> list[str] | None:
+    """`--sessions`: `all` (every armed, running or paused session) is None, `none` is [], else the ids."""
+    text = text.strip()
+    if text == "all":
+        return None
+    if text == "none":
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _redirect_state_for_replay(directory: str) -> str | None:
+    """`--replay-sandbox DIR`: run with DIR as the local app-data folder, so a replay's sessions, journals and store
+    live there and never in the real lab. Refused when DIR is (or lies inside) the real one. Returns a message on
+    refusal."""
+    from pathlib import Path
+    from stockify.daemon import market_day
+    target = Path(directory).resolve()
+    for real_state in market_day.real_state_dirs():                # every candidate real lab folder
+        real_app = real_state.resolve().parent                       # the real STOCKIFY folder in local app-data
+        real_root = real_app.parent                                  # the real local app-data folder
+        if target == real_root or real_app == target or real_app in target.parents or target in real_app.parents:
+            return f"--replay-sandbox {directory}: that is the real lab's folder; pick an empty directory elsewhere"
+    target.mkdir(parents=True, exist_ok=True)
+    os.environ["LOCALAPPDATA"] = str(target)
+    return None
+
+
 def _cmd_daemon(args) -> int:
     from stockify import daemon
-    if args.recorder_only:
-        if args.ticker == "live":
-            _load_env()
-        return daemon.run_recorder(ticker_spec=args.ticker, faults=args.inject)
-    if args.once:
+    from stockify.daemon import exitcodes, singleton
+    if args.inject and args.ticker == "live":
+        print("--inject needs a replay ticker (--ticker replay:YYYY-MM-DD:<Nx|max>): faults are never injected into "
+              "the live ticker, so none would be armed", file=sys.stderr)
+        return 2
+    if args.once and not args.recorder_only:
         daemon.run_forever(once=True)
         return 0
+    if args.replay_sandbox is not None:
+        problem = _redirect_state_for_replay(args.replay_sandbox)
+        if problem:
+            print(problem, file=sys.stderr)
+            return 2
+    try:
+        lock = singleton.acquire()               # held until the process ends; the OS drops it however it ends
+    except singleton.AlreadyRunning as e:
+        print(e, file=sys.stderr)
+        return exitcodes.ALREADY_RUNNING
+    except singleton.LockUnavailable as e:
+        print(e, file=sys.stderr)
+        return exitcodes.LOCK_FAILED
+    sessions = [] if args.recorder_only else _parse_sessions(args.sessions)
+    if args.recorder_only or args.ticker != "live":
+        if args.ticker == "live":
+            _load_env()
+        from stockify.daemon import market_day
+        try:
+            return daemon.run_market_day(ticker_spec=args.ticker, faults=args.inject, session_ids=sessions)
+        except market_day.ReplayRefused as e:
+            print(e, file=sys.stderr)
+            return 2
     _load_env()
-    return daemon.run_daemon()
+    return daemon.run_daemon(session_ids=sessions)
 
 
 def _cmd_config(args) -> int:
@@ -346,9 +398,16 @@ def _cmd_oracle_run(args) -> int:
         return 1
     m = res.metrics
     print(res.folder)
-    print(f"NAV {m['nav_start_paise'] / 100:,.2f} -> {m['nav_end_paise'] / 100:,.2f}; trades {m['trades']}; "
-          f"costs {m['costs_total_paise'] / 100:,.2f}; labels {', '.join(res.labels)}", file=sys.stderr)
+    print(_summary_line(m, res.labels), file=sys.stderr)
     return 0
+
+
+def _summary_line(m: dict, labels) -> str:  # noqa: ANN001
+    """The one-line result both `oracle run` and `run` print: NAV, trades, rejected orders, costs, labels."""
+    rejects = sum((m.get("rejects") or {}).values())
+    return (f"NAV {m.get('nav_start_paise', 0) / 100:,.2f} -> {m.get('nav_end_paise', 0) / 100:,.2f}; "
+            f"trades {m.get('trades')}; rejects {rejects}; costs {m.get('costs_total_paise', 0) / 100:,.2f}; "
+            f"labels {', '.join(labels)}")
 
 
 def _cmd_run(args) -> int:
@@ -398,9 +457,7 @@ def _cmd_run(args) -> int:
     print(row["folder"])
     m = json.loads(row["metrics_json"]) if row.get("metrics_json") else {}
     labels = json.loads(row["labels_json"]) if row.get("labels_json") else []
-    print(f"NAV {m.get('nav_start_paise', 0) / 100:,.2f} -> {m.get('nav_end_paise', 0) / 100:,.2f}; "
-          f"trades {m.get('trades')}; costs {m.get('costs_total_paise', 0) / 100:,.2f}; "
-          f"labels {', '.join(labels)}", file=sys.stderr)
+    print(_summary_line(m, labels), file=sys.stderr)
     return 0
 
 
@@ -498,7 +555,7 @@ def _cmd_margin_check(args) -> int:
         print(f"--date must be YYYY-MM-DD and --at HH:MM (IST); got {args.date!r}, {args.at!r}", file=sys.stderr)
         return 2
     try:
-        res = mc.check(legs, day, args.at)
+        res = mc.check(legs, day, args.at, live=args.live)
     except mc.CheckInputError as e:                     # the request is wrong
         print(e, file=sys.stderr)
         return 2
@@ -513,10 +570,129 @@ def _cmd_margin_scorecard(args) -> int:
     """MEZ 4.11: every staircase step against every stored Kite answer (offline; writes nothing)."""
     from stockify.fno import margin_check as mc
     card = mc.scorecard()
-    if not card.rows:
+    if not card.rows and not (card.live_answers or card.live_errors):
         print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
         return 1
     _print_console(mc.scorecard_text(card))
+    return 0
+
+
+def _cmd_margin_live_report(args) -> int:
+    """IWB 5.1: where Kite's live margin answers and the staircase disagree (offline; reads the lab, writes nothing)."""
+    from datetime import date
+    from stockify.fno import margin_live_report as mlr
+    try:
+        start = date.fromisoformat(args.start) if args.start else None
+        end = date.fromisoformat(args.end) if args.end else None
+    except ValueError:
+        print(f"--from and --to must be YYYY-MM-DD; got {args.start!r}, {args.end!r}", file=sys.stderr)
+        return 2
+    text = mlr.report(start=start, end=end)
+    if text.startswith("no live margin rows"):
+        print(text.strip(), file=sys.stderr)
+        return 1
+    _print_console(text)
+    return 0
+
+
+def _cmd_session_refinalise(args) -> int:
+    """C-1: finalise a session-day again, from its journal, without waiting for NSE's files (a day that failed, or was
+    left open). Exit 0: finalised; 1: it cannot be finalised (the reason is printed; the day stays `finalised_failed`);
+    2: bad arguments, an unknown session or a day the session never opened; 3: busy elsewhere, try again; 4: could not
+    run (a locked database, an engine that is not built)."""
+    from datetime import date
+    from stockify import store
+    from stockify.daemon import finalise
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD; got {args.date!r}", file=sys.stderr)
+        return 2
+    if store.get_session(args.session) is None:
+        print(f"no such session: {args.session!r}", file=sys.stderr)
+        return 2
+    if store.get_session_day(args.session, args.date) is None:
+        print(f"session {args.session!r} has no record of {args.date}", file=sys.stderr)
+        return 2
+    try:
+        result = finalise.refinalise(args.session, day)
+    except Exception as e:  # noqa: BLE001 — a locked database or an engine that is not built
+        print(f"refinalise: could not run: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 4
+    if result.status == "finalised":
+        print(f"finalised: {args.session} {args.date} ({result.settle_count} settlement records)")
+        return 0
+    if result.status == "failed":
+        print(f"cannot finalise {args.session} {args.date}: {result.error}", file=sys.stderr)
+        return 1
+    print(f"{result.status}: {args.session} {args.date}; try again shortly", file=sys.stderr)
+    return 3
+
+
+def _cmd_parity_journal(args) -> int:
+    """RD 5.1: replay a finalised session-day's journal and compare it with the store (reads only). Exit 0: identical;
+    1: a difference (one `differs:` line); 2: bad arguments or an unknown session; 3: not finalised, nothing checked; 4: could not run (a locked
+    database, an engine that is not built)."""
+    from datetime import date
+    from stockify import parity, store
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD; got {args.date!r}", file=sys.stderr)
+        return 2
+    if store.get_session(args.session) is None:
+        print(f"no such session: {args.session!r}", file=sys.stderr)
+        return 2
+    try:
+        result = parity.journal_parity(args.session, day)
+    except Exception as e:  # noqa: BLE001 — a locked database or an engine that is not built is not a difference
+        print(f"parity: could not run: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 4
+    if result.outcome == "skipped":
+        print(f"skipped: {result.summary['reason']}", file=sys.stderr)
+        return 3
+    if result.outcome == "fail":
+        print(result.difference_line)
+        return 1
+    print(f"identical: {args.session} {args.date} ({result.summary['records']} journal records)")
+    return 0
+
+
+def _cmd_parity_recorder(args) -> int:
+    """RD 5.4: re-run a finalised session-day on the recorder's data and report how far it drifts from the live
+    day (reads only; never pauses a session). Exit 0: reported, whatever the drift; 2: bad arguments or an unknown
+    session; 3: nothing checked (not finalised, not recorded, or the landing file is busy); 4: could not run."""
+    from datetime import date
+    from stockify import parity, store
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD; got {args.date!r}", file=sys.stderr)
+        return 2
+    if store.get_session(args.session) is None:
+        print(f"no such session: {args.session!r}", file=sys.stderr)
+        return 2
+    try:
+        result = parity.recorder_parity(args.session, day)
+    except Exception as e:  # noqa: BLE001 — a locked database or an engine that is not built is not a difference
+        print(f"parity: could not run: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 4
+    if result.outcome == "skipped":
+        print(f"skipped: {result.summary['reason']}", file=sys.stderr)
+        return 3
+    s = result.summary
+    print(f"recorder parity {args.session} {args.date}: fills {s['fills_live']} live, {s['fills_recorder']} recorder, "
+          f"{s['fills_matched']} matched; NAV differs by {s['pnl_diff_paise']} paise (recorder less live)")
+    first = s["first_divergence"]
+    if first is not None:
+        print(f"first divergence at {s['first_divergence_ns']} ns, fill #{first['index']}: live "
+              f"{json.dumps(first['live'], sort_keys=True)} / recorder {json.dumps(first['recorder'], sort_keys=True)}")
+    if s["explained_by"]:                           # only differences have causes: an identical day prints nothing here
+        print(f"explained by: {', '.join(s['explained_by'])}")
+    if s["unexplained"]:
+        n = sum(1 for x in s["differences"] if not x["causes"])
+        print(f"unexplained: {n} of {s['differences_total']} difference(s) have no earlier dropped frames, journaled "
+              "margin answer or pause that covers them")
     return 0
 
 
@@ -600,6 +776,43 @@ def _cmd_tools_fuzz(args) -> int:
     return fuzz.main(fuzz.parse_seeds(args.seeds), args.shrink, args.save)
 
 
+def _cmd_notify_test(args) -> int:
+    """Send one test message through the channel chosen in notify.json (secrets come from the environment). Exit 0:
+    sent; 1: not sent (the reason is printed; a secret never is)."""
+    from stockify.daemon import notify
+    error = notify.send_test()
+    if error is not None:
+        print(f"notify test: not sent: {error}", file=sys.stderr)
+        return 1
+    print("notify test: sent")
+    return 0
+
+
+def _cmd_backup_run(args) -> int:
+    """Back the lab's irreplaceable stores up to `--target`, or `storage.json` -> `backup.target` (GK 5.7). Exit 0:
+    done; 1: some copy failed or did not verify; 2: no usable target (the reason is printed)."""
+    from pathlib import Path
+
+    from stockify import backup, timeutil
+    from stockify.config import loader
+    target = args.target or loader.load_json("storage.json")["backup"]["target"]
+    if not target:
+        print("backup: no target: pass --target DIR, or set backup.target in stockify/config/storage.json "
+              "(a folder outside the lab and the repo, ideally on another drive)", file=sys.stderr)
+        return 2
+    try:
+        res = backup.run(Path(target), day=timeutil.ist_today())
+    except backup.BackupRefused as e:
+        print(e, file=sys.stderr)
+        return 2
+    print(f"backup: {res.copied} copied, {res.skipped} skipped, {res.bytes} bytes -> {target}")
+    for note in res.notes:
+        print(f"backup: note: {note}")
+    for error in res.errors:
+        print(f"backup: ERROR: {error}", file=sys.stderr)
+    return 1 if res.errors else 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -635,6 +848,12 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("daemon", help="market daemon: record each session, then hibernate (D-32)")
     d.add_argument("--once", action="store_true", help="log one idle cycle and exit")
     d.add_argument("--recorder-only", action="store_true", help="record today's ticks (M1.5)")
+    d.add_argument("--sessions", default="all",
+                   help="paper sessions to run: all (every armed, running or paused one), none, or ids separated "
+                        "by commas")
+    d.add_argument("--replay-sandbox", default=None, metavar="DIR",
+                   help="run a replay's paper sessions with DIR as the lab's home: a replay never writes sessions "
+                        "into the real lab")
     d.add_argument("--ticker", default="live",
                    help="live, or replay:YYYY-MM-DD:<Nx|max> to replay a recorded day")
     d.add_argument("--inject", action="append", default=[],
@@ -643,6 +862,18 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("config", help="validate stockify/config/").set_defaults(func=_cmd_config)
     sub.add_parser("engine", help="print the engine build info").set_defaults(func=_cmd_engine)
+
+    nt = sub.add_parser("notify", help="notifications (M5.8)")
+    ntsub = nt.add_subparsers(dest="notify_command", required=True)
+    ntsub.add_parser("test", help="send one test message through the channel in notify.json").set_defaults(
+        func=_cmd_notify_test)
+
+    bk = sub.add_parser("backup", help="verified backup of the stores that cannot be rebuilt (M5.13)")
+    bksub = bk.add_subparsers(dest="backup_command", required=True)
+    bkr = bksub.add_parser("run", help="copy refdata, lab, journals, the tick archive, NSE raw files and the ELM "
+                                       "archive to the target; reads the lab, changes nothing in it")
+    bkr.add_argument("--target", help="backup folder (default: storage.json backup.target)")
+    bkr.set_defaults(func=_cmd_backup_run)
 
     r = sub.add_parser("refdata", help="reference data (instruments with history)")
     rsub = r.add_subparsers(dest="refdata_command", required=True)
@@ -750,10 +981,41 @@ def main(argv: list[str] | None = None) -> int:
                                    "IST that can be tomorrow, whose i1 file NSE creates the evening before)")
     mk.add_argument("--at", help="IST time HH:MM: the SPAN file in force is the last created by then "
                                  "(default 15:30)")
+    mk.add_argument("--live", action="store_true",
+                    help="also ask Kite for this basket (read-only /margins/basket, consider_positions=false; needs "
+                         "a fresh Kite login) and print its answer beside the staircase's")
     mk.set_defaults(func=_cmd_margin_check)
     mgsub.add_parser("scorecard", help="every staircase step's error against every stored Kite answer, by portfolio "
                                        "type (offline; reads the lab, writes nothing)"
                      ).set_defaults(func=_cmd_margin_scorecard)
+
+    lr = mgsub.add_parser("live-report", help="where Kite's live margin answers and the staircase disagree, by portfolio "
+                                              "type, underlying, IST hour and SPAN-file age (offline; reads the lab)")
+    lr.add_argument("--from", dest="start", help="first IST trade date, YYYY-MM-DD (default: all)")
+    lr.add_argument("--to", dest="end", help="last IST trade date, YYYY-MM-DD (default: all)")
+    lr.set_defaults(func=_cmd_margin_live_report)
+
+    se = sub.add_parser("session", help="paper session maintenance")
+    sesub = se.add_subparsers(dest="session_command", required=True)
+    rf = sesub.add_parser("refinalise", help="finalise a failed or unfinished session-day again from its journal "
+                                             "(exit 0 finalised, 1 cannot, 2 bad arguments, 3 busy, 4 could not run)")
+    rf.add_argument("--session", required=True, help="session id")
+    rf.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
+    rf.set_defaults(func=_cmd_session_refinalise)
+
+    pa = sub.add_parser("parity", help="nightly parity gates (M5.10)")
+    pasub = pa.add_subparsers(dest="parity_command", required=True)
+    pj = pasub.add_parser("journal", help="replay a finalised session-day's journal and compare it with the store "
+                                          "(reads only; exit 0 identical, 1 a difference, 3 not finalised, 4 could not run)")
+    pj.add_argument("--session", required=True, help="session id")
+    pj.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
+    pj.set_defaults(func=_cmd_parity_journal)
+    pr = pasub.add_parser("recorder", help="re-run a finalised session-day on the recorder's data and report the drift "
+                                           "from the live day (reads only, never pauses; exit 0 reported, 3 nothing "
+                                           "checked, 4 could not run)")
+    pr.add_argument("--session", required=True, help="session id")
+    pr.add_argument("--date", required=True, help="trade date YYYY-MM-DD")
+    pr.set_defaults(func=_cmd_parity_recorder)
 
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)
@@ -820,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
         s.set_defaults(func=None, milestone=milestone)
 
     args = p.parse_args(argv)
-    log.setup(args.verbose)
+    log.setup(args.verbose, file="stockify-daemon.log" if args.command == "daemon" else None)
     if args.func is None:
         print(f"stockify {args.command}: not implemented yet (planned for {args.milestone})",
               file=sys.stderr)

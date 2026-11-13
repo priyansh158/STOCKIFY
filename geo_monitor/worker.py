@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import traceback
 from typing import Any, Optional
 
 try:
@@ -28,6 +29,7 @@ from geo_monitor.gemini_classifier import (
     classify_batch,
     heuristic_suspect,
     resolve_gemini_api_key,
+    scrub,
     should_alert,
 )
 from geo_monitor.queries import build_monitor_queries
@@ -160,8 +162,8 @@ def run_once(
             )
         stats["classified"] = len(classified)
     except Exception as e:
-        log.exception("Gemini classification failed")
-        stats["errors"].append(str(e))
+        _log_failure("Gemini classification failed", e)
+        stats["errors"].append(scrub(str(e)))        # the stats are logged each cycle
         return stats
 
     for c in classified:
@@ -217,6 +219,16 @@ def run_once(
     return stats
 
 
+def _log_failure(what: str, e: BaseException) -> None:
+    """Log `what` with the trace of `e`, as text that has been through `scrub`.
+
+    Used instead of `log.exception`, which would write whatever the error holds: no line this
+    process logs may show the Gemini key.
+    """
+    trace = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    log.error("%s\n%s", what, scrub(trace).rstrip())
+
+
 def run_forever(*, once: bool = False) -> None:
     load_env()
     logging.basicConfig(
@@ -236,8 +248,8 @@ def run_forever(*, once: bool = False) -> None:
         try:
             stats = run_once()
             log.info("Cycle done: %s", stats)
-        except Exception:
-            log.exception("Monitor cycle crashed")
+        except Exception as e:
+            _log_failure("Monitor cycle crashed", e)
         if once:
             return
         sleep_for = max(5, _interval_sec() - int(time.time() - started))

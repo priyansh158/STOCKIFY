@@ -56,6 +56,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from stockify import numerics, paths, timeutil
+from stockify.data import instruments
 
 MAGIC = b"STKEVT01"
 VERSION = 1
@@ -80,8 +81,12 @@ SIZE = {TICK_QUOTE: 104, TICK_FULL: 384, INDEX_K: 80, BAR_K: 88, CLOCK: 24, GAP_
 # <block name="gap-reasons" same-as="docs/plan/A1_schemas.md:gap-reasons" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
 GAP_REASONS = {"disconnect": 1, "process_stop": 2, "token_expired": 3, "stall": 4, "not_subscribed": 5}
 # </block>
+# Landing gap reasons that only say which frames the recording lacks (RM 5.3); `include_gaps` leaves them out
+# because the .evt format has no GAP code for them (adding one is a format change). The parity report reads them.
+RECORDER_ONLY_GAP_REASONS = frozenset({"queue_full"})
 # <block name="refdata-subtypes" same-as="docs/plan/A1_schemas.md:refdata-subtypes" same-as-pattern='"(?P<value>[a-z_]+)": (?P<key>\d+)'>
-REFDATA_SUBTYPES = {"instrument_add": 1, "price_band": 2, "margin_requirement": 3, "spec_change": 4}
+REFDATA_SUBTYPES = {"instrument_add": 1, "price_band": 2, "margin_requirement": 3, "spec_change": 4,
+                    "strategy_control": 5}
 # </block>
 BASIS = {"raw": 0, "adjusted": 1}
 FLAG_CLOCK = 2
@@ -90,6 +95,13 @@ MAX_JSON = 65_535 - 32
 INTERVAL_S = {"minute": 60, "3minute": 180, "5minute": 300, "10minute": 600, "15minute": 900,
               "30minute": 1800, "60minute": 3600, "day": 86400}
 # </block>
+# REG 5.1: every key a pack spec may carry (the ones `build` and its helpers read), the forms of an instrument
+# selector (`resolve`) and the keys of an option-chain selector (`_chain`). A run config with any other key is
+# refused by stockify.runconfig, so add a key here when the builder starts reading it.
+SPEC_KEYS = ("dataset", "from", "to", "interval", "instruments", "tiers", "clock_cadence_ms", "skip_missing_days",
+             "include_gaps")
+SELECTOR_KEYS = ("ids", "symbols", "chain")
+CHAIN_KEYS = ("underlying", "kinds", "expiry", "strikes", "futures")
 SEC = 1_000_000_000
 
 
@@ -308,6 +320,21 @@ def resolve(selectors: list[dict] | None, day: date, recorded: set[int] | None =
 
 # ── Building ─────────────────────────────────────────────────────────────────
 
+def merge_recorder_gaps(*sources) -> dict | None:  # noqa: ANN002
+    """The union of `queue_full` spans, each source a list of spans or a manifest's `recorder_gaps` (or None), in
+    sorted order with the known frames summed; None when there are no spans. The union is what a refreshed manifest
+    keeps, so the label never depends on which source a pack was last built from."""
+    seen: dict[str, dict] = {}
+    for src in sources:
+        for span in (src.get("spans", []) if isinstance(src, dict) else src or []):
+            seen.setdefault(json.dumps(span, sort_keys=True), span)
+    if not seen:
+        return None
+    spans = sorted(seen.values(), key=lambda s: (s["day"], s["start_ns"] or 0, s["end_ns"] or 0,
+                                                 s["first_frame_no"] or 0, s["last_frame_no"] or 0))
+    return {"frames": sum(s["frames"] or 0 for s in spans), "spans": spans}
+
+
 @dataclass
 class _Build:
     spec: dict
@@ -318,6 +345,33 @@ class _Build:
     added: set = field(default_factory=set)
     first_day: dict = field(default_factory=dict)
     counter: int = 0
+    gaps: dict = field(default_factory=dict)         # IST day -> instrument ids with no event that day (M-4)
+    dropped: list = field(default_factory=list)      # the recorder's `queue_full` spans (RM 5.3); not in the evt bytes
+    immutable: bool = False                          # read a landing file as `mode=ro&immutable=1` (nothing writes it)
+
+    def note_gaps(self, day: date | str, wanted: set[int], seen: set[int]) -> None:
+        """Record the instruments a day asked for and got no event for. Nothing is made up for them (I-7)."""
+        missing = sorted(wanted - seen)
+        if missing:
+            self.gaps[day if isinstance(day, str) else day.isoformat()] = missing
+
+    def gaps_manifest(self) -> dict:
+        days = dict(sorted(self.gaps.items()))
+        return {"count": sum(len(v) for v in days.values()), "days": days}
+
+    def note_dropped(self, day: date, tick_day) -> None:  # noqa: ANN001
+        """The frames the recorder's queue refused on `day`: the pack has no record for them (the format has no code),
+        so the manifest names them, and a run over the pack is labelled (`data:dropped_frames`). A landing file from
+        before migration 0002 has no frame columns, so they are read with `.get`."""
+        for g in tick_day.gaps():
+            if g["reason"] in RECORDER_ONLY_GAP_REASONS:
+                self.dropped.append({"day": day.isoformat(), "reason": g["reason"], "start_ns": g["start_ns"],
+                                     "end_ns": g["end_ns"], "first_frame_no": g.get("first_frame_no"),
+                                     "last_frame_no": g.get("last_frame_no"), "frames": g.get("frames")})
+
+    def recorder_gaps_manifest(self) -> dict | None:
+        """None when nothing was dropped, so a manifest without drops has no such key and is as it always was."""
+        return merge_recorder_gaps(self.dropped)
 
     def add(self, t: int, rank: int, iid: int, rec: bytes, src_seq: int | None = None) -> None:
         if src_seq is None:
@@ -393,6 +447,15 @@ def _settle_events(b: _Build, ids: set[int], day: date) -> None:
             b.add(t_fsp, 3, uid, enc_settle(uid, t_fsp, 0, d, row[0]))
 
 
+def settle_records(ids: set[int], day: date) -> list[tuple[int, int, bytes]]:
+    """The `SETTLE` records a paper session's day needs after NSE's evening files (DM 5.5): the daily settlement
+    prices of `ids` and, on an expiry day, the final settlement price of their underlyings, as (publication t, rank,
+    record) in the order a pack would hold them. Empty when none of the files has arrived."""
+    b = _Build({}, "raw")
+    _settle_events(b, set(ids), day)
+    return [(key[0], key[1], rec) for key, rec in sorted(b.events, key=lambda e: e[0])]
+
+
 def _clock_events(b: _Build, t_lo: int, t_hi: int) -> list:
     cad = int(b.spec.get("clock_cadence_ms", 0)) * 1_000_000
     if cad <= 0 or t_lo is None:
@@ -415,6 +478,8 @@ def _tier_ids(subs: list[dict], tier: str, t: int) -> set[int]:
 def _gap_events(b: _Build, tick_day, ids: set[int]) -> None:  # noqa: ANN001
     subs = tick_day.subscriptions()
     for g in sorted(tick_day.gaps(), key=lambda g: (g["start_ns"] or 0, g["end_ns"] or 0, g["reason"])):
+        if g["reason"] in RECORDER_ONLY_GAP_REASONS:
+            continue                       # names frames the landing lacks; the pack format has no code for it
         scope = g.get("scope") or "all"
         if scope == "all":
             targets = [0]
@@ -433,7 +498,7 @@ def _gap_events(b: _Build, tick_day, ids: set[int]) -> None:  # noqa: ANN001
 def _ticks_day(b: _Build, day: date):  # noqa: ANN202
     """(sorted key/bytes iterator, t_min, t_max) for one recorded day."""
     from stockify.data import ticks
-    tick_day = ticks.open_day(day)
+    tick_day = ticks.open_day(day, immutable=b.immutable)
     if tick_day is None:
         if b.spec.get("skip_missing_days"):
             return None
@@ -465,11 +530,13 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
     out = []
     monotonic = True
     last_t = None
+    seen_ids: set[int] = set()
     for p in tick_day.packets(["seq", "recv_ns", "instrument_id", "raw"], instrument_ids=ids or {-1}, kinds=tiers):
         if p["instrument_id"] is None:
             unknown += 1
             continue
         digest.update(struct.pack("<qq", p["seq"], p["instrument_id"]) + p["raw"])
+        seen_ids.add(p["instrument_id"])
         kind, rec = enc_tick(p, p["instrument_id"], p["recv_ns"])
         t = p["recv_ns"]
         if last_t is not None and t < last_t:
@@ -478,6 +545,8 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
         t_lo = t if t_lo is None else min(t_lo, t)
         t_hi = t if t_hi is None else max(t_hi, t)
         out.append(((t, 4, p["seq"], p["instrument_id"]), rec))
+    b.note_gaps(day, ids, seen_ids)
+    b.note_dropped(day, tick_day)
     b.events = []
     _refdata_events(b, ids, day, learned)
     _settle_events(b, ids, day)
@@ -488,6 +557,52 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
                       "packets_digest": digest.hexdigest(), "unmapped_packets": unknown})
     ticks_sorted = out if monotonic else sorted(out)
     return heapq.merge(ticks_sorted, side), t_lo, t_hi
+
+
+def _instrument_label(iid: int) -> str:
+    """`NFO:NIFTY26NOVFUT`, or for a contract the bhavcopy registered without a tradingsymbol (A1 §1)
+    `NFO:NIFTY FUT 2024-01-25` / `NFO:NIFTY CE 2024-01-25 21500.00`: never `NFO:None`."""
+    info = instruments.get(iid)
+    if info is None:
+        return "unknown instrument"
+    if info.get("tradingsymbol"):
+        return f"{info['exchange']}:{info['tradingsymbol']}"
+    parts = [info.get("underlying") or "?", info.get("kind") or "?"]
+    if info.get("expiry"):
+        parts.append(info["expiry"])
+    if info.get("strike_paise") is not None:
+        parts.append(f"{info['strike_paise'] // 100}.{info['strike_paise'] % 100:02d}")
+    return f"{info['exchange']}:{' '.join(parts)}"
+
+
+def _fo_units(day: date, iid: int, contracts, row_lot):  # noqa: ANN001, ANN202
+    """An `fo_eod` row's traded volume in units (D-79).
+
+    NSE's F&O daily file gives volume in contracts (lots) and `fo_eod` keeps it as published; a bar's volume is in
+    units for every source, so it is converted here, once: contracts × lot. The lot is the row's own `lot_size`
+    or, where that is NULL (old-format files), the dated contract spec in force on the trade date. No lot from
+    either fails the build: never a guessed lot, never contracts passed off as units. The product is taken in
+    Python (SQLite would turn an overflowing one into a float) and must fit an int64."""
+    def fail(why: str) -> PackError:
+        return PackError(f"fo_eod {day.isoformat()} instrument {iid} ({_instrument_label(iid)}): {why}")
+
+    lot, source = row_lot, "fo_eod.lot_size"
+    if lot is None:
+        lot, source = (instruments.spec_at(iid, day) or {}).get("lot_size"), "contract_specs"
+        if lot is None:
+            raise fail("no sourced lot size exists for that day (none in the row, no contract spec in force), so "
+                       "its volume in contracts cannot be turned into units; a lot is never derived from turnover "
+                       "(D-79)")
+    if type(lot) is not int or lot < 1:
+        raise fail(f"lot size {lot!r} ({source}) is not a positive whole number")
+    if contracts is None:
+        return None
+    if type(contracts) is not int:
+        raise fail(f"volume {contracts!r} is not a whole number of contracts")
+    units = contracts * lot
+    if not numerics.INT64_MIN <= units <= numerics.INT64_MAX:
+        raise fail(f"volume {contracts} contracts × lot {lot} does not fit an int64")
+    return units
 
 
 def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
@@ -508,26 +623,40 @@ def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
             t = _ist(day, pricing["eod_publication_ist"])
             conn = refdata._connect()
             marks = ",".join("?" * len(ids)) or "NULL"
-            q = {"fo_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, oi FROM fo_eod",
+            # fo_eod.volume is in contracts and is turned into units below (D-79); oi is units already
+            q = {"fo_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, oi, lot_size "
+                           "FROM fo_eod",
                  "cm_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, volume, NULL FROM cm_eod",
                  "index_eod": "SELECT instrument_id, open_paise, high_paise, low_paise, close_paise, NULL, NULL FROM index_eod"}
+            seen_ids: set[int] = set()
             for table, sql in q.items():
                 extra = " AND series='EQ'" if table == "cm_eod" else ""
                 for r in conn.execute(f"{sql} WHERE trade_date=? AND instrument_id IN ({marks}){extra} "
                                       "ORDER BY instrument_id", (d, *sorted(ids))):
+                    if table == "fo_eod":
+                        r = (*r[:5], _fo_units(day, r[0], r[5], r[7]), r[6])
                     rows_digest.update(numerics.dumps_canonical([table, d, *r]).encode())
+                    seen_ids.add(r[0])
                     all_events.append(((t, 4, len(all_events), r[0]),
                                        enc_bar(r[0], t, 86400, _ist(day, "00:00"), *r[1:])))
+            b.note_gaps(day, ids, seen_ids)
     if spec["dataset"] == "bars":
         interval = spec.get("interval")
         if interval not in INTERVAL_S:
             raise PackError(f"bars pack needs an interval from {', '.join(INTERVAL_S)}")
         isec = INTERVAL_S[interval]
         ids = set()
+        day_ids: dict[str, set[int]] = {}
         for day in calendar.trading_days("FO", start, end):
-            ids |= resolve(spec.get("instruments"), day)
+            day_ids[day.isoformat()] = resolve(spec.get("instruments"), day)
+            ids |= day_ids[day.isoformat()]
         lo, hi = _ist(start, "00:00"), _ist(end, "23:59") + 59 * SEC
         rows = [(iid, r) for iid in sorted(ids) for r in history.bars(iid, interval, lo, hi)]
+        with_bars: dict[str, set[int]] = {}
+        for iid, r in rows:
+            with_bars.setdefault(timeutil.ns_to_ist(r["ts_ns"]).date().isoformat(), set()).add(iid)
+        for d, wanted in day_ids.items():
+            b.note_gaps(d, wanted, with_bars.get(d, set()))
         for n, (iid, r) in enumerate(rows):     # source seq = row order by (instrument_id, start)
             rows_digest.update(numerics.dumps_canonical([iid, r["ts_ns"], r["close_paise"], r["fetched_on"]]).encode())
             t = r["ts_ns"] + isec * SEC
@@ -539,12 +668,26 @@ def _table_events(b: _Build, start: date, end: date):  # noqa: ANN202
     return sorted(all_events + _clock_events(b, t_lo, t_hi)), t_lo, t_hi
 
 
+_PACK_SHA = re.compile(r"[0-9a-f]{64}")
+
+
+def _checked_sha(sha: str) -> str:
+    """`sha` if it is a pack hash, else PackError. The hash becomes a file name, so anything but 64
+    lower-case hex digits (a separator, dots, a drive letter) is refused here, whoever the caller is."""
+    if not (isinstance(sha, str) and _PACK_SHA.fullmatch(sha)):
+        shown = repr(sha) if len(repr(sha)) <= 80 else repr(sha)[:77] + "..."
+        raise PackError(f"pack hash must be exactly 64 lower-case hex digits, got {shown}")
+    return sha
+
+
 def pack_path(sha: str) -> Path:
-    return paths.packs_dir() / f"{sha}.evt"
+    name = f"{_checked_sha(sha)}.evt"          # checked before the packs folder is looked at
+    return paths.packs_dir() / name
 
 
 def manifest_path(sha: str) -> Path:
-    return paths.packs_dir() / f"{sha}.json"
+    name = f"{_checked_sha(sha)}.json"
+    return paths.packs_dir() / name
 
 
 def _normalise(spec: dict) -> dict:
@@ -584,8 +727,9 @@ def clean_stale_tmp(max_age_s: int = STALE_AFTER_S) -> list[str]:
     return removed
 
 
-def build(spec: dict) -> str:
-    """Write the pack and its manifest; return the pack's SHA-256."""
+def build(spec: dict, *, immutable: bool = False) -> str:
+    """Write the pack and its manifest; return the pack's SHA-256. `immutable` reads a landing file as
+    `mode=ro&immutable=1` (for a file nothing is writing); it is no part of the spec and changes nothing in the pack."""
     try:
         clean_stale_tmp()
     except OSError:
@@ -593,7 +737,7 @@ def build(spec: dict) -> str:
     spec = _normalise(spec)
     start, end = date.fromisoformat(spec["from"]), date.fromisoformat(spec["to"])
     basis = "adjusted" if spec["dataset"] == "bars" else "raw"
-    b = _Build(spec, basis)
+    b = _Build(spec, basis, immutable=immutable)
     flags = FLAG_CLOCK if int(spec.get("clock_cadence_ms", 0)) > 0 else 0
     folder = paths.packs_dir()
     tmp = folder / f".building-{os.getpid()}-{secrets.token_hex(6)}.evt"   # unique per builder, threads too
@@ -642,7 +786,10 @@ def build(spec: dict) -> str:
     counts = dict(sorted(b.counts.items()))
     manifest = {"sha256": digest, "format": "evt/1", "spec": spec, "price_basis": basis, "records": count,
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
+                "gaps": b.gaps_manifest(), "volume_unit": "units",
                 "bytes": _refused_retry(lambda p: p.stat().st_size, target)}
+    if b.recorder_gaps_manifest() is not None:
+        manifest["recorder_gaps"] = b.recorder_gaps_manifest()
     _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest
 
@@ -700,7 +847,8 @@ def _publish(tmp: Path, target: Path, digest: str) -> None:
 _WALL_CLOCK_FIELDS = frozenset({"created_ns", "built_ns", "duration_ms", "pid", "host"})
 # Provenance: where the records were read from (landing or archive, P-05). The same pack can be rebuilt from
 # another source (after retention moves a day to the archive); the manifest then follows its latest build.
-_PROVENANCE_FIELDS = frozenset({"sources"})
+# `recorder_gaps` is provenance too: the same evt bytes come from a landing file that lost frames or from one that did not.
+_PROVENANCE_FIELDS = frozenset({"sources", "recorder_gaps"})
 
 
 def _same_manifest(existing: str, ours: str, ignore: frozenset[str] = _WALL_CLOCK_FIELDS) -> bool | None:
@@ -711,6 +859,19 @@ def _same_manifest(existing: str, ours: str, ignore: frozenset[str] = _WALL_CLOC
         return None
     strip = lambda m: {k: v for k, v in m.items() if k not in ignore}  # noqa: E731
     return isinstance(a, dict) and strip(a) == strip(b)
+
+
+def _merge_provenance(existing: str, ours: str) -> str:
+    """`ours`, with `recorder_gaps` the union of both manifests' spans."""
+    try:
+        a, b = json.loads(existing), json.loads(ours)
+    except json.JSONDecodeError:
+        return ours
+    merged = merge_recorder_gaps(a.get("recorder_gaps"), b.get("recorder_gaps"))
+    if merged is None:
+        return ours
+    b["recorder_gaps"] = merged
+    return json.dumps(b, indent=2, sort_keys=True) + "\n"
 
 
 def _publish_text(target: Path, text: str) -> None:
@@ -739,6 +900,11 @@ def _publish_text(target: Path, text: str) -> None:
                 if verdict is False:
                     if not _same_manifest(existing, text, _WALL_CLOCK_FIELDS | _PROVENANCE_FIELDS):
                         raise error                      # a complete manifest with other content: a conflict
+                    merged = _merge_provenance(existing, text)      # never drop or shrink what the manifest recorded
+                    if merged != text:
+                        _refused_retry(lambda p: p.write_text(merged, encoding="utf-8"), tmp)
+                    if _same_manifest(existing, merged):
+                        return
                     try:
                         tmp.replace(target)              # same pack read from elsewhere: follow the latest build
                         return

@@ -83,7 +83,7 @@ Files: `costs.hpp/.cpp`.
 Files: `ledger.hpp/.cpp`, `margin_flat.cpp`.
 
 - [x] Positions, average price, realised P&L, cash, NAV (A4 §6); funds reservation at submit with the required-amount table of A4 §6.5. MIS square-off at the dated cut-off with `AUTO_SQOFF` orders that bypass the session/margin checks, plus the optional fee (G04). `SEG_CLOSE` (DAY-order expiry, provisional futures marks) and `DAY_END` (settlement fallback, `positions_eod`, the single daily NAV row, `on_session_end`) per A4 §1.10 and §6.7; re-marks when daily settlement prices arrive (A4 §6.4).
-- [x] `MarginModel` interface (A2 §2) with `FlatMargin` (T0, D-14): MIS `mis_margin_pct`; NRML futures and short options `pct × notional` by underlying class (index / stock) from `margin_params.json`; labelled approximate (I-14).
+- [x] `MarginModel` interface (A2 §2) with `FlatMargin` (T0, D-14): MIS shares `mis_margin_pct` (MIS futures and options are margined as NRML, D-80); NRML futures and short options `pct × notional` by underlying class (index / stock) from `margin_params.json`; labelled approximate (I-14).
 - [x] Index options/futures cash settlement per A4 §7.2 (needed for G10; physical settlement is M4.6).
 
 ## M3.9 Metrics and artifacts (S)
@@ -97,7 +97,7 @@ Files: `strategy.hpp`, `context.hpp/.cpp`, `indicators.hpp`, `engine/strategies/
 
 - [x] C++ `Strategy` base class and `Context`; indicators (SMA, EMA, RSI and ATR with Wilder smoothing, session VWAP) identical in definition to the oracle's (golden indicator vectors, A3 U-05).
 - [x] Registry: `STOCKSIM_STRATEGY(ClassName, "name")`; C++ reference strategies `sma_cross_cpp` and `orb_cpp` (port the Python ones to prove the native path).
-- [x] pybind11 module `stockify._engine` exactly as `A2_interfaces.md` §3: `Engine(bundle_path)`, `add_pack(path)`, `set_strategy_cpp(name)`, `set_strategy_py(obj)`, `load_sod_state(json)`, `run()`, `push(bytes)`, `finish()`, `drain_outputs()` (new orders, order events, fills, charges and logs since the last call, for M5), `eod_state()`, `write_artifacts(dir)`, `labels()`, plus module-level `build_info()`. (The two state methods raise until M5.3, D-47.)
+- [x] pybind11 module `stockify._engine` exactly as `A2_interfaces.md` §3: `Engine(bundle_path)`, `add_pack(path)`, `set_strategy_cpp(name)`, `set_strategy_py(obj)`, `load_sod_state(json)`, `run()`, `push(bytes)`, `finish()`, `drain_outputs()` (new orders, order events, fills, charges and logs since the last call, for M5), `eod_state()`, `write_artifacts(dir)`, `labels()`, plus module-level `build_info()`. (Both state methods work since VOL 5.3, D-47 closed by D-66: the state is A1 §6.4, and a state that is wrong is refused whole, ST 5.1.)
 - [x] Python strategies: a trampoline subclass forwards hooks to the Python object; `Context` methods are exposed with the same names and semantics as the oracle's `Context` (M2.3). Python exceptions inside a hook stop the run with the traceback in `events_log.txt` and status `failed` (never swallowed).
 - [x] Every M2 reference strategy (Python) runs unchanged on the engine and matches the oracle.
 
@@ -124,7 +124,7 @@ Server: `server/routers/tests.py`; DTOs in `server/schemas.py`, mirrored in `web
 
 - [x] `GET /api/strategies` (registered C++ strategies and discovered Python strategies with their parameter schemas, for the form). `POST /api/tests` validates and launches `python -m stockify run` as a subprocess (queue; at most `cpu_count − 1` concurrent runs); `GET /api/tests`, `GET /api/tests/{id}` (+ `/orders`, `/fills`, `/equity`, `/charges`, `/logs`), `POST /api/tests/{id}/cancel`. Declare fixed routes before `/{id}` routes (A2 §6).
 - [x] `/tests`: run cards (status, strategy, range, headline metrics, **labels**: approximate fills, flat margin, unverified charges, adjusted basis) and a "New test" form (strategy, parameters, symbols or chain selector, range, fill model, price basis, capital, seed).
-- [x] `/tests/[id]`: metrics, responsive equity curve, drawdown, fills list, cost breakdown, manifest (build id, hashes). Mobile-first: single column, tap targets ≥ 44 px, readable at 390 px width; ₹ via `Intl.NumberFormat("en-IN")`.
+- [x] `/tests/[id]`: metrics, responsive equity curve, drawdown, fills list, cost breakdown, manifest (build id, hashes). Desktop only (D-83): readable down to about 1024 px, wide tables are fine; ₹ via `Intl.NumberFormat("en-IN")`.
 
 ## M3.15 Strategy how-to (S)
 
@@ -147,4 +147,4 @@ cd web; npm run lint; npm run build
 
 ## Definition of done
 
-All goldens and the differential fuzz pass on both implementations; determinism holds; a Python strategy runs unchanged on both; `/tests` works end to end on a phone-sized viewport; benchmark numbers recorded.
+All goldens and the differential fuzz pass on both implementations; determinism holds; a Python strategy runs unchanged on both; `/tests` works end to end in a desktop browser; benchmark numbers recorded.

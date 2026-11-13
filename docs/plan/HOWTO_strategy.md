@@ -14,8 +14,9 @@ For options (the chain view, margin models, expiry, comparisons and margin calib
 The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference strategy). In words:
 
 - The **opening range** is the highest high and lowest low of the first `range_minutes` minute bars after 09:15.
-- A later bar that **closes above the range** buys `qty` shares (MIS, intraday) with a market order, and at once
-  places a **stop**: a sell stop-market at the bottom of the range. With `short: true`, a close **below** the
+- A later bar that **closes above the range** buys `qty` shares (MIS, intraday) with a market order, and each
+  time that order fills places a **stop** for exactly the filled quantity: a sell stop-market at the bottom of the range
+  (a rejected entry gets none). With `short: true`, a close **below** the
   range sells short instead, with a buy stop at the top.
 - At `exit_hhmm` (default 15:10) a timer cancels the stop and closes whatever is still open. If the strategy
   forgets, the broker's MIS square-off at the cut-off would do it, with a fee.
@@ -23,7 +24,7 @@ The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference st
 
 ```python
 from stockify import timeutil
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, encode_state
 
 
 class OpeningRangeBreakout(Strategy):
@@ -51,7 +52,10 @@ class OpeningRangeBreakout(Strategy):
         self.open_ns = timeutil.ist_ns(self.day, "09:15")
         self.hi = self.lo = None
         self.traded = False
-        self.stop_id = None
+        self.entry_id = None
+        self.stop_side = None
+        self.stop_trigger = 0
+        self.stop_ids = []
         exit_ns = timeutil.ist_ns(self.day, self.exit_hhmm)
         if exit_ns > ctx.now():
             ctx.schedule_at(exit_ns)                     # the time exit
@@ -69,24 +73,43 @@ class OpeningRangeBreakout(Strategy):
             return
         tick = ctx.spec(self.iid)["tick_paise"]
         if bar.close > self.hi:
-            ctx.place(self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long")
-            self.stop_id = ctx.place(self.iid, "SELL", self.qty, "MIS", "SL-M", trigger=self.lo // tick * tick,
-                                     tag="orb_stop")
+            self.entry_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long")
+            self.stop_side, self.stop_trigger = "SELL", self.lo // tick * tick
             self.traded = True
         elif self.short and bar.close < self.lo:
-            ctx.place(self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short")
-            self.stop_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "SL-M", trigger=-(-self.hi // tick) * tick,
-                                     tag="orb_stop")
+            self.entry_id = ctx.place(self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short")
+            self.stop_side, self.stop_trigger = "BUY", -(-self.hi // tick) * tick
             self.traded = True
 
+    def on_fill(self, ctx, fill):
+        # The stop exists only for what the entry has filled: one SL-M of exactly each fill's quantity. A rejected or
+        # cancelled entry fills nothing, so it never gets a stop (and cannot open a reverse position).
+        if self.entry_id is not None and fill.order_id == self.entry_id:
+            self.stop_ids.append(ctx.place(self.iid, self.stop_side, fill.qty, "MIS", "SL-M",
+                                           trigger=self.stop_trigger, tag="orb_stop"))
+
+    # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
+    def save_state(self) -> dict:
+        return encode_state(self, {**self.state_attrs(), "day": self.day.isoformat() if self.day else None})
+
+    def load_state(self, state: dict) -> None:
+        from datetime import date
+        super().load_state(state)
+        self.day = date.fromisoformat(self.day) if self.day else None
+
     def on_timer(self, ctx, timer_id):
-        if self.stop_id is not None:
-            ctx.cancel(self.stop_id)
+        for stop_id in self.stop_ids:
+            ctx.cancel(stop_id)
         pos = ctx.position(self.iid, "MIS")
         if pos and pos.qty:
             side = "SELL" if pos.qty > 0 else "BUY"
             ctx.place(self.iid, side, abs(pos.qty), "MIS", "MARKET", tag="orb_exit")
 ```
+
+`save_state` / `load_state` matter only in paper trading, where each trading day runs a fresh engine and `on_start`
+runs on the first day only: everything the strategy keeps on `self` must come back the next morning. The default
+`save_state` saves every attribute that is an int, bool, str, None, `Decimal`, tuple, list or str-keyed dict; this
+strategy keeps a `date` (`self.day`), so it writes it as text and reads it back (A2 §4.1).
 
 Things to know when you write your own (the full API is A2 §4):
 
@@ -99,6 +122,44 @@ Things to know when you write your own (the full API is A2 §4):
   `socket`, `requests`, `threading`, `sqlite3` and the like, or call `open`, `eval`, `exec`, `datetime.now()` or
   `date.today()`. Use `ctx.now()`, `ctx.today()`, `ctx.rng()` and `ctx.log()` instead. This is what makes a run
   reproducible.
+- **Imports come from an allowlist (LCB 5.3, 5.4).** A strategy module may import only `__future__`, `datetime`,
+  `decimal`, `re`, `math`, `dataclasses`, `typing`, `enum`, `collections`, `itertools`, `functools`, `statistics`,
+  `stockify.strategy`, `stockify.engine`, `stockify.timeutil`, and modules of its own package (for the reference
+  strategies, `stockify.strategies.*`; a platform package such as `stockify.tools` does not count). Names imported
+  from those modules are checked too (LCB 5.5): no `*`, no `_`-prefixed names, no module-like names (`sys`,
+  `time`, `importlib`, `ast`, `inspect`, …), and nothing that is itself a module, so `from stockify.strategy import
+  importlib` is refused while `from decimal import Decimal` is fine. `import X.Y` must name an allowed module. The
+  check also refuses:
+  - attributes starting with `_` other than on `self`/`cls` (and dunders such as `self.__class__` even there); the
+    one exception is the context's instrument table `ctx._rows()`, which the option helpers read;
+  - attributes named `importlib`, `sys`, `modules`, `kite_client`, `kiteconnect`, `os`, `subprocess`, `socket`,
+    `time`, `ast`, `inspect`, `builtins`, or a frame's `f_globals`/`f_back`/… (allowed modules hold some of these:
+    `stockify.timeutil.time` is the wall clock);
+  - format strings that reach a private attribute (`'{0.__class__}'.format(x)`);
+  - calls to `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`, `breakpoint`, `open`, `input`,
+    `__import__`, `exec`, `eval` and `compile`, and the names `__builtins__`, `__loader__` and `__spec__`;
+  - the wall clock: the attributes `now`, `today`, `utcnow`, `time_ns`, `monotonic` and `perf_counter` on anything
+    but the strategy context (`ctx.now()` and `ctx.today()` are the API), and `fromtimestamp` without a time and an explicit `tz`;
+  - the wall-clock functions of `stockify.timeutil` (LCB 5.14): `now_ns`, `now_ist` and `ist_today` may not be
+    imported (under any name), nor used as an attribute of any object, the context included. The rest of
+    `stockify.timeutil` (`ist_ns`, `ns_to_ist`, `parse_hhmm`, …) only converts times and is fine;
+  - the attributes `exec`, `eval`, `compile`, `bltns` and `builtins` on any object, and anything that evaluates a
+    string as code: `get_type_hints`, `ForwardRef`, `evaluate_forward_ref`, `get_annotations`, `.register`, and any
+    string inside an annotation (`def f(a: "X")`, `-> "X"`, `x: "int"`); write annotations as plain names (with
+    `from __future__ import annotations` they are never evaluated anyway) (LCB 5.7);
+  - rebinding `ctx`: it may only be a parameter of a `def` (no assignment, loop, `with ... as`, walrus,
+    comprehension, `except ... as`, import alias, lambda parameter or default value), and a call to a function of
+    the same module may pass only `ctx` itself into a parameter named `ctx`;
+  - attribute chains that start at an imported module are followed over the real objects (LCB 5.6): reaching a
+    module that is not on the list (`enum.bltns` is builtins, `dataclasses.types`), a dangerous builtin (`eval`,
+    `open`, `getattr`, …) or a frame or code object is refused, and so is a step that does not resolve or indexing
+    into a module's names. `bar.open` is fine: `open` is refused only along such a chain.
+
+  The paper daemon runs strategies in a process that holds a live Kite token, so a strategy must never be able to
+  reach it. The source is parsed **before** the module is imported, so a refused file's top-level code never runs;
+  modules the strategy imports from its own package (such as `stockify/strategies/_option_legs.py`) are checked the
+  same way. Defining `__init__` or other dunder methods in a class is fine; private helper methods on `self`
+  (`self._new_day(...)`) are fine. This guards against accidents; it is not a sandbox.
 - To make your own, put the file in `stockify/strategies/` and name it in the config as
   `"stockify.strategies.<module>:<Class>"`. The `PARAMS` list is only a description, for the strategy catalogue
   and the `/tests` form (labels, types, defaults, help text); the strategy itself reads `ctx.params`.
@@ -122,7 +183,13 @@ bars in the lab so far):
 - `price_basis` must match the data: Kite bars are stored adjusted for splits and bonuses, so this is `adjusted`.
 - `capital_paise` is the starting money: ₹1,00,000.
 - `fill_model` `bar` fills an order on the next bar (A4 §4.1), taking at most 10 % of that bar's volume, with
-  0.05 % slippage against you.
+  0.05 % slippage against you. `bar.volume` is in units (shares; for F&O, contracts × lot size) whatever the
+  data source: NSE's daily F&O file counts contracts and is converted when the pack is built (A1 §5, D-79).
+  Known data hole: 2023-12-28 and 2023-12-29 carry no sourced lot size, so an F&O `bhav_eod` pack over those two
+  days fails to build; start such a pack on 2024-01-01 or later.
+- The `x` of `bps` slippage is a fraction of the price, written as a decimal string: `"0.0005"` = 5 bp = 0.05 %.
+  It is not a number of basis points: `"5"` is refused, as is anything outside `"0"` to `"0.1"` (0 to 1,000 bp)
+  and anything that is not a string. `participation` is a fraction too (`"0.10"` = 10 %).
 
 ## 3. Run it from the command line
 
@@ -243,7 +310,7 @@ identical
 A C++ strategy can also run with no Python at all, from the run's `bundle.json` (for benchmarks and checks):
 
 ```
-engine\build\win-msvc-release\stocksim_run.exe --bundle %LOCALAPPDATA%\STOCKIFY\kite\lab\runs\orb_reliance_minute_cpp-6133f45a5b44\bundle.json --out C:\temp\orb_cpp
+engine\build\win-msvc-release\stocksim_run.exe --bundle $env:LOCALAPPDATA\STOCKIFY\kite\lab\runs\orb_reliance_minute_cpp-6133f45a5b44\bundle.json --out C:\temp\orb_cpp
 ```
 
 ```

@@ -12,7 +12,9 @@ Rules enforced for every file:
 * within one dated list, rows are sorted by `effective_from` per `applies`
   key, and two rows for the same key may not share a date;
 * charge rates are decimal strings converted exactly to ppb through
-  `stockify.numerics` (a `<field>_ppb` key is added next to each one).
+  `stockify.numerics` (a `<field>_ppb` key is added next to each one);
+* in `broker_policy.json`, an `FO` row of `mis_margin_pct` is exactly 1: it is a share of the NRML
+  margin, and intraday F&O leverage is not modelled (A4 §6.5, D-80).
 
 `jsonschema` is not a dependency, so the checks are written by hand.
 """
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -46,6 +49,7 @@ SCHEMAS = {
     "kite_limits.json": "stockify.kite_limits/1",
     "notify.json": "stockify.notify/1",
     "research.json": "stockify.research/1",
+    "paper.json": "stockify.paper/1",
 }
 
 CSV_HEADERS = {
@@ -148,6 +152,128 @@ def _convert_charge_rates(doc: dict) -> None:
                         raise ConfigError(f"charges.components.{comp}[{i}].{field}: {e}") from e
 
 
+def _check_mis_margin(doc: dict) -> None:
+    """broker_policy.mis_margin_pct: a CM row is a share of the traded value; an FO row is a share of the NRML
+    margin, and only the whole of it is modelled (A4 §6.5, D-80). Any other FO value is refused here, so that it is
+    never applied as a silent scale."""
+    for i, row in enumerate(doc.get("mis_margin_pct", [])):
+        if not isinstance(row, dict) or (row.get("applies") or {}).get("segment") != "FO":
+            continue
+        where = f"broker_policy.mis_margin_pct[{i}]"
+        try:
+            whole = numerics.to_ppb(row.get("pct")) == numerics.to_ppb("1")
+        except (ArithmeticError, TypeError, ValueError) as e:      # not a decimal string
+            raise ConfigError(f"{where}.pct: {e}") from e
+        if not whole:
+            raise ConfigError(f"{where}: the FO row from {row.get('effective_from')} has pct {row.get('pct')!r}; only "
+                              '"1" (the full NRML margin) is accepted: intraday F&O leverage is not modelled (D-80)')
+
+
+# paper.json whole-number keys and their largest accepted value (RM 5.3): generous, but a typo (an hour as 3600000,
+# a queue of a billion frames) is refused. A bound is a sanity limit, not a market rule.
+PAPER_BOUNDS = {"clock_every_s": 3600, "dispatcher_queue_max": 10_000_000, "token_poll_s": 3600,
+                "coverage_gap_tolerance_s": 3600, "commands_every_s": 60, "sod_state_warn_mb": 100_000,
+                "journal.fsync_every_s": 60, "margin_poll.debounce_s": 60, "margin_poll.every_s": 86_400,
+                "margin_poll.max_rps": 10, "dispatch.batch_max_items": 100_000, "dispatch.batch_max_ms": 1000,
+                "engine_log.max_lines_per_min": 10_000, "engine_log.max_line_chars": 10_000}
+_PLAIN_DECIMAL = re.compile(r"[0-9]+(\.[0-9]+)?")
+
+
+def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
+    top = PAPER_BOUNDS[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
+        raise ConfigError(f"{where}: must be a whole number from 1 to {top}, got {value!r}")
+    return value
+
+
+NOTIFY_CHANNELS = (None, "email")                  # email only (owner, 2026-11-11)
+NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary")
+
+
+def _check_notify(doc: dict) -> None:
+    """notify.json (stockify.notify/1): `channel` is null or one of NOTIFY_CHANNELS, `events` has exactly the
+    NOTIFY_EVENTS keys, each true or false. The old `channels` list is refused (it is an unknown key)."""
+    extra = set(doc) - {"schema", "channel", "events"}
+    if extra:
+        raise ConfigError(f"notify.json: unknown keys {sorted(extra)}")
+    if "channel" not in doc or doc["channel"] not in NOTIFY_CHANNELS:
+        raise ConfigError(f"notify.json: channel must be null or one of {list(NOTIFY_CHANNELS[1:])}, "
+                          f"got {doc.get('channel')!r}")
+    events = doc.get("events")
+    if not isinstance(events, dict) or set(events) != set(NOTIFY_EVENTS):
+        raise ConfigError(f"notify.json: events must be an object with exactly {list(NOTIFY_EVENTS)}")
+    for name, on in events.items():
+        if not isinstance(on, bool):
+            raise ConfigError(f"notify.json: events.{name} must be true or false, got {on!r}")
+
+
+STORAGE_KEYS = ("retention_days", "disk_warn_free_gb", "disk_warn_free_fraction", "parquet_zstd_level",
+                "log_max_mb", "log_backups", "backup")
+LOG_BOUNDS = {"log_max_mb": (1, 1000), "log_backups": (0, 100)}      # a log file's size cap and how many rotated files stay
+BACKUP_KEYS = ("target", "include_span")
+
+
+def _check_storage(doc: dict) -> None:
+    """storage.json (stockify.storage/1): an unknown key at any level is refused, naming it (D-76's style: a
+    misspelt `include_span` must not silently keep its default). `backup` is `{target, include_span}`: `target` is null
+    (no backup yet) or a non-empty folder, `include_span` is true or false (GK 5.7)."""
+    extra = set(doc) - set(STORAGE_KEYS) - {"schema"}
+    if extra:
+        raise ConfigError(f"storage.json: unknown keys {sorted(extra)}; known: {list(STORAGE_KEYS)}")
+    for key, (low, high) in LOG_BOUNDS.items():
+        if key in doc and (isinstance(doc[key], bool) or not isinstance(doc[key], int) or not low <= doc[key] <= high):
+            raise ConfigError(f"storage.json: {key} must be a whole number from {low} to {high}, got {doc[key]!r}")
+    if "backup" not in doc:
+        return
+    cfg = doc["backup"]
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"storage.json: backup must be an object with {list(BACKUP_KEYS)}, got {cfg!r}")
+    extra = set(cfg) - set(BACKUP_KEYS)
+    if extra:
+        raise ConfigError(f"storage.json: backup has unknown keys {sorted(extra)}; known: {list(BACKUP_KEYS)}")
+    for key in BACKUP_KEYS:
+        if key not in cfg:
+            raise ConfigError(f"storage.json: backup.{key} is missing")
+    target = cfg["target"]
+    if target is not None and (not isinstance(target, str) or not target.strip()):
+        raise ConfigError(f"storage.json: backup.target must be null or a folder path, got {target!r}")
+    if not isinstance(cfg["include_span"], bool):
+        raise ConfigError(f"storage.json: backup.include_span must be true or false, got {cfg['include_span']!r}")
+
+
+def _check_paper(doc: dict) -> None:
+    """paper.json (stockify.paper/1): every key present, whole numbers within PAPER_BOUNDS, and
+    `coverage_threshold` a plain decimal string (digits and one optional dot: no sign, spaces or exponent) in (0, 1]."""
+    shape = {"clock_every_s": None, "journal": ("fsync_every_s",), "dispatcher_queue_max": None,
+             "dispatch": ("batch_max_items", "batch_max_ms"),
+             "margin_poll": ("debounce_s", "every_s", "max_rps"), "token_poll_s": None,
+             "coverage_threshold": "fraction", "coverage_gap_tolerance_s": None, "commands_every_s": None, "sod_state_warn_mb": None,
+             "engine_log": ("max_lines_per_min", "max_line_chars")}
+    extra = set(doc) - set(shape) - {"schema"}
+    if extra:
+        raise ConfigError(f"paper.json: unknown keys {sorted(extra)}")
+    for key, kind in shape.items():
+        if key not in doc:
+            raise ConfigError(f"paper.json: {key} is missing")
+        where = f"paper.json: {key}"
+        if kind is None:
+            _bounded_int(doc[key], where, key)
+        elif kind == "fraction":
+            text = doc[key]
+            try:
+                frac = numerics.to_ppb(text) if isinstance(text, str) and _PLAIN_DECIMAL.fullmatch(text) else None
+            except (numerics.NumericError, OverflowError):
+                frac = None
+            if frac is None or not 0 < frac <= numerics.PPB:
+                raise ConfigError(f"{where}: must be a plain decimal string in (0, 1], got {text!r}")
+        else:
+            sub = doc[key]
+            if not isinstance(sub, dict) or set(sub) != set(kind):
+                raise ConfigError(f"{where}: must be an object with exactly {list(kind)}")
+            for k in kind:
+                _bounded_int(sub[k], f"{where}.{k}", f"{key}.{k}")
+
+
 def load_json(name: str, config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
@@ -161,6 +287,14 @@ def load_json(name: str, config_dir: Path | None = None) -> dict:
     doc = _walk_dated(doc, name.removesuffix(".json"), allow_verify=(name == "charges.json"))
     if name == "charges.json":
         _convert_charge_rates(doc)
+    if name == "broker_policy.json":
+        _check_mis_margin(doc)
+    if name == "paper.json":
+        _check_paper(doc)
+    if name == "notify.json":
+        _check_notify(doc)
+    if name == "storage.json":
+        _check_storage(doc)
     return doc
 
 

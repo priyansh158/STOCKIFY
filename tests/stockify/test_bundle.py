@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import json
 import unittest
+from unittest import mock
 from datetime import date
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
-from stockify import bundle, paths, runconfig, timeutil
+from stockify.strategies.buy_and_hold import BuyAndHold as strategy_buy_and_hold
+from stockify import bundle, paths, runconfig, strategy, timeutil
 from stockify.data import history, instruments, packs, refdata
 
 HEADER = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,"
@@ -46,6 +50,24 @@ class RunConfigTests(unittest.TestCase):
         for change, field in cases:
             with self.subTest(field=field), self.assertRaisesRegex(runconfig.RunConfigError, f"^{field.replace('[', '.').replace(']', '.')}"):
                 runconfig.load(run(**change))
+
+    # Anything but 64 lower-case hex digits could become a path outside the packs folder (LCB 5.10).
+    BAD_PACK_HASHES = (
+        "../x" + "0" * 61, "../" + "0" * 61, "..\\" + "0" * 61, "/" + "0" * 63, "\\" + "0" * 63,
+        "0" * 31 + "/" + "0" * 32, "0" * 31 + "\\" + "0" * 32, "0" * 31 + ".." + "0" * 31, "C:" + "0" * 62,
+        "A" * 64, "0" * 63 + "F", "0" * 63, "0" * 65, "", "0" * 63 + "g", "0" * 63 + " ", "0" * 64 + "\n",
+        "0" * 63 + "\n", "\uff10" * 64, "0" * 63 + "\u0660", "0" * 63 + "\x00", 0, None, ["0" * 64], b"0" * 64,
+    )
+
+    def test_a_pack_hash_is_64_lower_case_hex_digits_and_nothing_else(self):
+        for bad in self.BAD_PACK_HASHES:
+            with self.subTest(bad=bad), self.assertRaisesRegex(
+                    runconfig.RunConfigError, r"^data\.packs\[0\]\.sha256: must be exactly 64 lower-case hex digits"):
+                runconfig.load(run(data={"packs": [{"sha256": bad}]}))
+        with self.assertRaisesRegex(runconfig.RunConfigError, r"^data\.packs\[1\]\.sha256"):
+            runconfig.load(run(data={"packs": [{"sha256": "0" * 64}, {"sha256": "../" + "0" * 61}]}))
+        for good in ("0" * 64, "0123456789abcdef" * 4):
+            self.assertEqual(runconfig.load(run(data={"packs": [{"sha256": good}]}))["data"]["packs"], [{"sha256": good}])
 
 
 class BundleTest(unittest.TestCase):
@@ -124,6 +146,68 @@ class BundleTests(BundleTest):
         self.assertEqual([r["effective_from"] for r in fut], ["2024-10-01"])           # 2026-04-01 row not yet
         self.assertEqual(fut[0]["sell_ppb"], 200_000)
 
+    GAP_SPEC = {"dataset": "bars", "interval": "day", "from": "2025-12-22", "to": "2025-12-31"}
+
+    def _gap_spec(self):
+        return {**self.GAP_SPEC, "instruments": [{"ids": [self.rel, self.fut]}]}
+
+    def _drop_future_bars(self):
+        with history._Tx() as conn:
+            for d in (24, 29):
+                ts = timeutil.ist_ns(date(2025, 12, d), "00:00")
+                conn.execute("DELETE FROM bars WHERE instrument_id=? AND ts_ns=?", (self.fut, ts))
+
+    def test_a_pack_records_the_instruments_with_no_events_each_day(self):
+        self._drop_future_bars()
+        m = packs.manifest(packs.build(self._gap_spec()))
+        self.assertEqual(m["gaps"], {"count": 2, "days": {"2025-12-24": [self.fut], "2025-12-29": [self.fut]}})
+        self.assertEqual(m["volume_unit"], "units")
+        # Nothing is filled in (I-7): the records are the rows there are.
+        self.assertEqual(m["counts_by_kind"]["BAR"], 12)
+
+    def test_a_pack_without_gaps_says_so(self):
+        m = packs.manifest(packs.build(self._gap_spec()))
+        self.assertEqual(m["gaps"], {"count": 0, "days": {}})
+
+    def test_a_run_over_a_pack_with_gaps_is_labelled_and_the_report_lists_them(self):
+        self._drop_future_bars()
+        b = self.resolve(data={"packs": [{"spec": self._gap_spec()}]})
+        self.assertIn("data:gaps=2", b["labels"])
+        self.assertEqual(b["packs"][0]["gaps"], {"count": 2, "days": {"2025-12-24": [self.fut], "2025-12-29": [self.fut]}})
+        b["strategy"]["params"] = {"symbol": "NSE:RELIANCE"}
+        import tempfile
+        from pathlib import Path
+        from stockify.oracle import run_bundle
+        folder = Path(tempfile.mkdtemp(dir=str(support.SANDBOX_ROOT)))
+        run_bundle(b, [paths.packs_dir() / f"{b['packs'][0]['sha256']}.evt"], folder / "run",
+                   strategy=strategy_buy_and_hold())
+        text = (folder / "run" / "report.md").read_text(encoding="utf-8")
+        self.assertIn("data:gaps=2", text)
+        self.assertIn("2025-12-24", text)
+        self.assertIn(f"{self.fut}", text)
+        # No gaps: no label and no key in the bundle.
+        clean = self.resolve()
+        self.assertFalse([x for x in clean["labels"] if x.startswith("data:gaps")])
+        self.assertNotIn("gaps", clean["packs"][0])
+
+    def _stale_manifest(self, dataset: str) -> str:
+        sha = packs.build(run()["data"]["packs"][0]["spec"])
+        path = packs.manifest_path(sha)
+        m = json.loads(path.read_text(encoding="utf-8"))
+        del m["volume_unit"]
+        m["spec"] = {**m["spec"], "dataset": dataset}
+        path.write_text(json.dumps(m), encoding="utf-8")
+        return sha
+
+    def test_a_bhav_eod_pack_without_volume_unit_must_be_rebuilt(self):
+        sha = self._stale_manifest("bhav_eod")
+        with self.assertRaisesRegex(bundle.BundleError, r"D-79.*rebuild the pack"):
+            self.resolve(data={"packs": [{"sha256": sha}]})
+
+    def test_other_pack_kinds_without_volume_unit_still_load(self):
+        sha = self._stale_manifest("bars")
+        self.assertEqual(self.resolve(data={"packs": [{"sha256": sha}]})["packs"][0]["sha256"], sha)
+
     def test_pack_problems(self):
         sha = packs.build(run()["data"]["packs"][0]["spec"])
         with self.assertRaisesRegex(bundle.BundleError, "mix price bases"):
@@ -136,10 +220,42 @@ class BundleTests(BundleTest):
         with self.assertRaisesRegex(bundle.BundleError, "hash mismatch"):
             self.resolve(data={"packs": [{"sha256": sha}]})
 
+    def test_a_config_that_skipped_validation_still_cannot_name_a_path(self):
+        outside = paths.packs_dir().parent / ("0" * 61 + ".evt")
+        outside.write_bytes(b"not a pack")
+        self.addCleanup(outside.unlink)
+        for bad in ("../" + "0" * 61, "..\\" + "0" * 61):
+            with self.subTest(bad=bad), self.assertRaisesRegex(packs.PackError, "64 lower-case hex digits"):
+                bundle.resolve_packs({"data": {"packs": [{"sha256": bad}]}})
+
+    def test_editing_a_helper_module_changes_the_strategy_hash(self):
+        real = bundle._file_sha
+
+        def edited(path):  # as if _option_legs.py had been changed on disk
+            return "edited" if path.name == "_option_legs.py" else real(path)
+
+        for ref in ("short_straddle_stop:ShortStraddleStop", "iron_fly:IronFly"):
+            cfg = {"strategy": {"kind": "python", "ref": f"stockify.strategies.{ref}", "params": {}}}
+            with self.subTest(ref=ref):
+                before = bundle.strategy_ref(cfg)["source_sha256"]
+                with mock.patch.object(bundle, "_file_sha", edited):
+                    after = bundle.strategy_ref(cfg)["source_sha256"]
+                self.assertNotEqual(before, after)
+        # A strategy that imports no helper is not affected by that helper's file.
+        cfg = {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold", "params": {}}}
+        with mock.patch.object(bundle, "_file_sha", edited):
+            self.assertEqual(bundle.strategy_ref(cfg)["source_sha256"], bundle.strategy_ref(cfg)["source_sha256"])
+            self.assertNotIn("stockify.strategies._option_legs", strategy.module_closure("stockify.strategies.buy_and_hold"))
+
     def test_strategy_source_hash(self):
         b = self.resolve()
         import stockify.runconfig as rc
-        self.assertEqual(b["strategy"]["source_sha256"], hashlib.sha256(open(rc.__file__, "rb").read()).hexdigest())
+        # The hash covers the strategy file and every own-package helper it imports, by module name, in sorted order.
+        files = [(name, importlib.util.find_spec(name).origin) for name in strategy.module_closure("stockify.runconfig")]
+        h = hashlib.sha256()
+        for name, origin in sorted(files):
+            h.update(name.encode() + b":" + hashlib.sha256(open(origin, "rb").read()).hexdigest().encode() + b";")
+        self.assertEqual(b["strategy"]["source_sha256"], h.hexdigest())
         with self.assertRaisesRegex(bundle.BundleError, "strategy"):
             self.resolve(strategy={"kind": "python", "ref": "no.such.module:X"})
 

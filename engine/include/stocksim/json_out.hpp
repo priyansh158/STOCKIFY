@@ -23,6 +23,7 @@ class JValue {
     JValue(bool b) : v_(b) {}                               // NOLINT: implicit by design
     JValue(int v) : v_(static_cast<std::int64_t>(v)) {}     // NOLINT
     JValue(std::int64_t v) : v_(v) {}                       // NOLINT
+    JValue(std::uint64_t v) : v_(v) {}                      // NOLINT: PCG32 stream positions (A1 §6.4)
     JValue(double v) : v_(v) {}                             // NOLINT
     JValue(const char* s) : v_(std::string(s)) {}           // NOLINT
     JValue(std::string s) : v_(std::move(s)) {}             // NOLINT
@@ -40,7 +41,7 @@ class JValue {
     const auto& variant() const { return v_; }
 
  private:
-    std::variant<std::monostate, bool, std::int64_t, double, std::string, Array, Object> v_;
+    std::variant<std::monostate, bool, std::int64_t, std::uint64_t, double, std::string, Array, Object> v_;
 };
 
 std::string json_quote(std::string_view text);

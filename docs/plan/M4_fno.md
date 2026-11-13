@@ -17,7 +17,7 @@ Concepts: C-2, C-7, C-12, C-13, C-15. Contract: `A4_engine_semantics.md` §6–�
 ## M4.1 Derivative contract model (S)
 
 - [x] Bundle and engine carry, per derivative: kind (`FUT`, `CE`, `PE`), underlying and underlying class (`INDEX` / `STOCK`), expiry date, strike, settlement type (cash for index, physical for stock, dated in `contract_rules.json`), last trading moment (the FO close on the expiry date from `sessions.json`: 15:30 IST before 2026-08-03, 15:40 IST after, X-7).
-- [x] Freeze limits per underlying, dated: from NSE circulars (X-5) entered into `freeze_limits` (A1 §1.2), with `qtyfreeze.csv` (S-6) only as a cross-check because it lags. Slices use `floor(freeze / lot) × lot` units, since an order above the freeze quantity is rejected and every order must be a whole number of lots (A3 G16).
+- [x] Freeze limits per underlying, dated: from NSE circulars (X-5) entered into `stockify/config/freeze_limits.json` (D-54; A1 §1.2 describes the old table), with `qtyfreeze.csv` (S-6) only as a cross-check because it lags. Slices use `floor(freeze / lot) × lot` units, since an order above the freeze quantity is rejected and every order must be a whole number of lots (A3 G16).
 
 ## M4.2 Expiries and rollover helpers (S)
 
@@ -32,7 +32,7 @@ Files: `engine/include/stocksim/pricing/black76.hpp`, `stockify/fno/black76.py` 
 - [x] IV: no-arbitrage bound check first (return NaN + reason: `BELOW_INTRINSIC`; `ABOVE_FORWARD` for calls above `D·F`; `ABOVE_STRIKE` for puts above `D·K`; `BELOW_TICK` when the price is under one tick), then Brent's method on σ ∈ [0.001, 5.0] to 1e-10 absolute in price, falling back to bisection; flag `LOW_VEGA` when vega is too small for a stable answer.
 - [x] Time to expiry: ACT/365 from `now` to the contract's last trading moment (M4.1), floor at one second.
 - [x] Rate from `pricing.json` (dated; a placeholder until the owner sets it from current T-bill yields).
-- [x] Tests: A3 G17 (reference vectors, including Hull's textbook Black-76 example) and G18 (round trip over a grid, with sub-tick points flagged), using the single tolerance table in `A3_testing.md` §3.
+- [x] Tests (unit tests, not golden yaml files: `tests/stockify/test_black76.py`, `tests/fixtures/black76_vectors.json`): A3 G17 (reference vectors, including Hull's textbook Black-76 example) and G18 (round trip over a grid, with sub-tick points flagged), using the single tolerance table in `A3_testing.md` §3.
 
 ## M4.4 Option-chain view (M)
 
@@ -71,7 +71,7 @@ Files: `engine/src/margin/spanlite.cpp`, `stockify/fno/spanlite.py`. Parameters:
 
 > **Update (2026-11-09):** the first real calibration ran (NIFTY and BANKNIFTY, 200 samples each) and the owner adopted both refitted rows into `spanlite` (D-74); `spanlite_pending` is empty. Average error against Kite: NIFTY 16.9 % to 2.1 %, BANKNIFTY 22.2 % to 8.4 %. The monthly re-run box below stays open.
 
-> **Status (2026-11-08):** the tool is built and tested against a fake Kite client (IWB 4.1); the ticked boxes below mean the tool does each step. **No real calibration has run yet**: the first one needs the owner, a Kite login and market hours (first good day Wed 11 Nov 2026 IST; 9 Nov is an expiry day, 10 Nov a holiday), and the 🛑 owner review of its error report before any row is adopted. Until then SPAN-lite runs on the labelled placeholder rows.
+> **Status (2026-11-08):** the tool is built and tested against a fake Kite client (IWB 4.1); the ticked boxes below mean the tool does each step. **No real calibration had run yet when this was written** (it has since: see the 2026-11-09 update above and D-74); the first one needed the owner, a Kite login and market hours (first good day Wed 11 Nov 2026 IST; 9 Nov is an expiry day, 10 Nov a holiday), and the 🛑 owner review of its error report before any row is adopted. Until then SPAN-lite runs on the labelled placeholder rows.
 
 Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Table: `margin_calibration` (A1 §4).
 
@@ -81,7 +81,7 @@ Tool: `python -m stockify margin calibrate --underlying NIFTY --samples 200`. Ta
 - [x] Write the fitted values as a **new dated row** in `margin_params.json` with `source: "calibration <date>"`. 🛑 The owner reviews the error report before the row is adopted.
 - [ ] Re-run monthly and after any NSE margin circular (e.g. X-11), keeping history.
 
-*(The tool is built and tested against a fake Kite client (IWB 4.1); its first real run is the owner's, during market hours. The fit goes to `margin_params.json` → `spanlite_pending` and is adopted only by moving it into `spanlite` after review.)*
+*(The tool is built and tested against a fake Kite client (IWB 4.1); its first real run was the owner's, during market hours (done 2026-11-09, D-74). The fit goes to `margin_params.json` → `spanlite_pending` and is adopted only by moving it into `spanlite` after review.)*
 
 ## M4.10 Margin T2: exact SPAN (done as the margin staircase, D-64)
 
@@ -120,4 +120,4 @@ python -m stockify margin calibrate --underlying NIFTY --samples 50      # owner
 
 ## Definition of done
 
-Goldens G10–G12 and G16–G18 pass on both implementations; SPAN-lite calibrated for NIFTY and BANKNIFTY with an error report the owner accepted; the straddle vs iron-fly demo runs on at least five recorded days.
+Goldens G10–G12 and G16 pass on both implementations, and G17 and G18 pass as unit tests (`tests/stockify/test_black76.py`); SPAN-lite calibrated for NIFTY and BANKNIFTY with an error report the owner accepted; the straddle vs iron-fly demo runs on at least five recorded days (pending: the line at M4.13 is open until going live).

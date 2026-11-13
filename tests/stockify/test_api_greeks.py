@@ -33,7 +33,7 @@ class GreeksApiTests(SandboxedDBTest):
         super().setUp()
         from fastapi.testclient import TestClient
         from server.main import app
-        self.client = TestClient(app)
+        self.client = TestClient(app, base_url=tests.support.API_BASE_URL)
 
     def _run(self, run_id: str, g: dict):  # noqa: ANN202
         scratch = paths.lab_dir() / f"scratch-{run_id}"

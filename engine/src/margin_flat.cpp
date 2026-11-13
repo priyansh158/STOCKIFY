@@ -55,8 +55,16 @@ FlatMargin::FlatMargin(const Json& root)
       mis_rows_(list_or_empty(require(root, "broker_policy", "bundle"), "mis_margin_pct")),
       addon_(list_or_empty(require(root, "margin_params", "bundle"), "expiry_day_short_index_option_addon")),
       schedule_(list_or_empty(require(root, "broker_policy", "bundle"), "delivery_margin_schedule")) {
-    for (const Json& d : require(root, "days", "bundle")) {
-        days_.push_back(d.at("date").get<std::string>());
+    // the bundle's days with its prev_days and next_days (VOL 5.2, A1 §6.2): a one-day paper bundle counts trading
+    // days (D-60) as the whole run does
+    for (const char* key : {"prev_days", "days", "next_days"}) {
+        const auto rows = root.find(key);
+        if (rows == root.end() || !rows->is_array()) {
+            continue;
+        }
+        for (const Json& d : *rows) {
+            days_.push_back(d.at("date").get<std::string>());
+        }
     }
 }
 
@@ -197,8 +205,10 @@ Int128 FlatMargin::long_option_delivery(const Instrument& row, Qty units, const 
 }
 
 Paise FlatMargin::mis(std::string_view kind, Qty units, Paise price, const std::string& date) const {
-    const bool deriv = kind == "FUT" || kind == "CE" || kind == "PE";
-    const Ppb r = mis_rate(deriv ? "FO" : "CM", date);
+    if (kind == "FUT" || kind == "CE" || kind == "PE") {  // margin.FlatMargin.mis: the same refusal
+        throw RunError("mis: a " + std::string(kind) + " is margined as NRML, not as a share of its value (D-80)");
+    }
+    const Ppb r = mis_rate("CM", date);
     const Qty u = units < 0 ? -units : units;
     const Int128 x = Int128::mul(checked_mul(u, price), r);
     if (x.negative()) {

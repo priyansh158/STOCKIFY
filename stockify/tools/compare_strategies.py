@@ -200,8 +200,15 @@ def watched(config: dict) -> dict:
 
 def run(config, *, impl: str = "engine") -> Path:  # noqa: ANN001
     """Launch every run of a compare config, then write runs/compare-<name>/compare.md; returns its path."""
-    from stockify import paths, runs as runs_mod
+    from stockify import paths, runconfig, runs as runs_mod
     doc = load_config(config)
+    # REG 5.3: every run's own config is checked before the first one starts. `watched` hides a Python strategy
+    # behind MarginWatch, which is not a catalogue strategy, so the params check has to see the config as written.
+    for n, r in enumerate(doc["runs"]):
+        try:
+            runconfig.load(r["config"])
+        except runconfig.RunConfigError as e:
+            raise CompareError(f"runs[{n}] ({r['title']}): {e}") from e
     done = []
     for r in doc["runs"]:
         run_id = runs_mod.launch(watched(r["config"]), impl=impl, report=False)

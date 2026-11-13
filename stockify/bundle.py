@@ -25,7 +25,7 @@ import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
-from stockify import numerics, paths, timeutil
+from stockify import numerics, paths, runconfig, timeutil
 
 log = logging.getLogger("stockify.bundle")
 
@@ -144,6 +144,22 @@ def resolve_days(start: date, end: date, policy: dict) -> list[dict]:
                                            "FO": _cutoff(policy, "FO", d)},
                          "day_end_ns": _day_end_ns(d)})
         d += timedelta(days=1)
+    return days
+
+
+def day_seed(seed: int, day: date) -> int:
+    """A trading day's PCG32 seed (A4 §4.5, VOL 5.1): the first 8 bytes, little-endian, of
+    sha256("stockify-seed:<seed>:<YYYYMMDD>")."""
+    digest = hashlib.sha256(f"stockify-seed:{seed}:{day:%Y%m%d}".encode("ascii")).digest()
+    return int.from_bytes(digest[:8], "little")
+
+
+def apply_seed_mode(cfg: dict, days: list[dict]) -> list[dict]:
+    """With `seed_mode: per_day`, each day gets `seed` = day_seed(run seed, date): the only source of that day's
+    seed for both engines. With the default ("run") the days are returned untouched."""
+    if runconfig.seed_mode(cfg) == "per_day":
+        for d in days:
+            d["seed"] = day_seed(cfg["seed"], date.fromisoformat(d["date"]))
     return days
 
 
@@ -286,6 +302,18 @@ def _file_sha(path: Path) -> str:
     return h.hexdigest()
 
 
+def dropped_frames_labels(pack_rows: list[dict]) -> list[str]:
+    """`data:dropped_frames=<n>` when a pack's day lost frames to the recorder's full queue: the run is labelled, and
+    nothing is filled in (I-7). A span that names no frame count (a landing file from before migration 0002) makes the
+    total `unknown`: a drop is never labelled 0 and never left unlabelled."""
+    spans = [s for p in pack_rows for s in p.get("recorder_gaps", {}).get("spans", [])]
+    if not spans:
+        return []
+    if any(s.get("frames") is None for s in spans):
+        return ["data:dropped_frames=unknown"]
+    return [f"data:dropped_frames={sum(s['frames'] for s in spans)}"]
+
+
 def resolve_packs(cfg: dict) -> list[dict]:
     from stockify.data import packs
     out = []
@@ -298,13 +326,39 @@ def resolve_packs(cfg: dict) -> list[dict]:
         if actual != sha:
             raise BundleError(f"data.packs[{i}]: pack hash mismatch: file {path.name} hashes to {actual}")
         m = packs.manifest(sha)
-        out.append({"sha256": sha, "path": f"packs/{sha}.evt", "price_basis": m["price_basis"], "spec": m["spec"]})
+        if m["spec"].get("dataset") == "bhav_eod" and "volume_unit" not in m:
+            # D-79: an end-of-day pack built before the contracts-to-units fix may carry contract counts as volume.
+            raise BundleError(f"data.packs[{i}]: pack {sha} was built before volume became units (D-79): "
+                              "rebuild the pack")
+        row = {"sha256": sha, "path": f"packs/{sha}.evt", "price_basis": m["price_basis"], "spec": m["spec"]}
+        if m.get("gaps", {}).get("count"):          # only a pack with gaps says so: other bundles stay as they were
+            row["gaps"] = m["gaps"]
+        if m.get("recorder_gaps"):                  # frames the recorder dropped on a full queue (RM 5.3)
+            row["recorder_gaps"] = m["recorder_gaps"]
+        out.append(row)
     bases = {p["price_basis"] for p in out}
     if len(bases) > 1:
         raise BundleError(f"packs mix price bases {sorted(bases)} (I-5)")
     if cfg.get("price_basis") and bases and cfg["price_basis"] not in bases:
         raise BundleError(f"run price_basis {cfg['price_basis']!r} but packs are {bases.pop()!r} (I-5)")
     return out
+
+
+def _python_source_sha(module: str) -> str:
+    """One hash for a Python strategy: its file and every own-package helper it imports (REG 5.6, sharp-edges M-8),
+    each as its dotted module name and the file's own hash, in sorted order. Editing a helper changes the hash."""
+    from stockify import strategy as strategy_mod
+    try:
+        names = strategy_mod.module_closure(module)
+    except strategy_mod.StrategyCodeError as e:
+        raise BundleError(f"strategy {module}: {e}") from e
+    h = hashlib.sha256()
+    for name in names:
+        spec = importlib.util.find_spec(name)
+        if spec is None or not spec.origin or not Path(spec.origin).is_file():
+            raise BundleError(f"strategy {module}: source of {name} cannot be found to hash")
+        h.update(name.encode("utf-8") + b":" + _file_sha(Path(spec.origin)).encode("ascii") + b";")
+    return h.hexdigest()
 
 
 def strategy_ref(cfg: dict) -> dict:
@@ -317,7 +371,7 @@ def strategy_ref(cfg: dict) -> dict:
             raise BundleError(f"strategy {s['ref']}: {e}") from e
         if spec is None or not spec.origin or not Path(spec.origin).is_file():
             raise BundleError(f"strategy {s['ref']}: source cannot be found to hash")
-        source = _file_sha(Path(spec.origin))
+        source = _python_source_sha(module)
     elif s["kind"] == "script":
         source = hashlib.sha256(numerics.dumps_canonical(s["actions"]).encode()).hexdigest()
     else:
@@ -379,7 +433,7 @@ def _spanlite_calibrations(rows: list[dict], instruments_rows: list[dict], days:
 
 # ── NSE SPAN files and ELM % (CAM 4.3) ──────────────────────────────────────
 
-SPAN_MODELS = ("span_exact", "staircase")     # the margin models that read NSE's SPAN files (spec §5.1)
+SPAN_MODELS = ("span_exact", "staircase", "live_with_fallback")     # the margin models that read NSE's SPAN files (spec §5.1)
 NO_DERIVATIVES_LABEL = "margin_span:no_derivatives"   # a SPAN model on a bundle without dated futures or options
 _DERIVATIVES = ("FUT", "CE", "PE")
 
@@ -531,14 +585,17 @@ def _span_entry(path: str, root: Path, keys: dict[str, set[tuple]]) -> dict:
 
 
 def span_section(instruments_rows: list[dict], days: list[dict],
-                 skipped: dict[str, list[dict]] | None = None) -> dict[str, list[dict]]:
+                 skipped: dict[str, list[dict]] | None = None,
+                 until_ns: int | None = None) -> dict[str, list[dict]]:
     """bundle["span"]: per run day, every NSE SPAN file usable that day in created order, without lookahead
     (`nse_margin_files.usable_files`: the previous NSE session's `.s`, then D's `i1`..`i4`, never D's `.s`; each
     applies from its own created_ns). Each keeps the bundle's underlyings only, with the contracts the bundle trades
     and all their parameter blocks. A day with no usable file has an empty list (the margin model steps down).
     A file that cannot be read, whose business date is not its name's, or whose created time is not plausible
     (L-4), is left out; with `skipped`, it is recorded there as {day: [{"file", "reason"}]}. A bundle without dated
-    futures or options parses nothing: {} (resolve_bundle labels it `margin_span:no_derivatives`)."""
+    futures or options parses nothing: {} (resolve_bundle labels it `margin_span:no_derivatives`). With `until_ns`
+    (a paper session's day bundle, D-67) only files created at or before it are kept: what was archived when the bundle
+    was resolved."""
     from stockify.data import nse_margin_files as mf
     keys = _contract_keys(instruments_rows)
     if not keys:
@@ -555,6 +612,8 @@ def span_section(instruments_rows: list[dict], days: list[dict],
                 skipped.setdefault(d["date"], []).append(
                     {"file": Path(path).relative_to(root).as_posix(), "reason": reason})
         for path, created_ns in usable:
+            if until_ns is not None and created_ns > until_ns:
+                continue
             if path not in parsed:
                 try:
                     parsed[path] = _span_entry(path, root, keys)
@@ -607,9 +666,16 @@ def elm_section(instruments_rows: list[dict], days: list[dict],
 
 def resolve_bundle(cfg: dict) -> dict:
     """The bundle for a validated run config (`runconfig.load`)."""
-    from stockify.config import loader
     pack_rows = resolve_packs(cfg)
     ids, traded, start, end = _scan_packs(pack_rows)
+    return _resolve_core(cfg, pack_rows, ids, traded, start, end)
+
+
+def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[int, str], start: date, end: date,
+                  *, span_until_ns: int | None = None, elm_known: bool = True) -> dict:
+    """Everything a bundle holds, for the instruments `ids` over [start, end]: shared by a run (`resolve_bundle`,
+    from its packs) and a paper session's day (`resolve_session_day`, no packs)."""
+    from stockify.config import loader
     policy = _dated_section(loader.load_json("broker_policy.json"), start, end)
     _ppb_fields(policy, ("pct", "fraction"))
     days = resolve_days(start, end, policy)
@@ -630,6 +696,10 @@ def resolve_bundle(cfg: dict) -> dict:
                                                                           instruments_rows, days)))
     if cfg["fill_model"]["kind"] == "eod_close":
         labels.append("eod_approx")
+    gap_days = {d for p in pack_rows for d in p.get("gaps", {}).get("days", {})}
+    if gap_days:                                 # CAM 5.3: instruments with no data on a day; nothing is filled in (I-7)
+        labels.append(f"data:gaps={len(gap_days)}")
+    labels.extend(dropped_frames_labels(pack_rows))
     if cfg["fill_model"]["kind"] == "snapshot_ltp":
         labels.append("fill:approximate")
     unverified = _charge_rows_unverified(charges, instruments_rows)
@@ -641,7 +711,7 @@ def resolve_bundle(cfg: dict) -> dict:
     if not rows_in_range(policy.get("market_protection_auto_bp", []), start, end):
         raise BundleError("no market_protection_auto_bp row in force in range (broker_policy.json)")
     out = {
-        "schema": SCHEMA, "run": cfg, "seed": cfg["seed"], "days": days,
+        "schema": SCHEMA, "run": cfg, "seed": cfg["seed"], "days": apply_seed_mode(cfg, days),
         "instruments": instruments_rows,
         "charges": charges, "broker_policy": policy, "margin_params": margin, "pricing": pricing,
         "packs": pack_rows, "strategy": strategy_ref(cfg), "labels": sorted(set(labels)), "sod_state": None,
@@ -649,9 +719,9 @@ def resolve_bundle(cfg: dict) -> dict:
     if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
         skipped: dict[str, list[dict]] = {}
         elm_skipped: dict[str, list[dict]] = {}
-        out["span"] = span_section(instruments_rows, days, skipped)
+        out["span"] = span_section(instruments_rows, days, skipped, span_until_ns)
         out["span_skipped"] = skipped
-        out["elm"] = elm_section(instruments_rows, days, elm_skipped)
+        out["elm"] = elm_section(instruments_rows, days, elm_skipped) if elm_known else {}
         out["elm_skipped"] = elm_skipped
         extra = set()
         if not _contract_keys(instruments_rows):   # I-1: nothing for SPAN to price, so no file was parsed
@@ -661,6 +731,150 @@ def resolve_bundle(cfg: dict) -> dict:
         if elm_skipped:
             extra.add("margin_elm:skipped_files")
         out["labels"] = sorted(set(out["labels"]) | extra)
+    return out
+
+
+# -- A paper session's day (REG 5.1, M5.3, D-67) ------------------------------
+
+def session_universe(selectors: list[dict], day: date) -> set[int]:
+    """The instrument ids a session's universe names on `day`: `packs.resolve`'s, with each `chain` selector widened
+    to every strike of its expiry (a `strikes` window is dropped) and every listed future of its underlying (D-67).
+    A live day cannot know where the underlying will trade, so a window centred on yesterday's close would leave the
+    strategy without the strikes it needs after a gap."""
+    from stockify.data import instruments, packs
+    ids: set[int] = set()
+    plain = []
+    for sel in selectors:
+        chain = sel.get("chain") if isinstance(sel, dict) else None
+        if not isinstance(chain, dict):
+            plain.append(sel)
+            continue
+        wide = {k: v for k, v in chain.items() if k not in ("strikes", "futures")}
+        ids |= packs.resolve([{"chain": wide}], day)
+        und = chain["underlying"].upper()
+        for expiry in instruments.expiries(und, "FUT", day):
+            fut = instruments.derivative(und, "FUT", expiry)
+            if fut:
+                ids.add(fut)
+    return ids | packs.resolve(plain, day)
+
+
+def _is_trading_day(d: date) -> bool:
+    from stockify.data import calendar
+    return calendar.is_trading_day("CM", d) or calendar.is_trading_day("FO", d)
+
+
+def _schedule_horizon(policy: dict) -> int:
+    """How many trading days before a contract's expiry the dated delivery-margin schedule reaches (Z-4, D-60)."""
+    return max((-int(r["day_offset"]) for rows in policy.get("delivery_margin_schedule", []) for r in rows["rows"]),
+               default=0)
+
+
+def _calendar_days(day: date, horizon: int) -> tuple[list[dict], list[dict]]:
+    """(prev_days, next_days) of a day bundle (A1 §6.2): the trading day before `day`, and the next
+    `max(1, horizon)` trading days. One is what an order queued after the session and a midnight daily bar need
+    (A4 §3.10); `horizon` is the dated delivery-margin schedule's reach, so a stock-future's expiry that is within it
+    is a day of the bundle and D-60's trading-day count comes out as in a whole run (a holiday in expiry week
+    included). An expiry further off is outside the schedule today, as the count would say."""
+    from stockify.config import loader
+    before = day - timedelta(days=1)
+    while not _is_trading_day(before):
+        before -= timedelta(days=1)
+    after: list[date] = []
+    d = day
+    while len(after) < max(1, horizon):
+        d += timedelta(days=1)
+        if _is_trading_day(d):
+            after.append(d)
+    wide = _dated_section(loader.load_json("broker_policy.json"), before, after[-1])
+    return resolve_days(before, before, wide), [x for a in after for x in resolve_days(a, a, wide)]
+
+
+def _sod_instruments(sod_state: dict | None) -> set[int]:
+    """Every instrument id the previous day's state names, in every field the state loader checks against the
+    bundle (ledger positions, flat ones too; pending orders; DP charges; built bars; subscriptions; final settlement
+    prices; the market; the bar history). They stay in the bundle whatever today's universe selects, expired or rolled
+    off included, so the loader's checks stay as strict as they are (a state is never trimmed to fit). A field of the
+    wrong shape names nothing here: the loader refuses it, with its own words."""
+    if not isinstance(sod_state, dict):
+        return set()
+    ids: set[int] = set()
+
+    def add(value) -> None:  # noqa: ANN001
+        if isinstance(value, int) and not isinstance(value, bool):
+            ids.add(value)
+        elif isinstance(value, str) and value.isascii() and value.isdecimal():
+            ids.add(int(value))
+
+    def rows(field) -> list:  # noqa: ANN001
+        return field if isinstance(field, list) else []
+
+    def keys(field) -> list:  # noqa: ANN001
+        return list(field) if isinstance(field, dict) else []
+
+    ledger = sod_state.get("ledger")
+    for p in rows(ledger.get("positions") if isinstance(ledger, dict) else None):
+        add(p.get("instrument_id") if isinstance(p, dict) else None)
+    for o in rows(sod_state.get("pending_orders")):
+        add(o.get("instrument_id") if isinstance(o, dict) else None)
+    for field in ("dp_done", "built_bars", "fsp_seen"):          # [[instrument or underlying id, ...], ...]
+        for r in rows(sod_state.get(field)):
+            add(r[0] if isinstance(r, list) and r else None)
+    subs = sod_state.get("subscriptions")
+    if isinstance(subs, dict):
+        for iid in rows(subs.get("ticks")):
+            add(iid)
+        for key in keys(subs.get("bars")):
+            add(key)
+    for key in keys(sod_state.get("market")):
+        add(key)
+    for key in keys(sod_state.get("bar_history")):                # "<instrument_id>:<interval_s>"
+        add(key.partition(":")[0] if isinstance(key, str) else None)
+    return ids
+
+
+def resolve_session_day(session_id: str, cfg: dict, day: date, sod_state: dict | None, *,
+                        refdata_stale: bool = False, sod_from: str | None = None) -> dict:
+    """The bundle for one trading day of a paper session (`sessionconfig.load`'s `cfg`), resolved before the open.
+
+    One day, `packs: []`, the day's seed (`seed_mode: per_day`), the previous day's `sod_state` embedded as given,
+    and `prev_days` / `next_days` (A1 §6.2). Labels are `resolve_bundle`'s, plus `session:<session_id>` and, when
+    the refdata refresh failed, `refdata_stale`, and, when an earlier day failed and its last good state is carried
+    on, `sod_from:<that day>` (`sod_from:start` for none; D-84). Only what is known at resolve time goes in: SPAN files archived by
+    the refdata job's time (the previous end-of-day file and `i1`); the intraday `i2`..`i4` come later and are
+    labelled `margin_span:sod_files_only`; the day's ELM file is left out too (`margin_elm:sod_files_only`: the day
+    steps from B1 to B2). Raises `BundleError` on a non-trading day or an unsafe `session_id`."""
+    from stockify.config import loader
+    from stockify.data import instruments
+    if not paths.safe_segment(session_id, 64):
+        raise BundleError(f"session_id {session_id!r} must be 1-64 letters, digits, '.', '_' or '-'")
+    if not _is_trading_day(day):
+        raise BundleError(f"{day} is not an NSE trading day")
+    held = _sod_instruments(sod_state)
+    for iid in sorted(held):                     # expired or rolled off, a row is still in refdata: or the state is unusable
+        if instruments.get(iid) is None:
+            raise BundleError(f"sod_state names instrument {iid}, which is not in refdata: the bundle for {day} "
+                              "cannot hold it, so the state cannot be loaded")
+    ids = session_universe(cfg["universe"], day) | held
+    for iid in sorted(ids):                      # the underlyings of the derivatives, as a pack's refdata would
+        info = instruments.get(iid)
+        if info is not None and info["underlying_id"]:
+            ids.add(info["underlying_id"])
+    traded = {iid: day.isoformat() for iid in ids}
+    cutoff = timeutil.ist_ns(day, loader.load_json("schedule.json")["jobs"]["refdata"])
+    # D's contract-wise ELM file is not archived by then either (D-64 d: its publish time is unverified), so a day
+    # bundle never holds it and the day's margin steps from B1 to B2: a live resolve and a replay agree.
+    out = _resolve_core(cfg, [], ids, traded, day, day, span_until_ns=cutoff, elm_known=False)
+    out["prev_days"], out["next_days"] = _calendar_days(day, _schedule_horizon(out["broker_policy"]))
+    out["sod_state"] = sod_state
+    labels = set(out["labels"]) | {f"session:{session_id}"}
+    if refdata_stale:
+        labels.add("refdata_stale")
+    if sod_from is not None:
+        labels.add(f"sod_from:{sod_from}")
+    if cfg["margin"]["model"] in SPAN_MODELS and NO_DERIVATIVES_LABEL not in labels:
+        labels |= {"margin_span:sod_files_only", "margin_elm:sod_files_only"}
+    out["labels"] = sorted(labels)
     return out
 
 

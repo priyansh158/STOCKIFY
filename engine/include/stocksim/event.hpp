@@ -69,7 +69,7 @@ inline constexpr std::uint16_t kFlagClock = 2;
 inline constexpr std::pair<std::uint16_t, std::string_view> kGapReasons[] = {{1, "disconnect"}, {2, "process_stop"}, {3, "token_expired"}, {4, "stall"}, {5, "not_subscribed"}};
 // </block>
 // <block name="refdata-subtypes" same-as="docs/plan/A1_schemas.md:refdata-subtypes" same-as-pattern='\{(?P<key>\d+), "(?P<value>[a-z_]+)"\}'>
-inline constexpr std::pair<std::uint16_t, std::string_view> kRefDataSubtypes[] = {{1, "instrument_add"}, {2, "price_band"}, {3, "margin_requirement"}, {4, "spec_change"}};
+inline constexpr std::pair<std::uint16_t, std::string_view> kRefDataSubtypes[] = {{1, "instrument_add"}, {2, "price_band"}, {3, "margin_requirement"}, {4, "spec_change"}, {5, "strategy_control"}};
 // </block>
 
 // The name of a code, or an empty view for an unknown one.

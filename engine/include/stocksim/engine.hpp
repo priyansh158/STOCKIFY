@@ -38,6 +38,23 @@
 namespace stocksim {
 
 class Engine;
+class LiveAnswers;             // margin_live.hpp (it needs Context, defined below)
+class LiveWithFallbackMargin;
+struct SpanLiteHost;
+
+// What the live margin model sees of the book now (Engine::margin_now, MEZ 5.1).
+struct MarginNow {
+    std::vector<std::pair<InstrumentId, Qty>> legs;  // the staircase legs, sorted: what the hash covers
+    std::string portfolio_sha256;
+    std::vector<UnderlyingMargin> fallback;  // the staircase's per-underlying rows
+    bool l1 = false;                         // a fresh journaled answer prices this book now
+};
+struct SodState;  // sod_state.cpp: the capture / restore helpers, which see the engine's internals
+
+// The day-to-day state (sod_state.hpp, VOL 5.3): written and applied by these, which see the engine's internals.
+std::string eod_state_json(const Engine& engine);
+void load_sod_state(Engine& engine, std::string_view text);
+void load_sod_state_json(Engine& engine, const Json& state);
 
 // ── Market state (A4 §2) ─────────────────────────────────────────────────────
 
@@ -249,9 +266,12 @@ struct Outputs {
 
 class Engine {
  public:
+    // Applies the bundle's `sod_state` (A1 §6.4) when it has one; the strategy's part waits for set_strategy.
     explicit Engine(Bundle bundle);
 
-    void set_strategy(std::shared_ptr<Strategy> strategy);
+    // Hands a resumed strategy its saved state (A4 §1.10); RunError when its load_state fails.
+    // `name` is what a C++ strategy's failures are called (a Python strategy's trampoline names itself).
+    void set_strategy(std::shared_ptr<Strategy> strategy, std::string_view name = {});
     const Strategy* strategy() const { return strategy_.get(); }
     void add_pack(std::shared_ptr<const PackReader> pack);  // packs in bundle order: the pack's src is its index
 
@@ -259,6 +279,11 @@ class Engine {
     void run(EventSource& source);                 // backtest over any source, then finish()
     void push(std::span<const std::byte> batch);   // live: encoded records, processed up to the batch end (A4 §1.4)
     void finish();                                 // the internal events left after the last input
+
+    // A paper session's day-to-day state (sod_state.hpp). Both hold the engine's busy guard, so a strategy callback
+    // that calls back into them is refused, and a refused load leaves the engine as it was.
+    void load_state_text(std::string_view text);   // before the first event, at most once
+    std::string eod_state() const;                 // after a day has ended and nothing has been processed since
 
     // One call at a time, and nothing after a failure (M3 review): run / push / finish refuse while another is in
     // progress (another thread, the GIL released for a C++ strategy, or a strategy calling back in), and once an
@@ -277,10 +302,15 @@ class Engine {
 
     // Results, for the artifacts (M3.9).
     const Book& book() const { return book_; }
+    // Final orders loaded from a sod_state: this day's orders.csv leaves them out (A1 §6.4 `final_orders`).
+    const std::set<OrderId>& prior_final() const { return prior_final_; }
+    std::int64_t charge_row_base() const { return charge_row_base_; }  // charges.csv rows written on earlier days
     const InstrumentTable& instruments() const { return instruments_; }
     const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
     const std::vector<EquityRow>& equity() const { return equity_; }
     const std::vector<MarginDailyRow>& margin_daily() const { return margin_daily_; }
+    // The live margin model's view of the book now (RunError under any other model). Engine thread, between pushes.
+    MarginNow margin_now() const;
     const std::vector<SettleClose>& settle_closes() const { return settle_closes_; }
     const std::map<std::string, std::int64_t>& rejects() const { return rejects_; }
     Ppm participation_used() const { return participation_used_; }
@@ -288,11 +318,23 @@ class Engine {
 
  private:
     friend class Context;
+    friend struct SodState;
+    friend std::string eod_state_json(const Engine& engine);
+    friend void load_sod_state(Engine& engine, std::string_view text);
+    friend void load_sod_state_json(Engine& engine, const Json& state);
 
     // time and phases
     Date date_of(TimeNs t) const { return ist_date(t); }
     std::string_view group_of(InstrumentId iid, std::optional<Date> d = std::nullopt) const;
     std::string_view phase_at(std::string_view group, TimeNs t) const { return calendar_.phase_at(group, t); }
+    // A day's CONTINUOUS start, over the bundle's days and its prev_days / next_days (runner.continuous_start): a
+    // bar dated an earlier day (a daily bar at the next midnight) is matched against its own session (A1 §6.2).
+    std::optional<TimeNs> continuous_start(std::string_view group, Date d) const {
+        return cal_all_.continuous_start(group, d);
+    }
+    static SessionCalendar all_days(const Json& root, const SessionCalendar& days);  // prev_days + days + next_days
+    // save_state() as A1 §6.4 embeds it: parsed, a JSON object; RunError (naming the strategy when it can) otherwise.
+    std::string checked_strategy_state() const;
     const Spec* spec(InstrumentId iid, Date d) const { return instruments_.spec_on(iid, d); }
     const Spec& spec_or_throw(InstrumentId iid, Date d) const;
 
@@ -302,15 +344,21 @@ class Engine {
     void process_input(const Event& e);
     void push_internal(InternalEvent ev);
     void schedule_days();
-    void close_out();  // the final DAY_END after a last input past the last trading day (D-52)
+    void close_out();
+    void reseed_for(TimeNs t);  // seed_mode per_day: re-create both streams at a seeded day's first event  // the final DAY_END after a last input past the last trading day (D-52)
 
     void log(std::string_view level, std::string_view msg);
-    void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9)
+    void deliver();  // queued on_order_update / on_fill callbacks (A4 §3.9); held while the strategy is disabled
+    bool hook_on(std::string_view hook);  // false (and a log line) while the strategy is disabled (A4 §3.11)
+    void on_strategy_control(std::string_view json);  // a journaled pause or resume (D-70)
     void track_open();
 
     // funds (A4 §6.5)
     std::optional<Paise> mark_price(InstrumentId iid) const;
     std::optional<Paise> ref_price(InstrumentId iid) const;
+    // The margin model's portfolio (D-80): NRML positions and MIS futures and options, one net NRML leg each.
+    std::vector<MarginLeg> fo_book(const Ledger& ledger) const;
+    SpanLiteHost margin_host(bool quiet) const;  // what the margin models read of the engine (a quiet one adds no label)
     Paise blocked(const Ledger& ledger, Date d) const;
     Funds funds(const Ledger& ledger) const;
     bool reduces(InstrumentId iid, Product product, Side side, Qty qty) const;
@@ -370,7 +418,9 @@ class Engine {
     void on_built(const InternalEvent& ev);
 
     Bundle bundle_;
-    SessionCalendar calendar_;
+    SessionCalendar calendar_;  // the bundle's days: processed (phases, DAY_END), seeded
+    SessionCalendar cal_all_;   // with prev_days and next_days (A1 §6.2): calendar only, never processed
+    bool day_bundle_ = false;   // a paper session's day bundle (prev_days or next_days present)
     InstrumentTable instruments_;
     TimeNs stale_after_ns_ = 0;
     std::string fill_kind_;  // bar | snapshot_ltp | snapshot_quote | eod_close
@@ -379,27 +429,32 @@ class Engine {
     std::string mark_kind_;  // ltp | mid
     TimeNs latency_ns_ = 0;
     Costs costs_;
+    const LiveWithFallbackMargin* live_margin_ = nullptr;  // margin_ when the model is live_with_fallback
+    std::shared_ptr<LiveAnswers> live_answers_;  // journaled Kite margin answers (MEZ 5.1); read by margin_
     std::unique_ptr<MarginModel> margin_;  // flat (T0), spanlite (T1, M4.8), staircase / span_exact (MEZ 4.10)
     std::shared_ptr<Strategy> strategy_;
     Context ctx_;
     Pcg32 strategy_rng_;
     Book book_;
+    std::vector<std::pair<Date, std::uint64_t>> day_seeds_;  // (IST date, days[].seed), in day order (VOL 5.1)
+    std::size_t next_day_seed_ = 0;
     PackSource packs_;
     LiveBatchSource live_;
 
     std::priority_queue<InternalEvent, std::vector<InternalEvent>, LaterKey> internal_;
     std::uint64_t internal_seq_ = 0;
     bool started_ = false;
-    std::atomic<bool> busy_{false};
+    mutable std::atomic<bool> busy_{false};
     bool failed_ = false;
     class Running;  // the guard around run / push / finish
+    class Scope;    // the busy guard around the state calls (it does not poison the engine when one refuses)
     bool closed_out_ = false;
     TimeNs now_ = 0;
     EventKey key_{0, 0, 0, 0};
     TimeNs last_day_end_ = 0;
 
     OrderId next_order_ = 1;
-    OrderId min_live_ = 1;  // orders below this id are all final
+    std::vector<OrderId> live_ids_;  // ids of the orders that are not final, ascending (never a walk over an id range)
     std::map<InstrumentId, MarketState> market_;
     std::set<InstrumentId> sub_ticks_;
     std::map<InstrumentId, std::set<std::int32_t>> sub_bars_;
@@ -410,6 +465,20 @@ class Engine {
     std::map<InstrumentId, Paise> underlying_last_;
     std::uint64_t event_no_ = 0;
     bool delivering_ = false;
+
+    // Day to day (VOL 5.3, A4 §1.10): see sod_state.hpp.
+    bool resumed_ = false;                                  // a sod_state was applied: no on_start
+    bool settled_ = false;                                  // a day has ended and nothing was processed since
+    std::vector<InternalEvent> carried_;                    // internal events passed over after the last DAY_END
+    std::set<OrderId> prior_final_;                         // final orders loaded from the state
+    std::int64_t charge_row_base_ = 0;                      // charges.csv rows written on earlier days
+    std::optional<Date> state_date_;                        // the last bundle trading day whose DAY_END ran
+    std::optional<std::string> day_end_strategy_state_;     // save_state() at DAY_END, checked (day bundles only)
+    std::optional<std::string> pending_strategy_state_;     // loaded before set_strategy: handed over then
+    std::string strategy_name_;                             // a C++ strategy's registered name, for its refusals
+    bool strategy_enabled_ = true;                          // D-70, A4 §3.11: a journaled switch, carried day to day
+    std::set<std::string> pause_reasons_;
+    Json queued_notifications_ = Json::array();
 
     std::vector<PositionEodRow> positions_eod_;
     std::vector<EquityRow> equity_;
@@ -425,7 +494,7 @@ class Engine {
     std::map<std::pair<std::string, std::string>, Context::ChainView> chain_cache_;
     OrderId orders_drained_ = 1;  // the next order id not yet drained
     std::size_t events_drained_ = 0, fills_drained_ = 0, charges_drained_ = 0;
-    std::set<std::string> labels_;
+    mutable std::set<std::string> labels_;  // margin_host(false) adds to it from const paths too
 };
 
 }  // namespace stocksim

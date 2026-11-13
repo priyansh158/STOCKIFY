@@ -102,9 +102,24 @@ async def logout() -> dict:
 async def status() -> dict:
     """Cheap auth-state check — safe to call frequently."""
     try:
+        authenticated = kite_client.is_authenticated()
         return {
             "configured":    kite_client.is_enabled(),
-            "authenticated": kite_client.is_authenticated(),
+            "authenticated": authenticated,
+            "daemon_waiting_for_login": _daemon_waiting_for_login(),
         }
     except Exception as e:
-        return {"configured": False, "authenticated": False, "error": str(e)}
+        return {"configured": False, "authenticated": False, "daemon_waiting_for_login": False, "error": str(e)}
+
+
+def _daemon_waiting_for_login() -> bool:
+    """True while the daemon says it is waiting for a login (token expired mid-day, or stale at the start) and no
+    login newer than the rejected token has been made. Reads daemon_status.json and stats the token file; never
+    opens it, so a token value never reaches this route."""
+    try:
+        from stockify.daemon import token_watch
+        if not token_watch.read_status().get("waiting_for_login"):
+            return False
+        return not token_watch.login_ok(kite_client.is_authenticated)
+    except Exception:
+        return False

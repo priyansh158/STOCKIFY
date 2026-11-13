@@ -1,6 +1,7 @@
 """The STOCKIFY market daemon (M1.5 recorder; M5 adds paper sessions).
 
-`run_recorder()` records one IST trading day:
+`run_market_day()` (market_day.py) records one IST trading day and runs the paper sessions on it; `run_recorder()` is
+the same with no sessions. Recording:
 
 1. make sure today's instruments are synced (live; needs a fresh Kite login),
 2. open the day's landing file and the subscription manager,
@@ -16,8 +17,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from datetime import date
 
+import kite_client  # noqa: F401  — first: patches the Kite SDK's client class to paper only (LCB 5.7)
 from stockify import log as slog
 from stockify import paths, timeutil
 from stockify.daemon import exitcodes
@@ -63,6 +66,59 @@ def _ensure_refdata(day: date) -> None:
     kite_client.refresh_instruments(force=True)
 
 
+def _is_token_failure(e: BaseException) -> bool:
+    """A failure about the login: this codebase's `KiteAuthError`, or the SDK's `TokenException` / a 403 (Task 19's
+    `is_auth_failure`, which matches the SDK's class by name and never imports it)."""
+    from stockify.daemon.ticker import is_auth_failure
+    return isinstance(e, kite_client.KiteAuthError) or is_auth_failure(getattr(e, "code", None), e)
+
+
+def refresh_refdata(day: date, clock, stop: threading.Event,  # noqa: ANN001
+                    on_idle: Callable[[], None] | None = None,
+                    token_fresh: Callable[[], bool] | None = None) -> bool | None:
+    """The `refdata` job (CDM 5.1): the day's instruments, which every session's day bundle is resolved from, so no
+    bundle is made before this returns. A failure is retried every `token_dependent_retry.every_min` until
+    `until` (09:10 IST); after that a failure that is not about the login leaves D-1's refdata in use and returns True
+    (the bundles are labelled `refdata_stale`). A failure about the login (`_is_token_failure`) marks the token
+    rejected and waits for a later login (`waiting_for_login` set, the owner told), then runs at once, until the
+    session group's close. `on_idle` (the catch-up) runs between attempts. Returns False when fresh, True when stale,
+    None when `stop` ended the wait."""
+    from stockify.daemon import scheduler, token_watch
+    p = scheduler.plan(day)
+    step = scheduler.token_retry_ns()
+    while True:
+        try:
+            _ensure_refdata(day)
+            return False
+        except Exception as e:  # noqa: BLE001 — a refresh failure never costs the day
+            token = _is_token_failure(e)
+            now = clock.now_ns()
+            giving_up = (not token and now >= p.refdata_until_ns) or now >= p.unsubscribe_ns
+            if giving_up:
+                log.error("refdata for %s failed with %s: giving up; D-1's instruments stay in use (refdata_stale)",
+                          day, type(e).__name__, exc_info=True)
+                return True
+            log.warning("refdata for %s failed (%s); trying again", day, type(e).__name__, exc_info=True)
+            if token and token_fresh is not None:
+                token_watch.write_status(rejected_token_mtime_ns=token_watch.token_mtime_ns())
+                if not token_watch.wait_for_login(clock, stop, token_fresh=token_fresh,
+                                                  on_idle=on_idle or (lambda: None), until_ns=p.unsubscribe_ns):
+                    return None if stop.is_set() else True
+                token_watch.login_accepted()
+                continue
+            if on_idle is not None:
+                try:
+                    on_idle()
+                except Exception:  # noqa: BLE001
+                    log.exception("a job run between refdata attempts failed")
+            now = clock.now_ns()
+            nxt = now + step
+            if now < p.refdata_until_ns:
+                nxt = min(nxt, p.refdata_until_ns)
+            if not clock.sleep_until(nxt, stop):
+                return None
+
+
 # Rough per-row cost in the landing file: raw packet + parsed columns + index overhead.
 ROW_OVERHEAD_BYTES = 160
 PACKETS_PER_INSTRUMENT_PER_S = 1.0          # K-4: about one or two snapshots per second
@@ -87,8 +143,10 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
-    """Jobs whose milestone is not built yet are logged, not faked. `now_ns` is the daemon clock's time (default:
-    the wall clock): the retry windows are judged against it."""
+    """Run one scheduler job for `day` (compaction, quality, nse_fetch, margin_files, prune, finalise, parity,
+    daily_summary, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
+    tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
+    windows are judged against it."""
     now_ns = timeutil.now_ns() if now_ns is None else now_ns
     if job == "compaction":
         from stockify.data import compact
@@ -157,6 +215,175 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         removed = store.prune_recorder_status(week_ago)
         log.info("pruned %d recorder_status rows older than 7 days", removed)
         state.mark(job, day)
+    elif job == "finalise":
+        _finalise_job(day, state, now_ns)
+    elif job == "parity":
+        _parity_job(day, state)
+    elif job == "daily_summary":
+        _daily_summary(day, state)
+    elif job == "backup":
+        _backup_job(day, state)
+
+
+def _day_sessions(day: date) -> list[tuple[str, dict]]:
+    """(session id, its row for `day`) of every session that opened `day`, in id order."""
+    from stockify import store
+    d = day.isoformat()
+    out = []
+    for s in store.list_sessions():
+        row = store.get_session_day(s["session_id"], d)
+        if row is not None:
+            out.append((s["session_id"], row))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _finalise_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """Finalise each session that opened `day` (D-1's SETTLE records, engine end of day, stored outputs). The day waits
+    for NSE's evening files, then goes at the next trading day's `day_bundles` time. One session's trouble never stops
+    another. The job is done when every session is finalised or has failed for good; `waiting`, `busy` and raised
+    errors are tried again (finalise's own claim keeps a second scheduler out)."""
+    from stockify.daemon import finalise, scheduler
+    from stockify.data import calendar
+    cutoff_passed = now_ns >= scheduler.plan(calendar.next_trading_day("FO", day)).day_bundles_ns
+    files_complete = state.done("nse_fetch", day)
+    complete = True
+    for sid, row in _day_sessions(day):
+        if row["status"] in ("finalised", finalise.FAILED_STATUS):      # a day the dispatcher failed is still finalised
+            continue                                                    # from its journal (C-1); only a failed finalise stops
+        try:
+            res = finalise.finalise_day(sid, day, files_complete=files_complete, cutoff_passed=cutoff_passed)
+        except Exception:  # noqa: BLE001
+            log.exception("finalising %s for %s raised; it will be tried again", sid, day)
+            complete = False
+            continue
+        if res.status == "failed":
+            log.error("session %s cannot finalise %s: %s", sid, day, res.error)
+            try:
+                finalise.record_failure(sid, day, res.error, wall_ns=now_ns)
+            except Exception:  # noqa: BLE001
+                log.exception("could not record the failed finalise of session %s", sid)
+                complete = False
+        elif res.status != "finalised":
+            complete = False
+    if complete:
+        state.mark("finalise", day)
+
+
+PARITY_TRIES = 8                                    # `skipped` results retried this many times a day, then given up
+BACKUP_TRIES = 3                                    # backup runs with copy errors, tried this many times a day
+
+
+def _tries(state, name: str, day: date, limit: int) -> int:  # noqa: ANN001
+    return sum(state.done(f"{name}_try{n}", day) for n in range(1, limit + 1))
+
+
+def _parity_job(day: date, state) -> None:  # noqa: ANN001
+    """Journal and recorder parity of each finalised session-day. `skipped` (the day could not be read now) is tried
+    again, at most PARITY_TRIES times a day: then one `parity_gave_up` timeline row per session names the reason and
+    the day is left. A pass or a fail is a result, recorded by the parity module, and is not run twice."""
+    from stockify import parity, store
+    d = day.isoformat()
+    why: dict[str, list[str]] = {}
+    for sid, row in _day_sessions(day):
+        if row["status"] != "finalised":
+            continue
+        try:
+            if not row.get("parity"):
+                res = parity.journal_parity(sid, day)
+                if res.outcome == "skipped":
+                    why.setdefault(sid, []).append(f"journal: {res.summary.get('reason')}")
+            if store.get_parity_result(sid, d, "recorder") is None:
+                res = parity.recorder_parity(sid, day)
+                if res.outcome == "skipped":
+                    why.setdefault(sid, []).append(f"recorder: {res.summary.get('reason')}")
+        except Exception as e:  # noqa: BLE001
+            log.exception("parity of %s for %s raised; it will be tried again", sid, day)
+            why.setdefault(sid, []).append(f"{type(e).__name__}: {e}")
+    if not why:
+        state.mark("parity", day)
+        return
+    n = _tries(state, "parity", day, PARITY_TRIES) + 1
+    state.mark(f"parity_try{n}", day)
+    if n < PARITY_TRIES:
+        return
+    for sid, reasons in why.items():
+        log.error("parity of %s for %s: given up after %d tries (%s)", sid, day, n, "; ".join(reasons))
+        try:
+            store.add_timeline(sid, "parity_gave_up", {"day": d, "tries": n, "reason": "; ".join(reasons)},
+                               wall_ns=timeutil.now_ns(), engine_ns=None)
+        except Exception:  # noqa: BLE001
+            log.exception("no timeline row for session %s", sid)
+    state.mark("parity", day)
+
+
+def _backup_job(day: date, state) -> None:  # noqa: ANN001
+    """The nightly verified backup (GK 5.7). No target, or a target the backup refuses, is a logged skip. A run with
+    copy errors (or an error raised) is tried again on later passes, at most BACKUP_TRIES times a day."""
+    from pathlib import Path
+    from stockify import backup
+    from stockify.config import loader
+    target = (loader.load_json("storage.json").get("backup") or {}).get("target")
+    if not target:
+        log.info("backup: no target configured (storage.json backup.target); skipped")
+        state.mark("backup", day)
+        return
+    errors: list[str] = []
+    try:
+        res = backup.run(Path(target), day=day)
+        errors = [str(e) for e in (getattr(res, "errors", None) or [])]
+    except backup.BackupRefused as e:
+        log.error("backup to %s refused: %s; skipped", target, e)
+        state.mark("backup", day)
+        return
+    except Exception as e:  # noqa: BLE001 — never costs the day
+        log.exception("backup to %s raised", target)
+        errors = [f"{type(e).__name__}: {e}"]
+    if not errors:
+        state.mark("backup", day)
+        return
+    n = _tries(state, "backup", day, BACKUP_TRIES) + 1
+    state.mark(f"backup_try{n}", day)
+    for error in errors:
+        log.error("backup (try %d of %d): %s", n, BACKUP_TRIES, error)
+    if n >= BACKUP_TRIES:
+        log.error("backup for %s: given up after %d tries", day, n)
+        state.mark("backup", day)
+
+
+SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up
+_summary_flight: dict[date, list] = {}               # day -> [] while a send is in flight, then [its error or None]
+
+
+def _daily_summary(day: date, state) -> None:  # noqa: ANN001
+    """Tell the owner what the day's sessions did, once every session has finalised (or failed): finalising waits for
+    NSE's settlement files, so this can be a later pass. The send is posted to the notifier's thread (this loop never
+    waits for a mail server); a pass collects its outcome. A failed send is tried again on a later pass, at most
+    SUMMARY_TRIES times a day, then logged once and given up. Nothing here stops the daemon."""
+    if state.done("daily_summary", day):
+        return
+    from stockify.daemon import notify
+    try:
+        outcome = _summary_flight.get(day)
+        if outcome is not None:
+            if not outcome:
+                return                                    # still being sent
+            del _summary_flight[day]
+            if outcome[0] is None:
+                state.mark("daily_summary", day)
+                return
+        tries = sum(state.done(f"daily_summary_try{n}", day) for n in range(1, SUMMARY_TRIES + 1))
+        if tries >= SUMMARY_TRIES:
+            log.error("the daily summary for %s was not sent after %d tries: giving up", day, tries)
+            state.mark("daily_summary", day)
+            return
+        if not notify.summary_ready(day):
+            return
+        flight: list = []
+        if notify.post_daily_summary(day, flight.append):
+            _summary_flight[day] = flight
+            state.mark(f"daily_summary_try{tries + 1}", day)
+    except Exception:  # noqa: BLE001
+        log.exception("the daily summary failed")
 
 
 def _kite_token_fresh() -> bool:
@@ -165,7 +392,8 @@ def _kite_token_fresh() -> bool:
 
 
 def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  # noqa: ANN001
-               recorder=None, token_fresh=None, send_reminder=None) -> int:  # noqa: ANN001
+               recorder=None, token_fresh=None, send_reminder=None,  # noqa: ANN001
+               session_ids: list[str] | None = None) -> int:
     """The live daemon: wait for the session, record it, then hibernate (D-32).
 
     Each pass handles one of three situations:
@@ -186,21 +414,45 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     power = power or Power()
     clock = clock or WallClock()
     stop = stop or threading.Event()
-    record = recorder or (lambda: run_recorder(ticker_spec="live", stop=stop, power=power))
-    token_fresh = token_fresh or _kite_token_fresh
     state = scheduler.State()
-    from stockify.daemon import reminder
-    reminder_kw = {"send": send_reminder} if send_reminder else {}
-
     tried: dict[tuple[str, date], int] = {}                  # (job, day) -> last attempt, for retry_every_min
-    while not stop.is_set():
+
+    def catch_up() -> None:
+        """The scheduler's missed jobs, each at most once per its retry interval. Also what the wait for a Kite login
+        runs on every poll (LCB 5.2): a missing login never holds up the earlier days' work."""
         now = clock.now_ns()
+        in_session = scheduler.session_in_progress(now)
         for job, d in scheduler.missed_jobs(now, state):
+            if in_session and job in scheduler.HELD_DURING_SESSION:
+                continue                                     # not beside the live recorder: after the close (M-2)
+            if not scheduler.runnable(job, d, state):
+                continue                                     # parity and the summary wait for finalise
             last = tried.get((job, d))
             if last is not None and now < last + scheduler.retry_every_ns(job):
                 continue
             tried[(job, d)] = now
-            _run_job(job, d, state, now)
+            try:
+                _run_job(job, d, state, now)
+            except Exception:  # noqa: BLE001 — a failing job never stops the others
+                log.exception("job %s for %s failed", job, d)
+
+    def before_open(day: date) -> None:
+        """What the open itself needs, unthrottled: D-1 finalised, so D's sessions start from its state."""
+        from stockify.daemon import finalise
+        prev = finalise.previous_trading_day(day)
+        if not state.done("finalise", prev):
+            _run_job("finalise", prev, state, clock.now_ns())
+
+    record = recorder or (lambda: run_market_day(ticker_spec="live", stop=stop, power=power,
+                                                 session_ids=session_ids, token_fresh=token_fresh,
+                                                 on_idle=catch_up, before_open=before_open))
+    token_fresh = token_fresh or _kite_token_fresh
+    from stockify.daemon import reminder
+    reminder_kw = {"send": send_reminder} if send_reminder else {}
+
+    while not stop.is_set():
+        now = clock.now_ns()
+        catch_up()
 
         today = timeutil.ns_to_ist(now).date()
         if calendar_is_trading(today) and now >= scheduler.plan(today).unsubscribe_ns:
@@ -229,7 +481,6 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
                     power.release()
                 if code != exitcodes.OK:
                     return code
-                state.mark("session", day)
                 continue                                          # now situation 1
 
         result = _sleep_or_wait(clock, power, state, obligations, stop)
@@ -269,104 +520,19 @@ def calendar_is_trading(day: date) -> bool:
 
 def run_recorder(*, ticker_spec: str = "live", faults: list[str] | None = None,
                  stop: threading.Event | None = None, power=None) -> int:  # noqa: ANN001
-    from stockify.config import loader
-    from stockify.daemon.clock import WallClock
-    from stockify.daemon.landing import LandingDB
-    from stockify.daemon.recorder import Recorder
-    from stockify.daemon.subscriptions import SubscriptionManager
-    from stockify.daemon.ticker import RecorderSession, direct_call, live_call_in_ticker, make_live_ticker
-    from stockify.data import calendar
+    """The recorder alone: `run_market_day` with no paper sessions (GK 5.1)."""
+    from stockify.daemon import market_day
+    return market_day.run_market_day(ticker_spec=ticker_spec, faults=faults, stop=stop, power=power, session_ids=[])
 
-    stop = stop or threading.Event()
-    schedule = loader.load_json("schedule.json")
-    replay = ticker_spec != "live"
 
-    if replay:
-        from stockify.daemon.replay_ticker import open_replay, parse_spec
-        day, _ = parse_spec(ticker_spec)
-        ticker, clock = open_replay(ticker_spec, faults=faults)
-        landing = LandingDB(day, paths.ticks_replay_file(day))
-        call = direct_call
-    else:
-        import kite_client
-        clock = WallClock()
-        day = timeutil.ist_today()
-        if not calendar.is_trading_day("FO", day):
-            log.info("%s is not an NSE trading day; nothing to record", day)
-            return exitcodes.OK
-        if not kite_client.is_authenticated():
-            log.warning("no fresh Kite login: waiting for one (log in at /portfolio)")
-            return exitcodes.TOKEN_EXPIRED
-        _ensure_refdata(day)
-        payload = kite_client.load_cached_token()
-        ticker = make_live_ticker(kite_client._api_key(), payload["access_token"])
-        landing = LandingDB(day)
-        call = live_call_in_ticker
+def run_market_day(**kwargs) -> int:
+    """Record the day and run the paper sessions on it; see `stockify.daemon.market_day`."""
+    from stockify.daemon import market_day
+    return market_day.run_market_day(**kwargs)
 
-    tokens = _token_map(day)
-    universe = loader.load_json("universe.json")
-    manager = SubscriptionManager(day, universe, clock, log_rows=landing.log_subscriptions)
-    for warning in manager.warnings:
-        log.warning("subscriptions: %s", warning)
-    recorder = Recorder(landing, tokens.get, clock)
-    session = RecorderSession(ticker, recorder, manager, clock, call_in_ticker=call)
-    end_ns = timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])
 
-    if not replay:
-        start_ns = timeutil.ist_ns(day, schedule["jobs"]["subscribe"])
-        if clock.now_ns() < start_ns:
-            log.info("waiting for the subscribe time %s IST", schedule["jobs"]["subscribe"])
-            if not clock.sleep_until(start_ns, stop):
-                return exitcodes.OK
-        if clock.now_ns() >= end_ns:
-            log.info("the session is over for %s", day)
-            return exitcodes.OK
-
-    recorder.start()
-    session.start()
-    ticker.connect(threaded=True)
-    log.info("recording %s: %d instruments, landing %s", day, len(manager.current), landing.path)
-    est = estimate_bytes_per_day(day, manager)
-    log.info("expected landing size today: about %.0f MB (assumes about %d chain strikes once "
-             "centred and one packet per instrument per second)", est["bytes"] / 1e6, est["chain_instruments"])
-    last_power_check = 0
-    bands = None
-    if not replay:
-        from stockify.data import limits
-        bands = limits.Snapshotter(day, manager, client=kite_client.get_client(), clock=clock)
-    try:
-        while not stop.is_set() and not session.stopped.is_set():
-            session.tick()
-            if bands is not None:
-                bands.tick()                    # price bands into daily_limits (M1.5)
-            if power is not None and clock.now_ns() - last_power_check >= 60 * 1_000_000_000:
-                last_power_check = clock.now_ns()
-                if power.on_ac_power() is False:
-                    if "on_battery" not in recorder.stats.alarms:
-                        recorder.stats.alarms.append("on_battery")
-                    log.warning("running on battery during the session: recording continues until the battery "
-                                "runs out (Windows then hibernates; the stop is recorded as a gap)")
-            if replay and ticker.finished.is_set():
-                break
-            if clock.now_ns() >= end_ns:
-                log.info("unsubscribe time reached")
-                break
-            stop.wait(0.05 if replay else 1.0)
-    except KeyboardInterrupt:
-        log.info("interrupted")
-    finally:
-        if not session.stopped.is_set():
-            session.end_session()
-        try:
-            ticker.close()
-            if replay:
-                ticker.stop()
-        except Exception as e:                  # the reactor may already be gone
-            log.debug("ticker close: %s", e)
-        recorder.stop()
-        session.tick()
-        landing.close()
-        stats = recorder.stats
-        log.info("recorded %d packets in %d frames; %d heartbeats; dropped %d; exit %d",
-                 stats.packets, stats.frames, stats.heartbeats, stats.dropped_frames, session.exit_code)
-    return session.exit_code
+def _release_ticket(ticker) -> None:  # noqa: ANN001
+    """Give back a live ticker's connection-budget ticket (M5.14); replay tickers hold none."""
+    ticket = getattr(ticker, "budget_ticket", None)
+    if ticket is not None:
+        ticket.release()

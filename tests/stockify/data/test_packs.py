@@ -28,6 +28,34 @@ def t(hhmmss: str) -> int:
     return timeutil.ist_ns(DAY, hhmmss)
 
 
+class PackPathTests(unittest.TestCase):
+    """A pack's file name is its hash and nothing else (LCB 5.10)."""
+
+    BAD = ("../x" + "0" * 61, "../" + "0" * 61, "..\\" + "0" * 61, "/" + "0" * 63, "\\" + "0" * 63,
+           "0" * 31 + "/" + "0" * 32, "0" * 31 + "\\" + "0" * 32, "0" * 31 + ".." + "0" * 31, "C:" + "0" * 62,
+           "A" * 64, "0" * 63 + "F", "0" * 63, "0" * 65, "", "ab", "0" * 63 + "g", "0" * 64 + "\n", "0" * 63 + "\n",
+           "\uff10" * 64, "0" * 63 + "\x00", "*" * 64, 0, None, b"0" * 64)
+
+    def test_only_a_full_lower_case_hash_becomes_a_path(self):
+        for fn in (packs.pack_path, packs.manifest_path, packs.manifest):
+            for bad in self.BAD:
+                with self.subTest(fn=fn.__name__, bad=bad), \
+                        self.assertRaisesRegex(packs.PackError, "exactly 64 lower-case hex digits"):
+                    fn(bad)
+
+    def test_the_refusal_does_not_touch_the_disk(self):
+        with patch.object(paths, "packs_dir", side_effect=AssertionError("looked at the packs folder")):
+            for fn in (packs.pack_path, packs.manifest_path):
+                with self.assertRaises(packs.PackError):
+                    fn("../" + "0" * 61)
+
+    def test_a_real_hash_stays_inside_the_packs_folder(self):
+        for sha in ("0" * 64, "0123456789abcdef" * 4):
+            self.assertEqual(packs.pack_path(sha), paths.packs_dir() / f"{sha}.evt")
+            self.assertEqual(packs.manifest_path(sha), paths.packs_dir() / f"{sha}.json")
+            self.assertEqual(packs.pack_path(sha).parent, paths.packs_dir())
+
+
 class PackTest(unittest.TestCase):
     def setUp(self):
         support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
@@ -222,9 +250,11 @@ class TablePackTests(PackTest):
             conn.execute("INSERT INTO index_eod VALUES ('2026-11-17', ?, 1, 2, 3, 4)", (self.idx,))
         sha = packs.build({"dataset": "bhav_eod", "from": "2026-11-17", "to": "2026-11-17",
                            "instruments": [{"ids": [self.fut, self.idx]}]})
+        self.assertEqual(sha, "9766bc39578e4694f9decb9e60153388564986362a61faf8f591f9b11067243f")
         recs = packs.read(packs.pack_path(sha))[1]
         bars = {r["instrument_id"]: r for r in recs if r["kind"] == "BAR"}
         self.assertEqual((bars[self.fut]["close"], bars[self.fut]["oi"], bars[self.fut]["t_event"]), (15, 8, t("19:00")))
+        self.assertEqual(bars[self.fut]["volume"], 455)                  # 7 contracts × the dated spec's lot 65 (D-79)
         self.assertEqual(bars[self.idx]["interval_s"], 86400)
         settle = next(r for r in recs if r["kind"] == "SETTLE")
         self.assertEqual((settle["subtype"], settle["price_paise"]), (1, 16))

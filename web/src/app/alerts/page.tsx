@@ -1,142 +1,111 @@
-import Link from "next/link";
 import { api } from "@/lib/api";
+import { istWhenEpoch } from "@/lib/format";
 import type { GeoAlert } from "@/lib/types";
+import { Chip, PageHead, Panel, Table } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
-function formatWhen(unixSeconds: number): string {
-  if (!unixSeconds) return "—";
-  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function severityTone(severity: string): { fg: string; bg: string; border: string } {
+function severityTone(severity: string): "down" | "warn" | undefined {
   const s = severity.toUpperCase();
-  if (s === "CRITICAL") {
-    return { fg: "var(--color-red-soft)", bg: "rgba(255,68,68,0.12)", border: "var(--color-red)" };
-  }
-  if (s === "HIGH") {
-    return { fg: "var(--color-amber)", bg: "rgba(255,170,64,0.10)", border: "var(--color-amber)" };
-  }
-  return { fg: "var(--color-fg-muted)", bg: "rgba(255,255,255,0.04)", border: "rgba(0,255,65,0.20)" };
+  if (s === "CRITICAL") return "down";
+  if (s === "HIGH") return "warn";
+  return undefined;
 }
 
-async function fetchAlerts(): Promise<GeoAlert[]> {
+/** "CRITICAL" becomes "Critical". */
+function severityWord(severity: string): string {
+  const s = severity.toLowerCase();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** What an alert is about: the monitor writes macro, holding or both. Anything else is shown as written. */
+function scopeWords(scope: string): string {
+  if (scope === "macro") return "The whole market";
+  if (scope === "holding") return "Your holdings";
+  if (scope === "both") return "The market and your holdings";
+  return scope;
+}
+
+async function fetchAlerts(): Promise<{ items: GeoAlert[]; failed: boolean }> {
   try {
-    return await api<GeoAlert[]>("/api/alerts?limit=100&min_severity=MEDIUM");
+    return { items: await api<GeoAlert[]>("/api/alerts?limit=100&min_severity=MEDIUM"), failed: false };
   } catch {
-    return [];
+    return { items: [], failed: true };
   }
 }
 
 export default async function AlertsPage() {
-  const items = await fetchAlerts();
+  const { items, failed } = await fetchAlerts();
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12">
-      <div className="flex items-center justify-between mb-6">
-        <Link
-          href="/"
-          className="stk-mono-tight"
-          style={{ color: "var(--color-fg-muted)" }}
-        >
-          ← Search
-        </Link>
-        <div className="stk-mono-tight" style={{ color: "var(--color-fg-muted)" }}>
-          {items.length} alert{items.length === 1 ? "" : "s"}
-        </div>
-      </div>
+    <div className="stk-page">
+      <PageHead
+        title="Geo alerts"
+        lede={
+          <>
+            The always-on monitor (<code>python -m geo_monitor</code>) reads Google News for world events that could
+            disrupt Indian stocks. It emails you High and Critical alerts.
+            {items.length > 0 && ` ${items.length} shown.`}
+          </>
+        }
+      />
 
-      <h1
-        className="stk-mono text-2xl sm:text-3xl font-bold mb-2"
-        style={{ color: "var(--color-green)" }}
-      >
-        Geo alerts
-      </h1>
-      <p className="mb-6 text-sm" style={{ color: "var(--color-fg-muted)" }}>
-        From the always-on monitor (<code className="stk-mono-tight">python -m geo_monitor</code>).
-        Email fires on HIGH / CRITICAL.
-      </p>
-
-      {items.length === 0 ? (
-        <div
-          className="stk-mono-tight rounded-lg border px-6 py-12 text-center"
-          style={{
-            borderColor: "rgba(0,255,65,0.20)",
-            color: "var(--color-fg-muted)",
-          }}
-        >
-          No alerts yet.
-          <br />
-          Run the monitor with Gemini + email configured in{" "}
-          <code>.env</code>.
-        </div>
+      {failed ? (
+        <Panel tone="red">
+          <p role="alert">Could not reach the STOCKIFY API, so the alerts cannot be shown. Check that the app is running, then reload this page.</p>
+        </Panel>
+      ) : items.length === 0 ? (
+        <Panel>
+          <p className="stk-empty">
+            No alerts yet.
+            <br />
+            Run the monitor with Gemini + email configured in <code>.env</code>.
+          </p>
+        </Panel>
       ) : (
-        <ul className="flex flex-col gap-3">
-          {items.map((item) => {
-            const tone = severityTone(item.severity);
-            return (
-              <li
-                key={item.id}
-                className="rounded-lg border px-4 py-3"
-                style={{
-                  borderColor: tone.border,
-                  background: tone.bg,
-                }}
-              >
-                <div className="flex flex-wrap items-center gap-2 mb-1">
-                  <span
-                    className="stk-mono-tight text-xs font-bold px-2 py-0.5 rounded"
-                    style={{ color: tone.fg, border: `1px solid ${tone.border}` }}
-                  >
-                    {item.severity} · {item.disruption_score}
-                  </span>
-                  <span className="stk-mono-tight text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                    {formatWhen(item.created_at)}
-                  </span>
-                  {item.emailed_at ? (
-                    <span className="stk-mono-tight text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                      emailed
-                    </span>
-                  ) : null}
-                </div>
-                <div className="font-medium" style={{ color: "var(--color-fg)" }}>
+        <Table
+          caption="Geo alerts, newest first"
+          head={[
+            { label: "Severity" },
+            { label: "When (IST)" },
+            { label: "Alert" },
+            { label: "Tickers affected" },
+            { label: "News source" },
+          ]}
+        >
+          {items.map((item) => (
+            <tr key={item.id}>
+              <td>
+                <Chip tone={severityTone(item.severity)}>{severityWord(item.severity)}</Chip>
+                <div className="stk-label">Disruption score {item.disruption_score} of 100</div>
+              </td>
+              <td className="stk-label" data-wrap>
+                {istWhenEpoch(item.created_at)}
+                {item.emailed_at ? <div>Emailed</div> : null}
+              </td>
+              <td data-wrap>
+                <div className="stk-alert-title">
                   {item.url ? (
-                    <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline">
+                    <a href={item.url} target="_blank" rel="noreferrer">
                       {item.title}
                     </a>
                   ) : (
                     item.title
                   )}
                 </div>
-                {item.affected_tickers?.length > 0 && (
-                  <div className="stk-mono-tight mt-1 text-xs" style={{ color: "var(--color-green-soft)" }}>
-                    {item.affected_tickers.join(" · ")}
-                  </div>
-                )}
-                {item.why_disruptive && (
-                  <p className="mt-2 text-sm" style={{ color: "var(--color-fg-muted)" }}>
-                    {item.why_disruptive}
-                  </p>
-                )}
-                {item.investor_action && (
-                  <p className="mt-1 text-sm" style={{ color: "var(--color-fg)" }}>
-                    {item.investor_action}
-                  </p>
-                )}
-                <div className="stk-mono-tight mt-2 text-xs" style={{ color: "var(--color-fg-muted)" }}>
-                  {item.source || "—"}
-                  {item.scope ? ` · ${item.scope}` : ""}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                {item.why_disruptive && <p className="stk-label">{item.why_disruptive}</p>}
+                {item.investor_action && <p>{item.investor_action}</p>}
+              </td>
+              <td className="stk-mono" data-wrap>
+                {item.affected_tickers?.length > 0 ? item.affected_tickers.join(", ") : "—"}
+              </td>
+              <td className="stk-label" data-wrap>
+                {item.source || "—"}
+                {item.scope ? <div>About: {scopeWords(item.scope)}</div> : null}
+              </td>
+            </tr>
+          ))}
+        </Table>
       )}
     </div>
   );

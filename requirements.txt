@@ -31,3 +31,9 @@ tzdata>=2024.1          # Windows has no system time-zone database (Asia/Kolkata
 
 # STOCKIFY engine build (dev): pybind11 provides the CMake package
 pybind11>=2.13
+
+# Trusted certificate bundle: versions before 2026.10.18 trust CAs with compromised keys (supply-chain audit F2)
+certifi>=2026.10.18
+
+# Tests (dev): starlette's TestClient needs httpx2
+httpx2>=2.13.0

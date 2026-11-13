@@ -18,6 +18,29 @@ class _Rng:
         return self._g.below(n)
 
 
+def _whole(name: str, v, fn: str = "ctx.place") -> int:  # noqa: ANN001
+    """B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place (and, B2B 5.4, of ctx.modify) are an int and
+    nothing else. A float, a bool, a str or a Decimal is refused, never rounded: `int(1.5)` used to place 1. The
+    engine's binding (engine/bindings/engine.cpp, `whole`) has the same rule and the same words."""
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise TypeError(f"{fn}: {name} must be an int, not {type(v).__name__} ({v!r}): "
+                        "money is whole paise and quantity is whole units")
+    return v
+
+
+def _protection(v):  # noqa: ANN001, ANN202
+    """B2B 5.2 (audit M-2): `protection` is "AUTO" or an int from 1 to 10000 basis points. Anything else is refused,
+    never taken as AUTO. The engine's binding (engine/bindings/engine.cpp, `protection_arg`) has the same rule."""
+    what = 'ctx.place: protection must be "AUTO" or an int from 1 to 10000 (basis points)'
+    if isinstance(v, str) and v == "AUTO":
+        return v
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise TypeError(f"{what}, not {type(v).__name__} ({v!r})")
+    if not 1 <= v <= 10000:
+        raise ValueError(f"{what}, not {type(v).__name__} ({v!r})")
+    return v
+
+
 class Context:
     def __init__(self, engine):  # noqa: ANN001
         self._e = engine
@@ -104,11 +127,18 @@ class Context:
     # orders
     def place(self, instrument: int, side: str, qty: int, product: str, type: str, price: int = 0, trigger: int = 0,  # noqa: A002
               validity: str = "DAY", protection="AUTO", tag: str = "") -> int:  # noqa: ANN001
-        o = self._e.place(int(instrument), side, int(qty), product, type, int(price), int(trigger), validity,
-                          protection, tag)
+        o = self._e.place(int(instrument), side, _whole("qty", qty), product, type, _whole("price", price),
+                          _whole("trigger", trigger), validity, _protection(protection), tag)
         return o.order_id
 
     def modify(self, order_id: int, **changes) -> bool:  # noqa: ANN003
+        # B2B 5.4: qty, price and trigger are whole ints, checked in that order; a quantity of 0 or less is refused
+        # (an order of no units cannot be saved at the day's end). The engine's binding has the same rule and words.
+        for name in ("qty", "price", "trigger"):
+            if name in changes:
+                v = _whole(name, changes[name], "ctx.modify")
+                if name == "qty" and v <= 0:
+                    raise ValueError(f"ctx.modify: qty must be positive, not {v}")
         return self._e.modify(order_id, changes)
 
     def cancel(self, order_id: int) -> bool:
