@@ -616,7 +616,7 @@ def _cmd_research_show(args) -> int:
 
 def _cmd_sensitivity(args) -> int:
     """M6.7: re-run a finished run with costs, extra slippage ticks, latency and other fill models, one change at a
-    time. Exit 0 done, 1 when a variant failed unexpectedly, 2 for an unknown or unfinished run or a locked holdout."""
+    time. Exit 0 done (robust, fragile or already losing), 1 when a variant failed or the verdict is inconclusive, 2 for an unknown or unfinished run or a locked holdout."""
     from stockify import runconfig
     from stockify.research import sensitivity
     try:
@@ -625,7 +625,7 @@ def _cmd_sensitivity(args) -> int:
         print(e, file=sys.stderr)
         return 2
     _print_console(sensitivity.format_table(res))
-    return 1 if any(r.status == "failed" for r in res.rows) else 0
+    return 1 if res.verdict == "inconclusive" or any(r.status == "failed" for r in res.rows) else 0
 
 
 def _cmd_margin_check(args) -> int:

@@ -31,6 +31,7 @@ from tests.stockify.test_runs_launch import BUY
 REPO = Path(__file__).resolve().parents[3]
 ORB = json.loads((REPO / "examples" / "runs" / "orb_reliance_minute.json").read_text(encoding="utf-8"))
 CAP = 100_000_000
+PINNED = [{"sha256": "a" * 64}]
 
 
 def orb(**over) -> dict:
@@ -113,7 +114,8 @@ class VariantTests(unittest.TestCase):
 class ApplicabilityTests(unittest.TestCase):
     def test_fill_model_applicability_comes_from_the_validator(self):
         cfg = orb()                                           # price_basis adjusted: eod_close needs raw
-        with mock.patch.object(bundle, "resolve_bundle", return_value={}):
+        with mock.patch.object(bundle, "resolve_packs", return_value=PINNED), \
+                mock.patch.object(bundle, "resolve_bundle", return_value={}):
             res = sensitivity.applicable_fill_models(cfg)
         self.assertEqual(set(res), set(runconfig.FILL_KINDS))
         with self.assertRaises(runconfig.RunConfigError) as cm:
@@ -124,7 +126,8 @@ class ApplicabilityTests(unittest.TestCase):
             self.assertIsNone(res[kind], kind)
 
     def test_a_bundle_the_resolver_refuses_is_not_applicable_with_its_text(self):
-        with mock.patch.object(bundle, "resolve_bundle", side_effect=bundle.BundleError("no quotes in these packs")):
+        with mock.patch.object(bundle, "resolve_packs", return_value=PINNED), \
+                mock.patch.object(bundle, "resolve_bundle", side_effect=bundle.BundleError("no quotes in these packs")):
             res = sensitivity.applicable_fill_models(orb())
         self.assertEqual(res["snapshot_quote"], "no quotes in these packs")
 
@@ -163,9 +166,10 @@ class SuiteBase(SandboxedDBTest):
     def setUp(self):
         super().setUp()
         self.cfg = orb()
-        patcher = mock.patch.object(bundle, "resolve_bundle", return_value={})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name, value in (("resolve_packs", PINNED), ("resolve_bundle", {})):
+            patcher = mock.patch.object(bundle, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def source(self, net: int, *, cfg=None, run_id="src", status="done") -> str:
         cfg = cfg or self.cfg
@@ -231,9 +235,90 @@ class FragileTests(SuiteBase):
         self.assertEqual(rows["costs_x1.5"].delta_net_paise, 0)
         self.assertEqual(res.verdict, "robust")
 
-    def test_a_failed_threshold_run_is_said_not_silently_robust(self):
+    def test_a_failed_cost_check_is_inconclusive_never_robust(self):
         res, _ = self.suite(net_default, fail=("costs_x1.5",))
+        self.assertEqual((res.verdict, res.fragile), ("inconclusive", False))
         self.assertTrue(any("could not be checked" in r for r in res.reasons), res.reasons)
+
+    def test_a_failed_tick_check_is_inconclusive(self):
+        res, _ = self.suite(net_default, fail=("slip_plus1",))
+        self.assertEqual(res.verdict, "inconclusive")
+
+    def test_a_not_applicable_check_is_inconclusive(self):
+        cfg = orb(fill_model={**ORB["fill_model"], "slippage": {"kind": "bps", "x": "0.0005", "extra_ticks": 1000}})
+        rid = self.source(5_000, cfg=cfg)                     # +1 tick is 1001: the validator refuses it
+        res = sensitivity.run_suite(rid, pool_run=FakePool(net_default), now_ns=1)
+        self.assertEqual({r.key: r.status for r in res.rows}["slip_plus1"], "not_applicable")
+        self.assertEqual(res.verdict, "inconclusive")
+
+    def test_fragile_still_wins_when_the_other_check_did_not_run(self):
+        def net(cfg):
+            return -300 if cfg.get("costs", {}).get("scale") == "1.5" else 5_000
+        res, _ = self.suite(net, fail=("slip_plus1",))
+        self.assertEqual((res.verdict, res.fragile), ("fragile", True))
+
+    def test_already_losing_stays_already_losing_when_checks_fail(self):
+        rid = self.source(-5)
+        res = sensitivity.run_suite(rid, pool_run=FakePool(net_default, fail=("costs_x1.5",)), now_ns=1)
+        self.assertEqual(res.verdict, "already_losing")
+
+    def test_a_baseline_that_is_the_threshold_uses_its_own_net_result(self):
+        cfg = orb(costs={**ORB["costs"], "scale": "1.5"})
+        rid = self.source(5_000, cfg=cfg)
+        fake = FakePool(net_default)
+        res = sensitivity.run_suite(rid, pool_run=fake, now_ns=1)
+        self.assertNotIn("costs_x1.5", [r.key for r in res.rows])        # dropped as the baseline itself
+        self.assertEqual(res.verdict, "robust")
+        self.assertTrue(any("costs" in r and "still makes" in r for r in res.reasons), res.reasons)
+        losing = self.source(-5, cfg=cfg, run_id="src2")
+        self.assertEqual(sensitivity.run_suite(losing, pool_run=fake, now_ns=1).verdict, "already_losing")
+
+    def test_a_zero_extra_tick_threshold_is_the_baseline_itself(self):
+        s = {**research.settings()["sensitivity"], "fragile_extra_ticks": 0}      # +0 ticks is the baseline itself
+        rid = self.source(5_000)
+        with mock.patch.object(research, "settings", return_value={**research.settings(), "sensitivity": s}):
+            res = sensitivity.run_suite(rid, pool_run=FakePool(net_default), now_ns=1)
+        self.assertEqual(res.verdict, "robust")
+
+    def test_a_fragile_setting_missing_from_the_lists_is_still_run(self):
+        s = {**research.settings()["sensitivity"], "cost_scale": ["0"], "extra_ticks": [2],
+             "fragile_cost_scale": "1.5", "fragile_extra_ticks": 1}
+        keys = {v.key for v in sensitivity.variants(orb(), s)}
+        self.assertTrue({"costs_x1.5", "slip_plus1"} <= keys)
+
+    def test_a_missing_fragile_setting_is_an_error_not_a_skipped_check(self):
+        base = research.settings()
+        for n, drop in enumerate(("fragile_cost_scale", "fragile_extra_ticks")):
+            broken = {**base, "sensitivity": {k: v for k, v in base["sensitivity"].items() if k != drop}}
+            rid = self.source(5_000, run_id=f"m{n}")
+            with mock.patch.object(research, "settings", return_value=broken):
+                with self.assertRaisesRegex(sensitivity.SensitivityError, "fragile_"):
+                    sensitivity.run_suite(rid, pool_run=FakePool(net_default), now_ns=1)
+        self.assertEqual(store.list_research_jobs(kind="sensitivity"), [])
+
+    def test_variant_keys_normalise_the_scale(self):
+        self.assertEqual(sensitivity.variant_key("costs", "1.50"), "costs_x1.5")
+        self.assertEqual(sensitivity.variant_key("costs", "2.0"), "costs_x2")
+        self.assertEqual(sensitivity.variant_key("costs", "10"), "costs_x10")
+        s = {**research.settings()["sensitivity"], "cost_scale": ["1.50", "1.5", "2"]}
+        keys = [v.key for v in sensitivity.variants(orb(), s)]
+        self.assertEqual(keys.count("costs_x1.5"), 1)
+
+    def test_a_pool_that_returns_the_wrong_number_of_outcomes_fails_the_job(self):
+        self.source(5_000)
+        with self.assertRaisesRegex(sensitivity.SensitivityError, "outcomes"):
+            sensitivity.run_suite("src", pool_run=lambda jobs, workers=None: [], now_ns=1)
+        (job,) = store.list_research_jobs(kind="sensitivity")
+        self.assertEqual(job["status"], "failed")
+
+    def test_a_failure_in_the_applicability_check_closes_the_job_as_failed(self):
+        self.source(5_000)
+        with mock.patch.object(sensitivity, "applicable_fill_models", side_effect=RuntimeError("disk gone")):
+            with self.assertRaises(RuntimeError):
+                sensitivity.run_suite("src", pool_run=FakePool(net_default), now_ns=1)
+        (job,) = store.list_research_jobs(kind="sensitivity")
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("disk gone", job["error"])
 
     def test_the_baseline_is_a_row_from_the_source_and_is_not_rerun(self):
         res, fake = self.suite(net_default)
@@ -398,6 +483,19 @@ class CliTests(SuiteBase):
             code, out, _ = self.run_cli("sensitivity", "--run", "src")
         self.assertEqual(code, 1)
 
+    def test_verdict_exit_codes(self):
+        self.source(5_000)
+        fragile = FakePool(lambda c: -300 if c.get("costs", {}).get("scale") == "1.5" else 5_000)
+        with mock.patch.object(pool, "run_all", fragile):
+            self.assertEqual(self.run_cli("sensitivity", "--run", "src")[0], 0)      # fragile is a result, not an error
+        with mock.patch.object(pool, "run_all", FakePool(net_default, fail=("costs_x1.5",))):
+            code, out, _ = self.run_cli("sensitivity", "--run", "src")
+        self.assertEqual(code, 1)                                                     # inconclusive
+        self.assertIn("inconclusive", out)
+        self.source(-5, run_id="lose")
+        with mock.patch.object(pool, "run_all", FakePool(net_default)):
+            self.assertEqual(self.run_cli("sensitivity", "--run", "lose")[0], 0)
+
     def test_a_locked_holdout_exits_two(self):
         self.source(5_000)
         with mock.patch.object(holdout, "enforce", side_effect=holdout.HoldoutLocked("locked, say why")):
@@ -415,41 +513,93 @@ def charge_rows(files) -> list[dict]:  # noqa: ANN001
     return list(csv.DictReader(io.StringIO(files["charges.csv"].decode("utf-8"))))
 
 
+def gst_rate(charges: dict) -> Fraction:
+    """The GST rate in force in `charges` (a dated section): read from the config, never a literal."""
+    return Fraction(Decimal(charges["components"]["gst"][-1]["rate"]))
+
+
+def component_problems(one: dict, scaled: dict, k: str, rate: Fraction) -> list[str]:
+    """What is wrong with one charge row at scale `k` against the same row at scale 1: each of brokerage, exchange
+    and sebi must be k times its scale-1 value (within 1 paise) and GST must be `rate` of the scaled base of those
+    three (within 1 paise: GST follows its scaled base, so it is never scaled twice)."""
+    out = []
+    for comp in ("brokerage", "exchange", "sebi"):
+        if abs(Fraction(int(scaled[comp])) - Fraction(k) * int(one[comp])) > 1:
+            out.append(f"{comp}: {scaled[comp]} is not {k} x {one[comp]}")
+    base = int(scaled["brokerage"]) + int(scaled["exchange"]) + int(scaled["sebi"])
+    if abs(int(scaled["gst"]) - half_up(rate * base)) > 1:
+        out.append(f"gst: {scaled['gst']} is not {rate} of {base}")
+    return out
+
+
+def squared_gst(charges: dict, k: str) -> dict:
+    """The mutant: charges scaled the right way, then the GST rate scaled as well (so GST grows as k squared)."""
+    out = bundle.scale_charges(charges, Decimal(k))
+    for row in out["components"]["gst"]:
+        rate = Decimal(row["rate"]) * Decimal(k)
+        row["rate"] = format(rate, "f")
+        row["rate_ppb"] = numerics.to_ppb(row["rate"])
+    return out
+
+
 class PerComponentCostTests(unittest.TestCase):
     """costs.scale multiplies the TOTAL cost: every component scales, and GST follows its scaled base (never
-    squared). A squared GST hides inside a total tolerance on a big row but not on a small one, so each component is
-    checked on its own, on a large intraday row and on a small CNC-like row (zero or tiny brokerage)."""
+    squared). A squared GST hides inside a total tolerance on a large row, so each component is checked on its own,
+    on the large golden G09 and on small trades with a small non-zero brokerage (a few rupees of turnover)."""
 
-    def check_golden(self, gid: str) -> None:
-        # The dated GST rate (the row in force, the last one), never a literal.
-        rate = Fraction(Decimal(loader.load_json("charges.json")["components"]["gst"][-1]["rate"]))
-        base = charge_rows(golden_run("1", gid=gid))
-        self.assertTrue(base, gid)
-        for k in ("2", "1.5", "0.5"):
-            scaled = charge_rows(golden_run(k, gid=gid))
-            self.assertEqual(len(scaled), len(base))
-            for b, s in zip(base, scaled):
-                with self.subTest(golden=gid, scale=k, row=b["row_no"]):
-                    for comp in ("brokerage", "exchange", "sebi"):
-                        self.assertLessEqual(abs(Fraction(int(s[comp])) - Fraction(k) * int(b[comp])), 1, comp)
-                    gst_base = int(s["brokerage"]) + int(s["exchange"]) + int(s["sebi"])
-                    self.assertLessEqual(abs(int(s["gst"]) - half_up(rate * gst_base)), 1, (s["gst"], gst_base))
+    DAY = "2026-03-31"
+    SCALES = ("2", "1.5", "0.5")
+
+    def charges(self) -> dict:
+        from datetime import date
+        d = date.fromisoformat(self.DAY)
+        return bundle._dated_section(loader.load_json("charges.json"), d, d)
+
+    def order_rows(self, charges: dict, k: str) -> list[dict]:
+        """The same small orders priced on `charges` scaled by `k`: a MIS equity buy and a CNC buy, a few rupees."""
+        from stockify.oracle import costs
+        c = costs.Costs(bundle.apply_cost_scale({"costs": {"scale": k}}, charges), {})
+        return [c.order("EQ", "MIS", "BUY", 500_000, self.DAY), c.order("EQ", "CNC", "BUY", 400_000, self.DAY),
+                c.order("EQ", "MIS", "SELL", 300_000, self.DAY)]
 
     def test_every_component_scales_and_gst_follows_its_scaled_base_on_a_large_row(self):
-        self.check_golden("G09")                               # brokerage 20 rupees, exchange 29.74: GST in the hundreds
+        rate = gst_rate(self.charges())
+        base = charge_rows(golden_run("1", gid="G09"))
+        self.assertTrue(base)
+        for k in self.SCALES:
+            for b, s in zip(base, charge_rows(golden_run(k, gid="G09"))):
+                with self.subTest(scale=k, row=b["row_no"]):
+                    self.assertEqual(component_problems(b, s, k, rate), [])
 
-    def test_a_small_cnc_like_row_does_not_hide_a_squared_gst(self):
-        self.check_golden("G01")                               # CNC: zero brokerage, tiny turnover
-        self.check_golden("G03")
-        for r in charge_rows(golden_run("2", gid="G03")):
-            self.assertEqual(int(r["brokerage"]), 0)           # CNC brokerage is zero at any scale
+    def test_small_trades_with_a_small_non_zero_brokerage_scale_per_component(self):
+        charges = self.charges()
+        rate = gst_rate(charges)
+        one = self.order_rows(charges, "1")
+        for row in one:                                            # the rows used are not vacuous
+            self.assertGreater(row["brokerage"] + row["exchange"] + row["sebi"] + row["gst"], 0, row)
+        self.assertTrue(any(0 < row["brokerage"] < 500 for row in one))      # a small, non-zero brokerage
+        self.assertLess(max(row["turnover"] for row in one), 1_000_000)      # turnover of a few thousand rupees
+        for k in self.SCALES:
+            for n, (b, s) in enumerate(zip(one, self.order_rows(charges, k))):
+                with self.subTest(scale=k, order=n):
+                    self.assertEqual(component_problems(b, s, k, rate), [])
 
-    def test_a_squared_gst_would_be_caught_on_a_small_row(self):
-        """The rule on whole numbers: at k=2 a base of 100 paise gives a right GST of 36; a squared one is 72."""
-        rate = Fraction("0.18")
-        right, squared = half_up(rate * 200), half_up(rate * 200 * 2)
-        self.assertLessEqual(abs(right - 36), 1)
-        self.assertGreater(abs(squared - right), 1)
+    def test_the_check_fails_on_a_squared_gst(self):
+        """The mutant: scaling the GST rate as well squares GST. The per-component check must catch it on the small
+        rows (where a total tolerance would not) and on the large golden's charges."""
+        from stockify.oracle import costs
+        charges = self.charges()
+        rate = gst_rate(charges)
+        one = self.order_rows(charges, "1")
+        for k in self.SCALES:
+            mutant = costs.Costs(squared_gst(charges, k), {})
+            rows = [mutant.order("EQ", "MIS", "BUY", 500_000, self.DAY),
+                    mutant.order("EQ", "CNC", "BUY", 400_000, self.DAY),
+                    mutant.order("EQ", "MIS", "SELL", 300_000, self.DAY)]
+            with self.subTest(scale=k):
+                problems = [p for b, s in zip(one, rows) for p in component_problems(b, s, k, rate)]
+                self.assertTrue(any(p.startswith("gst") for p in problems), (k, problems))
+                self.assertFalse(any(not p.startswith("gst") for p in problems), problems)   # only GST is wrong
 
 
 # ---- end to end -------------------------------------------------------------------------------------------------
@@ -488,6 +638,27 @@ class EndToEndTests(BundleTest):
         self.assertEqual(doc["verdict"], res.verdict)
         done = sum(r.status == "done" for r in res.rows)
         self.assertEqual(len(store.list_runs(family_id="buy/tiny/sharpe")), 1 + done)
+
+
+class PinnedPacksTests(BundleTest):
+    """Not mocked: the dry applicability check builds a spec pack at most once, however many fill kinds it tries."""
+
+    def test_packs_are_built_at_most_once_for_all_fill_kinds(self):
+        from stockify.data import packs
+        cfg = runconfig.validate(run_config(name="pin", strategy=BUY))
+        real = packs.build
+        with mock.patch.object(packs, "build", wraps=real) as spy:
+            res = sensitivity.applicable_fill_models(cfg)
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(set(res), set(runconfig.FILL_KINDS))
+        self.assertIsNone(res["bar"])                                       # the real resolve accepts the baseline
+        self.assertIn("price_basis", res["eod_close"])                      # and the validator still speaks first
+
+    def test_a_pack_that_cannot_be_resolved_gives_every_kind_the_same_text(self):
+        cfg = runconfig.validate(run_config(name="pin2", strategy=BUY, data={"packs": [{"sha256": "b" * 64}]}))
+        res = sensitivity.applicable_fill_models(cfg)
+        self.assertEqual(len(set(res.values())), 1)
+        self.assertIn("not found", next(iter(res.values())))
 
 
 if __name__ == "__main__":
