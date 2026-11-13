@@ -16,7 +16,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
                             ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
-                            SweepHeatmapDTO, SweepRowDTO, TrialRowDTO)
+                            SweepHeatmapDTO, SweepRowDTO, TrialRowDTO, WalkforwardDTO, WalkforwardSummaryDTO,
+                            WalkforwardWindowDTO)
 
 router = APIRouter(tags=["research"])
 
@@ -211,3 +212,23 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
         axes=[SweepAxisDTO(path=a, labels=[_label(v) for v in vs], values=vs) for a, vs in doc["axes"].items()],
         rows=[SweepRowDTO(**{k: r.get(k) for k in SweepRowDTO.model_fields}) for r in doc["rows"]],
         best_run_id=doc.get("best_run_id"), cells=h, plain=_sweep_sentence(doc, h))
+
+# ---- walk-forward report (M6.5, WF 6.6; Task 22) ----------------------------------------------------------------
+# The prefix `/api/research/walkforward/` is its own: no `{job_id}` route of another kind can shadow it, and the
+# family route above (`/api/research/families/{family_id:path}`) lives under a different prefix.
+
+@router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO)
+def walkforward_detail(job_id: str) -> WalkforwardDTO:
+    """A finished walk-forward job, read from its walkforward.json: 404 for an unknown job (or one of another
+    kind), 409 for a job that is not finished or whose file is gone. Read-only; a stored error text is never
+    echoed, and a window's own error only when it is a plain line (no paths)."""
+    from stockify.research import plain, wf_report
+    try:
+        d = _clean(wf_report.detail(job_id))
+    except wf_report.WfReportError as e:
+        raise HTTPException(status_code=404 if e.kind == "unknown" else 409, detail=str(e))
+    s = d["summary"]
+    s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
+    d["summary"] = WalkforwardSummaryDTO(**s)
+    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"))}) for w in d["windows"]]
+    return WalkforwardDTO(**d)

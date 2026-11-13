@@ -9,7 +9,7 @@ interval_sentence accepts `label` (the brief's signature) but does not show it, 
 table row that already names the statistic. Its unit "%" takes fractions (0.021 prints as 2.1%).
 
 Later tasks add only their own builder: fragile_sentence (Task 16),
-wf_sentence (Task 22). pbo_sentence is here (Task 23). Their meanings are already in KEYS.
+wf_sentence (Task 22, done). pbo_sentence is here (Task 23). Their meanings are already in KEYS.
 """
 from __future__ import annotations
 
@@ -255,9 +255,67 @@ def pbo_sentence(pbo: float | None, n_trials: int, n_total: int | None = None) -
             f"landed at or below the middle on the other ({tries})")
 
 
+# ---- walk-forward (M6.5, WF 6.6) ---------------------------------------------------------------------------------
+
+def wf_ratio_sentence(summary) -> str:  # noqa: ANN001
+    """What the days the settings never saw kept of the result on the days they were fitted to. The share is only
+    quoted when the in-sample Sharpe is positive (the summary's ratio is None otherwise) and the out-of-sample one
+    is not below zero: a ratio of a loss is not a share that was "kept"."""
+    if summary.oos_days <= 0 or summary.oos_sharpe is None or not math.isfinite(summary.oos_sharpe):
+        return "no out-of-sample days with a usable Sharpe, so there is no ratio"
+    if summary.is_sharpe is None or not math.isfinite(summary.is_sharpe):
+        return "no in-sample Sharpe to compare with, so there is no ratio"
+    if summary.is_sharpe <= 0:
+        return "in-sample was not positive, so there is no ratio"
+    if summary.oos_sharpe < 0:
+        return "the Sharpe out of sample was below zero, so no part of the in-sample Sharpe was kept"
+    ratio = summary.ratio if summary.ratio is not None else summary.oos_sharpe / summary.is_sharpe
+    return f"kept {_percent_text(ratio)} of the in-sample Sharpe out of sample"
+
+
+def wf_stability_sentence(summary, *, chosen_windows: int | None = None) -> str:  # noqa: ANN001
+    """How often the same settings won. `chosen_windows` is the number of windows that picked any settings; with it
+    the line reads "N of M windows that picked one", without it the share is counted over every window and shown
+    as a percentage when it is not a whole number of them."""
+    share = summary.chosen_modal_share
+    if share is None or not math.isfinite(share):
+        return "no window picked settings, so there is no stability to report"
+    if chosen_windows is None and summary.windows <= 1:
+        return "only one window, so there is no stability to report"
+    if chosen_windows is not None:
+        n = chosen_windows
+        if n <= 1:
+            return "only one window picked settings, so there is no stability to report"
+        return f"the same settings won {round(share * n)} of {n} windows that picked one"
+    n = summary.windows
+    won = share * n
+    if math.isclose(won, round(won), abs_tol=1e-9):
+        return f"the same settings won {round(won)} of {n} windows"
+    return f"the same settings won {_percent_text(min(1.0, max(0.0, share)))} of the windows"
+
+
+def wf_dsr_sentence(n_trials: int, dsr: float | None) -> str:
+    """The deflated Sharpe of the stitched out-of-sample days. They are not "the best of N": each window's settings
+    were picked on training days and tried on days the pick never saw. The allowance for luck still counts every
+    training try (N = windows x grid), so the figure is a cautious one, and the sentence says so."""
+    if n_trials < 1:
+        raise ValueError(f"n_trials must be at least 1, not {n_trials!r}")
+    if n_trials == 1:
+        return "only one try, so nothing to allow for"
+    p = _usable(dsr)
+    verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the out-of-sample edge beats luck"
+    return (f"after allowing for luck over {n_trials} tries (every setting run in training, in every window), "
+            f"{verdict}; the out-of-sample days were never used to choose, so this is a cautious figure")
+
+
+def wf_sentence(summary, *, chosen_windows: int | None = None) -> str:  # noqa: ANN001
+    """The ratio and the stability of a walk-forward summary, in one line (a WalkforwardSummary)."""
+    return f"{wf_ratio_sentence(summary)}; {wf_stability_sentence(summary, chosen_windows=chosen_windows)}"
+
+
 # ---- sensitivity (M6.7, FW 6.4) ---------------------------------------------------------------------------------
 
-def _signed(paise: int) -> str:
+def signed_rupees(paise: int) -> str:
     """Rupees with an explicit sign: +₹41,200, -₹3,100, ₹0."""
     return ("+" if paise > 0 else "") + rupees(paise / 100)
 
@@ -285,7 +343,7 @@ def _words_ticks(ticks: int, kind: str) -> str:
     return f"{n} extra tick{'' if one else 's'}" + (" of slippage" if kind in ("break", "survive") else "")
 
 
-def _plain_reason(error: str | None) -> str | None:
+def plain_reason(error: str | None) -> str | None:
     """A stored error as a short clause, or None when it is empty or looks like a raw log line (code names,
     paths, a traceback, a long text): better to say nothing than to show that."""
     text = (error or "").strip().rstrip(".")
@@ -311,8 +369,8 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
     verdict = result.verdict
     if verdict == "already_losing":
         if base == 0:
-            return f"Made no money ({_signed(base)}), so there is nothing to break; it is not called fragile."
-        return f"Already losing money ({_signed(base)}), so there is nothing to break; it is not called fragile."
+            return f"Made no money ({signed_rupees(base)}), so there is nothing to break; it is not called fragile."
+        return f"Already losing money ({signed_rupees(base)}), so there is nothing to break; it is not called fragile."
     checks = ((_s.variant_key("costs", fragile_cost_scale), "costs"),
               (_s.variant_key("slippage", fragile_extra_ticks), "ticks"))
 
@@ -336,7 +394,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
             lead = "Breaks " if n == 0 else "It also breaks "
             word = phrase(axis, "break")
             joint = f"if {word}" if axis == "costs" else f"with {word}"
-            parts.append(f"{lead}{joint}: net P&L turns from {_signed(base)} to {_signed(net)}.")
+            parts.append(f"{lead}{joint}: net P&L turns from {signed_rupees(base)} to {signed_rupees(net)}.")
         return " ".join(parts)
     if verdict == "robust":
         nets = [net for _, status, net, _e in results if status == "done" and net is not None]
@@ -345,7 +403,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
         if base < 0 or any(n < 0 for n in nets):
             raise ValueError("a robust result has a check below zero")
         return (f"Survives {phrase('costs', 'survive')} and {phrase('ticks', 'survive')}: net P&L does not turn "
-                f"negative ({_signed(nets[0])} and {_signed(nets[1])}, from {_signed(base)}).")
+                f"negative ({signed_rupees(nets[0])} and {signed_rupees(nets[1])}, from {signed_rupees(base)}).")
     if verdict == "inconclusive":
         clauses = []
         for axis, status, _net, error in results:
@@ -353,7 +411,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
                 continue
             what = phrase(axis, "survive")
             if status == "not_applicable":
-                why = _plain_reason(error)
+                why = plain_reason(error)
                 clauses.append(f"{what} couldn't be run for this strategy" + (f" ({why})" if why else ""))
             else:
                 clauses.append(f"the run with {what} didn't finish")

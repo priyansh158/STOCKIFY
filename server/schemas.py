@@ -716,4 +716,52 @@ class GapPageDTO(BaseModel):
     offset: int
     limit: int
     gaps: list[GapDTO]
+
+
+# ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
+
+class WalkforwardSummaryDTO(BaseModel):
+    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive."""
+    windows: int
+    is_windows: int
+    oos_days: int
+    is_sharpe: float | None = None
+    oos_sharpe: float | None = None
+    ratio: float | None = None
+    chosen_modal_share: float | None = None
+    n_trials: int
+    var_sharpe: float | None = None
+    dsr: DsrDTO | None = None
+
+
+class WalkforwardWindowDTO(BaseModel):
+    """One window. `train` and `test` hold run_id, from, to, days, net_pnl_paise (int paise) and sharpe, or are
+    absent when that part did not run. Calendar-day dates, inclusive."""
+    index: int
+    train_from: str
+    train_to: str
+    test_from: str
+    test_to: str
+    chosen_params: dict[str, Any] | None = None
+    chosen_run_id: str | None = None
+    test_run_id: str | None = None
+    test_status: str
+    error: str | None = None
+    train: dict[str, Any] | None = None
+    test: dict[str, Any] | None = None
+
+
+class WalkforwardDTO(BaseModel):
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    train: int
+    test: int
+    step: int
+    summary: WalkforwardSummaryDTO
+    windows: list[WalkforwardWindowDTO]
+    stitched_dates: list[str]
+    stitched_index: list[float]
+    plain: dict[str, str]
 # </block>

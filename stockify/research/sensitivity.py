@@ -40,6 +40,10 @@ class SensitivityError(ValueError):
     """The run cannot be put through the suite (unknown, unfinished, unreadable). The CLI exits 2."""
 
 
+class SensitivityRunError(SensitivityError):
+    """A failure after the job exists (the pool misbehaved): the job is marked failed. The command exits 1 for it."""
+
+
 @dataclass(frozen=True)
 class Variant:
     key: str
@@ -263,7 +267,7 @@ def run_suite(run_id: str, *, workers: int | None = None, unlock_reason: str | N
                 for v in runnable]
         outcomes = (pool_run or pool.run_all)(jobs, workers=workers) if jobs else []   # looked up late: patchable
         if len(outcomes) != len(jobs):
-            raise SensitivityError(f"the pool returned {len(outcomes)} outcomes for {len(jobs)} runs")
+            raise SensitivityRunError(f"the pool returned {len(outcomes)} outcomes for {len(jobs)} runs")
         for v, o in zip(runnable, outcomes):
             net, sharpe = _result_of(o.run_id) if o.status == "done" and o.run_id else (None, None)
             if o.status == "done" and net is None:
