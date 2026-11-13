@@ -258,14 +258,19 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertIsNone(r["pollClosedHidden"])
         self.assertIsNone(r["pollNoMs"])
 
+    def test_a_failing_poll_backs_off_to_thirty_seconds_and_a_success_resets_it(self):
+        self.assertEqual(self.r["backoff"], [5000, 10000, 20000, 30000, 30000, 30000])
+        # no interval means no polling; a negative count counts as none; the cap never goes below the base
+        self.assertEqual(self.r["backoffOdd"], [0, 5000, 40000, 30000])
+
     def test_a_day_with_no_recording_or_an_unreadable_one_is_a_plain_state_not_no_trades(self):
         r = self.r
         self.assertEqual(r["viewNoPack"], "pruned")
         self.assertEqual(r["viewUnreadable"], "pruned")
         self.assertEqual(r["viewOkEmpty"], "empty")
-        self.assertEqual(r["wordsNoPackPaper"], "No recording yet for this day. The trades are listed below.")
+        self.assertEqual(r["wordsNoPackPaper"], "No price data was recorded for this day. The trades are listed below.")
         self.assertEqual(r["wordsNoPackRun"], "There is no price recording for this day. The trades are listed below.")
-        self.assertEqual(r["wordsUnreadable"], "The price recording for this day cannot be read right now. The trades are listed below.")
+        self.assertEqual(r["wordsUnreadable"], "The price recording for this day cannot be read right now. Reload to try again; the trades are listed below.")
         self.assertEqual(r["wordsPruned"], "The price data for this run is no longer on disk. The trades are listed below.")
 
 

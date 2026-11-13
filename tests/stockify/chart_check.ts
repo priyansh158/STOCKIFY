@@ -243,6 +243,8 @@ out.pollHidden = chart.pollDelay(true, true, 5000);
 out.pollClosed = chart.pollDelay(false, false, 5000);
 out.pollClosedHidden = chart.pollDelay(false, true, 5000);
 out.pollNoMs = chart.pollDelay(true, false, 0);
+out.backoff = [0, 1, 2, 3, 4, 9].map((n) => chart.nextDelay(5000, n));
+out.backoffOdd = [chart.nextDelay(0, 3), chart.nextDelay(5000, -1), chart.nextDelay(40000, 0), chart.nextDelay(5000, 2000)];
 const mdl = (data_state: string, markers: unknown[] = []) => ({ data_state, markers });
 out.viewNoPack = chart.chartViewState(mdl("no_pack"));
 out.viewUnreadable = chart.chartViewState(mdl("pack unreadable"));

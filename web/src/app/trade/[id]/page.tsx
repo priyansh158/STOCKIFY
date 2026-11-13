@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { getSessionChart } from "@/lib/chart_api";
 import { pollDelay } from "@/lib/chart";
@@ -301,6 +301,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   // The chart polls only while its day is open (the API says so in each answer) and the tab is visible.
   const [chartLive, setChartLive] = useState(false);
   const [tabHidden, setTabHidden] = useState(false);
+  const wantedDay = useRef<string | undefined>(undefined);
   useEffect(() => {
     const sync = () => setTabHidden(document.hidden);
     sync();
@@ -309,8 +310,10 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }, []);
   const loadChart = useCallback<NonNullable<React.ComponentProps<typeof PriceChartLazy>["load"]>>(
     async (_range, opts) => {
+      const asked = opts?.trade_date;
+      wantedDay.current = asked ?? wantedDay.current; // a poll repeats the day already shown
       const model = await getSessionChart(id, opts);
-      setChartLive(Boolean(model?.live));
+      if (asked === undefined || asked === wantedDay.current) setChartLive(Boolean(model?.live)); // not for a day the picker has left
       return model;
     },
     [id],

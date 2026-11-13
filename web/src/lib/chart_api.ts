@@ -8,7 +8,7 @@ import { chartQuery, type ChartModel, type ChartOpts } from "./chart";
 
 async function get(path: string, opts: ChartOpts): Promise<ChartModel | null> {
   try {
-    return await api<ChartModel>(path + chartQuery(opts));
+    return await api<ChartModel>(path + chartQuery(opts), { signal: opts.signal });
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
