@@ -36,6 +36,7 @@ SCHEMAS = {
     "charges.json": "stockify.charges/1",
     "sessions.json": "stockify.sessions/1",
     "contract_rules.json": "stockify.contract_rules/1",
+    "freeze_limits.json": "stockify.freeze_limits/1",
     "broker_policy.json": "stockify.broker_policy/1",
     "margin_params.json": "stockify.margin_params/1",
     "pricing.json": "stockify.pricing/1",

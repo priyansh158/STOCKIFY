@@ -1,6 +1,7 @@
 """The oracle's `Context` (A2 §4.2): what a strategy can see and do."""
 from __future__ import annotations
 
+import math
 from datetime import date
 
 from stockify import numerics, strategy as S, timeutil
@@ -22,6 +23,8 @@ class Context:
         self._e = engine
         self.params = dict(engine.bundle["strategy"].get("params", {}))
         self._rng = _Rng(engine.strategy_rng)
+        self._chain_key = None          # the event key the chain cache belongs to
+        self._chain_cache: dict = {}
 
     # time and phases
     def now(self) -> int:
@@ -184,11 +187,92 @@ class Context:
         rows = [r for r in self._rows() if r["underlying"] == underlying and r["kind"] == "FUT"]
         return [r["id"] for r in sorted(rows, key=lambda r: r["expiry"])]
 
-    def chain(self, underlying: str, expiry: str) -> list[dict]:
-        rows = [r for r in self._rows() if r["underlying"] == underlying and r["expiry"] == expiry
-                and r["kind"] in ("CE", "PE")]
-        return [{"instrument_id": r["id"], "kind": r["kind"], "strike_paise": r["strike_paise"]}
-                for r in sorted(rows, key=lambda r: (r["strike_paise"], r["kind"]))]
+    def chain(self, underlying: str, expiry: str) -> S.ChainView:
+        """The option chain of one expiry with quotes, IVs and Greeks (M4.4, C-13).
+
+        Rows by (strike, kind), each with the original keys instrument_id, kind, strike_paise, then bid_paise,
+        ask_paise, mid_paise (float), ltp_paise, stale, oi, iv_bid / iv_ask / iv_mid (None when there is no
+        quote or no IV), iv_reason (why iv_mid is missing), and delta / gamma / vega / theta at iv_mid (rupees,
+        per 1.00 vol, per year). The forward and ATM strike are on the returned ChainView. Computed once per
+        engine step (cached on the event key), deterministic; each call gets fresh objects."""
+        e = self._e
+        if self._chain_key != e.key:
+            self._chain_key, self._chain_cache = e.key, {}
+        k = (underlying, expiry)
+        if k not in self._chain_cache:
+            self._chain_cache[k] = self._compute_chain(underlying, expiry)
+        rows, fwd, source, atm = self._chain_cache[k]
+        return S.ChainView([dict(r) for r in rows], fwd, source, atm)
+
+    def _quote(self, iid: int) -> tuple[int | None, int | None, float | None]:
+        m = self._e.market.get(iid)
+        bid, ask = (m.bid, m.ask) if m else (None, None)
+        return bid, ask, ((bid + ask) / 2 if bid is not None and ask is not None else None)
+
+    def _compute_chain(self, underlying: str, expiry: str) -> tuple:
+        from stockify.fno import black76 as B
+        e = self._e
+        rows = sorted((r for r in self._rows() if r["underlying"] == underlying and r["expiry"] == expiry
+                       and r["kind"] in ("CE", "PE")), key=lambda r: (r["strike_paise"], r["kind"]))
+        if not rows:
+            return [], None, None, None
+        t = B.year_fraction(e.now, rows[0]["last_trading_ns"])   # always set: the bundle load checks it (D-61)
+        r = B.rate_on(e.bundle["pricing"].get("risk_free", []), e._date(e.now))
+        disc = math.exp(-r * t)
+        fwd, source = self._forward(underlying, expiry, rows, disc)
+        if fwd is not None and not fwd > 0:
+            fwd, source = None, None    # quotes that imply no positive forward give no IVs
+        strikes = sorted({row["strike_paise"] for row in rows})
+        atm = min(strikes, key=lambda x: (abs(x - fwd), x)) if fwd is not None else None
+        out = []
+        for row in rows:
+            iid, is_call, strike = row["id"], row["kind"] == "CE", row["strike_paise"]
+            m = e.market.get(iid)
+            bid, ask, mid = self._quote(iid)
+            item = {"instrument_id": iid, "kind": row["kind"], "strike_paise": strike, "bid_paise": bid,
+                    "ask_paise": ask, "mid_paise": mid, "ltp_paise": m.ltp if m else None, "stale": self.stale(iid),
+                    "oi": m.oi if m else None, "iv_bid": None, "iv_ask": None, "iv_mid": None, "iv_reason": None,
+                    "delta": None, "gamma": None, "vega": None, "theta": None}
+            if fwd is not None:
+                f_r, k_r = fwd / 100.0, strike / 100.0
+                for name, paise in (("iv_bid", bid), ("iv_ask", ask)):
+                    if paise is not None:
+                        sigma, why = B.implied_vol(is_call, paise / 100.0, f_r, k_r, t, r)
+                        item[name] = sigma if why is None else None
+                if mid is not None:
+                    sigma, why = B.implied_vol(is_call, mid / 100.0, f_r, k_r, t, r)
+                    item["iv_reason"] = why
+                    if why is None:
+                        g = B.greeks(is_call, f_r, k_r, t, r, sigma)
+                        item.update(iv_mid=sigma, delta=g.delta, gamma=g.gamma, vega=g.vega, theta=g.theta)
+            out.append(item)
+        return out, fwd, source, atm
+
+    def _forward(self, underlying: str, expiry: str, rows: list[dict], disc: float) -> tuple[float | None, str | None]:
+        """C-13: the same-expiry future's mid; else the median of K + (C_mid − P_mid)/D over the (up to 5) strikes
+        nearest the money with both sides quoted and fresh, if there are at least 2; else the index value."""
+        e = self._e
+        for fut in self._rows():
+            if fut["underlying"] == underlying and fut["expiry"] == expiry and fut["kind"] == "FUT":
+                mid = self._quote(fut["id"])[2]
+                if mid is not None:
+                    return mid, "future"
+        sides: dict[int, dict[str, float]] = {}
+        for row in rows:
+            mid = self._quote(row["id"])[2]
+            if mid is not None and not self.stale(row["id"]):
+                sides.setdefault(row["strike_paise"], {})[row["kind"]] = mid
+        pairs = sorted((abs(v["CE"] - v["PE"]), strike, v["CE"], v["PE"]) for strike, v in sides.items()
+                       if "CE" in v and "PE" in v)[:5]
+        if len(pairs) >= 2:
+            values = sorted(strike + (c - p) / disc for _, strike, c, p in pairs)
+            n = len(values)
+            return (values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2), "synthetic"
+        uid = rows[0].get("underlying_id")
+        m = e.market.get(uid) if uid is not None else None
+        if m is not None and m.ltp is not None:
+            return float(m.ltp), "forward_from_index"
+        return None, None
 
     rupees = staticmethod(S.rupees)
     paise = staticmethod(numerics.to_paise)

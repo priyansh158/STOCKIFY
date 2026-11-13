@@ -28,14 +28,14 @@ using stocksim::Engine;
 
 // Python classes the oracle hands to strategies, imported once per strategy.
 struct OracleTypes {
-    py::object bar, tick, phase_change, position_view, funds, order_view, fill_view, date, json_loads;
+    py::object bar, tick, phase_change, position_view, funds, order_view, fill_view, date, json_loads, chain_view;
     static OracleTypes load() {
         py::module_ s = py::module_::import("stockify.strategy");
         py::module_ o = py::module_::import("stockify.oracle.orders");
         return OracleTypes{s.attr("Bar"),          s.attr("Tick"),          s.attr("PhaseChange"),
                            s.attr("PositionView"), s.attr("Funds"),         o.attr("OrderView"),
                            o.attr("FillView"),     py::module_::import("datetime").attr("date"),
-                           py::module_::import("json").attr("loads")};
+                           py::module_::import("json").attr("loads"), s.attr("ChainView")};
     }
 };
 
@@ -343,15 +343,33 @@ void bind_engine(py::module_& m) {
             return x.c().futures_chain(underlying);
         })
         .def("chain", [](const CtxProxy& x, const std::string& underlying, const std::string& expiry) {
-            py::list out;
-            for (const auto& r : x.c().chain(underlying, expiry)) {
-                py::dict d;  // the oracle's key order
+            // stockify.strategy.ChainView with the oracle's row keys, in the oracle's order (M4.4).
+            const auto opt_f = [](const std::optional<double>& v) { return v ? py::object(py::float_(*v)) : py::object(py::none()); };
+            const auto opt_s = [](const std::optional<std::string>& v) { return v ? py::object(py::str(*v)) : py::object(py::none()); };
+            const stocksim::Context::ChainView view = x.c().chain(underlying, expiry);
+            py::list rows;
+            for (const auto& r : view.rows) {
+                py::dict d;
                 d["instrument_id"] = r.instrument;
                 d["kind"] = r.kind;
                 d["strike_paise"] = r.strike;
-                out.append(d);
+                d["bid_paise"] = opt(r.bid);
+                d["ask_paise"] = opt(r.ask);
+                d["mid_paise"] = opt_f(r.mid);
+                d["ltp_paise"] = opt(r.ltp);
+                d["stale"] = py::bool_(r.stale);
+                d["oi"] = opt(r.oi);
+                d["iv_bid"] = opt_f(r.iv_bid);
+                d["iv_ask"] = opt_f(r.iv_ask);
+                d["iv_mid"] = opt_f(r.iv_mid);
+                d["iv_reason"] = opt_s(r.iv_reason);
+                d["delta"] = opt_f(r.delta);
+                d["gamma"] = opt_f(r.gamma);
+                d["vega"] = opt_f(r.vega);
+                d["theta"] = opt_f(r.theta);
+                rows.append(d);
             }
-            return out;
+            return x.types.chain_view(rows, opt_f(view.forward), opt_s(view.forward_source), opt(view.atm_strike));
         })
         .def("_rows", [](CtxProxy& x) {
             if (!x.rows) {
@@ -391,6 +409,7 @@ void bind_engine(py::module_& m) {
         .def("finish", [](Engine& e) { guarded(e, [&] { e.finish(); }); })
         .def("drain_outputs", [](Engine& e) {
             // Rows exactly as the CSVs spell them (artifacts.hpp), as dicts keyed by column name.
+            e.ensure_idle("drain_outputs");
             const stocksim::Outputs o = e.drain_outputs();
             const stocksim::Book& b = e.book();
             DictRows orders(stocksim::kOrdersHeader), events(stocksim::kOrderEventsHeader),
@@ -415,7 +434,10 @@ void bind_engine(py::module_& m) {
             out["log"] = o.log;
             return out;
         })
-        .def("events_log", [](const Engine& e) { return e.log_lines(); })
+        .def("events_log", [](const Engine& e) {
+            e.ensure_idle("events_log", true);  // readable after a failure: it holds the traceback
+            return e.log_lines();
+        })
         .def("write_artifacts", [](const Engine& e, const std::string& folder) {
             return stocksim::write_artifacts(e, std::filesystem::path(folder));
         })

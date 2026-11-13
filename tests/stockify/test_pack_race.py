@@ -85,7 +85,7 @@ class PackRaceTests(BundleTest):
         target = packs.pack_path(sha)
         real_exists = Path.exists
         with mock.patch.object(Path, "exists", lambda p: False if p == target else real_exists(p)):
-            with self.assertRaises(PermissionError):
+            with self.assertRaises(FileExistsError):
                 packs._publish(tmp, target, "0" * 64)       # our bytes hash to something else
         self.assertEqual(target.read_bytes(), before)
         tmp.unlink()
@@ -129,6 +129,66 @@ class PackRaceTests(BundleTest):
                 break
 
 
+    def test_readers_never_see_a_refused_open_while_builders_replace(self):
+        """Pack-race form 3: `PermissionError: [Errno 13] ... packs/<sha>.json` (a Windows path). A reader opened the manifest
+        (or the pack) in the instant another process was replacing it. Every manifest and pack read in packs.py
+        goes through the same refused-open retry as publishing. 5 builders replace the manifest of an existing
+        pack, over and over, while a reader loops packs.manifest() and packs.read_bytes()."""
+        import threading
+        import time
+        sha = packs.build(self.spec)
+        stop, errors, reads = threading.Event(), [], [0]
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    self.assertEqual(packs.manifest(sha)["sha256"], sha)
+                    packs.read_bytes(packs.pack_path(sha))
+                    reads[0] += 1
+                except Exception as e:  # noqa: BLE001 — any failure is the finding
+                    errors.append(repr(e))
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        started = time.perf_counter()
+        try:
+            for _ in range(10):
+                self.assertEqual(self._builders(5), [sha] * 5)
+                if time.perf_counter() - started > 60:
+                    break
+        finally:
+            stop.set()
+            t.join(timeout=30)
+        self.assertEqual(errors[:3], [])
+        self.assertGreater(reads[0], 0)
+        self.assertEqual(self._leftovers(sha), [])
+
+    def test_a_rebuild_never_replaces_the_existing_files(self):
+        """CB 4.6: a pack and its manifest, once published, are never replaced (os.rename refuses an existing
+        target), so a reader can never meet the replace window. Same file ids after a rebuild."""
+        import os
+        sha = packs.build(self.spec)
+        ids = [os.stat(packs.pack_path(sha)).st_ino, os.stat(packs.manifest_path(sha)).st_ino]
+        self.assertEqual(packs.build(self.spec), sha)
+        self.assertEqual([os.stat(packs.pack_path(sha)).st_ino, os.stat(packs.manifest_path(sha)).st_ino], ids)
+        self.assertEqual(self._leftovers(sha), [])
+
+    def test_only_provenance_may_refresh_a_manifest(self):
+        """CB 4.6: the same pack read from another source (landing → archive, P-05) refreshes `sources`; any other
+        difference is a conflict and the manifest is left as it was."""
+        sha = packs.build(self.spec)
+        target = packs.manifest_path(sha)
+        text = target.read_text(encoding="utf-8")
+        moved = json.loads(text)
+        moved["sources"] = [{**src, "source": "archive"} for src in moved["sources"]] or [{"source": "archive"}]
+        moved_text = json.dumps(moved, indent=2, sort_keys=True) + chr(10)
+        packs._publish_text(target, moved_text)
+        self.assertEqual(target.read_text(encoding="utf-8"), moved_text)
+        other = {**moved, "records": moved["records"] + 1}
+        with self.assertRaises(FileExistsError):
+            packs._publish_text(target, json.dumps(other))
+        self.assertEqual(target.read_text(encoding="utf-8"), moved_text)
+        self.assertEqual(self._leftovers(sha), [])
+
     def test_an_open_manifest_with_the_same_content_is_accepted(self):
         sha = packs.build(self.spec)
         target = packs.manifest_path(sha)
@@ -165,7 +225,7 @@ class PackRaceTests(BundleTest):
         text = target.read_text(encoding="utf-8")
         other = json.loads(text)
         other["records"] += 1
-        with target.open("rb"), self.assertRaises(PermissionError):
+        with target.open("rb"), self.assertRaises(FileExistsError):
             packs._publish_text(target, json.dumps(other))
         self.assertEqual(target.read_text(encoding="utf-8"), text)
         self.assertEqual(self._leftovers(sha), [])

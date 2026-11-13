@@ -45,7 +45,7 @@ Paise slipped(Side side, Paise price, Paise tick, const Json& slip, Pcg32& rng, 
     } else {
         throw RunError("slippage '" + kind + "'");
     }
-    Paise out = side == Side::Buy ? price + move : price - move;
+    Paise out = side == Side::Buy ? checked_add(price, move) : checked_sub(price, move);
     if (cap) {
         out = side == Side::Buy ? std::min(out, *cap) : std::max(out, *cap);
     }

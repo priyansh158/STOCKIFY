@@ -18,6 +18,7 @@ seeds 4000–4199 (`tests/stockify/test_engine_fuzz.py`, which imports the world
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import math
 import random
@@ -39,6 +40,132 @@ COMPARED = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "posit
 
 
 # ── Worlds ───────────────────────────────────────────────────────────────────
+
+# MEZ 4.10: synthetic NSE SPAN sections are cut from the trimmed real 2026-11-09 i1 file (the oracle's own tests'
+# fixture), its dates moved so that its NIFTY 2026-11-23 expiry lands on the world's.
+FIXTURE_SPAN = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "span" / "nsccl.20261109.i1.trim.spn"
+_FIXTURE_ANCHOR = date(2026, 11, 23)
+_SPAN_KINDS = ("FUT", "CE", "PE")
+
+
+@functools.lru_cache(maxsize=1)
+def _fixture_nifty():  # noqa: ANN202
+    from stockify.fno.span_file import parse_span
+    return parse_span(FIXTURE_SPAN, {"NIFTY"}).commodities["NIFTY"]
+
+
+def _world_key(row: dict) -> tuple:
+    return row["kind"], row["expiry"], None if row["kind"] == "FUT" else row["strike_paise"]
+
+
+def fixture_span_entry(underlying: str, rows: list[dict], anchor_expiry: str, created_ns: int,
+                       drop: frozenset = frozenset(), file: str = "span/2026/nsccl.fixture.i1.zip") -> dict:
+    """A bundle span entry (A1 §6.2, bundle._span_commodity's shape) for `underlying`, from the fixture's NIFTY with
+    every date moved by (anchor_expiry - 2026-11-23). The world's derivatives of that underlying (`rows`, golden or
+    bundle instrument dicts) map to the fixture's contracts by (kind, moved expiry, strike); a contract the fixture
+    lacks, or a world key in `drop`, is absent (missing, never zero)."""
+    from stockify import bundle as bundle_mod
+    shift = date.fromisoformat(anchor_expiry) - _FIXTURE_ANCHOR
+
+    def fwd(text: str | None) -> str | None:
+        return None if text is None else (date.fromisoformat(text) + shift).isoformat()
+
+    keys = set()
+    for r in rows:
+        if r.get("underlying") == underlying and r["kind"] in _SPAN_KINDS and _world_key(r) not in drop:
+            k = _world_key(r)
+            keys.add((k[0], (date.fromisoformat(k[1]) - shift).isoformat(), k[2]))
+    cc = bundle_mod._span_commodity(_fixture_nifty(), keys)
+    for c in cc["contracts"]:
+        c["expiry"] = fwd(c["expiry"])
+    for x in cc["series"]:
+        x["expiry"], x["settle_date"] = fwd(x["expiry"]), fwd(x["settle_date"])
+    for name in ("scan_tiers", "intra_tiers", "inter_tiers", "som_tiers"):
+        for t in cc[name]:
+            t["start"], t["end"] = fwd(t["start"]), fwd(t["end"])
+    for sp in cc["calendar_spreads"]:
+        for leg in sp["legs"]:
+            leg["expiry"] = fwd(leg["expiry"])
+    return {"created_ns": created_ns, "file": file, "sha256": "0" * 64, "scan_points": [],
+            "commodities": {underlying: cc}}
+
+
+def fixture_stock_commodity(underlying: str, rows: list[dict], anchor_expiry: str) -> dict:
+    """A synthetic commodity for a stock underlying the fixture lacks (span_exact fuzz worlds): the fixture's moved
+    NIFTY parameters, and for each of the world's FUT / CE / PE rows of `underlying` the fixture's 23-Nov future or
+    25,000 call / put relabelled with that row's expiry and strike (made-up values, exact decimal strings)."""
+    template = [{"kind": "FUT", "underlying": "_", "expiry": anchor_expiry},
+                {"kind": "CE", "underlying": "_", "expiry": anchor_expiry, "strike_paise": 2_500_000},
+                {"kind": "PE", "underlying": "_", "expiry": anchor_expiry, "strike_paise": 2_500_000}]
+    cc = fixture_span_entry("_", template, anchor_expiry, 0)["commodities"]["_"]
+    by_kind = {c["kind"]: c for c in cc["contracts"]}
+    contracts = []
+    for r in rows:
+        if r.get("underlying") == underlying and r["kind"] in _SPAN_KINDS:
+            k = _world_key(r)
+            contracts.append({**copy.deepcopy(by_kind[k[0]]), "expiry": k[1], "strike_paise": k[2]})
+    cc["contracts"] = contracts
+    return cc
+
+
+def fixture_elm(underlying: str, rows: list[dict], pct: str, drop: frozenset = frozenset()) -> dict:
+    """One day's bundle elm section (A1 §6.2): `pct` per cent for each of the underlying's derivatives not in `drop`."""
+    out = {}
+    for r in rows:
+        if r.get("underlying") == underlying and r["kind"] in _SPAN_KINDS and _world_key(r) not in drop:
+            k = _world_key(r)
+            out[f"{k[0]}|{k[1]}|{'' if k[2] is None else k[2]}"] = pct
+    return {underlying: out}
+
+
+def _staircase_sections(rng: random.Random, days: list[date], instruments: list[dict], expiry: str,
+                        split: bool = False, exact: bool = False) -> dict:
+    """A staircase world's span / span_skipped / elm (from `rng` only): per day the usual previous-evening file, none,
+    a late one (nothing in force before it), one lacking a strike, or two (the later lacking a strike); per day an
+    ELM file with every %, one lacking a leg, or none. `split`: scan tier 1 holds only the index expiry (the
+    expiring contracts on the expiry day), tier 2 everything after it (the far future). `exact` (span_exact
+    worlds): the stock AAA gets a synthetic commodity and ELM % too, and most days have a full file and ELM file,
+    so many such worlds can be priced; the rest fail alike on both sides."""
+    span, elm = {}, {}
+    idx = [r for r in instruments if r.get("underlying") == "IDX"]
+    options = [_world_key(r) for r in idx if r["kind"] != "FUT"]
+    for d in days:
+        evening = timeutil.ist_ns(d - timedelta(days=1), "20:26")
+        late = timeutil.ist_ns(d, rng.choice(["09:45", "11:30", "13:00"]))
+        drop = frozenset([rng.choice(options)])
+        friendly = exact and rng.random() < 0.8
+        k = 0 if friendly else rng.randrange(6)
+        if k <= 1:
+            entries = [fixture_span_entry("IDX", idx, expiry, evening)]
+        elif k == 2:
+            entries = []
+        elif k == 3:
+            entries = [fixture_span_entry("IDX", idx, expiry, late)]
+        elif k == 4:
+            entries = [fixture_span_entry("IDX", idx, expiry, evening, drop)]
+        else:
+            entries = [fixture_span_entry("IDX", idx, expiry, evening),
+                       fixture_span_entry("IDX", idx, expiry, late, drop, file="span/2026/nsccl.fixture.i2.zip")]
+        if exact:
+            for entry in entries:
+                entry["commodities"]["AAA"] = fixture_stock_commodity("AAA", instruments, expiry)
+        if split:
+            after = (date.fromisoformat(expiry) + timedelta(days=1)).isoformat()
+            for entry in entries:
+                entry["commodities"]["IDX"]["scan_tiers"] = [
+                    {"number": 1, "start": expiry, "end": expiry, "rates": {}},
+                    {"number": 2, "start": after, "end": "2031-06-24", "rates": {}}]
+        span[d.isoformat()] = entries
+        j = 0 if friendly else rng.randrange(4)
+        if j <= 1:
+            pct = rng.choice(["2", "3.5", "5"])
+            elm[d.isoformat()] = fixture_elm("IDX", idx, pct)
+            if exact:
+                elm[d.isoformat()].update(fixture_elm("AAA", instruments, pct))
+        elif j == 2:
+            elm[d.isoformat()] = fixture_elm("IDX", idx, "2", frozenset([rng.choice([_world_key(r) for r in idx])]))
+    return {"span": span, "span_skipped": {}, "elm": elm}
+
 
 def _real_charges() -> dict:
     """The shipped Zerodha rows, with the loader's VERIFY dates resolved (A1 §7.2)."""
@@ -77,6 +204,18 @@ def fuzz_world(seed: int) -> dict:
          "underlying_class": "STOCK", "settlement": "physical",
          "specs": [{"from": "2015-01-01", "lot": 250, "tick_paise": 10}]},
     ]
+    # M4.6: some worlds let the stock future expire mid-run with stock options beside it, settled by delivery
+    # (A4 §7.3). Drawn from its own RNG, so the worlds without it are exactly as before.
+    alt = random.Random(seed * 7919 + 4006)
+    delivery = alt.random() < 0.35
+    if delivery:
+        instruments[6]["expiry"] = expiry
+        for iid, kind, strike in ((8, "CE", alt.choice([240_000, 250_000, 260_000])),
+                                  (9, "PE", alt.choice([240_000, 250_000, 260_000]))):
+            instruments.append({"id": iid, "kind": kind, "tradingsymbol": f"AAA{kind}", "underlying": "AAA",
+                                "underlying_id": 1, "expiry": expiry, "strike_paise": strike,
+                                "underlying_class": "STOCK", "settlement": "physical",
+                                "specs": [{"from": "2015-01-01", "lot": 250, "tick_paise": 5}]})
     dataset = rng.choice(["bars", "bars", "daily", "ticks", "ticks"])
     kind = {"bars": "bar", "daily": rng.choice(["eod_close", "bar"]), "ticks": rng.choice(["snapshot_ltp", "snapshot_quote"])}[dataset]
     slip = rng.choice([{"kind": "none"}, {"kind": "fixed_ticks", "k": 1}, {"kind": "random_ticks", "k": 3},
@@ -99,10 +238,50 @@ def fuzz_world(seed: int) -> dict:
                                                        ["CAS", "15:15", "15:35"], ["POSTCLOSE", "15:50", "16:00"]]}}}
     if rng.random() < 0.8:
         bundle["charges"] = _real_charges()
+    if alt.random() < 0.5:                       # M4.7: the expiry-day ELM on short index options (X-9)
+        bundle["expiry_addon"] = "0.02"
+    if alt.random() < 0.35:                      # M4.8: SPAN-lite with the shipped placeholder rows
+        run["margin"] = {"model": "spanlite"}
+        bundle["spanlite_placeholder"] = True
+    if alt.random() < 0.5:                       # VOL 4.5: CAS stocks squared off at 15:12 on their CAS day (Z-5)
+        bundle["mis_cutoff"]["CM_CAS"] = "15:12"
+    if alt.random() < 0.25:                      # a small account: margin shortfalls to trade out of (A4 §6.5)
+        run["capital_paise"] = 1_500_000
+    if delivery:                                 # M4.7: the Z-4 delivery-margin schedule (D-60)
+        bundle["delivery_schedule"] = True
+    if delivery and "charges" not in bundle:
+        bundle["physical_delivery"] = {"brokerage_pct": "0.0025", "netted_brokerage_pct": "0.001",
+                                       "stt_each_side_pct_of_value": "0.001"}
     if rng.random() < 0.5:
         bundle["sqoff_fee_paise"] = 5000
+    # MEZ 4.10: some worlds run the margin staircase over synthetic NSE SPAN / ELM sections. Drawn from their own
+    # RNG after every other draw, so the worlds without it are exactly as before.
+    stair = random.Random(seed * 104_729 + 4010)
+    far_future = False
+    if stair.random() < 0.35:
+        # span_exact sometimes: worlds it can price agree, and worlds where it cannot fail alike on both sides
+        exact = stair.random() < 0.3
+        run["margin"] = {"model": "span_exact" if exact else "staircase"}
+        if stair.random() < 0.5:                 # a far index future (the fixture's 29-Dec month): calendars
+            far_future = True
+            instruments.append({"id": 10, "kind": "FUT", "tradingsymbol": "IDXFUT2", "underlying": "IDX",
+                                "underlying_id": 3, "expiry": (days[1] + timedelta(days=36)).isoformat(),
+                                "specs": [{"from": "2015-01-01", "lot": 50, "tick_paise": 10}]})
+        lite = stair.choice(["none", "placeholder", "calibrated"])   # what the steps below SPAN find: B5 / B4 / B3
+        bundle.pop("spanlite_placeholder", None)
+        if lite != "none":
+            bundle["spanlite_placeholder"] = True
+        if lite == "calibrated":
+            bundle["spanlite_calibration_id"] = "fuzz-adopted"
+        bundle.update(_staircase_sections(stair, days, instruments, expiry, split=stair.random() < 0.5,
+                                          exact=exact))
     price = {1: 250_000, 2: 100_000, 3: 2_500_000, 4: 2_502_000, 5: 15_000, 6: 14_000, 7: 251_000}
     tick = {1: 5, 2: 5, 3: 5, 4: 10, 5: 5, 6: 5, 7: 10}
+    if delivery:
+        price.update({8: 6_000, 9: 5_000})
+        tick.update({8: 5, 9: 5})
+    if far_future:
+        price[10], tick[10] = 2_515_000, 10
     events: list[dict] = []
     for day in days:
         def at(hhmm: str, d=day) -> int:  # noqa: ANN001
@@ -152,6 +331,9 @@ def fuzz_world(seed: int) -> dict:
         if rng.random() < 0.6:
             events.append({"kind": "SETTLE", "instrument": 4, "t": at("18:00"), "date": day.isoformat(),
                            "price": price[4], "subtype": "daily"})
+        if delivery and day.isoformat() == expiry and alt.random() < 0.8:   # else the §7.2 fallback at DAY_END
+            events.append({"kind": "SETTLE", "instrument": 1, "t": at("16:05"), "date": expiry, "price": price[1],
+                           "subtype": "final"})
     return {"id": f"FUZZ{seed}", "bundle": bundle, "run": run, "events": events, "strategy": {"actions": []},
             "fuzz": {"seed": seed, "p_act": random.Random(seed + 1).choice([5, 15, 40])}}
 
@@ -226,6 +408,44 @@ class RandomTrader(Strategy):
             ctx.log("info", f"cancel {oid} -> {ctx.cancel(oid)}")
         elif k < 80:
             ctx.log("info", f"funds {ctx.funds()!r} positions {ctx.positions()!r}")
+        elif k < 88:
+            self._chain(ctx)
+        elif k < 93:
+            self._shortfall_close(ctx)
+
+    def _chain(self, ctx) -> None:  # noqa: ANN001
+        """Read an option chain (M4.4: forward, ATM, IVs and Greeks, all logged so both sides must agree to the
+        last bit) and sometimes trade one of its legs."""
+        r = ctx.rng()
+        under = self._pick(r, ["IDX", "AAA"])
+        expiries = ctx.expiries(under, "OPT")
+        if not expiries:
+            return
+        c = ctx.chain(under, expiries[0])
+        legs = " ".join(f"{x['kind']}{x['strike_paise']}:{x.get('iv_mid')!r}/{x.get('delta')!r}/{x.get('iv_reason')}"
+                        for x in c)
+        ctx.log("info", f"chain {under} {expiries[0]} fwd={c.forward_paise!r} {c.forward_source} "
+                        f"atm={c.atm_strike_paise} {legs}")
+        if c and r.below(2) == 0:
+            x = c[r.below(len(c))]
+            spec = ctx.spec(x["instrument_id"]) or {"lot": 1}
+            oid = ctx.place(x["instrument_id"], self._pick(r, ["BUY", "SELL"]), spec["lot"] * (1 + r.below(2)),
+                            self._pick(r, ["NRML", "NRML", "MIS"]), "MARKET", protection=self._pick(r, ["AUTO", 5000]))
+            self.placed.append(oid)
+            ctx.log("info", f"chain-trade {oid} {x['instrument_id']} -> {ctx.order(oid).status}")
+
+    def _shortfall_close(self, ctx) -> None:  # noqa: ANN001
+        """With funds below zero, close a position: an order that only reduces is never refused R_MARGIN."""
+        if ctx.funds().available >= 0:
+            return
+        pos = ctx.positions()
+        if not pos:
+            return
+        p = pos[ctx.rng().below(len(pos))]
+        oid = ctx.place(p.instrument, "SELL" if p.qty > 0 else "BUY", abs(p.qty), p.product, "MARKET")
+        self.placed.append(oid)
+        o = ctx.order(oid)
+        ctx.log("info", f"shortfall-close {oid} {p.instrument} {p.product} -> {o.status} {o.reason}")
 
     def _maybe(self, ctx) -> None:  # noqa: ANN001
         if ctx.rng().below(100) < self.p_act:

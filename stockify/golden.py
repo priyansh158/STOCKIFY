@@ -15,7 +15,8 @@ Defaults (all overridable in the YAML under `bundle:`):
 
 * sessions: CM PREOPEN 09:00–09:15, CONTINUOUS 09:15–15:30, POSTCLOSE 15:40–16:00;
   FO_FUT CONTINUOUS 09:15–15:30; FO_OPT CONTINUOUS 09:15–15:30; CM_CAS = CM.
-* `mis_cutoff`: none (no square-off) unless given, e.g. `{CM: "15:20", FO: "15:25"}`.
+* `mis_cutoff`: none (no square-off) unless given, e.g. `{CM: "15:20", FO: "15:25"}`; `CM_CAS`
+  (CAS stocks on their CAS days, Z-5) defaults to the CM time.
 * charges `zero`: every component zero; or explicit rows in the A1 §7.2 format.
 * policy: protection 200 bp, MIS margin CM 20 % / FO 100 %, no CNC sale hold-back.
 * margin: flat index 12 %, stock 20 %. Pricing: stale 5000 ms, risk-free 0.
@@ -64,6 +65,9 @@ def _charges(spec) -> dict:  # noqa: ANN001
                       "source": "golden"}] for c in ZERO_COMPONENTS}
         comps["brokerage"][0] = {"applies": {}, "effective_from": "2015-01-01", "kind": "zero", "verified": True,
                                  "verified_on": "2026-01-01", "source": "golden"}
+        comps["physical_delivery"] = [{"applies": {}, "effective_from": "2015-01-01", "brokerage_pct": "0",
+                                       "netted_brokerage_pct": "0", "stt_each_side_pct_of_value": "0",
+                                       "verified": True, "verified_on": "2026-01-01", "source": "golden"}]
         doc = {"components": comps}
     else:
         doc = {"components": copy.deepcopy(spec)}
@@ -82,25 +86,28 @@ def _charges(spec) -> dict:  # noqa: ANN001
 
 
 def _days(g: dict) -> list[dict]:
+    return [_day(g, d) for d in g["bundle"]["dates"]]
+
+
+def _day(g: dict, d: str) -> dict:
+    """One day's sessions from the golden's own session table (also used for an expiry after the run, D-61)."""
     b = g["bundle"]
     sessions = {**DEFAULT_SESSIONS, **b.get("sessions", {})}
     sessions.setdefault("CM_CAS", sessions["CM"])
     cut = b.get("mis_cutoff", {})
-    out = []
-    for d in b["dates"]:
-        day = date.fromisoformat(d)
-        groups = {}
-        for gname in ("CM", "CM_CAS", "FO_FUT", "FO_OPT"):
-            rows = b.get("sessions_by_date", {}).get(d, {}).get(gname, sessions[gname])
-            groups[gname] = [{"phase": p, "start_ns": timeutil.ist_ns(day, s), "end_ns": timeutil.ist_ns(day, e)}
-                             for p, s, e in rows]
-        cuts = cut.get(d, cut) if isinstance(cut.get(d), dict) else cut
-        out.append({"date": d, "groups": groups,
-                    "mis_cutoff_ns": {"CM": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
-                                      "CM_CAS": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
-                                      "FO": timeutil.ist_ns(day, cuts["FO"]) if "FO" in cuts else None},
-                    "day_end_ns": timeutil.ist_ns(day, "23:59:59") + 999_999_999})
-    return out
+    day = date.fromisoformat(d)
+    groups = {}
+    for gname in ("CM", "CM_CAS", "FO_FUT", "FO_OPT"):
+        rows = b.get("sessions_by_date", {}).get(d, {}).get(gname, sessions[gname])
+        groups[gname] = [{"phase": p, "start_ns": timeutil.ist_ns(day, s), "end_ns": timeutil.ist_ns(day, e)}
+                         for p, s, e in rows]
+    cuts = cut.get(d, cut) if isinstance(cut.get(d), dict) else cut
+    return {"date": d, "groups": groups,
+            "mis_cutoff_ns": {"CM": timeutil.ist_ns(day, cuts["CM"]) if "CM" in cuts else None,
+                              "CM_CAS": timeutil.ist_ns(day, cuts.get("CM_CAS", cuts.get("CM")))
+                              if "CM_CAS" in cuts or "CM" in cuts else None,
+                              "FO": timeutil.ist_ns(day, cuts["FO"]) if "FO" in cuts else None},
+            "day_end_ns": timeutil.ist_ns(day, "23:59:59") + 999_999_999}
 
 
 def _instruments(g: dict, days: list[dict]) -> list[dict]:
@@ -122,6 +129,8 @@ def _instruments(g: dict, days: list[dict]) -> list[dict]:
         last = row["actual_expiry"] or row["expiry"]
         if last in by_date:
             row["last_trading_ns"] = bundle_mod.group_close_ns(by_date[last], group)
+        elif last:                                       # expiry after the run (D-61)
+            row["last_trading_ns"] = bundle_mod.group_close_ns(_day(g, last), group)
         out.append(row)
     return out
 
@@ -142,6 +151,7 @@ def build_bundle(g: dict) -> dict:
     run = {"schema": "stockify.run/1", "name": g["id"], "strategy": {"kind": "script", "actions": []},
            "data": {"packs": [{"sha256": "0" * 64}]}, "capital_paise": 10_000_000, "price_basis": "raw",
            "fill_model": {"kind": "bar"}, **copy.deepcopy(g.get("run", {}))}
+    run["margin"] = {"model": "flat", **run.get("margin", {})}   # pinned: goldens never follow a changed default
     ref = g["strategy"].get("ref")
     actions = copy.deepcopy(g["strategy"].get("actions", []))
     for a in actions:
@@ -162,9 +172,25 @@ def build_bundle(g: dict) -> dict:
                             "pct_ppb": numerics.to_ppb(b.get("mis_margin_fo", "1"))}],
         "cnc_sell_credit_same_day": [],
     }
+    if b.get("delivery_schedule"):                   # the shipped Z-4 delivery-margin schedule (D-60)
+        from stockify.config import loader
+        policy["delivery_margin_schedule"] = loader.load_json("broker_policy.json")["delivery_margin_schedule"]
     margin = {"flat": [{"applies": {}, "effective_from": "2015-01-01",
                         "index_pct_ppb": numerics.to_ppb(b.get("margin_index", "0.12")),
                         "stock_pct_ppb": numerics.to_ppb(b.get("margin_stock", "0.20"))}]}
+    if b.get("spanlite_placeholder"):                # the shipped SPAN-lite rows (M4.8; placeholders until M4.9)
+        from stockify.config import loader
+        rows = copy.deepcopy(loader.load_json("margin_params.json")["spanlite"])
+        for r in rows:
+            for f in ("psr_pct", "vsr_pct", "extreme_weight", "elm_pct", "default_iv"):
+                r[f"{f}_ppb"] = numerics.to_ppb(r[f])
+        if "spanlite_calibration_id" in b:          # an adopted row instead of the placeholder (staircase B3)
+            for r in rows:
+                r["calibration_id"] = b["spanlite_calibration_id"]
+        margin["spanlite"] = rows
+    if "expiry_addon" in b:                          # the expiry-day ELM on short index options (X-9)
+        margin["expiry_day_short_index_option_addon"] = [{"applies": {}, "effective_from": "2015-01-01",
+                                                          "pct_ppb": numerics.to_ppb(b["expiry_addon"])}]
     sqoff = b.get("sqoff_fee_paise")
     charges = _charges(b.get("charges", "zero"))
     if "gst_rate" in b:                              # a GST row on brokerage, exchange and SEBI (zero charges)
@@ -177,14 +203,23 @@ def build_bundle(g: dict) -> dict:
     if "exercise_brokerage_paise" in b:
         charges["components"]["exercise_brokerage"] = [{"applies": {}, "effective_from": "2015-01-01", "kind": "flat",
                                                         "flat_paise": b["exercise_brokerage_paise"]}]
+    if "physical_delivery" in b:                     # {brokerage_pct, netted_brokerage_pct, stt_each_side_pct_of_value}
+        row = {"applies": {}, "effective_from": "2015-01-01", **b["physical_delivery"]}
+        for f in ("brokerage_pct", "netted_brokerage_pct", "stt_each_side_pct_of_value"):
+            row[f"{f}_ppb"] = numerics.to_ppb(row[f])
+        charges["components"]["physical_delivery"] = [row]
     if sqoff is not None:
         charges["components"]["auto_square_off_fee"] = [{"applies": {}, "effective_from": "2015-01-01",
                                                          "per_order_paise": sqoff, "plus_gst": b.get("sqoff_plus_gst", True)}]
-    return {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
-            "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
-            "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
-            "packs": [], "strategy": _bundle_strategy(run["strategy"]),
-            "labels": [], "sod_state": None}
+    out = {"schema": "stockify.bundle/1", "run": cfg, "seed": cfg["seed"], "days": days,
+           "instruments": _instruments(g, days), "charges": charges, "broker_policy": policy,
+           "margin_params": margin, "pricing": {"stale_after_ms": 5000, "risk_free": []},
+           "packs": [], "strategy": _bundle_strategy(run["strategy"]),
+           "labels": [], "sod_state": None}
+    for key in ("span", "span_skipped", "elm"):     # NSE SPAN / ELM sections as written (A1 §6.2; MEZ 4.10 fuzz)
+        if key in b:
+            out[key] = copy.deepcopy(b[key])
+    return out
 
 
 # ── Events → pack ────────────────────────────────────────────────────────────

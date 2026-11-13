@@ -62,7 +62,7 @@ std::optional<Paise> Engine::mark_price(InstrumentId iid) const {  // runner.mar
     }
     const MarketState& m = it->second;
     if (mark_kind_ == "mid" && m.bid && *m.bid != 0 && m.ask && *m.ask != 0) {
-        return floor_div(*m.bid + *m.ask, 2);
+        return floor_div(checked_add(*m.bid, *m.ask), 2);
     }
     return m.ltp;
 }
@@ -86,13 +86,13 @@ Paise Engine::blocked(const Ledger& ledger, Date d) const {  // runner.blocked
         }
         if (p.product == Product::MIS) {
             const std::optional<Paise> m = mark_price(p.instrument);
-            mis = checked_add(mis, margin_.mis(instruments_.at(p.instrument).kind, p.q,
+            mis = checked_add(mis, margin_->mis(instruments_.at(p.instrument).kind, p.q,
                                                m && *m != 0 ? *m : p.avg_price(), date));
         } else {
             legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
         }
     }
-    return checked_add(margin_.requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
+    return checked_add(margin_->requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date),
                        mis);
 }
 
@@ -120,7 +120,7 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
         return o.side == Side::Buy ? checked_mul(o.qty, px) : 0;
     }
     if (o.product == Product::MIS) {
-        return margin_.mis(row.kind, o.qty, px, date);
+        return margin_->mis(row.kind, o.qty, px, date);
     }
     if (row.is_option() && o.side == Side::Buy) {
         return checked_mul(o.qty, px);
@@ -131,8 +131,6 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
             legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
         }
     }
-    const Paise before =
-        margin_.requirement(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, date);
     // after_legs = legs + [(o, NRML, signed qty)], combined per (instrument, product) in first-seen order
     std::vector<MarginLeg> combined;
     auto add = [&](const MarginLeg& leg) {
@@ -148,8 +146,9 @@ Paise Engine::required(const Order& o, Paise px) const {  // runner._required
         add(leg);
     }
     add(MarginLeg{o.instrument, Product::NRML, o.qty * o.sign()});
-    const Paise after = margin_.requirement(
-        combined, instruments_,
+    // before and after (the staircase prices each underlying at one step for both, MEZ 4.9)
+    const auto [before, after] = margin_->pair(
+        legs, combined, instruments_, [this](InstrumentId i) { return ref_price(i); },
         [&](InstrumentId i) { return i == o.instrument ? std::optional<Paise>(px) : ref_price(i); }, date);
     return std::max<Paise>(0, after - before);
 }
@@ -276,9 +275,8 @@ std::optional<Reason> Engine::validate(Order& o, bool system, Reason start, Reas
                     break;
                 }
                 const std::string_view g = group_of(o.instrument, d);
-                const std::string seg = g.substr(0, 2) == "FO" ? "FO" : "CM";
                 const DaySchedule* day = calendar_.day(d);
-                const std::optional<TimeNs> cutoff = day != nullptr ? day->cutoff(seg) : std::nullopt;
+                const std::optional<TimeNs> cutoff = day != nullptr ? day->cutoff(cutoff_key(g)) : std::nullopt;
                 if (o.product == Product::MIS && cutoff && now_ >= *cutoff) {
                     return code;
                 }
@@ -362,7 +360,8 @@ std::optional<Reason> Engine::validate(Order& o, bool system, Reason start, Reas
             case Reason::Margin:
                 if (!system) {
                     const Paise need = required(o, order_px(o));
-                    if (need > funds(book_.ledger).available) {
+                    // A4 §6.5: only risk-increasing orders are refused, so a shortfall can be traded out of
+                    if (need > funds(book_.ledger).available && !reduces(o.instrument, o.product, o.side, o.qty)) {
                         return code;
                     }
                     o.reserved = need;
@@ -554,10 +553,13 @@ std::optional<Ppb> Engine::cnc_credit_ppb() const {  // runner._cnc_credit_ppb
 
 void Engine::fill(Book& book, Order& o, Qty qty, Paise price, const std::string& evidence, TimeNs t) {  // runner._fill
     const Date d = date_of(t);
+    // The checked arithmetic first: an overflow leaves no half-recorded fill behind (M3 review).
+    const Paise fill_value = checked_add(o.fill_value, checked_mul(qty, price));
+    const Qty filled_qty = checked_add(o.filled_qty, qty);
     Fill f{book.next_fill++, o.order_id, t, o.instrument, o.side, qty, price, evidence};
     book.fills.push_back(f);
-    o.filled_qty += qty;
-    o.fill_value = checked_add(o.fill_value, checked_mul(qty, price));
+    o.filled_qty = filled_qty;
+    o.fill_value = fill_value;
     o.trade_date = d;
     if (o.reserved != 0) {  // release the reserve pro rata (A4 §6.5)
         const Paise keep = mul_div_floor(o.reserved, o.remaining(), o.remaining() + qty);
@@ -939,11 +941,24 @@ std::vector<std::size_t> Engine::expiring(InstrumentId underlying_id, Date d) { 
 }
 
 void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const std::string& source) {  // runner._settle_final
-    for (const std::size_t i : expiring(underlying_id, d)) {
+    const std::vector<std::size_t> all = expiring(underlying_id, d);
+    std::vector<std::size_t> physical;
+    for (const std::size_t i : all) {
+        if (instruments_.at(book_.ledger.positions()[i].instrument).settlement == std::optional<std::string>("physical")) {
+            physical.push_back(i);
+        }
+    }
+    if (!physical.empty()) {
+        settle_physical(underlying_id, d, fsp, source, physical);
+    }
+    for (const std::size_t i : all) {
         Position& p = book_.ledger.positions()[i];
         const Instrument& row = instruments_.at(p.instrument);
+        if (row.settlement == std::optional<std::string>("physical")) {
+            continue;
+        }
         if (row.settlement != std::optional<std::string>("cash")) {
-            throw RunError(row.tradingsymbol + ": physical settlement is out of scope until M4.6");
+            throw RunError(row.tradingsymbol + ": unknown settlement '" + row.settlement.value_or("") + "'");
         }
         Ledger& led = book_.ledger;
         const Side closing = p.d > 0 ? Side::Sell : Side::Buy;
@@ -961,10 +976,9 @@ void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const s
             settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, intrinsic});
             led.cash = checked_add(led.cash, checked_mul(p.qty(), intrinsic));
             p.realised = checked_add(p.realised, p.d * checked_sub(checked_mul(p.q, intrinsic), p.c));
-            if (p.d > 0 && intrinsic > 0) {
-                const ChargeParts parts = costs_.exercise(row.kind, checked_mul(p.q, intrinsic), iso(d));
-                charge_row(book_, "settlement", 0, p.instrument, d, parts);
-            }
+            // D-59: brokerage on every option open at expiry; exercise STT only on a long ITM one's intrinsic value
+            const Paise exercised = p.d > 0 ? checked_mul(p.q, intrinsic) : 0;
+            charge_row(book_, "settlement", 0, p.instrument, d, costs_.exercise(row.kind, exercised, iso(d)));
             p.q = 0;
             p.c = 0;
             p.last_mark = intrinsic;
@@ -972,6 +986,87 @@ void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const s
         }
         log("INFO", "settled " + std::to_string(p.instrument) + " " + std::string(to_string(p.product)) + " at FSP " +
                         std::to_string(fsp) + " (" + source + ")");
+    }
+}
+
+void Engine::settle_physical(InstrumentId stock, Date d, Paise fsp, const std::string& source,
+                             std::vector<std::size_t> idx) {  // runner._settle_physical (A4 §7.3, D-58)
+    const Instrument* srow = instruments_.find(stock);
+    if (srow == nullptr || srow->kind != "EQ") {
+        throw RunError(instruments_.at(book_.ledger.positions()[idx.front()].instrument).tradingsymbol +
+                       ": physical settlement needs its underlying stock in the bundle");
+    }
+    Ledger& led = book_.ledger;
+    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) {
+        const Position& x = led.positions()[a];
+        const Position& y = led.positions()[b];
+        return std::pair(x.instrument, to_string(x.product)) < std::pair(y.instrument, to_string(y.product));
+    });
+    struct Leg {
+        bool take;
+        Qty units;
+        Paise price;
+        InstrumentId contract;
+        std::string kind;
+        Paise exercised;
+    };
+    std::vector<Leg> legs;
+    for (const std::size_t i : idx) {  // close every position first: booking the stock may grow the ledger
+        Position& p = led.positions()[i];
+        const Instrument& row = instruments_.at(p.instrument);
+        const Side closing = p.d > 0 ? Side::Sell : Side::Buy;
+        const Qty units = p.q;
+        if (row.kind == "FUT") {
+            settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, fsp});
+            led.settle_variation(p, fsp, source);
+            p.realised = p.pnl(fsp);
+            p.vm = p.realised;
+            legs.push_back(Leg{p.d > 0, units, fsp, p.instrument, row.kind, 0});
+        } else {
+            const Paise k = row.strike.value_or(0);
+            settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, 0});
+            p.realised = checked_add(p.realised, p.d * checked_sub(0, p.c));  // closes at 0: the premium is its P&L
+            p.last_mark = 0;
+            p.mark_source = source;
+            const bool itm = row.kind == "CE" ? fsp > k : fsp < k;
+            if (itm) {
+                const bool take = (row.kind == "CE") == (p.d > 0);
+                const Paise exercised = p.d > 0 ? checked_mul(units, fsp > k ? fsp - k : k - fsp) : 0;
+                legs.push_back(Leg{take, units, k, p.instrument, row.kind, exercised});
+            } else {  // D-59: an expiring OTM option pays the expiry brokerage
+                charge_row(book_, "settlement", 0, p.instrument, d, costs_.exercise(row.kind, 0, iso(d)));
+            }
+        }
+        p.q = 0;
+        p.c = 0;
+        log("INFO", "settled " + std::to_string(p.instrument) + " " + std::string(to_string(p.product)) + " at FSP " +
+                        std::to_string(fsp) + " (" + source + ")");
+    }
+    Qty taken = 0;
+    Qty given = 0;
+    for (const Leg& l : legs) {
+        if (l.take) {
+            taken = checked_add(taken, l.units);
+        } else {
+            given = checked_add(given, l.units);
+        }
+    }
+    Qty left_take = std::min(taken, given);
+    Qty left_give = left_take;
+    for (const Leg& l : legs) {
+        Qty& left = l.take ? left_take : left_give;
+        const Qty n = std::min(l.units, left);
+        left -= n;
+        const Side side = l.take ? Side::Buy : Side::Sell;
+        led.apply_fill(stock, Product::CNC, style(stock, Product::CNC), side, l.units, l.price, cnc_credit_ppb(), d);
+        if (const Position* held = led.position(stock, Product::CNC); held != nullptr && held->qty() < 0) {
+            labels_.insert("short_delivery");
+        }
+        const ChargeParts parts =
+            costs_.delivery(l.kind, checked_mul(l.units, l.price), checked_mul(n, l.price), l.exercised, iso(d));
+        charge_row(book_, "settlement", 0, l.contract, d, parts);
+        log("INFO", "delivered " + std::to_string(stock) + " CNC " + std::string(to_string(side)) + " " +
+                        std::to_string(l.units) + " at " + std::to_string(l.price) + " (" + source + ")");
     }
 }
 

@@ -174,4 +174,34 @@ void bind_testing_packs(py::module_& t) {
         }
         return keys;
     });
+    // A script of pushes and reads on one LiveBatchSource: ("push", bytes) -> "ok" or "error: …";
+    // ("read", n) -> the keys of up to n records read (n < 0: all that are there).
+    t.def("live_steps", [](const std::vector<std::pair<std::string, py::object>>& steps) {
+        stocksim::LiveBatchSource live;
+        py::list out;
+        for (const auto& [op, arg] : steps) {
+            if (op == "push") {
+                const std::string data = arg.cast<py::bytes>();
+                try {
+                    live.push(std::as_bytes(std::span<const char>(data.data(), data.size())));
+                    out.append("ok");
+                } catch (const std::exception& ex) {
+                    out.append(std::string("error: ") + ex.what());
+                }
+            } else {
+                long long n = arg.cast<long long>();
+                py::list keys;
+                while (n != 0) {
+                    const stocksim::Event* e = live.next();
+                    if (e == nullptr) {
+                        break;
+                    }
+                    keys.append(key_tuple(e->key()));
+                    --n;
+                }
+                out.append(keys);
+            }
+        }
+        return out;
+    });
 }

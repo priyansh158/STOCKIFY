@@ -75,6 +75,7 @@ G13 and G15 test the Python data layer (instruments, calendar), so they live in 
 | G18 | Price → IV → price round trip over a grid (moneyness 0.8–1.2, T 1–90 days, σ 5–80%): points whose model price is below one tick (₹0.05) must return NaN with `LOW_VEGA` or `BELOW_TICK`; all others round-trip within relative 1e-8; out-of-bounds prices return the right reason | C-13, M4.3 |
 | G19 | Closing auction from 2026-08-03: an order in a CAS stock at 15:16 is rejected `R_CAS` and its open DAY orders are cancelled at 15:15; a non-CAS stock still trades until 15:30 | A4 §3.2, §4.8, X-7 |
 | G20 | Orders submitted at 09:05 for a future (group in `PREOPEN`) and an option (group `CLOSED`): with `queue` both activate at 09:15 and fill on the first eligible event; with `reject` both are rejected `R_SESSION` | A4 §3.10, X-6 |
+| G21 | On a CAS day a CAS stock's MIS is squared off at 15:12 while a plain stock waits for the 15:20 CM cut-off; a MIS order on the CAS stock after 15:12 is rejected `R_SESSION`, the same order on the plain stock fills | A4 §6.3, Z-5 |
 
 G17 vectors (r = 6.5%, ACT/365; values from the plan author's reference implementation, to be confirmed by the two independent implementations):
 

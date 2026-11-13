@@ -4,9 +4,12 @@ import type {
   TestCharge,
   TestEquity,
   TestFill,
+  TestGreek,
   TestLogs,
+  TestMargin,
   TestRun,
   TestRunDetail,
+  TestSettlement,
 } from "./types";
 
 export const strategies: Strategy[] = [
@@ -93,7 +96,62 @@ export const runs: TestRun[] = [
     strategy_ref: "stockify.strategies.eod_short_straddle:EodShortStraddle", price_basis: "raw",
     nav_end_paise: 96_120_000, max_drawdown: 0.0712, trades: 31, costs_total_paise: 3_420_118,
     labels: ["fill:eod_close", "margin:flat(approx)", "eod_approx", "settlement_fallback"] },
+  { ...base, run_id: "iron_fly_nifty-20261108T040000-a1b2c3", name: "iron_fly_nifty",
+    strategy_ref: "stockify.strategies.iron_fly:IronFly", price_basis: "raw",
+    nav_end_paise: 101_840_000, max_drawdown: 0.0231, trades: 12, costs_total_paise: 412_660,
+    labels: ["fill:snapshot_quote", "margin:staircase", "margin:B1_span_nse_elm", "margin:B4_spanlite_placeholder",
+             "margin_steps:B1_span_nse_elm=1", "margin_steps:B4_spanlite_placeholder=1", "margin_spanlite:placeholder",
+             "settlement_fallback", "delivery_margin_approx", "short_delivery"] },
 ];
+
+const FLY = "iron_fly_nifty-20261108T040000-a1b2c3";
+
+/** Margin by day for the sample iron fly (the margin staircase); other sample runs use the flat model and have none. */
+export function margin(id: string): TestMargin[] {
+  if (id !== FLY) return [];
+  return [
+    { trade_date: "2026-11-03", underlying_id: 256265, underlying: "NIFTY 50", model: "staircase", step: "B1_span_nse_elm", scan_paise: 9_412_300,
+      somc_paise: 0, elm_paise: 3_120_000, addons_paise: 0, total_paise: 12_532_300 },
+    { trade_date: "2026-11-04", underlying_id: 256265, underlying: "NIFTY 50", model: "staircase", step: "B4_spanlite_placeholder", scan_paise: 8_905_100,
+      somc_paise: 0, elm_paise: 3_098_000, addons_paise: 3_098_000, total_paise: 15_101_100 },
+  ];
+}
+
+/** Settlements for the sample iron fly: two legs at an estimated price, one stock delivery. */
+export function settlements(id: string): TestSettlement[] {
+  if (id !== FLY) return [];
+  const t = 1_794_045_000_000_000_000;
+  return [
+    { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "cash", instrument_id: 668,
+      tradingsymbol: "NIFTY26N0424000CE", product: "NRML", side: null, qty: null, price_paise: 2_398_550,
+      source: "fallback", charges_paise: 2_360 },
+    { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "cash", instrument_id: 669,
+      tradingsymbol: "NIFTY26N0424000PE", product: "NRML", side: null, qty: null, price_paise: 2_398_550,
+      source: "fallback", charges_paise: 8_861 },
+    { t_ns: t, t_ist: "2026-11-04T15:40:00+05:30", trade_date: "2026-11-04", kind: "delivery", instrument_id: 1,
+      tradingsymbol: "RELIANCE", product: "CNC", side: "BUY", qty: 500, price_paise: 141_230, source: "settle",
+      charges_paise: null },
+  ];
+}
+
+/** Greeks at the two day ends of the sample iron fly: four legs, one of them with no implied volatility. */
+export function greeks(id: string): TestGreek[] {
+  if (id !== FLY) return [];
+  const leg = (d: string, iid: number, sym: string, kind: string, strike: number, qty: number, mark: number,
+               iv: number | null, delta: number | null, gamma: number | null, vega: number | null,
+               theta: number | null, reason: string | null = null): TestGreek => ({
+    trade_date: d, instrument_id: iid, tradingsymbol: sym, underlying: "NIFTY", kind, strike_paise: strike,
+    expiry: "2026-11-04", qty, mark_paise: mark, underlying_paise: 2_401_250, iv, iv_reason: reason,
+    delta_units: delta, gamma_units_per_rupee: gamma, vega_rupees_per_point: vega, theta_rupees_per_day: theta,
+    expiry_close_estimated: false,
+  });
+  return [
+    leg("2026-11-03", 668, "NIFTY26N0424000CE", "CE", 2_400_000, -75, 9_215, 0.1342, -40.1, -0.0412, -611.2, 3_904.5),
+    leg("2026-11-03", 669, "NIFTY26N0424000PE", "PE", 2_400_000, -75, 8_840, 0.1355, 34.7, -0.0409, -612.0, 3_861.0),
+    leg("2026-11-03", 670, "NIFTY26N0424200CE", "CE", 2_420_000, 75, 2_310, 0.1288, 15.2, 0.0302, 455.7, -2_610.3),
+    leg("2026-11-03", 671, "NIFTY26N0423800PE", "PE", 2_380_000, 75, 5, null, null, null, null, null, "BELOW_TICK"),
+  ];
+}
 
 export const equity: TestEquity[] = Array.from({ length: 60 }, (_, i) => {
   const wave = Math.sin(i / 6) * 4_000_000 + i * 520_000 - (i > 30 && i < 40 ? (i - 30) * 900_000 : 0);
@@ -153,5 +211,7 @@ export function detail(id: string): TestRunDetail {
     manifest: run.status === "done"
       ? { engine_build_id: "2c5ed577b5ab", bundle_sha256: "9f2c…", packs: ["41ab…"], duration_ms: 812 }
       : null,
+    fill_count: run.status === "done" ? fills.length : null,
+    cost_totals: run.status === "done" ? { stt: 98_033, exchange: 3_111, sebi: 98, stamp: 14_700, gst: 3_242, dp: 1_480 } : {},
   };
 }

@@ -10,15 +10,89 @@
       "verified": false
     }
   ],
-  "spanlite": {},
+  "spanlite": [
+    {
+      "applies": {
+        "underlying_class": "INDEX"
+      },
+      "effective_from": "2015-01-01",
+      "psr_pct": "0.06",
+      "vsr_pct": "0.25",
+      "extreme_multiple": 3,
+      "extreme_weight": "0.35",
+      "somc_per_lot_paise": 200000,
+      "elm_pct": "0.02",
+      "default_iv": "0.15",
+      "calibration_id": "placeholder",
+      "source": "placeholder until M4.9 calibration against Kite (owner, market hours); not NSE's risk parameters",
+      "verified": false
+    },
+    {
+      "applies": {
+        "underlying_class": "STOCK"
+      },
+      "effective_from": "2015-01-01",
+      "psr_pct": "0.12",
+      "vsr_pct": "0.25",
+      "extreme_multiple": 3,
+      "extreme_weight": "0.35",
+      "somc_per_lot_paise": 300000,
+      "elm_pct": "0.035",
+      "default_iv": "0.30",
+      "calibration_id": "placeholder",
+      "source": "placeholder until M4.9 calibration against Kite (owner, market hours); not NSE's risk parameters",
+      "verified": false
+    },
+    {
+      "applies": {
+        "underlying": "NIFTY"
+      },
+      "effective_from": "2026-11-09",
+      "psr_pct": "0.0799",
+      "psr_futures_pct": "0.0886",
+      "net_option_value": true,
+      "vsr_pct": "0.5061",
+      "extreme_multiple": 3,
+      "extreme_weight": "0.35",
+      "somc_per_lot_paise": 173,
+      "elm_pct": "0.02",
+      "default_iv": "0.15",
+      "calibration_id": "calibration-2026-11-09",
+      "source": "calibration 2026-11-09 (refit offline, target span + exposure + additional; D-62, D-63), adopted by the owner 2026-11-09 (D-74)",
+      "samples": 200,
+      "mean_relative_error": "0.0205",
+      "verified": false
+    },
+    {
+      "applies": {
+        "underlying": "BANKNIFTY"
+      },
+      "effective_from": "2026-11-09",
+      "psr_pct": "0.0735",
+      "psr_futures_pct": "0.0881",
+      "net_option_value": true,
+      "vsr_pct": "0.3096",
+      "extreme_multiple": 3,
+      "extreme_weight": "0.35",
+      "somc_per_lot_paise": 173,
+      "elm_pct": "0.02",
+      "default_iv": "0.15",
+      "calibration_id": "calibration-2026-11-09",
+      "source": "calibration 2026-11-09 (refit offline, target span + exposure + additional; D-62, D-63), adopted by the owner 2026-11-09 (D-74)",
+      "samples": 200,
+      "mean_relative_error": "0.0844",
+      "verified": false
+    }
+  ],
   "expiry_day_short_index_option_addon": [
     {
       "applies": {},
-      "effective_from": "2015-01-01",
+      "effective_from": "2024-11-20",
       "pct": "0.02",
-      "basis": "notional",
-      "source": "X-9 (basis ⚠)",
+      "basis": "underlying_price_x_qty",
+      "source": "X-9 (rule and scope confirmed 2026-11-07; notional = underlying price x quantity, Zerodha's formula)",
       "verified": false
     }
-  ]
+  ],
+  "spanlite_pending": []
 }

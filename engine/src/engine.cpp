@@ -9,6 +9,9 @@
 #include "stocksim/errors.hpp"
 #include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
+#include "stocksim/margin/spanlite.hpp"
+#include "stocksim/margin/staircase.hpp"
+#include "stocksim/pricing/black76.hpp"
 
 namespace stocksim {
 
@@ -18,6 +21,10 @@ const Json& run_of(const Bundle& b) { return require(b.root, "run", "bundle"); }
 
 }  // namespace
 
+namespace {
+double rate_on(const Json& bundle_root, const std::string& iso_day);  // defined with the chain view below
+}  // namespace
+
 // ── Construction ─────────────────────────────────────────────────────────────
 
 Engine::Engine(Bundle bundle)
@@ -25,7 +32,6 @@ Engine::Engine(Bundle bundle)
       calendar_(require(bundle_.root, "days", "bundle")),
       instruments_(require(bundle_.root, "instruments", "bundle"), calendar_),
       costs_(require(bundle_.root, "charges", "bundle"), require(run_of(bundle_), "costs", "run")),
-      margin_(bundle_.root),
       ctx_(*this),
       strategy_rng_(bundle_.seed, kStrategyStream),
       book_(Ledger(require_int(run_of(bundle_), "capital_paise", "run"), require_int(run_of(bundle_), "capital_paise", "run")),
@@ -40,6 +46,24 @@ Engine::Engine(Bundle bundle)
     mark_kind_ = require_string(run, "mark", "run");
     latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
+    const Json& margin_cfg = require(run, "margin", "run");
+    const std::string margin_model = require_string(margin_cfg, "model", "run.margin");
+    auto host = [this] {
+        return SpanLiteHost{[this] { return now_; },
+                            [this](const std::string& und, const std::string& expiry) { return ctx_.chain(und, expiry); },
+                            [this](InstrumentId iid, Date d) { return spec(iid, d); },
+                            [this](const std::string& label) { labels_.insert(label); },
+                            [this](const std::string& d) { return rate_on(bundle_.root, d); }};
+    };
+    if (margin_model == "spanlite") {
+        margin_ = std::make_unique<SpanLiteMargin>(bundle_.root, host());
+    } else if (margin_model == "flat") {
+        margin_ = std::make_unique<FlatMargin>(bundle_.root);
+    } else if (margin_model == "staircase" || margin_model == "span_exact") {  // MEZ 4.10: B1..B5 / B1-B2 only
+        margin_ = std::make_unique<StaircaseMargin>(bundle_.root, host(), margin_model, margin_model == "span_exact");
+    } else {  // never a silent fallback to flat (CAM 4.3)
+        throw RunError("run.margin: margin model '" + margin_model + "' is not supported yet");
+    }
 }
 
 void Engine::set_strategy(std::shared_ptr<Strategy> strategy) { strategy_ = std::move(strategy); }
@@ -73,7 +97,11 @@ Outputs Engine::drain_outputs() {
     return out;
 }
 
-std::vector<std::string> Engine::labels() const { return {labels_.begin(), labels_.end()}; }
+std::vector<std::string> Engine::labels() const {  // the run's labels and the margin model's (D-60), sorted
+    std::set<std::string> all = labels_;
+    all.insert(margin_->used_labels().begin(), margin_->used_labels().end());
+    return {all.begin(), all.end()};
+}
 
 // ── Time and phases ──────────────────────────────────────────────────────────
 
@@ -109,7 +137,7 @@ void Engine::schedule_days() {  // runner._schedule_days
             }
         }
         for (const auto& [seg, t] : day.mis_cutoff) {
-            if (t && (seg == "CM" || seg == "FO")) {
+            if (t && (seg == "CM" || seg == "CM_CAS" || seg == "FO")) {
                 InternalEvent ms{EventKey{*t, kRankMisSqoff, 0, 0}, InternalKind::MisSqoff};
                 ms.segment = seg;
                 ms.date = day.date;
@@ -158,9 +186,42 @@ void Engine::process_internal_before(const std::optional<EventKey>& next_input) 
     }
 }
 
+class Engine::Running {
+ public:
+    Running(Engine& e, const char* what) : e_(e) {
+        e.ensure_idle(what);
+        if (e.busy_.exchange(true)) {  // another thread got in between
+            throw RunError(std::string(what) + ": the engine is busy (a run, push or finish is in progress)");
+        }
+    }
+    ~Running() {
+        if (!done_) {
+            e_.failed_ = true;  // an exception is leaving: the engine's state is no longer trustworthy
+        }
+        e_.busy_ = false;
+    }
+    Running(const Running&) = delete;
+    Running& operator=(const Running&) = delete;
+    void done() { done_ = true; }
+
+ private:
+    Engine& e_;
+    bool done_ = false;
+};
+
+void Engine::ensure_idle(const char* what, bool allow_failed) const {
+    if (busy_.load()) {
+        throw RunError(std::string(what) + ": the engine is busy (a run, push or finish is in progress)");
+    }
+    if (failed_ && !allow_failed) {
+        throw RunError(std::string(what) + ": this engine's run failed earlier; start a new engine");
+    }
+}
+
 void Engine::run() { run(packs_); }
 
 void Engine::run(EventSource& source) {
+    Running guard(*this, "run");
     start(source.peek_key());
     for (;;) {
         const std::optional<EventKey> next = source.peek_key();
@@ -175,9 +236,11 @@ void Engine::run(EventSource& source) {
         process_input(*e);
     }
     close_out();
+    guard.done();
 }
 
 void Engine::push(std::span<const std::byte> batch) {
+    Running guard(*this, "push");
     live_.push(batch);
     start(live_.peek_key());
     while (const std::optional<EventKey> next = live_.peek_key()) {
@@ -188,12 +251,15 @@ void Engine::push(std::span<const std::byte> batch) {
         activate_due(now_);
         process_input(*e);
     }
+    guard.done();
 }
 
 void Engine::finish() {
+    Running guard(*this, "finish");
     start(std::nullopt);
     process_internal_before(std::nullopt);
     close_out();
+    guard.done();
 }
 
 // The final close-out (A4 §1.10, D-52; the end of runner.run): when the last input came after the last trading
@@ -309,6 +375,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
             m.min_interval = b.interval_s;
         }
         m.bars[b.interval_s].push_back(BarRow{b.start_ns, b.open, b.high, b.low, b.close, b.volume, b.oi});
+        m.oi = b.oi;
         if (b.interval_s == *m.min_interval) {
             if (fill_kind_ == "bar") {
                 match_bar(iid, b, e.t);
@@ -356,6 +423,7 @@ void Engine::on_market(const Event& e) {  // runner._on_market
     m.ltp = q.ltp;
     m.t = e.t;
     if (f.full) {
+        m.oi = f.oi;
         std::array<DepthLevel, 10> book{};
         for (std::size_t i = 0; i < 5; ++i) {
             book[i] = f.bids[i];
@@ -568,8 +636,7 @@ void Engine::mis_sqoff(const InternalEvent& ev) {  // runner._mis_sqoff
         if (p.product != Product::MIS || p.q == 0) {
             continue;
         }
-        const std::string_view g = group_of(p.instrument, ev.date);
-        if ((g.substr(0, 2) == "FO" ? "FO" : "CM") != ev.segment) {
+        if (cutoff_key(group_of(p.instrument, ev.date)) != ev.segment) {
             continue;
         }
         PlaceRequest r;
@@ -624,12 +691,28 @@ void Engine::day_end(const InternalEvent& ev) {  // runner._day_end
             m = p.last_mark ? *p.last_mark : p.avg_price();
         }
         const Paise unreal = p.d * checked_sub(checked_mul(p.q, *m), p.c);
+        const Instrument& ins = instruments_.at(p.instrument);  // D-55: the underlying's mark, for derivatives
+        const std::optional<Paise> under =
+            ins.is_derivative() && ins.underlying_id ? mark_price(*ins.underlying_id) : std::nullopt;
         positions_eod_.push_back(PositionEodRow{d, p.instrument, p.product, p.qty(), p.avg_price(), *m, src, unreal,
-                                                p.realised});
+                                                p.realised, under});
     }
     const Paise nav = led.nav([this](InstrumentId i) { return mark_price(i); });
     const Paise blk = blocked(led, d);
     equity_.push_back(EquityRow{d, nav, led.cash, blk, nav - led.capital + led.charges_total, led.charges_total});
+    if (!margin_->daily_model().empty()) {  // SPAN-lite's per-underlying day rows (M4.8)
+        std::vector<MarginLeg> legs;
+        for (const Position& p : led.positions()) {
+            if (p.q != 0 && p.product == Product::NRML) {
+                legs.push_back(MarginLeg{p.instrument, p.product, p.qty()});
+            }
+        }
+        for (const UnderlyingMargin& b :
+             margin_->breakdown(legs, instruments_, [this](InstrumentId i) { return ref_price(i); }, iso_date(d))) {
+            margin_daily_.push_back(MarginDailyRow{d, b.underlying, std::string(margin_->daily_model()), b.step,
+                                                   b.scan, b.somc, b.elm, b.addons, b.total()});
+        }
+    }
     strategy_->on_session_end(ctx_);
     deliver();
     book_.ledger.release_day(next_date(d));
@@ -709,7 +792,9 @@ std::vector<Bar> Context::bars(InstrumentId iid, std::int32_t interval_s, std::i
     const auto& rows = rows_it->second;
     const auto size = static_cast<std::int64_t>(rows.size());
     // Python rows[-n:]: the last n for n > 0, all for n == 0, rows[|n|:] for n < 0.
-    const std::int64_t first = n > 0 ? std::max<std::int64_t>(0, size - n) : (n == 0 ? 0 : std::min(size, -n));
+    // n < 0: start at |n|, but -n overflows for INT64_MIN; any |n| at or past the end is the end (M3 review).
+    const std::int64_t first =
+        n > 0 ? std::max<std::int64_t>(0, size - n) : (n == 0 ? 0 : (n < -size ? size : -n));
     for (std::int64_t i = first; i < size; ++i) {
         const BarRow& r = rows[static_cast<std::size_t>(i)];
         out.push_back(Bar{iid, interval_s, r.start, r.start + static_cast<TimeNs>(interval_s) * kNsPerSecond, r.open,
@@ -869,23 +954,187 @@ std::vector<InstrumentId> Context::futures_chain(std::string_view underlying) co
     return out;
 }
 
-std::vector<Context::ChainRow> Context::chain(std::string_view underlying, std::string_view expiry) const {
+namespace {
+
+// pricing.risk_free in force on an IST date (rate_ppb → decimal), as the oracle's black76.rate_on; 0 if none.
+double rate_on(const Json& bundle_root, const std::string& iso_day) {
+    const auto pricing = bundle_root.find("pricing");
+    if (pricing == bundle_root.end() || !pricing->contains("risk_free")) {
+        return 0.0;
+    }
+    const Json* best = nullptr;
+    for (const Json& row : pricing->at("risk_free")) {
+        const std::string& from = row.at("effective_from").get_ref<const std::string&>();
+        if (from <= iso_day && (best == nullptr || from > best->at("effective_from").get_ref<const std::string&>())) {
+            best = &row;
+        }
+    }
+    return best != nullptr ? static_cast<double>(best->at("rate_ppb").get<std::int64_t>()) / 1'000'000'000 : 0.0;
+}
+
+}  // namespace
+
+std::optional<double> Context::quote_mid(InstrumentId iid) const {
+    const auto it = e_.market_.find(iid);
+    if (it == e_.market_.end() || !it->second.bid || !it->second.ask) {
+        return std::nullopt;
+    }
+    return static_cast<double>(*it->second.bid + *it->second.ask) / 2;
+}
+
+Context::ChainView Context::chain(std::string_view underlying, std::string_view expiry) const {  // context.chain
+    if (e_.chain_key_ != e_.key_) {
+        e_.chain_key_ = e_.key_;
+        e_.chain_cache_.clear();
+    }
+    const auto k = std::make_pair(std::string(underlying), std::string(expiry));
+    auto it = e_.chain_cache_.find(k);
+    if (it == e_.chain_cache_.end()) {
+        it = e_.chain_cache_.emplace(k, compute_chain(underlying, expiry)).first;
+    }
+    return it->second;
+}
+
+Context::ChainView Context::compute_chain(std::string_view underlying, std::string_view expiry) const {
+    ChainView view;
     std::optional<Date> want;
     try {
         want = parse_iso_date(expiry);
     } catch (const FormatError&) {
-        return {};  // the oracle compares strings: a non-date matches nothing
+        return view;  // the oracle compares strings: a non-date matches nothing
     }
-    std::vector<ChainRow> out;
+    const std::optional<std::string> und{std::string(underlying)};
+    std::vector<const Instrument*> rows;
     for (const Instrument& r : e_.instruments_.rows()) {
-        if (r.underlying == std::optional<std::string>(std::string(underlying)) && r.expiry == want && r.is_option()) {
-            out.push_back(ChainRow{r.id, r.kind, r.strike.value_or(0)});
+        if (r.underlying == und && r.expiry == want && r.is_option()) {
+            rows.push_back(&r);
         }
     }
-    std::stable_sort(out.begin(), out.end(), [](const ChainRow& a, const ChainRow& b) {
-        return a.strike != b.strike ? a.strike < b.strike : a.kind < b.kind;
+    std::stable_sort(rows.begin(), rows.end(), [](const Instrument* a, const Instrument* b) {
+        const Paise sa = a->strike.value_or(0), sb = b->strike.value_or(0);
+        return sa != sb ? sa < sb : a->kind < b->kind;
     });
-    return out;
+    if (rows.empty()) {
+        return view;
+    }
+    const double t = pricing::year_fraction(e_.now_, rows.front()->last_trading_ns.value());  // set: checked at load (D-61)
+    const double r = rate_on(e_.bundle_.root, iso_date(e_.date_of(e_.now_)));
+    const double disc = std::exp(-r * t);
+
+    // The forward (C-13): the same-expiry future's mid; else the synthetic median; else the index value.
+    for (const Instrument& fut : e_.instruments_.rows()) {
+        if (fut.underlying == und && fut.expiry == want && fut.kind == "FUT") {
+            if (const auto mid = quote_mid(fut.id)) {
+                view.forward = *mid;
+                view.forward_source = "future";
+                break;
+            }
+        }
+    }
+    if (!view.forward) {
+        std::map<Paise, std::pair<std::optional<double>, std::optional<double>>> sides;  // strike → (CE, PE) mids
+        for (const Instrument* row : rows) {
+            const auto mid = quote_mid(row->id);
+            if (mid && !stale(row->id)) {
+                auto& s = sides[row->strike.value_or(0)];
+                (row->kind == "CE" ? s.first : s.second) = *mid;
+            }
+        }
+        struct Pair {
+            double gap;
+            Paise strike;
+            double c, p;
+        };
+        std::vector<Pair> pairs;
+        for (const auto& [strike, s] : sides) {
+            if (s.first && s.second) {
+                pairs.push_back(Pair{std::fabs(*s.first - *s.second), strike, *s.first, *s.second});
+            }
+        }
+        std::sort(pairs.begin(), pairs.end(), [](const Pair& a, const Pair& b) {
+            return a.gap != b.gap ? a.gap < b.gap : a.strike < b.strike;
+        });
+        if (pairs.size() > 5) {
+            pairs.resize(5);
+        }
+        if (pairs.size() >= 2) {
+            std::vector<double> values;
+            for (const Pair& q : pairs) {
+                values.push_back(static_cast<double>(q.strike) + (q.c - q.p) / disc);
+            }
+            std::sort(values.begin(), values.end());
+            const std::size_t n = values.size();
+            view.forward = n % 2 == 1 ? values[n / 2] : (values[n / 2 - 1] + values[n / 2]) / 2;
+            view.forward_source = "synthetic";
+        } else if (const auto uid = rows.front()->underlying_id) {
+            const auto m = e_.market_.find(*uid);
+            if (m != e_.market_.end() && m->second.ltp) {
+                view.forward = static_cast<double>(*m->second.ltp);
+                view.forward_source = "forward_from_index";
+            }
+        }
+    }
+    if (view.forward && !(*view.forward > 0)) {
+        view.forward.reset();  // quotes that imply no positive forward give no IVs
+        view.forward_source.reset();
+    }
+    if (view.forward) {
+        std::optional<Paise> best;
+        for (const Instrument* row : rows) {  // strike order: on a tie the first, lower, strike stays
+            const Paise k = row->strike.value_or(0);
+            if (!best || std::fabs(static_cast<double>(k) - *view.forward) <
+                             std::fabs(static_cast<double>(*best) - *view.forward)) {
+                best = k;
+            }
+        }
+        view.atm_strike = best;
+    }
+
+    for (const Instrument* row : rows) {
+        ChainRow c;
+        c.instrument = row->id;
+        c.kind = row->kind;
+        c.strike = row->strike.value_or(0);
+        const bool is_call = row->kind == "CE";
+        const auto m = e_.market_.find(row->id);
+        if (m != e_.market_.end()) {
+            c.bid = m->second.bid;
+            c.ask = m->second.ask;
+            c.ltp = m->second.ltp;
+            c.oi = m->second.oi;
+        }
+        c.mid = quote_mid(row->id);
+        c.stale = stale(row->id);
+        if (view.forward) {
+            const double f_r = *view.forward / 100.0;
+            const double k_r = static_cast<double>(c.strike) / 100.0;
+            const auto side_iv = [&](const std::optional<Paise>& quote) -> std::optional<double> {
+                if (!quote) {
+                    return std::nullopt;
+                }
+                const pricing::ImpliedVol iv =
+                    pricing::implied_vol(is_call, static_cast<double>(*quote) / 100.0, f_r, k_r, t, r);
+                return iv.reason ? std::nullopt : std::optional<double>(iv.sigma);
+            };
+            c.iv_bid = side_iv(c.bid);
+            c.iv_ask = side_iv(c.ask);
+            if (c.mid) {
+                const pricing::ImpliedVol iv = pricing::implied_vol(is_call, *c.mid / 100.0, f_r, k_r, t, r);
+                if (iv.reason) {
+                    c.iv_reason = std::string(pricing::to_string(*iv.reason));
+                } else {
+                    const pricing::Greeks g = pricing::greeks(is_call, f_r, k_r, t, r, iv.sigma);
+                    c.iv_mid = iv.sigma;
+                    c.delta = g.delta;
+                    c.gamma = g.gamma;
+                    c.vega = g.vega;
+                    c.theta = g.theta;
+                }
+            }
+        }
+        view.rows.push_back(std::move(c));
+    }
+    return view;
 }
 
 OrderId Context::place(const PlaceRequest& r) { return e_.place(r); }

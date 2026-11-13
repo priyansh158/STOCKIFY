@@ -30,6 +30,15 @@ Date next_date(Date d);                             // the calendar day after d
 int weekday(Date d);                                // Monday 0 … Sunday 6
 TimeNs ist_ns(Date d, std::string_view hhmm);       // "09:15" / "23:59:59" IST on d → UTC ns (timeutil.ist_ns)
 
+// The MIS cut-off an instrument's session group follows (A4 §6.3; runner._cutoff_key): FO for derivatives,
+// CM_CAS for a CAS stock on its CAS day (Z-5), CM otherwise.
+inline std::string_view cutoff_key(std::string_view group) {
+    if (group.substr(0, 2) == "FO") {
+        return "FO";
+    }
+    return group == "CM_CAS" ? "CM_CAS" : "CM";
+}
+
 struct PhaseSpan {
     std::string phase;
     TimeNs start_ns = 0;

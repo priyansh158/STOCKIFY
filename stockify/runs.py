@@ -41,7 +41,7 @@ class RunNotQueued(ValueError):
 # ── ids ──────────────────────────────────────────────────────────────────────
 
 def _taken(run_id: str) -> bool:
-    return (paths.runs_dir() / run_id).exists() or store.get_run(run_id) is not None
+    return paths.run_path(run_id).exists() or store.get_run(run_id) is not None
 
 
 def unique_run_id(base: str) -> str:
@@ -81,13 +81,20 @@ def queue(config) -> str:  # noqa: ANN001
     Starts nothing; returns the run id."""
     cfg = runconfig.load(config)
     run_id = queued_run_id(cfg["name"])
-    folder = paths.runs_dir() / run_id
+    folder = paths.run_path(run_id)
     folder.mkdir(parents=True)
     text = _config_json(cfg)
     (folder / "request.json").write_text(text + "\n", encoding="utf-8", newline="\n")
     store.create_run({"run_id": run_id, "status": "queued", "name": cfg["name"], "family_id": cfg.get("family_id"),
                       "config_json": text, "folder": str(folder), "impl": "engine"})
     return run_id
+
+
+def _claim(run_id: str) -> None:
+    """Record this process as the run's runner (`runner.pid`), so an API restart can tell a live run from a dead
+    one (stockify.proc)."""
+    from stockify import proc
+    proc.write_pidfile(paths.run_dir(run_id))
 
 
 def _error_text(e: BaseException) -> str:
@@ -111,6 +118,10 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
     if impl not in IMPLS:
         raise ValueError(f"impl must be one of {IMPLS}, not {impl!r}")
     if run_id is not None:
+        try:
+            paths.run_path(run_id)
+        except ValueError as e:
+            raise RunNotQueued(str(e)) from e
         row = store.get_run(run_id)
         if row is None or row["status"] != "queued":
             raise RunNotQueued(f"run {run_id} is {'unknown' if row is None else row['status']}, not queued")
@@ -118,6 +129,7 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         if not store.update_run(run_id, only_if_status="queued", status="running", started_ns=timeutil.now_ns(),
                                 impl=impl):
             raise RunNotQueued(f"run {run_id} stopped being queued before it started")
+        _claim(run_id)
     else:
         cfg = runconfig.load(config)
     text = _config_json(cfg)
@@ -137,7 +149,8 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         store.create_run({"run_id": run_id, "status": "running", "name": cfg["name"],
                           "family_id": cfg.get("family_id"), "config_json": text, "impl": impl,
                           "started_ns": timeutil.now_ns()})
-    folder = paths.runs_dir() / run_id
+        _claim(run_id)
+    folder = paths.run_path(run_id)
     try:
         if impl == "engine":
             from stockify import engine as runner
@@ -160,8 +173,7 @@ def _finish(run_id: str, folder: Path) -> None:
     fields, children = _summarise(folder)
     for k in ("status", "started_ns", "finished_ns"):
         fields.pop(k, None)
-    if store.update_run(run_id, only_if_status="running", status="done", finished_ns=timeutil.now_ns(), **fields):
-        store.replace_run_rows(run_id, **children)
+    store.finish_run(run_id, {**fields, "status": "done", "finished_ns": timeutil.now_ns()}, **children)
 
 
 # ── import ───────────────────────────────────────────────────────────────────
@@ -173,6 +185,7 @@ _INT_COLUMNS = {
     "equity.csv": {"nav_paise", "cash_paise", "margin_blocked_paise", "gross_pnl_paise", "charges_paise"},
     "charges.csv": {"row_no", "order_id", "instrument_id", "turnover_paise", "brokerage", "stt", "exchange", "sebi",
                     "stamp", "gst", "dp", "other", "total"},
+    "margin_daily.csv": {"underlying_id", "scan", "somc", "elm", "addons", "total"},
 }
 CHARGE_COMPONENTS = ("turnover_paise", "brokerage", "stt", "exchange", "sebi", "stamp", "gst", "dp", "other")
 
@@ -213,6 +226,8 @@ def import_run(folder) -> str:  # noqa: ANN001
     A new row is `done`; an existing row keeps a `cancelled` status, any other becomes `done`."""
     folder = Path(folder)
     run_id = folder.name
+    if paths.run_path(run_id).resolve() != folder.resolve():
+        raise ValueError(f"{folder} is not a run folder in {paths.runs_dir()}")
     fields, children = _summarise(folder)
     cfg = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     fields.update(name=cfg.get("name"), family_id=cfg.get("family_id"), config_json=_config_json(cfg))
@@ -233,7 +248,10 @@ def rerun(run_id: str) -> tuple[str, bool]:
     """Run a finished run again from its folder: the archived bundle.json exactly (never re-resolved), the
     packs it names, the same impl. Returns (new run id, determinism.json reproduced byte for byte)."""
     import hashlib
-    src = paths.runs_dir() / run_id
+    try:
+        src = paths.run_path(run_id)
+    except ValueError as e:
+        raise RunFailed(run_id, str(e)) from e
     try:
         bundle_text = (src / "bundle.json").read_bytes()
         manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
@@ -247,10 +265,11 @@ def rerun(run_id: str) -> tuple[str, bool]:
         raise RunFailed(run_id, f"pack file missing: {', '.join(missing)}")
     impl = "oracle" if manifest.get("engine") == "oracle" else "engine"
     new_id = unique_run_id(f"{run_id}-rerun")
-    folder = paths.runs_dir() / new_id
+    folder = paths.run_path(new_id)
     store.create_run({"run_id": new_id, "status": "running", "name": cfg.get("name"),
                       "family_id": cfg.get("family_id"), "config_json": _config_json(cfg), "impl": impl,
                       "folder": str(folder), "started_ns": timeutil.now_ns()})
+    _claim(new_id)
     try:
         if impl == "engine":
             from stockify import engine as runner
@@ -267,9 +286,41 @@ def rerun(run_id: str) -> tuple[str, bool]:
     return new_id, same
 
 
+# margin_daily.csv's header before D-64 added the `step` column (MEZ 4.9).
+MARGIN_HEADER_BEFORE_D64 = "trade_date,underlying_id,model,scan,somc,elm,addons,total"
+STEP_COLUMN_NOTE = "margin_daily.csv gained the step column, D-64"
+
+
+def step_column_only(run_old: str, run_new: str) -> bool:
+    """Whether a re-run of a folder saved before D-64 differs from it only by margin_daily.csv's added `step`
+    column (final I-3): determinism.json differs in margin_daily.csv alone, the old file is the one its
+    determinism.json names, its header is the pre-D-64 one, the new one has today's header, and row by row the new
+    file without its `step` cell is the old file."""
+    import hashlib
+    import io
+    from stockify.oracle.artifacts import MARGIN
+    if determinism_diff(run_old, run_new) != ["margin_daily.csv"]:
+        return False
+    old_folder, new_folder = paths.run_path(run_old), paths.run_path(run_new)
+    try:
+        old_bytes = (old_folder / "margin_daily.csv").read_bytes()
+        hashes = json.loads((old_folder / "determinism.json").read_text(encoding="utf-8"))
+        old_rows = list(csv.reader(io.StringIO(old_bytes.decode("utf-8"), newline="")))
+        new_rows = list(csv.reader(io.StringIO((new_folder / "margin_daily.csv").read_text(encoding="utf-8"),
+                                               newline="")))
+    except (OSError, ValueError):
+        return False
+    if hashes.get("margin_daily.csv") != hashlib.sha256(old_bytes).hexdigest():
+        return False
+    if not old_rows or not new_rows or old_rows[0] != MARGIN_HEADER_BEFORE_D64.split(",")             or new_rows[0] != MARGIN.split(",") or len(old_rows) != len(new_rows):
+        return False
+    step = new_rows[0].index("step")
+    return all(new[:step] + new[step + 1:] == old for old, new in zip(old_rows[1:], new_rows[1:]))
+
+
 def determinism_diff(run_a: str, run_b: str) -> list[str]:
     """The deterministic files whose hashes differ between two run folders' determinism.json."""
     def hashes(run_id: str) -> dict:
-        return json.loads((paths.runs_dir() / run_id / "determinism.json").read_text(encoding="utf-8"))
+        return json.loads((paths.run_path(run_id) / "determinism.json").read_text(encoding="utf-8"))
     a, b = hashes(run_a), hashes(run_b)
     return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))

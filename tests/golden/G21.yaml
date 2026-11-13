@@ -1,0 +1,55 @@
+id: G21
+title: On a CAS day a CAS stock's MIS is squared off at 15:12, a plain stock's at the 15:20 CM cut-off
+semantics: ["A4 §6.3", "Z-5"]
+bundle:
+  dates: ["2026-08-04"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: CASX, session_group: CM_CAS, cas_dates: ["2026-08-04"],
+        specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+    - { id: 2, kind: EQ, tradingsymbol: PLAIN, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+  sessions_by_date:
+    "2026-08-04": { CM_CAS: [ [PREOPEN, "09:00", "09:15"], [CONTINUOUS, "09:15", "15:15"], [CAS, "15:15", "15:35"],
+                              [POSTCLOSE, "15:50", "16:00"] ] }
+  mis_cutoff: { CM: "15:20", CM_CAS: "15:12" }
+run: { fill_model: { kind: bar }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-08-04T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-08-04T09:15:00+05:30", o: 20000, h: 20000, l: 20000, c: 20000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-08-04T09:16:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-08-04T09:16:00+05:30", o: 20000, h: 20000, l: 20000, c: 20000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-08-04T15:12:00+05:30", o: 10100, h: 10100, l: 10100, c: 10100, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-08-04T15:13:00+05:30", o: 20100, h: 20100, l: 20100, c: 20100, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-08-04T15:20:00+05:30", o: 20200, h: 20200, l: 20200, c: 20200, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 2, place: { instrument: 1, side: BUY, qty: 10, product: MIS, type: LIMIT, price: 10000 } }
+    - { on_event: 2, place: { instrument: 2, side: BUY, qty: 10, product: MIS, type: LIMIT, price: 20000 } }
+    - { at_ns: "2026-08-04T15:12:30+05:30", place: { instrument: 1, side: BUY, qty: 10, product: MIS, type: LIMIT, price: 10100 } }
+    - { at_ns: "2026-08-04T15:12:30+05:30", place: { instrument: 2, side: BUY, qty: 10, product: MIS, type: LIMIT, price: 20100 } }
+expect:
+  orders:
+    - { order_id: 1, instrument_id: 1, side: BUY, status: COMPLETE, avg_price_paise: 10000 }
+    - { order_id: 2, instrument_id: 2, side: BUY, status: COMPLETE, avg_price_paise: 20000 }
+    - { order_id: 3, instrument_id: 1, side: SELL, qty: 10, tag: AUTO_SQOFF, t_submit_ns: "2026-08-04T15:12:00+05:30",
+        status: COMPLETE, avg_price_paise: 10100 }
+    - { order_id: 4, instrument_id: 1, side: BUY, status: REJECTED, reason: R_SESSION }
+    - { order_id: 5, instrument_id: 2, side: BUY, status: COMPLETE, avg_price_paise: 20100 }
+    - { order_id: 6, instrument_id: 2, side: SELL, qty: 20, tag: AUTO_SQOFF, t_submit_ns: "2026-08-04T15:20:00+05:30",
+        status: COMPLETE, avg_price_paise: 20200 }
+  orders_count: 6
+  fills:
+    - { order_id: 1, price_paise: 10000, t: "2026-08-04T09:17:00+05:30" }
+    - { order_id: 2, price_paise: 20000, t: "2026-08-04T09:17:00+05:30" }
+    - { order_id: 3, price_paise: 10100, t: "2026-08-04T15:13:00+05:30", evidence: bar_open }
+    - { order_id: 5, price_paise: 20100, t: "2026-08-04T15:14:00+05:30" }
+    - { order_id: 6, price_paise: 20200, t: "2026-08-04T15:21:00+05:30", evidence: bar_open }
+  equity: [ { trade_date: "2026-08-04", cash_paise: 10004000, nav_paise: 10004000 } ]
+notes: |
+  2026-08-04 is a CAS day for CASX (its group is CM_CAS that day, A4 §4.8). Zerodha squares off MIS in CAS stocks
+  at 15:12 (Z-5) and other stocks at the CM cut-off, here 15:20. Both are bought at 09:16 (10 at 100.00 and 10 at
+  200.00) and fill on the 09:16 bars (t 09:17). At 15:12 the CM_CAS MIS_SQOFF sells CASX only: AUTO_SQOFF order 3,
+  filled at the open of the bar starting 15:12, 101.00. At 15:12:30 a new MIS buy of CASX is past its group's
+  cut-off and is rejected R_SESSION, while the same order on PLAIN is still before 15:20 and fills at 201.00 on
+  the 15:13 bar. At 15:20 the CM MIS_SQOFF sells PLAIN's 20 at the open of the 15:20 bar, 202.00.
+  Cash (zero charges): CASX 10 x (101.00 - 100.00) = +1,000; PLAIN 10 x (202.00 - 200.00) + 10 x (202.00 - 201.00)
+  = +3,000; 10,000,000 + 4,000 = 10,004,000, every position flat, so NAV = cash.

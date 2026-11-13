@@ -13,17 +13,22 @@ import copy
 import json
 from pathlib import Path
 
-from stockify import numerics
+from stockify import numerics, paths
 
 SCHEMA = "stockify.run/1"
 FILL_KINDS = ("bar", "snapshot_ltp", "snapshot_quote", "eod_close")
 SLIPPAGE_KINDS = ("none", "fixed_ticks", "random_ticks", "bps")
+# span_exact and staircase read NSE's SPAN files from the bundle (CAM 4.3). Both engines run them (MEZ 4.9 oracle,
+# MEZ 4.10 engine), so the staircase is the default; goldens stay pinned to flat (golden.build_bundle).
+# <block name="margin-models" same-as="docs/plan/A1_schemas.md:margin-models" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
+MARGIN_MODELS = ("flat", "spanlite", "span_exact", "staircase")
+# </block>
 DEFAULTS = {
     "family_id": None,
     "price_basis": None,
     "latency_ms": 0,
     "costs": {"broker": "zerodha", "allow_unverified": False, "auto_square_off_fee": True, "dp_charges": True},
-    "margin": {"model": "flat"},
+    "margin": {"model": "staircase"},
     "policies": {"preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": False},
     "mark": "ltp",
     "seed": 0,
@@ -118,6 +123,14 @@ def validate(raw: dict) -> dict:
     _need(isinstance(raw, dict), "run", "must be a JSON object")
     _need(raw.get("schema") == SCHEMA, "schema", f"must be {SCHEMA!r}")
     _need(isinstance(raw.get("name"), str) and raw["name"], "name", "required")
+    # The name becomes the run folder's name: one safe path segment (paths.safe_segment).
+    _need(paths.safe_segment(raw["name"], 64), "name",
+          "must be 1-64 letters, digits, '.', '_' or '-', start with a letter or digit, not end with '.', "
+          "and not be a Windows device name (CON, NUL, COM1 ...)")
+    fam = raw.get("family_id")
+    _need(fam is None or (isinstance(fam, str) and len(fam) <= 128
+                          and all(paths.safe_segment(part, 64) for part in fam.split("/"))), "family_id",
+          "must be up to 128 characters: segments like a name, separated by '/'")
     cfg = _merge(DEFAULTS, {k: v for k, v in raw.items()})
     cfg["strategy"] = _strategy(raw.get("strategy"))
     cfg["data"] = {**raw.get("data", {}), "packs": _packs(raw.get("data"))}
@@ -126,7 +139,7 @@ def validate(raw: dict) -> dict:
     cfg["fill_model"] = _fill(raw.get("fill_model"))
     _int(cfg["latency_ms"], "latency_ms", 0)
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
-    _choice(cfg["margin"]["model"], ("flat",), "margin.model")
+    _choice(cfg["margin"]["model"], MARGIN_MODELS, "margin.model")
     pol = cfg["policies"]
     _choice(pol["preopen"], ("queue", "reject"), "policies.preopen")
     _choice(pol["cas"], ("none", "close_price"), "policies.cas")

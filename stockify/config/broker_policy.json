@@ -18,6 +18,14 @@
       "verified_on": "2026-10-29"
     },
     {
+      "group": "CM_CAS",
+      "effective_from": "2026-08-03",
+      "time": "15:12",
+      "source": "Z-5 (Zerodha policies §8: MIS in CAS stocks squared off at 15:12 since CAS began; the page shows no other effective date)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
       "group": "FO",
       "effective_from": "2015-01-01",
       "time": "15:25",

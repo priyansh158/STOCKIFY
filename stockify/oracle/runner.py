@@ -78,12 +78,21 @@ class Market:
     ask: int | None = None
     book: list | None = None         # [(price, qty, orders)] bids 1-5 then asks 1-5
     band: tuple | None = None        # (lower, upper)
+    oi: int | None = None            # open interest: the last TICK_FULL or bar that carried it (M4.4)
     min_interval: int | None = None
     bars: dict = field(default_factory=dict)       # interval_s -> list of (start, o, h, l, c, v)
     day: str | None = None
 
 
 # ── The engine ───────────────────────────────────────────────────────────────
+
+
+def _cutoff_key(group: str) -> str:
+    """The MIS cut-off an instrument follows (A4 §6.3): FO for derivatives, CM_CAS for a CAS stock on its CAS day
+    (Z-5), CM otherwise."""
+    if group.startswith("FO"):
+        return "FO"
+    return "CM_CAS" if group == "CM_CAS" else "CM"
 
 class Engine:
     def __init__(self, bundle: dict, records: list[tuple], strategy, *, log_lines: list | None = None):  # noqa: ANN001
@@ -93,12 +102,29 @@ class Engine:
         self.policies = self.run_cfg["policies"]
         self.latency_ns = self.run_cfg["latency_ms"] * 1_000_000
         self.inst = {i["id"]: i for i in bundle["instruments"]}
+        self._check_instruments(bundle["instruments"])
         self.days = bundle["days"]
         self.day_by_date = {d["date"]: d for d in self.days}
         self.records = records                         # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
-        self.margin = FlatMargin(bundle)
+        model = self.run_cfg["margin"]["model"]
+        if model == "spanlite":
+            from stockify.fno.spanlite import SpanLiteMargin
+            self.margin = SpanLiteMargin(bundle, self)
+        elif model == "flat":
+            self.margin = FlatMargin(bundle)
+        elif model == "staircase":                     # MEZ 4.9: B1..B5 per underlying per check, steps recorded
+            from stockify.fno.staircase import StaircaseMargin
+            self.margin = StaircaseMargin(bundle, self)
+        elif model == "span_exact":                    # exact SPAN only: raises where it cannot price
+            from stockify.fno.staircase import SpanExactMargin
+            self.margin = SpanExactMargin(bundle, self)
+        else:                                          # never a silent fallback to flat (CAM 4.3)
+            raise RunError(f"run.margin: margin model {model!r} is not supported yet")
+        self.margin_model = model
+        # (date, underlying_id, model, step, scan, somc, elm, addons, total): M4.8, step MEZ 4.9
+        self.margin_daily: list[tuple] = []
         self.market: dict[int, Market] = {}
         capital = self.run_cfg["capital_paise"]
         self.book = Book(Ledger(capital, capital), {}, Pcg32(bundle["seed"], SLIPPAGE_STREAM))
@@ -167,6 +193,25 @@ class Engine:
                     return p["start_ns"]
         return None
 
+    @staticmethod
+    def _check_instruments(rows: list[dict]) -> None:
+        """Ids within uint32 and positive lots and ticks, checked once (as the engine's InstrumentTable does), so
+        no later division meets a zero."""
+        for n, r in enumerate(rows):
+            where = f"instruments[{n}]"
+            for field in ("id", "underlying_id"):
+                v = r.get(field)
+                if v is not None and not 0 <= v <= 4294967295:
+                    raise RunError(f"bundle: {where}: {field} must be between 0 and 4294967295, got {v}")
+            if r.get("kind") in ("FUT", "CE", "PE") and r.get("last_trading_ns") is None:
+                raise RunError(f"bundle: {where}: a {r['kind']} needs last_trading_ns (D-61)")
+            for s in r.get("specs") or []:
+                at = f"bundle: {where}.specs (from {s['from']}): "
+                if s["lot"] <= 0:
+                    raise RunError(at + f"lot must be positive, got {s['lot']}")
+                if s["tick_paise"] <= 0:
+                    raise RunError(at + f"tick_paise must be positive, got {s['tick_paise']}")
+
     def spec(self, iid: int, d: str) -> dict | None:
         best = None
         for s in self.inst[iid]["specs"]:
@@ -191,7 +236,7 @@ class Engine:
                 if close:
                     self.push(max(close), SEG_CLOSE, "SEG_CLOSE", (g, day["date"]))
             for seg, t in day["mis_cutoff_ns"].items():
-                if t is not None and seg in ("CM", "FO"):
+                if t is not None and seg in ("CM", "CM_CAS", "FO"):
                     self.push(t, MIS_SQOFF, "MIS_SQOFF", (seg, day["date"]))
             self.push(day["day_end_ns"], DAY_END, "DAY_END", day["date"])
 
@@ -276,13 +321,17 @@ class Engine:
             return o.qty * px
         legs = [(p.instrument_id, p.product, p.qty) for p in self.book.ledger.positions.values()
                 if p.q and p.product == "NRML"]
-        before = self.margin.requirement(legs, self.inst.__getitem__, self._ref_price, d)
         after_legs = legs + [(o.instrument_id, "NRML", o.qty * o.sign)]
         combined: dict = {}
         for iid, prod, units in after_legs:
             combined[(iid, prod)] = combined.get((iid, prod), 0) + units
-        after = self.margin.requirement([(i, p, u) for (i, p), u in combined.items()], self.inst.__getitem__,
-                                        lambda i: px if i == o.instrument_id else self._ref_price(i), d)
+        merged = [(i, p, u) for (i, p), u in combined.items()]
+        price_after = lambda i: px if i == o.instrument_id else self._ref_price(i)  # noqa: E731
+        if hasattr(self.margin, "pair"):            # the staircase: before and after at one step (MEZ 4.9)
+            before, after = self.margin.pair(legs, merged, self.inst.__getitem__, self._ref_price, price_after, d)
+        else:
+            before = self.margin.requirement(legs, self.inst.__getitem__, self._ref_price, d)
+            after = self.margin.requirement(merged, self.inst.__getitem__, price_after, d)
         return max(0, after - before)
 
     # ── Orders (A4 §3) ───────────────────────────────────────────────────────
@@ -366,8 +415,7 @@ class Engine:
                     return code
             elif code == "R_SESSION" and not system:
                 g = self.group_of(o.instrument_id, d)
-                seg = "FO" if g.startswith("FO") else "CM"
-                cutoff = self.day_by_date[d]["mis_cutoff_ns"].get(seg) if d in self.day_by_date else None
+                cutoff = self.day_by_date[d]["mis_cutoff_ns"].get(_cutoff_key(g)) if d in self.day_by_date else None
                 if o.product == "MIS" and cutoff is not None and self.now >= cutoff:
                     return code
                 if self.policies["preopen"] == "reject" and self.phase_at(g, self.now) != "CONTINUOUS":
@@ -417,7 +465,8 @@ class Engine:
             elif code == "R_MARGIN" and not system:
                 px = self._order_px(o)
                 need = self._required(o, px)
-                if need > self.funds().available:
+                # A4 §6.5: only risk-increasing orders are refused, so a shortfall can be traded out of
+                if need > self.funds().available and not self._reduces(o.instrument_id, o.product, o.side, o.qty):
                     return code
                 o.reserved = need
                 self.book.ledger.reserved += need
@@ -845,6 +894,7 @@ class Engine:
                 m.min_interval = isec
             m.bars.setdefault(isec, []).append((rec["start_ns"], rec["open"], rec["high"], rec["low"], rec["close"],
                                                 rec["volume"], rec["oi"]))
+            m.oi = rec["oi"]
             fill_bar = isec == m.min_interval
             bar = {"start": rec["start_ns"], "open": rec["open"], "high": rec["high"], "low": rec["low"],
                    "close": rec["close"], "volume": rec["volume"], "t": rec["t_event"]}
@@ -879,6 +929,7 @@ class Engine:
         m.s0, m.s1 = m.s1, snap
         m.ltp, m.t = rec["ltp"], rec["t_event"]
         if kind == "TICK_FULL":
+            m.oi = rec["oi"]
             m.book = [(p, q, n) for p, q, n in rec["depth"]]
             bid = rec["depth"][0][0] or None
             ask = rec["depth"][5][0] or None
@@ -955,11 +1006,17 @@ class Engine:
         return out
 
     def _settle_final(self, underlying_id: int, d: str, fsp: int, source: str) -> None:
-        """Cash settlement at the FSP (A4 §7.2)."""
-        for p in self._expiring(underlying_id, d):
+        """Settlement at the FSP: in cash (A4 §7.2), or by delivery of the stock (§7.3)."""
+        expiring = self._expiring(underlying_id, d)
+        physical = [p for p in expiring if self.inst[p.instrument_id]["settlement"] == "physical"]
+        if physical:
+            self._settle_physical(underlying_id, d, fsp, source, physical)
+        for p in expiring:
             row = self.inst[p.instrument_id]
+            if row["settlement"] == "physical":
+                continue
             if row["settlement"] != "cash":
-                raise RunError(f"{row['tradingsymbol']}: physical settlement is out of scope until M4.6")
+                raise RunError(f"{row['tradingsymbol']}: unknown settlement {row['settlement']!r}")
             led = self.book.ledger
             closing_side = "SELL" if p.d > 0 else "BUY"
             units = p.q
@@ -975,12 +1032,60 @@ class Engine:
                 self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, intrinsic))
                 led.cash += p.qty * intrinsic
                 p.realised += p.d * (p.q * intrinsic - p.c)
-                if p.d > 0 and intrinsic > 0:
-                    parts = self.costs.exercise(row["kind"], p.q * intrinsic, d)
-                    self._charge_row(self.book, "settlement", 0, p.instrument_id, d, parts)
+                # D-59: brokerage on every option open at expiry (exercised, assigned or expired);
+                # exercise STT only on the intrinsic value of a long ITM one
+                exercised = p.q * intrinsic if p.d > 0 else 0
+                parts = self.costs.exercise(row["kind"], exercised, d)
+                self._charge_row(self.book, "settlement", 0, p.instrument_id, d, parts)
                 p.q, p.c = 0, 0
                 p.last_mark, p.mark_source = intrinsic, source
             self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
+
+    def _settle_physical(self, stock: int, d: str, fsp: int, source: str, positions: list) -> None:
+        """Stock F&O at expiry (A4 §7.3, D-58): close each position, then deliver the stock as CNC trades."""
+        if stock not in self.inst or self.inst[stock]["kind"] != "EQ":
+            raise RunError(f"{self.inst[positions[0].instrument_id]['tradingsymbol']}: physical settlement needs "
+                           f"its underlying stock in the bundle")
+        led = self.book.ledger
+        legs = []                                   # (take, units, price, contract id, kind, exercised intrinsic)
+        for p in sorted(positions, key=lambda p: (p.instrument_id, p.product)):
+            row = self.inst[p.instrument_id]
+            closing_side = "SELL" if p.d > 0 else "BUY"
+            units = p.q
+            if row["kind"] == "FUT":
+                self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, fsp))
+                led.settle_variation(p, fsp, source)
+                p.realised = p.pnl(fsp)
+                p.vm = p.realised
+                legs.append((p.d > 0, units, fsp, p.instrument_id, row["kind"], 0))
+            else:
+                k = row["strike_paise"]
+                self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, 0))
+                p.realised += p.d * (0 - p.c)        # the option closes at 0: its premium is its P&L
+                p.last_mark, p.mark_source = 0, source
+                itm = fsp > k if row["kind"] == "CE" else fsp < k
+                if itm:
+                    take = (row["kind"] == "CE") == (p.d > 0)
+                    exercised = units * abs(fsp - k) if p.d > 0 else 0
+                    legs.append((take, units, k, p.instrument_id, row["kind"], exercised))
+                else:                                # D-59: an expiring OTM option pays the expiry brokerage
+                    self._charge_row(self.book, "settlement", 0, p.instrument_id, d,
+                                     self.costs.exercise(row["kind"], 0, d))
+            p.q, p.c = 0, 0
+            self.log("INFO", f"settled {p.instrument_id} {p.product} at FSP {fsp} ({source})")
+        netted = {True: min(sum(u for t, u, *_ in legs if t), sum(u for t, u, *_ in legs if not t))}
+        netted[False] = netted[True]
+        for take, units, price, iid, kind, exercised in legs:
+            n = min(units, netted[take])
+            netted[take] -= n
+            side = "BUY" if take else "SELL"
+            led.apply_fill(stock, "CNC", self._style(stock, "CNC"), side, units, price, self._cnc_credit_ppb(), d)
+            held = led.position(stock, "CNC")
+            if held is not None and held.qty < 0:
+                self.labels.add("short_delivery")
+            parts = self.costs.delivery(kind, units * price, n * price, exercised, d)
+            self._charge_row(self.book, "settlement", 0, iid, d, parts)
+            self.log("INFO", f"delivered {stock} CNC {side} {units} at {price} ({source})")
 
     def _on_phase(self, payload: tuple) -> None:
         g, phase = payload
@@ -1020,8 +1125,7 @@ class Engine:
         for (iid, prod), p in sorted(self.book.ledger.positions.items()):
             if prod != "MIS" or not p.q:
                 continue
-            g = self.group_of(iid, d)
-            if ("FO" if g.startswith("FO") else "CM") != seg:
+            if _cutoff_key(self.group_of(iid, d)) != seg:
                 continue
             side = "SELL" if p.d > 0 else "BUY"
             self.place(iid, side, p.q, "MIS", "MARKET", tag="AUTO_SQOFF", system=True)
@@ -1047,10 +1151,19 @@ class Engine:
             if m is None:
                 m = p.last_mark if p.last_mark is not None else p.avg_price
             unreal = p.d * (p.q * m - p.c)
-            self.positions_eod.append((d, iid, prod, p.qty, p.avg_price, m, src, unreal, p.realised))
+            row = self.inst[iid]
+            # D-55: a derivative's underlying mark at day end (the run's mark rule), for Greeks in the API
+            uid = row.get("underlying_id") if row["kind"] in ("FUT", "CE", "PE") else None
+            under = self.mark_price(uid) if uid is not None else None
+            self.positions_eod.append((d, iid, prod, p.qty, p.avg_price, m, src, unreal, p.realised, under))
         nav = led.nav(self.mark_price)
         blocked = self.blocked(led, d)
         self.equity.append((d, nav, led.cash, blocked, nav - led.capital + led.charges_total, led.charges_total))
+        if hasattr(self.margin, "breakdown"):       # per-underlying day rows (M4.8; flat writes none)
+            legs = [(p.instrument_id, p.product, p.qty) for p in led.positions.values() if p.q and p.product == "NRML"]
+            for b in self.margin.breakdown(legs, self.inst.__getitem__, self._ref_price, d):
+                self.margin_daily.append((d, b.underlying_id, self.margin_model, b.step, b.scan, b.somc, b.elm,
+                                          b.addons, b.total))
         self.strategy.on_session_end(self.ctx)
         self._deliver()
         led.release_day(self._next_date(d))
@@ -1111,6 +1224,7 @@ class Engine:
             self.key = (self.now, DAY_END, 0, self.internal_seq)
             self._activate_due(self.now)
             self._dispatch_internal("DAY_END", self._date(self.now))
+        self.labels |= self.margin.labels                # e.g. delivery_margin_approx (D-60)
 
     def _track_open(self) -> None:
         is_open = False

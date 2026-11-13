@@ -6,6 +6,8 @@ import type { StrategyParam } from "./types";
 
 const HHMM = /^\s*\d{1,2}:\d{1,2}(:\d{1,2})?\s*$/;
 const SYMBOL = /^([A-Z]+:)?\S.*$/;
+const DIGITS = String.raw`\d+(?:_\d+)*`;
+const DECIMAL = new RegExp(String.raw`^\s*[+-]?(?:${DIGITS}(?:\.(?:${DIGITS})?)?|\.${DIGITS})(?:[eE][+-]?${DIGITS})?\s*$`);
 
 function typeProblem(type: StrategyParam["type"], v: unknown): string | null {
   switch (type) {
@@ -18,7 +20,8 @@ function typeProblem(type: StrategyParam["type"], v: unknown): string | null {
       return typeof v === "boolean" ? null : "is not true or false";
     case "decimal":
       if (typeof v === "number") return Number.isFinite(v) ? null : "is not a decimal number";
-      if (typeof v === "string" && /^\s*[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?\s*$/.test(v)) return null;
+      // Python's Decimal(): digits may be grouped with single underscores ("1_000.5")
+      if (typeof v === "string" && DECIMAL.test(v)) return null;
       return "is not a decimal number";
     case "str":
     case "underlying":

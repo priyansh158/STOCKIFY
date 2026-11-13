@@ -1,0 +1,156 @@
+{
+  "schema": "stockify.freeze_limits/1",
+  "_comment": "Index quantity-freeze limits (units per order) from NSE circulars, dated (01_facts X-5). For an underlying listed here these rows decide; qtyfreeze.csv snapshots in refdata only cross-check them, since the CSV lags circulars (S-6). Limits before the first row are not known: no slicing then.",
+  "limits": [
+    {
+      "underlying": "BANKNIFTY",
+      "effective_from": "2026-03-02",
+      "freeze_qty": 600,
+      "source": "X-5 (NSE circular, Angel One / TeamLease summaries)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "effective_from": "2026-10-05",
+      "freeze_qty": 1440,
+      "source": "X-5 (NSE/FAOP/76693)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "effective_from": "2026-11-02",
+      "freeze_qty": 900,
+      "source": "X-5 (NSE/FAOP/77189)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "FINNIFTY",
+      "effective_from": "2026-03-02",
+      "freeze_qty": 1200,
+      "source": "X-5 (NSE circular, Angel One / TeamLease summaries)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "FINNIFTY",
+      "effective_from": "2026-09-01",
+      "freeze_qty": 1800,
+      "source": "X-5 (Angel One summary; no circular number given)",
+      "verified": false
+    },
+    {
+      "underlying": "FINNIFTY",
+      "effective_from": "2026-10-05",
+      "freeze_qty": 3240,
+      "source": "X-5 (NSE/FAOP/76693)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "FINNIFTY",
+      "effective_from": "2026-11-02",
+      "freeze_qty": 1800,
+      "source": "X-5 (NSE/FAOP/77189)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "MIDCPNIFTY",
+      "effective_from": "2026-03-02",
+      "freeze_qty": 2800,
+      "source": "X-5 (NSE circular, Angel One / TeamLease summaries)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "MIDCPNIFTY",
+      "effective_from": "2026-10-05",
+      "freeze_qty": 5760,
+      "source": "X-5 (NSE/FAOP/76693)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "MIDCPNIFTY",
+      "effective_from": "2026-11-02",
+      "freeze_qty": 2800,
+      "source": "X-5 (NSE/FAOP/77189)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTY",
+      "effective_from": "2026-03-02",
+      "freeze_qty": 1800,
+      "source": "X-5 (NSE circular, Angel One / TeamLease summaries)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTY",
+      "effective_from": "2026-10-05",
+      "freeze_qty": 3510,
+      "source": "X-5 (NSE/FAOP/76693)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTY",
+      "effective_from": "2026-11-02",
+      "freeze_qty": 1800,
+      "source": "X-5 (NSE/FAOP/77189)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTYFPI",
+      "effective_from": "2026-09-01",
+      "freeze_qty": 8500,
+      "source": "X-5 (Angel One summary; no circular number given)",
+      "verified": false
+    },
+    {
+      "underlying": "NIFTYFPI",
+      "effective_from": "2026-10-05",
+      "freeze_qty": 53900,
+      "source": "X-5 (NSE/FAOP/76693)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTYFPI",
+      "effective_from": "2026-11-02",
+      "freeze_qty": 8500,
+      "source": "X-5 (NSE/FAOP/77189)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTYNXT50",
+      "effective_from": "2026-03-02",
+      "freeze_qty": 600,
+      "source": "X-5 (NSE circular, Angel One / TeamLease summaries)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTYNXT50",
+      "effective_from": "2026-10-05",
+      "freeze_qty": 1125,
+      "source": "X-5 (NSE/FAOP/76693)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    },
+    {
+      "underlying": "NIFTYNXT50",
+      "effective_from": "2026-11-02",
+      "freeze_qty": 600,
+      "source": "X-5 (NSE/FAOP/77189)",
+      "verified": true,
+      "verified_on": "2026-11-07"
+    }
+  ]
+}

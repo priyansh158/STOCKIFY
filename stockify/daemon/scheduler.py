@@ -10,6 +10,7 @@ trade date and are skipped on non-trading days:
 | session     | subscribe 08:58 → 15:45   | the recorder (`run_recorder`)                |
 | compaction  | 16:30                     | must finish before sleeping (M1.7)           |
 | nse_fetch   | 19:30 → 23:00             | catch-up: runs on the next wake if slept through (M1.3) |
+| margin_files | 17:20 → 22:00            | SPAN + ELM files (CAM 4.2); holds sleep until done or 22:00 |
 | prune       | after the session         | recorder_status rows older than 7 days       |
 
 Completed jobs are remembered in `$LAB/scheduler_state.json` so a restart or a
@@ -18,8 +19,11 @@ resume from hibernate runs what was missed, once.
 Sleep after close (`schedule.json` → `sleep_after_close`): allowed once the
 session and compaction are done, not before `not_before`, not while the owner
 used the laptop in the last `idle_minutes`, and not when `$LAB/stay_awake`
-exists. Catch-up jobs never block sleep. The wake time is `wake_ist` on the
-next trading day.
+exists. Catch-up jobs never block sleep, with one exception: the day's
+margin files (`HOLDS_SLEEP_UNTIL_WINDOW_ENDS`) hold it until they are archived
+or their window ends (22:00), so they are fetched the same evening and retried
+every `retry_every_min`, not once the next morning (CAM 4.4). The wake time is
+`wake_ist` on the next trading day.
 """
 from __future__ import annotations
 
@@ -34,7 +38,8 @@ from stockify.data import calendar
 SEGMENT = "FO"
 CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
-CATCH_UP = ("nse_fetch",)
+CATCH_UP = ("nse_fetch", "margin_files")
+HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files",)   # fetched the same evening (CAM 4.4), not the next morning
 
 
 def schedule() -> dict:
@@ -51,6 +56,8 @@ class DayPlan:
     compaction_ns: int
     nse_fetch_ns: int
     nse_fetch_until_ns: int
+    margin_files_ns: int
+    margin_files_until_ns: int
     keep_awake_ns: int
 
 
@@ -66,6 +73,8 @@ def plan(day: date, cfg: dict | None = None) -> DayPlan:
         compaction_ns=timeutil.ist_ns(day, jobs["compaction"]),
         nse_fetch_ns=timeutil.ist_ns(day, jobs["nse_fetch"]["start"]),
         nse_fetch_until_ns=timeutil.ist_ns(day, jobs["nse_fetch"]["until"]),
+        margin_files_ns=timeutil.ist_ns(day, jobs["margin_files"]["start"]),
+        margin_files_until_ns=timeutil.ist_ns(day, jobs["margin_files"]["until"]),
         keep_awake_ns=timeutil.ist_ns(day, cfg["keep_awake"]["from"]),
     )
 
@@ -114,6 +123,19 @@ class State:
         tmp.replace(self.path)
 
 
+def retry_every_ns(job: str, cfg: dict | None = None) -> int:
+    """The gap between two attempts of a catch-up job (`retry_every_min`); 0 when it has none."""
+    spec = (cfg or schedule())["jobs"].get(job)
+    if not isinstance(spec, dict):
+        return 0
+    return int(spec.get("retry_every_min", 0)) * 60 * 1_000_000_000
+
+
+def window_end_ns(job: str, day: date, cfg: dict | None = None) -> int:
+    p = plan(day, cfg)
+    return {"nse_fetch": p.nse_fetch_until_ns, "margin_files": p.margin_files_until_ns}[job]
+
+
 def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tuple[str, date]]:
     """Catch-up jobs whose start passed on a recent trading day and never completed."""
     out = []
@@ -125,6 +147,8 @@ def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tupl
         p = plan(d, cfg)
         if "nse_fetch" in CATCH_UP and p.nse_fetch_ns <= now_ns and not state.done("nse_fetch", d):
             out.append(("nse_fetch", d))
+        if "margin_files" in CATCH_UP and p.margin_files_ns <= now_ns and not state.done("margin_files", d):
+            out.append(("margin_files", d))
     return out
 
 
@@ -149,6 +173,11 @@ def should_sleep(now_ns: int, day: date | None, state: State, *, idle_s: float,
         for job in BLOCKS_SLEEP:
             if not state.done(job, day):
                 return False, f"{job} for {day} not done"
+        for job in HOLDS_SLEEP_UNTIL_WINDOW_ENDS:
+            until = window_end_ns(job, day, cfg)
+            if not state.done(job, day) and now_ns < until:
+                return False, (f"{job} for {day} not done (window until "
+                               f"{timeutil.ns_to_ist(until):%H:%M} IST)")
     if idle_s < 60 * float(rule["idle_minutes"]):
         return False, f"owner active {idle_s / 60:.0f} min ago"
     return True, "ok"

@@ -15,6 +15,7 @@
 #include "stocksim/json_bundle.hpp"
 #include "stocksim/json_out.hpp"
 #include "stocksim/pcg32.hpp"
+#include "stocksim/pricing/black76.hpp"
 #include "stocksim/sha256.hpp"
 
 namespace py = pybind11;
@@ -90,6 +91,20 @@ void bind_testing(py::module_& t) {
     t.def("ema", &stocksim::ema);
     t.def("rsi", &stocksim::rsi);
     t.def("atr", &stocksim::atr);  // [(high, low, close), …]
+    // Black-76 (M4.3), cross-checked against stockify.fno.black76.
+    t.def("b76_price", &stocksim::pricing::price, py::arg("is_call"), py::arg("f"), py::arg("k"), py::arg("t"),
+          py::arg("r"), py::arg("sigma"));
+    t.def("b76_greeks", [](bool is_call, double f, double k, double t, double r, double sigma) {
+        const stocksim::pricing::Greeks g = stocksim::pricing::greeks(is_call, f, k, t, r, sigma);
+        return py::make_tuple(g.price, g.delta, g.gamma, g.vega, g.theta, g.rho);
+    });
+    t.def("b76_implied_vol", [](bool is_call, double target, double f, double k, double t, double r, double tick) {
+        const stocksim::pricing::ImpliedVol iv = stocksim::pricing::implied_vol(is_call, target, f, k, t, r, tick);
+        return py::make_tuple(iv.sigma, iv.reason ? py::object(py::str(std::string(stocksim::pricing::to_string(*iv.reason))))
+                                                  : py::object(py::none()));
+    }, py::arg("is_call"), py::arg("target"), py::arg("f"), py::arg("k"), py::arg("t"), py::arg("r"),
+       py::arg("tick") = stocksim::pricing::kDefaultTick);
+    t.def("b76_year_fraction", &stocksim::pricing::year_fraction);
     // Many doubles at once (little-endian float64 bytes) → the formatted strings joined by "\n".
     t.def("format_floats", [](const py::bytes& raw) {
         const std::string buf = raw;

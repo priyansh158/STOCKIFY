@@ -155,6 +155,8 @@ export interface TestRunDetail {
   config: Record<string, unknown>;
   metrics: Record<string, unknown>;
   manifest?: Record<string, unknown> | null;
+  fill_count?: number | null;
+  cost_totals: Record<string, number>;
 }
 
 export interface TestFill {
@@ -183,6 +185,54 @@ export interface TestCharge {
   trade_date: string;
   components: Record<string, number>;
   total_paise: number;
+}
+
+export interface TestMargin {
+  trade_date: string;
+  underlying_id: number;
+  underlying?: string | null;
+  model: string;
+  step?: string;
+  scan_paise: number;
+  somc_paise: number;
+  elm_paise: number;
+  addons_paise: number;
+  total_paise: number;
+}
+
+export interface TestSettlement {
+  t_ns: number;
+  t_ist: string;
+  trade_date: string;
+  kind: "cash" | "delivery";
+  instrument_id: number;
+  tradingsymbol?: string | null;
+  product: string;
+  side?: string | null;
+  qty?: number | null;
+  price_paise: number;
+  source: string;
+  charges_paise?: number | null;
+}
+
+export interface TestGreek {
+  trade_date: string;
+  instrument_id: number;
+  tradingsymbol?: string | null;
+  underlying?: string | null;
+  kind: string;
+  strike_paise?: number | null;
+  expiry?: string | null;
+  qty: number;
+  mark_paise: number;
+  underlying_paise?: number | null;
+  iv?: number | null;
+  iv_reason?: string | null;
+  delta_units?: number | null;
+  gamma_units_per_rupee?: number | null;
+  vega_rupees_per_point?: number | null;
+  theta_rupees_per_day?: number | null;
+  expiry_close_estimated: boolean;
 }
 
 export interface TestLogs {

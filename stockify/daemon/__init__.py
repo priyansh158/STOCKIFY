@@ -86,8 +86,10 @@ def estimate_bytes_per_day(day: date, manager) -> dict:  # noqa: ANN001
 RETRY_SLEEP_CHECK_S = 15 * 60
 
 
-def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
-    """Jobs whose milestone is not built yet are logged, not faked."""
+def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
+    """Jobs whose milestone is not built yet are logged, not faked. `now_ns` is the daemon clock's time (default:
+    the wall clock): the retry windows are judged against it."""
+    now_ns = timeutil.now_ns() if now_ns is None else now_ns
     if job == "compaction":
         from stockify.data import compact
         try:
@@ -128,14 +130,30 @@ def _run_job(job: str, day: date, state) -> None:  # noqa: ANN001
             log.info("NSE %s %s: %s %s", r.dataset, r.trade_date, r.outcome, r.detail)
         if nse_files.complete(results):
             state.mark(job, day)
-        elif all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False for r in results)                 and timeutil.now_ns() >= scheduler.plan(day).nse_fetch_until_ns:
+        elif all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False for r in results)                 and now_ns >= scheduler.plan(day).nse_fetch_until_ns:
             # Past the retry window and NSE still has not published: stop asking for this day.
             log.warning("NSE files for %s still missing after the retry window; giving up "
                         "(run `python -m stockify nse fetch --date %s` later)", day, day)
             state.mark(job, day)
+    elif job == "margin_files":
+        from stockify.daemon import scheduler
+        from stockify.data import nse_margin_files
+        try:
+            res = nse_margin_files.fetch_day(day)
+        except Exception as e:                       # network or config trouble: retried on the next pass
+            log.exception("margin files for %s failed: %s", day, e)
+            return
+        log.info("margin files %s: stored %d, already archived %d, missing %d, rejected %d, errors %d",
+                 day, len(res.stored), len(res.unchanged), len(res.missing), len(res.rejected), len(res.errors))
+        if nse_margin_files.complete(res):
+            state.mark(job, day)
+        elif now_ns >= scheduler.plan(day).margin_files_until_ns:
+            log.warning("NSE margin files for %s still incomplete after the retry window; giving up "
+                        "(run `python -m stockify nse margin-files --date %s` later)", day, day)
+            state.mark(job, day)
     elif job == "prune":
         from stockify import store
-        week_ago = timeutil.now_ns() - 7 * 86_400 * 1_000_000_000
+        week_ago = now_ns - 7 * 86_400 * 1_000_000_000
         removed = store.prune_recorder_status(week_ago)
         log.info("pruned %d recorder_status rows older than 7 days", removed)
         state.mark(job, day)
@@ -174,10 +192,15 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     from stockify.daemon import reminder
     reminder_kw = {"send": send_reminder} if send_reminder else {}
 
+    tried: dict[tuple[str, date], int] = {}                  # (job, day) -> last attempt, for retry_every_min
     while not stop.is_set():
         now = clock.now_ns()
         for job, d in scheduler.missed_jobs(now, state):
-            _run_job(job, d, state)
+            last = tried.get((job, d))
+            if last is not None and now < last + scheduler.retry_every_ns(job):
+                continue
+            tried[(job, d)] = now
+            _run_job(job, d, state, now)
 
         today = timeutil.ns_to_ist(now).date()
         if calendar_is_trading(today) and now >= scheduler.plan(today).unsubscribe_ns:

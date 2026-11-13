@@ -1,0 +1,270 @@
+{
+ "about": "Parameter values and the problem (or null) that stockify.strategies._catalogue.validate_params reports for each; web/src/lib/params.ts must agree on every case (tests/stockify/test_param_checks.py runs both). The server is the authority: these answers were recorded from it.",
+ "cases": [
+  {
+   "type": "int",
+   "value": 3,
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": "3",
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": " 3 ",
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": "+3",
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": "-3",
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": "1_000",
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": "1__0",
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "int",
+   "value": "1_",
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "int",
+   "value": "_1",
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "int",
+   "value": 2.0,
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": 2.5,
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "int",
+   "value": true,
+   "problem": null
+  },
+  {
+   "type": "int",
+   "value": "x",
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "int",
+   "value": "",
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "int",
+   "value": "3.0",
+   "problem": "is not a whole number"
+  },
+  {
+   "type": "decimal",
+   "value": "1.5",
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": "1_000.5",
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": ".5",
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": "5.",
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": "1e3",
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": "-2",
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": "abc",
+   "problem": "is not a decimal number"
+  },
+  {
+   "type": "decimal",
+   "value": "NaN",
+   "problem": "is not a decimal number"
+  },
+  {
+   "type": "decimal",
+   "value": "Infinity",
+   "problem": "is not a decimal number"
+  },
+  {
+   "type": "decimal",
+   "value": 2,
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": 2.5,
+   "problem": null
+  },
+  {
+   "type": "decimal",
+   "value": true,
+   "problem": "is not a decimal number"
+  },
+  {
+   "type": "decimal",
+   "value": "",
+   "problem": "is not a decimal number"
+  },
+  {
+   "type": "bool",
+   "value": true,
+   "problem": null
+  },
+  {
+   "type": "bool",
+   "value": false,
+   "problem": null
+  },
+  {
+   "type": "bool",
+   "value": "true",
+   "problem": "is not true or false"
+  },
+  {
+   "type": "bool",
+   "value": 1,
+   "problem": "is not true or false"
+  },
+  {
+   "type": "bool",
+   "value": 0,
+   "problem": "is not true or false"
+  },
+  {
+   "type": "hhmm",
+   "value": "15:10",
+   "problem": null
+  },
+  {
+   "type": "hhmm",
+   "value": "9:5",
+   "problem": null
+  },
+  {
+   "type": "hhmm",
+   "value": "24:00",
+   "problem": "is not a time like 15:10"
+  },
+  {
+   "type": "hhmm",
+   "value": "15",
+   "problem": "is not a time like 15:10"
+  },
+  {
+   "type": "hhmm",
+   "value": " 9:15 ",
+   "problem": null
+  },
+  {
+   "type": "hhmm",
+   "value": "15:10:30",
+   "problem": null
+  },
+  {
+   "type": "hhmm",
+   "value": "15:60",
+   "problem": "is not a time like 15:10"
+  },
+  {
+   "type": "hhmm",
+   "value": "15:10:60",
+   "problem": "is not a time like 15:10"
+  },
+  {
+   "type": "hhmm",
+   "value": 1510,
+   "problem": "is not a time like 15:10"
+  },
+  {
+   "type": "hhmm",
+   "value": "9:15am",
+   "problem": "is not a time like 15:10"
+  },
+  {
+   "type": "symbol",
+   "value": "NSE:RELIANCE",
+   "problem": null
+  },
+  {
+   "type": "symbol",
+   "value": "RELIANCE",
+   "problem": null
+  },
+  {
+   "type": "symbol",
+   "value": "",
+   "problem": "is not a symbol like NSE:RELIANCE"
+  },
+  {
+   "type": "symbol",
+   "value": " ",
+   "problem": "is not a symbol like NSE:RELIANCE"
+  },
+  {
+   "type": "symbol",
+   "value": "nse:x",
+   "problem": null
+  },
+  {
+   "type": "symbol",
+   "value": "NSE:NIFTY 50",
+   "problem": null
+  },
+  {
+   "type": "str",
+   "value": "CNC",
+   "problem": null
+  },
+  {
+   "type": "str",
+   "value": "",
+   "problem": "is not a non-empty text"
+  },
+  {
+   "type": "str",
+   "value": "  ",
+   "problem": "is not a non-empty text"
+  },
+  {
+   "type": "str",
+   "value": 3,
+   "problem": "is not a non-empty text"
+  }
+ ]
+}

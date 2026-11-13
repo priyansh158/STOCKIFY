@@ -1,0 +1,18 @@
+{
+  "schema": "stockify.run/1",
+  "name": "short_straddle_nifty_recorded",
+  "family_id": "short_straddle_stop/NIFTY/weekly",
+  "strategy": { "kind": "python", "ref": "stockify.strategies.short_straddle_stop:ShortStraddleStop",
+                "params": { "underlying": "NIFTY", "entry_hhmm": "09:30", "exit_hhmm": "15:15", "stop_pct": "0.3",
+                            "lots": 1, "min_days": 0, "protection_bp": 5000 } },
+  "data": { "packs": [ { "spec": { "dataset": "ticks", "from": "2026-11-11", "to": "2026-11-11",
+            "instruments": [ "NSE:NIFTY 50",
+                             { "chain": { "underlying": "NIFTY", "expiry": "nearest", "strikes": 10 } } ] } } ] },
+  "price_basis": "raw",
+  "capital_paise": 100000000,
+  "fill_model": { "kind": "snapshot_quote" },
+  "costs": { "broker": "zerodha", "allow_unverified": true },
+  "margin": { "model": "spanlite" },
+  "mark": "mid",
+  "seed": 42
+}

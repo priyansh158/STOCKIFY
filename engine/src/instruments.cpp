@@ -1,6 +1,7 @@
 #include "stocksim/instruments.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "stocksim/errors.hpp"
 
@@ -49,13 +50,22 @@ InstrumentTable::InstrumentTable(const Json& rows, const SessionCalendar& calend
         const Json& r = rows[i];
         const std::string where = "instruments[" + std::to_string(i) + "]";
         Instrument inst;
-        inst.id = static_cast<InstrumentId>(require_int(r, "id", where));
+        // Checked once here, so no later division or cast can meet a bad value (M3 review: a lot or tick of 0
+        // was a hardware divide-by-zero that killed the process).
+        const auto id_in_range = [&](std::int64_t v, const char* field) {
+            if (v < 0 || v > static_cast<std::int64_t>(UINT32_MAX)) {
+                throw FormatError("bundle: " + where + ": " + field + " must be between 0 and 4294967295, got " +
+                                  std::to_string(v));
+            }
+            return static_cast<InstrumentId>(v);
+        };
+        inst.id = id_in_range(require_int(r, "id", where), "id");
         inst.exchange = opt_string(r, "exchange").value_or("");
         inst.kind = require_string(r, "kind", where);
         inst.tradingsymbol = opt_string(r, "tradingsymbol").value_or("");
         inst.underlying = opt_string(r, "underlying");
         if (const auto u = opt_int(r, "underlying_id")) {
-            inst.underlying_id = static_cast<InstrumentId>(*u);
+            inst.underlying_id = id_in_range(*u, "underlying_id");
         }
         inst.expiry = opt_date(r, "expiry");
         inst.actual_expiry = opt_date(r, "actual_expiry");
@@ -69,12 +79,22 @@ InstrumentTable::InstrumentTable(const Json& rows, const SessionCalendar& calend
             }
         }
         inst.session_group = require_string(r, "session_group", where);
+        if ((inst.kind == "FUT" || inst.kind == "CE" || inst.kind == "PE") && !inst.last_trading_ns) {
+            throw FormatError("bundle: " + where + ": a " + inst.kind + " needs last_trading_ns (D-61)");
+        }
         if (const auto it = r.find("specs"); it != r.end() && it->is_array()) {
             for (const Json& s : *it) {
                 Spec spec;
                 spec.from = parse_iso_date(require_string(s, "from", where + ".specs"));
                 spec.lot = require_int(s, "lot", where + ".specs");
                 spec.tick = require_int(s, "tick_paise", where + ".specs");
+                const std::string at = "bundle: " + where + ".specs (from " + iso_date(spec.from) + "): ";
+                if (spec.lot <= 0) {
+                    throw FormatError(at + "lot must be positive, got " + std::to_string(spec.lot));
+                }
+                if (spec.tick <= 0) {
+                    throw FormatError(at + "tick_paise must be positive, got " + std::to_string(spec.tick));
+                }
                 spec.freeze_qty = opt_int(s, "freeze_qty");
                 spec.row = s;
                 inst.specs.push_back(std::move(spec));

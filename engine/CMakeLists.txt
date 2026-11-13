@@ -13,10 +13,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(STOCKSIM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 # Determinism (C-9): precise floating point, never /fp:fast.
-set(STOCKSIM_CXX_FLAGS /W4 /permissive- /utf-8 /fp:precise /EHsc)
+# Hardening (ST 4.1): Control Flow Guard and the SDL checks, on every target (and in the flags hash).
+set(STOCKSIM_CXX_FLAGS /W4 /permissive- /utf-8 /fp:precise /EHsc /guard:cf /sdl)
 if(STOCKSIM_WARNINGS_AS_ERRORS)
   list(APPEND STOCKSIM_CXX_FLAGS /WX)
 endif()
+
+# Link side: CFG needs /guard:cf at link time too; ASLR (/DYNAMICBASE) and 64-bit ASLR (/HIGHENTROPYVA) set explicitly.
+add_link_options(/guard:cf /DYNAMICBASE /HIGHENTROPYVA)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
@@ -86,7 +90,11 @@ add_library(stocksim_core STATIC
   src/costs.cpp
   src/matcher.cpp
   src/metrics.cpp
-  src/artifacts.cpp)
+  src/artifacts.cpp
+  src/pricing/black76.cpp
+  src/margin/spanlite.cpp
+  src/margin/span_exact.cpp
+  src/margin/staircase.cpp)
 target_include_directories(stocksim_core
   PUBLIC  "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -121,8 +129,11 @@ add_executable(stocksim_tests
   tests/test_output.cpp
   tests/test_bundle.cpp
   tests/test_packs.cpp
-  tests/test_session.cpp)
+  tests/test_session.cpp
+  tests/test_black76.cpp
+  tests/test_span_exact.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_strategies stocksim_core)
+target_compile_definitions(stocksim_tests PRIVATE STOCKSIM_FIXTURES_DIR="${REPO_ROOT}/tests/fixtures")
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
 
 enable_testing()

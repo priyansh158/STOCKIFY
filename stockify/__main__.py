@@ -13,7 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "margin": ("M4", "margin calibration tools"),
     "parity": ("M5", "nightly journal parity"),
     "compare": ("M6", "compare runs"),
     "export": ("M6", "export a run"),
@@ -122,6 +121,24 @@ def _cmd_calendar(args) -> int:
     return 0
 
 
+def _cmd_calendar_audit(args) -> int:
+    from datetime import date
+
+    from stockify.tools import holiday_audit
+
+    start, end = date.fromisoformat(args.date_from), date.fromisoformat(args.date_to)
+    if end < start:
+        print(f"--to {end} is before --from {start}", file=sys.stderr)
+        return 1
+    found = holiday_audit.audit(start, end, args.segment)
+    print(holiday_audit.report(found))
+    if found.not_checked:
+        print("calendar audit: " + ", ".join(name for name, _ in found.not_checked) + " not checked; run it again "
+              "while no recorder or daemon is writing", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _cmd_data_report(args) -> int:
     from datetime import date
 
@@ -209,6 +226,41 @@ def _cmd_nse_backfill(args) -> int:
         return 1
     print(json.dumps(totals, sort_keys=True))
     return 0 if not totals.get("error") else 1
+
+
+def _cmd_nse_margin_files(args) -> int:
+    from datetime import date
+
+    from stockify.data import nse_margin_files as mf
+
+    if args.elm_window:
+        results = mf.elm_window()
+        for r in results:
+            if r.stored or r.errors or r.rejected:
+                _print_margin(r)
+        have = sum(1 for r in results if mf.elm_name(r.day) in r.stored + r.unchanged)
+        print(f"ELM window: {have} of {len(results)} trading days archived "
+              f"({sum(1 for r in results if r.stored)} new)")
+        return 0 if not any(r.errors or r.rejected for r in results) else 1
+    if args.backfill:
+        results = mf.backfill(date.fromisoformat(args.backfill[0]), date.fromisoformat(args.backfill[1]))
+    elif args.date:
+        results = [mf.fetch_day(date.fromisoformat(args.date))]
+    else:
+        print("give --date YYYY-MM-DD, --backfill FROM TO or --elm-window", file=sys.stderr)
+        return 2
+    for r in results:
+        _print_margin(r)
+    return 0 if not any(r.errors or r.rejected for r in results) else 1
+
+
+def _print_margin(r) -> None:  # noqa: ANN001
+    print(f"{r.day}  stored {len(r.stored)}  already {len(r.unchanged)}  missing {len(r.missing)}  "
+          f"rejected {len(r.rejected)}  errors {len(r.errors)}")
+    for label, names in (("stored", r.stored), ("missing", r.missing), ("rejected", r.rejected),
+                         ("errors", r.errors)):
+        for name in names:
+            print(f"    {label:<8} {name}")
 
 
 def _cmd_bars_fetch(args) -> int:
@@ -307,6 +359,11 @@ def _cmd_run(args) -> int:
 
     if args.rerun:
         try:
+            paths.run_path(args.rerun)
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 2
+        try:
             new_id, same = runs.rerun(args.rerun)
         except runs.RunFailed as e:
             print(e, file=sys.stderr)
@@ -314,10 +371,15 @@ def _cmd_run(args) -> int:
         except runs.RunNotQueued as e:
             print(e, file=sys.stderr)
             return 2
-        print(paths.runs_dir() / new_id)
+        print(paths.run_path(new_id))
         if same:
             print(f"determinism.json reproduced byte for byte ({args.rerun} -> {new_id})", file=sys.stderr)
             return 0
+        if runs.step_column_only(args.rerun, new_id):     # a folder saved before D-64 (final I-3)
+            print(f"reproduced ({runs.STEP_COLUMN_NOTE}) ({args.rerun} -> {new_id}): every other deterministic "
+                  "file is byte for byte the same, and margin_daily.csv only gained its step column", file=sys.stderr)
+            return 0
+        print(f"not reproduced ({args.rerun} -> {new_id})", file=sys.stderr)
         for name in runs.determinism_diff(args.rerun, new_id):
             print(f"differs: {name}", file=sys.stderr)
         return 1
@@ -339,6 +401,137 @@ def _cmd_run(args) -> int:
     print(f"NAV {m.get('nav_start_paise', 0) / 100:,.2f} -> {m.get('nav_end_paise', 0) / 100:,.2f}; "
           f"trades {m.get('trades')}; costs {m.get('costs_total_paise', 0) / 100:,.2f}; "
           f"labels {', '.join(labels)}", file=sys.stderr)
+    return 0
+
+
+def _cmd_margin_calibrate(args) -> int:
+    from stockify.fno import calibrate
+    if args.refit:                                      # IWB 4.5: offline, from stored samples; never calls Kite
+        if not args.date:
+            print("--refit needs --date YYYY-MM-DD (the IST trade date of the stored calibration)", file=sys.stderr)
+            return 2
+        try:
+            report, params = calibrate.refit(args.underlying, args.date)
+        except calibrate.CalibrationError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print(report)
+        print(f"refitted row replaces {args.date}'s pending row in {params} (spanlite_pending; not used until you move "
+              "it into spanlite)", file=sys.stderr)
+        return 0
+    import kite_client
+    if not kite_client.is_enabled():
+        print("Kite is not set up here (no API key, or kiteconnect is not installed).", file=sys.stderr)
+        return 2
+    try:
+        client = kite_client.get_client()
+    except kite_client.KiteAuthError:
+        print("Log in to Kite first (the token is missing or from before today's 06:00 IST).", file=sys.stderr)
+        return 2
+    try:
+        report, params = calibrate.calibrate(client, args.underlying, args.samples, seed=args.seed,
+                                             skip_expiring=args.skip_expiring)
+    except calibrate.CalibrationError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(report)
+    print(f"fitted row added to {params} under spanlite_pending (not used until you move it into spanlite)",
+          file=sys.stderr)
+    return 0
+
+
+def _cmd_margin_span_validate(args) -> int:
+    """MEZ 4.8: the exact SPAN calculator and the ELM file against the stored Kite answers of one day (offline)."""
+    from datetime import date
+    from stockify import paths, store, timeutil
+    from stockify.fno import span_validate as sv
+    try:
+        day = date.fromisoformat(args.date)
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD, got {args.date!r}", file=sys.stderr)
+        return 2
+    underlyings = args.underlying
+    if not underlyings:
+        with sv.read_only():
+            underlyings = sorted({r["underlying"] for r in store.margin_calibrations()
+                                  if timeutil.ns_to_ist(r["wall_ns"]).date() == day})
+    rep = sv.validate(day, underlyings)
+    if not rep.samples:
+        print(f"no stored calibration samples on {day}", file=sys.stderr)
+        return 1
+    text = sv.report_text(rep)
+    out_dir = paths.lab_dir() / "margin_calibration"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = out_dir / f"span-validate-{day.isoformat()}.md"
+    report.write_text(text, encoding="utf-8")
+    _print_console(text)
+    print(report, file=sys.stderr)
+    return 0 if rep.gate()["passed"] else 1             # the report is written either way; 1 = the gate failed
+
+
+def _print_console(text: str) -> None:
+    """Print, with plain ASCII for the symbols a cp1252 console cannot show (₹ -> Rs)."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        text = (text.replace("₹", "Rs ").replace("—", "-").replace("×", "x").replace("−", "-")
+                .replace("·", "*").replace("≤", "<="))
+        text = text.encode(encoding, errors="replace").decode(encoding)
+    print(text)
+
+
+def _cmd_margin_check(args) -> int:
+    """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
+    from datetime import date
+    from stockify import timeutil
+    from stockify.fno import margin_check as mc
+    try:
+        legs = [mc.parse_leg(x) for x in args.leg]
+        day = date.fromisoformat(args.date) if args.date else None
+        if args.at is not None:
+            timeutil.parse_hhmm(args.at)
+    except mc.CheckError as e:
+        print(e, file=sys.stderr)
+        return 2
+    except ValueError:
+        print(f"--date must be YYYY-MM-DD and --at HH:MM (IST); got {args.date!r}, {args.at!r}", file=sys.stderr)
+        return 2
+    try:
+        res = mc.check(legs, day, args.at)
+    except mc.CheckInputError as e:                     # the request is wrong
+        print(e, file=sys.stderr)
+        return 2
+    except mc.CheckDataError as e:                      # the archive cannot price it
+        print(e, file=sys.stderr)
+        return 1
+    _print_console(mc.check_text(res))
+    return 0
+
+
+def _cmd_margin_scorecard(args) -> int:
+    """MEZ 4.11: every staircase step against every stored Kite answer (offline; writes nothing)."""
+    from stockify.fno import margin_check as mc
+    card = mc.scorecard()
+    if not card.rows:
+        print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
+        return 1
+    _print_console(mc.scorecard_text(card))
+    return 0
+
+
+def _cmd_compare_strategies(args) -> int:
+    from stockify import runs
+    from stockify.tools import compare_strategies as cs
+    try:
+        report = cs.run(args.config, impl=args.impl)
+    except cs.CompareError as e:
+        print(e, file=sys.stderr)
+        return 2
+    except runs.RunFailed as e:
+        print(f"a run failed: {e.error}", file=sys.stderr)
+        return 1
+    print(report)
     return 0
 
 
@@ -376,7 +569,7 @@ def _cmd_compare(args) -> int:
 
     def folder(x: str) -> Path:
         p = Path(x)
-        return p if p.exists() else paths.runs_dir() / x
+        return p if p.exists() else paths.run_path(x)  # a folder path, or a run id (checked)
 
     problems = compare.compare(folder(args.run_a), folder(args.run_b), tol_paise=args.tol_paise)
     for p in problems[:200]:
@@ -480,6 +673,14 @@ def main(argv: list[str] | None = None) -> int:
     nb.add_argument("--rows", dest="verbose_rows", action="store_true", help="print one line per file")
     nb.set_defaults(func=_cmd_nse_backfill)
 
+    nm = nsub.add_parser("margin-files", help="archive NSE's SPAN risk files and the contract-wise ELM file")
+    nm.add_argument("--date", help="IST trade date YYYY-MM-DD: every SPAN file of the day plus its ELM file")
+    nm.add_argument("--backfill", nargs=2, metavar=("FROM", "TO"),
+                    help="end-of-day SPAN files for every trading day in the range (resumable)")
+    nm.add_argument("--elm-window", action="store_true",
+                    help="the ELM file of every trading day back 120 days that NSE still serves")
+    nm.set_defaults(func=_cmd_nse_margin_files)
+
     b = sub.add_parser("bars", help="Kite historical bar cache (M1.4)")
     bsub = b.add_subparsers(dest="bars_command", required=True)
     bf = bsub.add_parser("fetch", help="fetch and cache candles")
@@ -504,7 +705,8 @@ def main(argv: list[str] | None = None) -> int:
     rmode = rn.add_mutually_exclusive_group()
     rmode.add_argument("--config", help="path to run.json")
     rmode.add_argument("--rerun", metavar="RUN_ID", help="re-run a finished run from its folder; exit 1 unless "
-                       "determinism.json is reproduced byte for byte (DT-03)")
+                       "determinism.json is reproduced byte for byte (DT-03; a folder saved before D-64 may differ "
+                       "only by margin_daily.csv's step column)")
     rn.add_argument("--run-id", help="run this queued run (its stored config); --config is then optional")
     rn.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     rn.add_argument("--no-report", action="store_true", help="skip report.md and the charts")
@@ -521,6 +723,38 @@ def main(argv: list[str] | None = None) -> int:
     ca.add_argument("--tol-paise", type=int, default=0, help="allowed difference in money columns (default 0)")
     ca.set_defaults(func=_cmd_compare)
 
+    mg = sub.add_parser("margin", help="margin model tools (M4)")
+    mgsub = mg.add_subparsers(dest="margin_command", required=True)
+    mc = mgsub.add_parser("calibrate", help="fit SPAN-lite to Kite's basket margins during market hours (M4.9; needs a "
+                                           "fresh Kite login; read-only, no orders; the fit waits for your review)")
+    mc.add_argument("--underlying", default="NIFTY")
+    mc.add_argument("--samples", type=int, default=200, help="portfolios to price (default 200)")
+    mc.add_argument("--seed", type=int, default=0, help="which portfolios are drawn (default 0)")
+    mc.add_argument("--skip-expiring", action="store_true",
+                    help="leave out contracts whose last trading day is today and take the next two expiries (use on an expiry day)")
+    mc.add_argument("--refit", action="store_true",
+                    help="fit again from the samples stored for --date, offline (no Kite call); replaces that day's "
+                         "pending row")
+    mc.add_argument("--date", help="with --refit: the IST trade date of the stored calibration, YYYY-MM-DD")
+    mc.set_defaults(func=_cmd_margin_calibrate)
+    sv = mgsub.add_parser("span-validate", help="check the exact SPAN calculator and NSE's ELM %% against the Kite "
+                                                "answers stored for a day (offline; reads the lab, writes one report)")
+    sv.add_argument("--date", required=True, help="IST trade date of the stored calibration samples, YYYY-MM-DD")
+    sv.add_argument("--underlying", nargs="*", help="default: every underlying sampled that day")
+    sv.set_defaults(func=_cmd_margin_span_validate)
+    mk = mgsub.add_parser("check", help="price a proposed basket with the margin staircase from the archived NSE "
+                                        "files (offline; reads the lab, writes nothing)")
+    mk.add_argument("--leg", action="append", required=True,
+                    help='"BUY|SELL <units> <tradingsymbol>", e.g. "SELL 65 NIFTY26N1724950CE"; repeat per leg')
+    mk.add_argument("--date", help="IST trade date YYYY-MM-DD (default: the latest archived day; after about 20:30 "
+                                   "IST that can be tomorrow, whose i1 file NSE creates the evening before)")
+    mk.add_argument("--at", help="IST time HH:MM: the SPAN file in force is the last created by then "
+                                 "(default 15:30)")
+    mk.set_defaults(func=_cmd_margin_check)
+    mgsub.add_parser("scorecard", help="every staircase step's error against every stored Kite answer, by portfolio "
+                                       "type (offline; reads the lab, writes nothing)"
+                     ).set_defaults(func=_cmd_margin_scorecard)
+
     tl = sub.add_parser("tools", help="maintenance tools")
     tsub = tl.add_subparsers(dest="tools_command", required=True)
     bn = tsub.add_parser("bench", help="engine speed on a recorded day's pack (M3.13); reads the lab, writes nothing there")
@@ -535,6 +769,11 @@ def main(argv: list[str] | None = None) -> int:
     fz.add_argument("--shrink", action="store_true", help="shrink each disagreement to a small world")
     fz.add_argument("--save", action="store_true", help="save each disagreement as tests/golden/F<seed>.yaml")
     fz.set_defaults(func=_cmd_tools_fuzz)
+    cs = tsub.add_parser("compare-strategies",
+                         help="run several strategies on the same days and write them side by side (M4.13)")
+    cs.add_argument("--config", required=True, help="a stockify.compare/1 JSON file")
+    cs.add_argument("--impl", default="engine", choices=["engine", "oracle"])
+    cs.set_defaults(func=_cmd_compare_strategies)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)
@@ -557,6 +796,19 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--start", help="first IST trade date YYYY-MM-DD (default: today in IST)")
     c.add_argument("--days", type=int, default=14, help="number of calendar days (default 14)")
     c.set_defaults(func=_cmd_calendar)
+    csub = c.add_subparsers(dest="calendar_command")
+    au = csub.add_parser("audit", help="the holiday list against the lab's data: trading days with no data and "
+                                       "holidays with data (D-75); reads the lab, writes nothing",
+                         description="The holiday list against the lab's data: trading days with no data and "
+                                     "holidays with data (D-75). Reads the lab and writes nothing: a database is "
+                                     "opened immutable. Run it only while no recorder or daemon is writing: a "
+                                     "database with a write in progress is not opened (the report names it "
+                                     "\"busy, not checked\" and the exit code is 1), and a read during a write can "
+                                     "make the report wrong, never the stores.")
+    au.add_argument("--from", dest="date_from", required=True, help="first date YYYY-MM-DD")
+    au.add_argument("--to", dest="date_to", required=True, help="last date YYYY-MM-DD")
+    au.add_argument("--segment", default="FO", choices=["CM", "FO"], help="calendar segment (default FO)")
+    au.set_defaults(func=_cmd_calendar_audit)
 
     k = sub.add_parser("kite", help="Kite Connect checks")
     ksub = k.add_subparsers(dest="kite_command", required=True)

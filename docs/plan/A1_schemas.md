@@ -304,6 +304,12 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
 
+<!-- <block name="margin-models" same-as-pattern='\x60(?P<value>[a-z_]+)\x60'> -->
+- `margin.model` choices, in this order: `flat`, `spanlite`, `span_exact`, `staircase` (the default, MEZ 4.10).
+<!-- </block> -->
+
+The last two read NSE's SPAN files from the bundle (§6.2); both engines run them (the oracle since MEZ 4.9, `stockify/fno/staircase.py`; the C++ engine since MEZ 4.10, `engine/src/margin/staircase.cpp` and `span_exact.cpp`, byte-identical), so the staircase is the default; goldens stay pinned to `flat` (`golden.build_bundle`): `staircase` picks per underlying per check the first step that can price all its legs (B1 exact SPAN + the NSE ELM file's %, no X-9 add-on; B2 exact SPAN + the dated rule ELM and X-9 add-on; B3 / B4 SPAN-lite with an adopted / the placeholder row; B5 flat) and labels the run `margin:<step>` and `margin_steps:<step>=<days>`; `span_exact` is B1/B2 only and fails the run naming the contract it cannot price, in the SPAN file in force or in the day's archived ELM file (a future or sold option without its %; with no ELM file for the day it uses the rule ELM, B2). B1 needs no % for bought options and never substitutes a missing price (the future's own, the index for sold options): that underlying is B2. The pre-trade check prices each underlying before and after the order at one step, the lower of the two. A bundle without a `span` section is labelled `margin_span:no_section`. The run's model label is `margin:staircase` or `margin:span_exact`, without the `(approx)` the other models carry: the `margin:<step>` labels say how exact each day was (CAM 4.4).
+
 ### 6.2 `bundle.json` (D-22)
 
 ```json
@@ -332,7 +338,81 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 }
 ```
 
-(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
+**`span` and `elm` (CAM 4.3)**, present only when `run.margin.model` is `span_exact` or `staircase` (every other
+bundle is unchanged, key for key):
+
+```json
+"span": { "2026-11-09": [ { "created_ns": 0, "file": "span/2026/nsccl.20261109.i1.zip", "sha256": "…",
+                            "scan_points": [ { "point": 1, "price_mult": "…", "price_numerator": "…",
+                                               "price_denominator": "…", "vol_mult": "…", "vol_numerator": "…",
+                                               "vol_denominator": "…", "weight": "…", "paired_point": 2 } ],
+                            "commodities": { "NIFTY": {
+                              "spot": "…", "cvf": { "PHY": "1.00", "FUT": "1.00", "OOP": "1.00" }, "som_method": "GROSS",
+                              "contracts": [ { "kind": "CE", "expiry": "2026-11-23", "strike_paise": 2500000,
+                                               "price": "…", "delta": "…", "vol": "…", "risk_array": [ "…16 values" ],
+                                               "composite_delta": "…" } ],
+                              "series": [ { "type": "OOP", "expiry": "2026-11-23", "price_scan": "…", "vol_scan": "…",
+                                            "time_to_expiry": "…", "vol": "…", "interest_rate": "…",
+                                            "settle_date": "2026-11-24" } ],
+                              "scan_tiers": [ { "number": 1, "start": "…", "end": "…", "rates": {} } ],
+                              "intra_tiers": [], "inter_tiers": [], "som_tiers": [ { "…": "…", "rates": { "1": "…" } } ],
+                              "calendar_spreads": [ { "number": 1, "charge_method": "…", "rates": { "1": "…" },
+                                                      "legs": [ { "expiry": "…", "side": "A", "weight": "…" } ] } ] } } } ] },
+"span_skipped": { "2026-11-09": [ { "file": "span/2026/nsccl.20261109.i2.zip", "reason": "SpanFileError: …" } ] },
+"elm": { "2026-11-09": { "NIFTY": { "CE|2026-11-23|2500000": "2", "FUT|2026-11-23|": "2" } } },
+"elm_skipped": { "2026-11-10": [ { "file": "elm/2026/F_AEL_OPT_CONTRACTS_10112026.csv.gz",
+                                   "reason": "ElmFileError: not a whole gzip: …" } ] }
+```
+
+A bundle whose instruments hold no dated future or option (FUT, CE, PE with an expiry) parses no file: `span`,
+`span_skipped`, `elm` and `elm_skipped` are all `{}` and the run is labelled `margin_span:no_derivatives` (CAM 4.4).
+Both engines then label it alike and never add `margin_span:no_section`; a leg without a SPAN contract (FUT_CONT)
+steps down to B3–B5 as always.
+
+`span[D]` lists every NSE SPAN file a backtest may use on run day D, in `created_ns` order, with no lookahead (spec
+§5.1): the end-of-day `.s` of the previous NSE session when archived, then D's `i1`..`i4` (`i1` is normally created
+the evening before). **The previous session (CAM 4.4, D-64 ruling 2; CDM 4.2):** the latest weekday before D that
+has an archived SPAN file of any suffix, whether or not the F&O calendar calls it a trading day (a Muhurat-only day is
+a holiday of the calendar that has a `.s`, and NSE had that file in force the next morning; D-75). Walk back over
+weekdays with no file and stop at the first that has one; use its `.s` if archived, else nothing (a day with intraday
+files but no `.s` never hands D an older file). A calendar trading day without any file uses up one of 5 empty days
+(a holiday the calendar does not hold, or the one archive gap, 2021-10-11, in RECON); a calendar holiday without a
+file uses up none; more than 5 empty trading days give nothing. D's own `.s` is never listed: it comes after the
+close. **Each entry applies from its own `created_ns`: the file in force at t is the last entry with
+`created_ns <= t`. Before the first entry nothing is in force (the underlying steps down); an entry is never applied
+earlier than its `created_ns`**, so a late `i1` (created after 09:15 on D) leaves the previous `.s` in force until
+then. A day with no usable file has `[]`. A file that cannot be read, whose business date differs from the date
+in its name, or whose created time (manifest, else header) is not plausible for that business date B (from 12:00 IST on the day
+before the previous trading day of B to B+1 06:00 IST, L-4), is left out and recorded in `span_skipped[D]` (`{file, reason}`; days without one are
+absent), and the run is labelled `margin_span:skipped_files`. Parsed entries are cached under `$LAB/cache/span`
+(`paths.span_cache_dir`), keyed by the file's SHA-256, its archive path, the wanted contracts, a format version and a fingerprint of the parser's code
+(SHA-256 of `stockify/fno/span_file.py` and `stockify/bundle.py`, once per process: a parser change can never serve an old entry);
+a cache file that cannot be read or whose key or entry hash does not match is rebuilt, so the bundle is the same
+with or without the cache.
+
+`file` is relative to `$LAB/nse/margin`, `sha256` is the archived zip's. Only the bundle's underlyings are kept, with
+only the contracts the bundle trades, but every parameter block (all series, tiers, spreads). **Absent means missing,
+never zero:** a contract or underlying the file lacks (e.g. a stock not in it) is not in the entry, and the margin
+model steps that underlying down. File values are the file's decimal strings; strikes are paise. Integers:
+`created_ns`, `strike_paise` (`null` for a FUT), scan `point` / `paired_point` (`null` when the file has none), tier
+and spread `number`. A series field is `null` when the file gives the series a scan range but not that field.
+`scan_points` (the 16 scenario definitions) is provenance: the risk arrays are already evaluated, so the exact SPAN
+calculation does not read them.
+
+`elm[D]` is present when D's contract-wise ELM file is archived and readable: per underlying,
+`"<kind>|<expiry>|<strike_paise>"` (futures: empty strike) to the ELM **per cent** as a decimal string, for the
+bundle's derivatives the file lists. Keyed by underlying because the same kind, expiry and strike exist on several
+underlyings. A contract listed twice with different %, with 0 %, with a strike that is not a whole number of paise,
+or with a % that is not a plain bounded decimal (1–3 integer digits, at most 8 fraction digits, no sign, space or
+exponent: `nse_margin_files.ELM_PCT`, M-3; both margin models apply the same form to the bundle's strings) is absent
+(missing). **D's file is assumed to apply from D's open (09:15); NSE's publish time for it is not verified (L-5,
+RECON).** An archived ELM file that cannot be read (truncated, corrupt or not UTF-8, M-1) is left out of `elm`, so
+that day's underlyings step to B2, and is recorded in `elm_skipped[D]` (`{file, reason}`, `file` relative to
+`$LAB/nse/margin`); the run is labelled `margin_elm:skipped_files`, by the bundle, so both engines carry it alike. Both engines implement
+these models (MEZ 4.9 oracle, MEZ 4.10 engine, §6.1); an unknown model is refused ("margin model … is not supported
+yet"), never a fallback to flat.
+
+(Zeros are placeholders.) An instrument's `session_group` is `CM` or `CM_CAS` for equities (CAS-eligible from 2026-08-03 when the stock is in that day's `fo_universe`), `FO_FUT` or `FO_OPT` for derivatives; indices follow `CM`. Every `FUT`, `CE` and `PE` has `last_trading_ns`: the end of its session group's last CONTINUOUS or CAS phase on its expiry date (`actual_expiry` when present, D-41), taken from the bundle's own day when the expiry is a run day and otherwise from the dated session rules for that date (D-61); both engines refuse a bundle without it. Paper sessions get one bundle per day, with `seed` derived as in A4 §4.5 and `sod_state` filled.
 
 ### 6.3 Run folder `runs/<run_id>/`
 
@@ -345,9 +425,9 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 | `order_events.csv` | ✔ | `t_ns,order_id,event,detail` |
 | `fills.csv` | ✔ | `fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence` (evidence: `bar_open`, `bar_path`, `vwap_int`, `ltp`, `book_lvl_<k>`, `book_cross`, `trade_through`, `eod_close`) |
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
-| `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise` |
+| `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,underlying_mark_paise` (the last: a derivative's underlying mark at DAY_END, empty otherwise; D-55) |
 | `equity.csv` | ✔ | `trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise` |
-| `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,scan,somc,elm,addons,total` (M4) |
+| `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with NRML F&O legs at DAY_END, none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons) |
 | `metrics.json` | ✔ (floats; A4 §9.3) | A4 §8 |
 | `events_log.txt` | ✔ | strategy and engine log lines stamped with engine time |
 | `determinism.json` | — | SHA-256 of each deterministic file |
@@ -506,7 +586,7 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
 
 ### 7.6 `margin_params.json`
 
-`flat` (dated: `index_pct`, `stock_pct`; assumption defaults `"0.12"` / `"0.20"`), `spanlite` (per underlying, dated: `psr_pct`, `vsr_pct`, `extreme_multiple` 3, `extreme_weight` `"0.35"`, `somc_per_lot_paise`, `elm_pct`, `default_iv`, `source`, `calibration_id`), `expiry_day_short_index_option_addon` (dated: `pct` `"0.02"`, `basis` — ⚠ X-9).
+`flat` (dated: `index_pct`, `stock_pct`; assumption defaults `"0.12"` / `"0.20"`), `spanlite` (per underlying, dated: `psr_pct`, optional `psr_futures_pct` (D-62: futures' price move; absent = `psr_pct`), optional `net_option_value` (D-63: boolean; true = scan net of the options' value), `vsr_pct`, `extreme_multiple` 3, `extreme_weight` `"0.35"`, `somc_per_lot_paise`, `elm_pct`, `default_iv`, `source`, `calibration_id`), `expiry_day_short_index_option_addon` (dated: `pct` `"0.02"`, `basis` — ⚠ X-9).
 
 ### 7.7 `pricing.json`
 
@@ -518,9 +598,15 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
 { "schema": "stockify.schedule/1",
   "jobs": { "refdata": "08:30", "subscribe": "08:58", "unsubscribe": "15:45", "compaction": "16:30",
             "nse_fetch": { "start": "19:30", "retry_every_min": 15, "until": "23:00" },
+            "margin_files": { "start": "17:20", "retry_every_min": 30, "until": "22:00" },
             "token_dependent_retry": { "every_min": 5, "until": "09:10" },
             "day_end": "23:59:59" } }
 ```
+
+Catch-up jobs (`nse_fetch`, `margin_files`) are retried no more often than `retry_every_min` and judged against the
+daemon's clock. `margin_files` also holds sleep on its trade date until the day's `.s` and ELM file are archived or
+`until` passes (CAM 4.4), so it runs the same evening; only when the laptop was off does it run the next morning, where
+one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches it later).
 
 ### 7.9 `storage.json`
 
@@ -530,5 +616,6 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
 
 - `sources.json`: per dataset `{url_template, valid_from, valid_to, parser, verified, evidence}` (S-1…S-7).
 - `kite_limits.json`: `historical_rps` 3, `quote_rps` 1, `quote_max_instruments` 500, `ws_max_instruments` 3000, `ws_max_connections` 3, `historical_max_days` per interval (⚠ defaults), `learned` (written by M1.4).
-- `calendar/nse_holidays.csv`: `date,segments,description,source`. `calendar/special_sessions.csv`: `date,group,phase,start,end,name,source`.
+- `calendar/nse_holidays.csv`: `date,segments,description,source`. `calendar/special_sessions.csv`: `date,group,phase,start,end,name,source`. Holiday rows from 2024 come from NSE's holiday-master API (but 2024-11-01, a Muhurat-only day its CM and FO lists leave out: D-75); the 2009–2023 rows are the weekdays with no NSE data in the lab, named from NSE's own lists (D-75, X-14). A day with only a Muhurat session is a holiday, its description ending `(Muhurat session only)`. `python -m stockify calendar audit --from D --to D` compares the list with the lab's data.
+- `freeze_limits.json`: index quantity-freeze limits from NSE circulars, dated per `underlying` (`{underlying, effective_from, freeze_qty, source, verified}`, X-5). They decide for the underlyings they list; the refdata `freeze_limits` table (`qtyfreeze.csv` snapshots, S-6) covers the rest and cross-checks them (D-54).
 - `notify.json`: channel type and per-event switches (secrets elsewhere). `research.json`: `holdout_from`, default walk-forward settings.

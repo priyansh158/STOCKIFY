@@ -295,6 +295,21 @@ class ResultTests(ApiTestBase):
             self.assertTrue(set(c["components"]) <= {"brokerage", "stt", "exchange", "sebi", "stamp", "gst", "dp",
                                                      "other"})
         self.assertEqual(sum(c["total_paise"] for c in charges), d["run"]["costs_total_paise"])
+        # the detail carries whole-run totals, because /fills and /charges are paged (review fixes 4 and 5)
+        all_fills = self.client.get(f"/api/tests/{run_id}/fills", params={"limit": 5000}).json()
+        self.assertEqual(d["fill_count"], len(all_fills))
+        self.assertGreater(d["fill_count"], 1)
+        per_part: dict[str, int] = {}
+        for c in charges:
+            for k, v in c["components"].items():
+                per_part[k] = per_part.get(k, 0) + v
+        self.assertEqual(d["cost_totals"], {k: v for k, v in per_part.items() if k in d["cost_totals"]})
+        # D-46: each row's total is rounded once from exact parts, the CSV parts each to the paisa, so the shown
+        # parts can miss the exact total by a little rounding per row (the UI shows the exact total, with a note)
+        gap = abs(sum(d["cost_totals"].values()) - d["run"]["costs_total_paise"])
+        self.assertLessEqual(gap, len(charges) * len(d["cost_totals"]))
+        page = self.client.get(f"/api/tests/{run_id}/fills", params={"offset": 1, "limit": 1}).json()
+        self.assertEqual(page, all_fills[1:2])
 
         logs = self.client.get(f"/api/tests/{run_id}/logs", params={"tail": 2}).json()
         self.assertEqual(logs["runner_log"], ["resolving", "running"])

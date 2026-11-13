@@ -8,6 +8,8 @@
 // determinism.json exactly as stockify.engine.run_bundle does, plus a small manifest.json (the only place a
 // clock is read, and only for duration_ms). No Python, no SQLite, no network.
 //
+// Each pack must hash to the SHA-256 the bundle names (as Python's resolve_packs checks).
+//
 // Exit codes: 0 done, 1 the run failed (events_log.txt ends with the reason), 2 usage or a non-C++ strategy.
 #include <chrono>
 #include <cstdio>
@@ -16,15 +18,18 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 
 #include "nlohmann/json.hpp"
 #include "stocksim/artifacts.hpp"
 #include "stocksim/build_info.hpp"
 #include "stocksim/engine.hpp"
+#include "stocksim/errors.hpp"
 #include "stocksim/format.hpp"
 #include "stocksim/json_bundle.hpp"
 #include "stocksim/pack_reader.hpp"
+#include "stocksim/sha256.hpp"
 #include "stocksim/strategy.hpp"
 
 namespace fs = std::filesystem;
@@ -101,15 +106,9 @@ int main(int argc, char** argv) {
 
     const auto started = std::chrono::steady_clock::now();
     std::unique_ptr<stocksim::Engine> engine;
-    try {
-        fs::create_directories(*out);
-        engine = std::make_unique<stocksim::Engine>(bundle);
-        for (const auto& p : bundle.packs) {
-            engine->add_pack(std::make_shared<stocksim::PackReader>(lab_dir / fs::path(p.path)));
-        }
-        engine->set_strategy(stocksim::make_strategy(bundle.strategy.ref));
-        engine->run();
-    } catch (const std::exception& ex) {
+    // Every failure from here on, the run or writing its results (a locked file, a bad metric), exits 1 with
+    // events_log.txt written; nothing reaches std::terminate (M3 review).
+    const auto fail = [&](const std::exception& ex) {
         std::string log;
         if (engine) {
             engine->context().log("ERROR", std::string("the run stops: ") + ex.what());
@@ -121,15 +120,35 @@ int main(int argc, char** argv) {
         }
         try {
             stocksim::write_file_bytes(*out / "events_log.txt", log);
-        } catch (const std::exception&) {
+        } catch (const std::exception&) {  // nowhere left to write it: stderr below still says why
         }
         std::fprintf(stderr, "stocksim_run: the run stops: %s\n", ex.what());
         return 1;
+    };
+    try {
+        fs::create_directories(*out);
+        engine = std::make_unique<stocksim::Engine>(bundle);
+        for (const auto& p : bundle.packs) {
+            auto pack = std::make_shared<stocksim::PackReader>(lab_dir / fs::path(p.path));
+            // The pack must be the one the bundle names, as Python's resolve_packs checks (M3 review).
+            const std::string actual =
+                stocksim::sha256_hex(std::span<const std::byte>(pack->data(), pack->length()));
+            if (actual != p.sha256) {
+                throw stocksim::RunError("pack " + p.path + ": hash mismatch: the file hashes to " + actual +
+                                         ", the bundle names " + p.sha256);
+            }
+            engine->add_pack(std::move(pack));
+        }
+        engine->set_strategy(stocksim::make_strategy(bundle.strategy.ref));
+        engine->run();
+        const auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+        stocksim::write_artifacts(*engine, *out);
+        write_manifest(*engine, bundle, *out, ms.count());
+        std::fprintf(stderr, "stocksim_run: %zu orders, %zu fills in %lld ms -> %s\n", engine->book().orders.size(),
+                     engine->book().fills.size(), static_cast<long long>(ms.count()), out->string().c_str());
+        return 0;
+    } catch (const std::exception& ex) {
+        return fail(ex);
     }
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-    stocksim::write_artifacts(*engine, *out);
-    write_manifest(*engine, bundle, *out, ms.count());
-    std::fprintf(stderr, "stocksim_run: %zu orders, %zu fills in %lld ms -> %s\n", engine->book().orders.size(),
-                 engine->book().fills.size(), static_cast<long long>(ms.count()), out->string().c_str());
-    return 0;
 }

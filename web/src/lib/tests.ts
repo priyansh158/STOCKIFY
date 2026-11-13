@@ -10,9 +10,12 @@ import type {
   TestCreated,
   TestEquity,
   TestFill,
+  TestGreek,
   TestLogs,
+  TestMargin,
   TestRun,
   TestRunDetail,
+  TestSettlement,
 } from "./types";
 
 const FIXTURES = process.env.NEXT_PUBLIC_STOCKIFY_FIXTURES === "1";
@@ -30,8 +33,9 @@ export function getTest(id: string): Promise<TestRunDetail> {
   return api<TestRunDetail>(`/api/tests/${encodeURIComponent(id)}`);
 }
 
-export function getFills(id: string): Promise<TestFill[]> {
-  return FIXTURES ? Promise.resolve(F.fills) : api<TestFill[]>(`/api/tests/${encodeURIComponent(id)}/fills`);
+export function getFills(id: string, offset = 0, limit = 200): Promise<TestFill[]> {
+  if (FIXTURES) return Promise.resolve(F.fills.slice(offset, offset + limit));
+  return api<TestFill[]>(`/api/tests/${encodeURIComponent(id)}/fills?offset=${offset}&limit=${limit}`);
 }
 
 export function getEquity(id: string): Promise<TestEquity[]> {
@@ -40,6 +44,21 @@ export function getEquity(id: string): Promise<TestEquity[]> {
 
 export function getCharges(id: string): Promise<TestCharge[]> {
   return FIXTURES ? Promise.resolve(F.charges) : api<TestCharge[]>(`/api/tests/${encodeURIComponent(id)}/charges`);
+}
+
+export function getMargin(id: string): Promise<TestMargin[]> {
+  if (FIXTURES) return Promise.resolve(F.margin(id));
+  return api<TestMargin[]>(`/api/tests/${encodeURIComponent(id)}/margin`);
+}
+
+export function getSettlements(id: string): Promise<TestSettlement[]> {
+  if (FIXTURES) return Promise.resolve(F.settlements(id));
+  return api<TestSettlement[]>(`/api/tests/${encodeURIComponent(id)}/settlements`);
+}
+
+export function getGreeks(id: string): Promise<TestGreek[]> {
+  if (FIXTURES) return Promise.resolve(F.greeks(id));
+  return api<TestGreek[]>(`/api/tests/${encodeURIComponent(id)}/greeks`);
 }
 
 export function getLogs(id: string, limit = 40): Promise<TestLogs> {

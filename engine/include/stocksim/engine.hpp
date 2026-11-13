@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -63,6 +64,7 @@ struct MarketState {
     std::optional<Paise> bid, ask;
     std::optional<std::array<DepthLevel, 10>> book;  // bids 1–5, then asks 1–5
     std::optional<std::pair<Paise, Paise>> band;     // (lower, upper)
+    std::optional<std::int64_t> oi;                  // the last TICK_FULL or bar that carried it (M4.4)
     std::optional<std::int32_t> min_interval;        // smallest interval of real bars seen
     std::map<std::int32_t, std::vector<BarRow>> bars;
     Date day = 0;
@@ -164,12 +166,36 @@ class Context {
     // F&O lookups over the bundle's rows (the oracle's ctx.expiries / futures_chain / chain).
     std::vector<Date> expiries(std::string_view underlying, std::string_view kind) const;  // "FUT", "OPT", "CE", "PE"
     std::vector<InstrumentId> futures_chain(std::string_view underlying) const;
+
+    // The option-chain view (M4.4, C-13), field for field the oracle's: quotes, IVs (bid / ask / mid) and the
+    // Greeks at the mid IV, in rupees; the forward and its source; the ATM strike.
     struct ChainRow {
         InstrumentId instrument = 0;
         std::string kind;
         Paise strike = 0;
+        std::optional<Paise> bid, ask;
+        std::optional<double> mid;  // paise, (bid + ask) / 2
+        std::optional<Paise> ltp;
+        bool stale = true;
+        std::optional<std::int64_t> oi;
+        std::optional<double> iv_bid, iv_ask, iv_mid;
+        std::optional<std::string> iv_reason;  // why iv_mid is missing although there is a mid
+        std::optional<double> delta, gamma, vega, theta;
     };
-    std::vector<ChainRow> chain(std::string_view underlying, std::string_view expiry) const;
+    struct ChainView {
+        std::vector<ChainRow> rows;
+        std::optional<double> forward;  // paise
+        std::optional<std::string> forward_source;  // future | synthetic | forward_from_index
+        std::optional<Paise> atm_strike;
+    };
+    // Cached per engine step (the event key); deterministic.
+    ChainView chain(std::string_view underlying, std::string_view expiry) const;
+
+ private:
+    ChainView compute_chain(std::string_view underlying, std::string_view expiry) const;
+    std::optional<double> quote_mid(InstrumentId iid) const;  // (bid + ask) / 2 in paise, both sides quoted
+
+ public:
 
  private:
     Engine& e_;
@@ -184,6 +210,15 @@ struct PositionEodRow {
     Paise avg_price = 0, mark = 0;
     std::string mark_source;
     Paise unrealised = 0, realised = 0;
+    std::optional<Paise> underlying_mark;  // D-55: a derivative's underlying mark at day end, else none
+};
+
+struct MarginDailyRow {  // margin_daily.csv (M4.8)
+    Date trade_date = 0;
+    InstrumentId underlying = 0;
+    std::string model;
+    std::string step;  // the staircase step that priced it (MEZ 4.9): B1..B5 for staircase / span_exact, B3/B4 spanlite
+    Paise scan = 0, somc = 0, elm = 0, addons = 0, total = 0;
 };
 
 struct EquityRow {
@@ -225,6 +260,13 @@ class Engine {
     void push(std::span<const std::byte> batch);   // live: encoded records, processed up to the batch end (A4 §1.4)
     void finish();                                 // the internal events left after the last input
 
+    // One call at a time, and nothing after a failure (M3 review): run / push / finish refuse while another is in
+    // progress (another thread, the GIL released for a C++ strategy, or a strategy calling back in), and once an
+    // exception has left one of them the engine refuses them all. Readers check with ensure_idle; the log stays
+    // readable after a failure (allow_failed), so the traceback can be written out.
+    bool failed() const { return failed_; }
+    void ensure_idle(const char* what, bool allow_failed = false) const;  // RunError if busy (or failed)
+
     const Bundle& bundle() const { return bundle_; }
     const std::vector<std::string>& log_lines() const { return log_lines_; }
     std::vector<std::string> drain_log();          // log lines since the last call
@@ -238,6 +280,7 @@ class Engine {
     const InstrumentTable& instruments() const { return instruments_; }
     const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
     const std::vector<EquityRow>& equity() const { return equity_; }
+    const std::vector<MarginDailyRow>& margin_daily() const { return margin_daily_; }
     const std::vector<SettleClose>& settle_closes() const { return settle_closes_; }
     const std::map<std::string, std::int64_t>& rejects() const { return rejects_; }
     Ppm participation_used() const { return participation_used_; }
@@ -316,6 +359,8 @@ class Engine {
     void on_settle(const Event& e);
     std::vector<std::size_t> expiring(InstrumentId underlying_id, Date d);
     void settle_final(InstrumentId underlying_id, Date d, Paise fsp, const std::string& source);
+    void settle_physical(InstrumentId stock, Date d, Paise fsp, const std::string& source,
+                         std::vector<std::size_t> idx);
     void on_phase(const InternalEvent& ev);
     bool daily_bars(InstrumentId iid) const;
     void seg_close(const InternalEvent& ev);
@@ -334,7 +379,7 @@ class Engine {
     std::string mark_kind_;  // ltp | mid
     TimeNs latency_ns_ = 0;
     Costs costs_;
-    FlatMargin margin_;
+    std::unique_ptr<MarginModel> margin_;  // flat (T0), spanlite (T1, M4.8), staircase / span_exact (MEZ 4.10)
     std::shared_ptr<Strategy> strategy_;
     Context ctx_;
     Pcg32 strategy_rng_;
@@ -345,6 +390,9 @@ class Engine {
     std::priority_queue<InternalEvent, std::vector<InternalEvent>, LaterKey> internal_;
     std::uint64_t internal_seq_ = 0;
     bool started_ = false;
+    std::atomic<bool> busy_{false};
+    bool failed_ = false;
+    class Running;  // the guard around run / push / finish
     bool closed_out_ = false;
     TimeNs now_ = 0;
     EventKey key_{0, 0, 0, 0};
@@ -365,6 +413,7 @@ class Engine {
 
     std::vector<PositionEodRow> positions_eod_;
     std::vector<EquityRow> equity_;
+    std::vector<MarginDailyRow> margin_daily_;
     std::vector<SettleClose> settle_closes_;
     std::map<std::string, std::int64_t> rejects_;
     Ppm participation_used_ = 0;  // ppm of a bar's volume, the most over the run
@@ -372,6 +421,8 @@ class Engine {
 
     std::vector<std::string> log_lines_;
     std::size_t log_drained_ = 0;
+    std::optional<EventKey> chain_key_;  // the step the chain cache belongs to
+    std::map<std::pair<std::string, std::string>, Context::ChainView> chain_cache_;
     OrderId orders_drained_ = 1;  // the next order id not yet drained
     std::size_t events_drained_ = 0, fills_drained_ = 0, charges_drained_ = 0;
     std::set<std::string> labels_;

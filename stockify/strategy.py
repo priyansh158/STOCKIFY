@@ -93,6 +93,22 @@ class Funds:
     reserved: int
 
 
+class ChainView(list):
+    """ctx.chain(): the option rows of one underlying and expiry (a list of dicts, so code written before M4.4 still
+    works), plus the forward the IVs and Greeks were computed from.
+
+    forward_paise: the same-expiry future's mid; else the synthetic forward (C-13); else the index value; None when
+    there is none. forward_source: "future" | "synthetic" | "forward_from_index" | None. atm_strike_paise: the
+    strike nearest the forward (the lower one on a tie)."""
+
+    def __init__(self, rows=(), forward_paise: float | None = None, forward_source: str | None = None,  # noqa: ANN001
+                 atm_strike_paise: int | None = None):
+        super().__init__(rows)
+        self.forward_paise = forward_paise
+        self.forward_source = forward_source
+        self.atm_strike_paise = atm_strike_paise
+
+
 def rupees(p: int) -> Decimal:
     return Decimal(p) / 100
 

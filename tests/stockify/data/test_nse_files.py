@@ -28,7 +28,7 @@ def fixture(name: str) -> bytes:
 def zipped(name: str, data: bytes) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr(name, data)
+        z.writestr(zipfile.ZipInfo(name, date_time=(2026, 11, 9, 0, 0, 0)), data)   # a fixed member time: the same bytes each call
     return buf.getvalue()
 
 
@@ -66,8 +66,20 @@ def ind_close(day: date, rows: list[tuple[str, str]]) -> bytes:
 
 
 class FakeResponse:
+    """`content`, or streamed in chunks by `iter_content` (as requests decodes them: decompressed bytes)."""
+
     def __init__(self, status: int, content: bytes):
         self.status_code, self.content = status, content
+        self.streamed = 0
+        self.closed = False
+
+    def iter_content(self, chunk_size=1):  # noqa: ANN001
+        for i in range(0, len(self.content), chunk_size):
+            self.streamed += min(chunk_size, len(self.content) - i)
+            yield self.content[i:i + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeSession:
@@ -79,8 +91,9 @@ class FakeSession:
         self.calls: list[tuple[str, int]] = []
         self.clock = clock
 
-    def get(self, url, timeout=None):  # noqa: ANN001
+    def get(self, url, timeout=None, **kw):  # noqa: ANN001
         self.calls.append((url, self.clock.mono_ns() if self.clock else 0))
+        self.last_kw = kw
         for suffix, answers in self.routes.items():
             if url.endswith(suffix):
                 answer = answers.pop(0) if len(answers) > 1 else answers[0]
@@ -286,6 +299,33 @@ FO_ROWS = [                                   # on expiry day every expiring con
     {"tp": "STO", "sym": "INFY", "exp": "2026-11-17", "strike": "1600.00", "opt": "CE", "lot": 400, "settle": "1600.00"},
     {"tp": "STO", "sym": "TCS", "exp": "2026-11-17", "strike": "3000.00", "opt": "CE", "lot": 175, "settle": "3001.00"},
 ]
+
+class BodyCapTests(NseTest):
+    """M-4: the body is streamed and counted; over `max_bytes` it is an error at once (no retry, nothing kept)."""
+
+    def test_the_default_cap_fits_real_files(self):
+        self.assertGreaterEqual(nse_files.DEFAULT_MAX_BODY_BYTES, 64 * 1024 * 1024)
+        http, session = self.http({"/x.zip": [(200, b"PK" + b"0" * 1000)]})
+        self.assertEqual(http.get("https://h/x.zip"), (200, b"PK" + b"0" * 1000))
+        self.assertTrue(session.last_kw.get("stream"))
+
+    def test_a_body_over_the_cap_raises_and_stops_reading(self):
+        big = FakeResponse(200, b"0" * 10_000_000)
+        session = FakeSession({"/big": [(200, b"")]}, self.clock)
+        session.get = lambda url, timeout=None, **kw: big                    # noqa: ARG005
+        http = nse_files.Http(session=session, clock=self.clock)
+        with self.assertRaisesRegex(nse_files.NseError, "over 1000000 bytes"):
+            http.get("https://h/big", max_bytes=1_000_000)
+        self.assertLess(big.streamed, 2_000_000)                               # stopped near the cap
+        self.assertTrue(big.closed)
+
+    def test_the_cap_is_per_http_or_per_call(self):
+        http = nse_files.Http(session=FakeSession({"/a": [(200, b"12345")]}, self.clock), clock=self.clock,
+                              max_bytes=4)
+        with self.assertRaises(nse_files.NseError):
+            http.get("https://h/a")
+        self.assertEqual(http.get("https://h/a", max_bytes=5), (200, b"12345"))
+
 
 class LoadTests(NseTest):
     def setUp(self):

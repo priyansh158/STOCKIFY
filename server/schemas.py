@@ -164,6 +164,8 @@ class TestRunDetailDTO(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
     manifest: dict[str, Any] | None = None
+    fill_count: int | None = Field(None, description="all fills of the run (the /fills list is paged)")
+    cost_totals: dict[str, int] = Field(default_factory=dict, description="paise per charge component, whole run")
 
 
 class TestFillDTO(BaseModel):
@@ -192,6 +194,60 @@ class TestChargeDTO(BaseModel):
     trade_date: str
     components: dict[str, int] = Field(default_factory=dict)
     total_paise: int
+
+
+class TestMarginDTO(BaseModel):
+    """One underlying's margin on one day (margin_daily.csv, M4): SPAN-lite parts in paise; empty for flat runs."""
+    trade_date: str
+    underlying_id: int
+    underlying: str | None = None
+    model: str
+    step: str = ""
+    scan_paise: int
+    somc_paise: int
+    elm_paise: int
+    addons_paise: int
+    total_paise: int
+
+
+class TestSettlementDTO(BaseModel):
+    """An expiry settlement (cash, at the final settlement price) or a physical delivery, from the run's log."""
+    t_ns: int
+    t_ist: str
+    trade_date: str
+    kind: Literal["cash", "delivery"]
+    instrument_id: int
+    tradingsymbol: str | None = None
+    product: str
+    side: str | None = None
+    qty: int | None = None
+    price_paise: int
+    source: str
+    charges_paise: int | None = None
+
+
+class TestGreekDTO(BaseModel):
+    """One open F&O position at a day end with its Greeks (M4.14), derived from positions_eod.csv: the option's mark,
+    its underlying's mark (D-55, used as the forward) and Black-76. Position figures: delta in underlying units, gamma
+    in units per rupee, vega in rupees per volatility point, theta in rupees per day. When no IV can be found,
+    `iv_reason` says why and the Greeks are empty. A future has delta = its quantity."""
+    trade_date: str
+    instrument_id: int
+    tradingsymbol: str | None = None
+    underlying: str | None = None
+    kind: str
+    strike_paise: int | None = None
+    expiry: str | None = None
+    qty: int
+    mark_paise: int
+    underlying_paise: int | None = None
+    iv: float | None = None
+    iv_reason: str | None = None
+    delta_units: float | None = None
+    gamma_units_per_rupee: float | None = None
+    vega_rupees_per_point: float | None = None
+    theta_rupees_per_day: float | None = None
+    expiry_close_estimated: bool = False   # the expiry is after the run's last day: its close time is estimated
 
 
 class TestLogsDTO(BaseModel):

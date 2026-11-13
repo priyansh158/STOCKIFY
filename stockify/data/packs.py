@@ -28,7 +28,9 @@ Records and `t_event` (A4 §1.1): ticks → receive time; Kite bars → bar star
 interval; bhav_eod bars → `pricing.json` `eod_publication_ist` on the trade
 date; SETTLE daily → the same EOD time, final → `fsp_publication_ist` on the
 expiry; REFDATA `instrument_add` → 00:00 IST of the first day an instrument
-appears; `spec_change` → 00:00 IST of its effective date; `price_band` → the
+appears, except an instrument the recorder first subscribed later in the day
+(a chain re-centre, any reason but `start…`): then the moment it was
+subscribed, when the daemon learned it (A4 §1.1, M4.12); `spec_change` → 00:00 IST of its effective date; `price_band` → the
 snapshot time; GAP → its start / end.
 
 Order: `(t_event, rank, source seq, instrument_id)` with A4 §1.3 ranks, then
@@ -46,6 +48,7 @@ import hashlib
 import heapq
 import json
 import os
+import re
 import secrets
 import struct
 from dataclasses import dataclass, field
@@ -201,7 +204,7 @@ def decode(data: bytes, offset: int) -> tuple[dict, int]:
 
 def read(path) -> tuple[dict, list[dict]]:  # noqa: ANN001
     """(header, records) of a pack; checks size, order and the record count."""
-    data = Path(path).read_bytes()
+    data = read_bytes(path)
     header = read_header(data)
     out, off, last = [], 64, None
     while off < len(data):
@@ -333,17 +336,20 @@ def _ist(day: date | str, hhmm: str) -> int:
     return timeutil.ist_ns(d, hhmm)
 
 
-def _refdata_events(b: _Build, ids: set[int], day: date) -> None:
-    """instrument_add on first appearance, spec changes, price bands."""
+def _refdata_events(b: _Build, ids: set[int], day: date, learned: dict[int, int] | None = None) -> None:
+    """instrument_add on first appearance (at 00:00, or at `learned[iid]` for an instrument subscribed mid-day),
+    spec changes, price bands."""
     from stockify.data import instruments, refdata
     conn = refdata._connect()
     t0 = _ist(day, "00:00")
+    learned = learned or {}
     for iid in sorted(ids - b.added):
         info = instruments.get(iid)
         if info is None:
             raise PackError(f"instrument {iid} is not in refdata")
         spec = instruments.spec_at(iid, day) or {}
-        b.add(t0, 2, iid, enc_refdata(iid, t0, "instrument_add", {
+        t_add = learned.get(iid, t0)
+        b.add(t_add, 2, iid, enc_refdata(iid, t_add, "instrument_add", {
             "instrument_id": iid, "exchange": info["exchange"], "kind": info["kind"],
             "tradingsymbol": info["tradingsymbol"], "underlying": info["underlying"],
             "underlying_id": info["underlying_id"], "expiry": info["expiry"],
@@ -436,9 +442,21 @@ def _ticks_day(b: _Build, day: date):  # noqa: ANN202
         return _ticks_day_read(b, day, tick_day)
 
 
+def _learned_mid_day(subs: list[dict]) -> dict[int, int]:
+    """instrument → receive time of its first subscription, for instruments whose first subscription that day was
+    not part of the session's start batch (reason `start…`), i.e. strikes a chain re-centre added (M4.12)."""
+    first: dict[int, dict] = {}
+    for s in sorted((s for s in subs if s["action"] == "subscribe" and s["instrument_id"] is not None),
+                    key=lambda s: (s["recv_ns"], s["instrument_id"])):
+        first.setdefault(s["instrument_id"], s)
+    return {iid: s["recv_ns"] for iid, s in first.items() if not str(s.get("reason") or "").startswith("start")}
+
+
 def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
     from stockify.data import ticks
-    recorded = {s["instrument_id"] for s in tick_day.subscriptions() if s["instrument_id"] is not None}
+    subs = tick_day.subscriptions()
+    recorded = {s["instrument_id"] for s in subs if s["instrument_id"] is not None}
+    learned = _learned_mid_day(subs)
     ids = resolve(b.spec.get("instruments"), day, recorded or None)
     tiers = tuple(b.spec.get("tiers", ticks.KINDS))
     digest = hashlib.sha256()
@@ -461,7 +479,7 @@ def _ticks_day_read(b: _Build, day: date, tick_day):  # noqa: ANN001, ANN202
         t_hi = t if t_hi is None else max(t_hi, t)
         out.append(((t, 4, p["seq"], p["instrument_id"]), rec))
     b.events = []
-    _refdata_events(b, ids, day)
+    _refdata_events(b, ids, day, learned)
     _settle_events(b, ids, day)
     if b.spec.get("include_gaps", True):
         _gap_events(b, tick_day, ids)
@@ -540,8 +558,38 @@ def _normalise(spec: dict) -> dict:
     return spec
 
 
+# Temporary files a builder writes (pid and a random part in the name): a builder that died leaves them.
+_TMP_NAMES = (re.compile(r"\.building-(\d+)-[0-9a-f]{12}\.evt"),
+              re.compile(r"\.[0-9a-f]{64}\.json\.(\d+)-[0-9a-f]{12}\.tmp"))
+STALE_AFTER_S = 86_400
+
+
+def clean_stale_tmp(max_age_s: int = STALE_AFTER_S) -> list[str]:
+    """Remove builder temp files older than `max_age_s` whose process no longer exists; returns their names.
+    A temp file whose pid is alive is kept (even if the pid was reused): it may belong to a running build."""
+    from stockify import proc, timeutil
+    now_s = timeutil.now_ns() / 1e9
+    removed = []
+    for f in paths.packs_dir().iterdir():
+        m = next((r.fullmatch(f.name) for r in _TMP_NAMES if r.fullmatch(f.name)), None)
+        if m is None:
+            continue
+        try:
+            if now_s - f.stat().st_mtime < max_age_s or proc.is_running(int(m.group(1))):
+                continue
+            f.unlink()
+            removed.append(f.name)
+        except OSError:
+            continue                     # gone already, or in use: leave it
+    return removed
+
+
 def build(spec: dict) -> str:
     """Write the pack and its manifest; return the pack's SHA-256."""
+    try:
+        clean_stale_tmp()
+    except OSError:
+        pass
     spec = _normalise(spec)
     start, end = date.fromisoformat(spec["from"]), date.fromisoformat(spec["to"])
     basis = "adjusted" if spec["dataset"] == "bars" else "raw"
@@ -594,7 +642,7 @@ def build(spec: dict) -> str:
     counts = dict(sorted(b.counts.items()))
     manifest = {"sha256": digest, "format": "evt/1", "spec": spec, "price_basis": basis, "records": count,
                 "counts_by_kind": counts, "t_min": t_min, "t_max": t_max, "sources": b.sources,
-                "bytes": target.stat().st_size}
+                "bytes": _refused_retry(lambda p: p.stat().st_size, target)}
     _publish_text(manifest_path(digest), json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return digest
 
@@ -620,16 +668,17 @@ def _pause(attempt: int) -> None:
 
 def _publish(tmp: Path, target: Path, digest: str) -> None:
     """Move a finished pack into place. Packs are content-addressed, so a target that already exists holds the
-    same bytes: keep it. Two builders of one spec can race (both saw no target); the loser's replace fails on
-    Windows while the winner's file is open or memory-mapped by an engine. Then the existing target is accepted
-    only if its hash matches; a different file re-raises at once. A pack in use is never overwritten."""
+    same bytes: keep it. The move is os.rename, which refuses an existing target (CB 4.6): a published pack is
+    never replaced, so no reader ever meets a replace window. Two builders of one spec can race (both saw no
+    target); the loser's rename is refused, and the existing target is accepted only if its hash matches; a
+    different file re-raises at once."""
     if target.exists():
         tmp.unlink()
         return
     error: OSError | None = None
     for attempt in range(_RETRIES):
         try:
-            tmp.replace(target)
+            os.rename(tmp, target)
             return
         except (PermissionError, FileExistsError) as e:
             error = e
@@ -646,33 +695,36 @@ def _publish(tmp: Path, target: Path, digest: str) -> None:
     raise error  # type: ignore[misc]
 
 
-# Manifest fields that depend on when or where a pack was built rather than on its content. There are none
-# today (every field is derived from the records), so racing builders write identical text; the comparison
-# still ignores such fields so that adding one later cannot turn a harmless race into a failure.
+# Manifest fields that depend on when a pack was built rather than on its content. There are none today; the
+# comparison still ignores such fields so that adding one later cannot turn a harmless race into a failure.
 _WALL_CLOCK_FIELDS = frozenset({"created_ns", "built_ns", "duration_ms", "pid", "host"})
+# Provenance: where the records were read from (landing or archive, P-05). The same pack can be rebuilt from
+# another source (after retention moves a day to the archive); the manifest then follows its latest build.
+_PROVENANCE_FIELDS = frozenset({"sources"})
 
 
-def _same_manifest(existing: str, ours: str) -> bool | None:
+def _same_manifest(existing: str, ours: str, ignore: frozenset[str] = _WALL_CLOCK_FIELDS) -> bool | None:
     """True: same content; False: different content; None: not readable as a manifest yet (look again)."""
     try:
         a, b = json.loads(existing), json.loads(ours)
     except json.JSONDecodeError:
         return None
-    strip = lambda m: {k: v for k, v in m.items() if k not in _WALL_CLOCK_FIELDS}  # noqa: E731
+    strip = lambda m: {k: v for k, v in m.items() if k not in ignore}  # noqa: E731
     return isinstance(a, dict) and strip(a) == strip(b)
 
 
 def _publish_text(target: Path, text: str) -> None:
-    """Write a manifest atomically (unique tmp, then replace). A racing builder writes the same content; when
-    the replace is refused (someone has the file open, or is replacing it), an existing manifest with the same
-    content is accepted. One whose content differs re-raises at once: it is never overwritten."""
+    """Write a manifest atomically: a unique tmp, then os.rename, which refuses an existing target (CB 4.6).
+    When it is refused, an existing manifest with the same content is kept as it is (a racing builder, or a
+    rebuild), so a reader meets no replace window. One that differs only in provenance (`sources`) is refreshed
+    by a replace, retried while refused. Any other difference re-raises at once: it is never overwritten."""
     tmp = target.with_name(f".{target.name}.{os.getpid()}-{secrets.token_hex(6)}.tmp")
-    tmp.write_text(text, encoding="utf-8")
+    _refused_retry(lambda p: p.write_text(text, encoding="utf-8"), tmp)
     error: OSError | None = None
     try:
         for attempt in range(_RETRIES):
             try:
-                tmp.replace(target)
+                os.rename(tmp, target)
                 return
             except (PermissionError, FileExistsError) as e:
                 error = e
@@ -684,8 +736,14 @@ def _publish_text(target: Path, text: str) -> None:
                 verdict = _same_manifest(existing, text)
                 if verdict:
                     return
-                if verdict is False:                     # a complete manifest with other content: a conflict
-                    raise error
+                if verdict is False:
+                    if not _same_manifest(existing, text, _WALL_CLOCK_FIELDS | _PROVENANCE_FIELDS):
+                        raise error                      # a complete manifest with other content: a conflict
+                    try:
+                        tmp.replace(target)              # same pack read from elsewhere: follow the latest build
+                        return
+                    except PermissionError as e:
+                        error = e
             _pause(attempt)
         raise error  # type: ignore[misc]
     finally:
@@ -697,5 +755,30 @@ def _no_recording(day: date) -> bool:
     return not ticks.has_day(day)
 
 
+def _refused_retry(op, path: Path):  # noqa: ANN001, ANN202
+    """Run `op(path)`, retrying a refused open (PermissionError) with the publishing back-off. A pack or manifest
+    can be refused for a moment while another process replaces it (pack-race form 3); a refusal that outlasts
+    the retries re-raises. A missing file is not retried: it is simply not built."""
+    for attempt in range(_RETRIES):
+        try:
+            return op(path)
+        except PermissionError:
+            if attempt == _RETRIES - 1:
+                raise
+            _pause(attempt)
+    raise AssertionError("unreachable")
+
+
+def read_bytes(path) -> bytes:  # noqa: ANN001
+    """A pack's bytes, through the refused-open retry."""
+    return _refused_retry(lambda p: p.read_bytes(), Path(path))
+
+
+def sha_file(path) -> str:  # noqa: ANN001
+    """A pack's SHA-256, through the refused-open retry."""
+    return _refused_retry(_sha_file, Path(path))
+
+
 def manifest(sha: str) -> dict:
-    return json.loads(manifest_path(sha).read_text(encoding="utf-8"))
+    """A pack's manifest, through the refused-open retry."""
+    return json.loads(_refused_retry(lambda p: p.read_text(encoding="utf-8"), manifest_path(sha)))

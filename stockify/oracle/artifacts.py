@@ -22,10 +22,16 @@ ORDER_EVENTS = "t_ns,order_id,event,detail"
 FILLS = "fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence"
 CHARGES = ("row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,"
            "other,total")
+# The positions_eod.csv columns, also written by the C++ engine (artifacts.cpp kPositions; checked by blockwatch).
+# <block name="positions-eod-columns" same-as="engine/src/artifacts.cpp:positions-eod-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
 POSITIONS = ("trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,"
-             "realised_paise")
+             "realised_paise,underlying_mark_paise")
+# </block>
 EQUITY = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise"
-MARGIN = "trade_date,underlying_id,model,scan,somc,elm,addons,total"
+# The margin_daily.csv columns (A1 §6.3), also written by the C++ engine (artifacts.cpp kMargin; checked by blockwatch).
+# <block name="margin-daily-columns" same-as="engine/src/artifacts.cpp:margin-daily-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
+MARGIN = "trade_date,underlying_id,model,step,scan,somc,elm,addons,total"
+# </block>
 # The ✔ rows of A1 §6.3, in order (checked by blockwatch).
 # <block name="deterministic-files" same-as="docs/plan/A1_schemas.md:deterministic-files" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+\.[a-z]+)"'>
 DETERMINISTIC = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
@@ -67,7 +73,7 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
         for n, c in enumerate(b.charges, start=1)])
     _csv(folder / "positions_eod.csv", POSITIONS, engine.positions_eod)
     _csv(folder / "equity.csv", EQUITY, engine.equity)
-    _csv(folder / "margin_daily.csv", MARGIN, [])
+    _csv(folder / "margin_daily.csv", MARGIN, getattr(engine, "margin_daily", []))
     (folder / "metrics.json").write_bytes((numerics.dumps_canonical(metrics) + "\n").encode("utf-8"))
     (folder / "events_log.txt").write_bytes(("\n".join(engine.log_lines) + ("\n" if engine.log_lines else "")).encode())
     hashes = {}

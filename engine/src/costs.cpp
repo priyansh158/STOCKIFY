@@ -252,4 +252,28 @@ ChargeParts Costs::exercise(std::string_view kind, Paise intrinsic_value, const 
     return parts_of(intrinsic_value, x);
 }
 
+ChargeParts Costs::delivery(std::string_view kind, Paise value, Paise netted_value, Paise exercised_intrinsic,
+                            const std::string& trade_date) const {  // costs.delivery
+    const Attrs attrs{{"segment", "FO"}, {"kind", std::string(kind)}};
+    const Json& row = *row_for("physical_delivery", attrs, trade_date, true);
+    Exact x;
+    x.stt = Int128::mul(value, row.at("stt_each_side_pct_of_value_ppb").get<Ppb>()) * kPpb;
+    if (exercised_intrinsic != 0) {
+        const Json& ex = *row_for("exercise_stt", attrs, trade_date, true);
+        x.stt += Int128::mul(exercised_intrinsic, ex.at("pct_of_intrinsic_ppb").get<Ppb>()) * kPpb;
+    }
+    x.brokerage = (Int128::mul(checked_sub(value, netted_value), row.at("brokerage_pct_ppb").get<Ppb>()) +
+                   Int128::mul(netted_value, row.at("netted_brokerage_pct_ppb").get<Ppb>())) *
+                  kPpb;
+    const Json& gst = *row_for("gst", {}, trade_date, true);
+    Int128 base_e9 = 0;
+    if (const auto on = gst.find("on"); on != gst.end()) {
+        for (const Json& name : *on) {
+            base_e9 += x.get(name.get<std::string>()).floor_div(kPpb);
+        }
+    }
+    x.gst = base_e9 * gst.at("rate_ppb").get<Ppb>();
+    return parts_of(value, x);
+}
+
 }  // namespace stocksim

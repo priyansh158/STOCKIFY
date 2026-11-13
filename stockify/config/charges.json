@@ -230,7 +230,7 @@
         "effective_from": "2015-01-01",
         "kind": "flat",
         "flat_paise": 2000,
-        "source": "Z-1 (charged on exercised/assigned contracts; basis unconfirmed)",
+        "source": "Z-1 (D-59: on every option leaving the books at expiry without a delivery leg - exercised, assigned or expired; conservative reading of Zerodha's charges page; confirm from a real contract note)",
         "verified": false
       }
     ],
@@ -286,6 +286,25 @@
         "pct": "0.0003553",
         "source": "Z-1",
         "verified": false
+      },
+      {
+        "applies": {
+          "segment": "CM"
+        },
+        "effective_from": "2015-01-01",
+        "pct": "0.0000322",
+        "source": "Z-3 (an older Zerodha capture; D-53)",
+        "verified": false
+      },
+      {
+        "applies": {
+          "segment": "CM"
+        },
+        "effective_from": "2024-10-01",
+        "pct": "0.0000297",
+        "source": "Z-3",
+        "verified": true,
+        "verified_on": "2026-11-07"
       },
       {
         "applies": {

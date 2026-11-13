@@ -10,6 +10,11 @@
       "retry_every_min": 15,
       "until": "23:00"
     },
+    "margin_files": {
+      "start": "17:20",
+      "retry_every_min": 30,
+      "until": "22:00"
+    },
     "token_dependent_retry": {
       "every_min": 5,
       "until": "09:10"

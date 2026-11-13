@@ -2,8 +2,9 @@
 
 The API never runs the engine itself. At most `max(1, os.cpu_count() - 1)` runs go at once; the rest wait in
 arrival order. The subprocess owns the run's status from `running` on (stockify.runs.launch); the queue only
-writes `cancelled` (with `only_if_status`, so it never overwrites a finished run) and, on API start, `failed`
-for runs a previous API process left `running`.
+writes `cancelled` (with `only_if_status`, so it never overwrites a finished run), `failed` for a runner that
+exited without finishing, and, on API start, `failed` for `running` rows whose runner is gone. A runner that is
+still alive (it records itself in `runner.pid`, stockify.proc) is adopted and watched instead.
 """
 from __future__ import annotations
 
@@ -31,6 +32,22 @@ class Process(Protocol):
 Launcher = Callable[[str], Process]
 
 
+def _write(fn: Callable, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+    """A status write that retries briefly while SQLite reports the database locked or busy (another process
+    is writing): 5 tries over about 1.5 s. Any other error, or the last one, is raised."""
+    import sqlite3
+    import time
+    for attempt in range(5):
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as e:
+            text = str(e).lower()
+            if ("locked" not in text and "busy" not in text) or attempt == 4:
+                raise
+            time.sleep(0.05 * 2 ** attempt)
+    return None
+
+
 def default_cap() -> int:
     return max(1, (os.cpu_count() or 2) - 1)
 
@@ -38,7 +55,7 @@ def default_cap() -> int:
 def subprocess_launcher(run_id: str) -> Process:
     """`python -m stockify run --config <runs>/<id>/request.json --run-id <id>`, output to runner.log."""
     from stockify import paths
-    folder = paths.runs_dir() / run_id
+    folder = paths.run_path(run_id)
     out = (folder / "runner.log").open("ab")
     try:
         return subprocess.Popen(
@@ -77,28 +94,54 @@ class TestQueue:
         self._pump()
 
     def _pump(self) -> None:
-        while True:
-            with self._lock:
-                if not self._waiting or len(self._running) >= self.cap:
-                    return
-                run_id = self._waiting.popleft()
-                try:
-                    proc = self.launcher(run_id)
-                except Exception as e:  # noqa: BLE001 — a launch failure fails that run, not the queue
-                    log.exception("could not start run %s", run_id)
-                    from stockify import store, timeutil
-                    store.update_run(run_id, status="failed", finished_ns=timeutil.now_ns(),
-                                     error=f"{type(e).__name__}: could not start the runner: {e}",
-                                     only_if_status="queued")
-                    continue
-                self._running[run_id] = proc
-            t = threading.Thread(target=self._watch, args=(run_id, proc), name=f"test-run-{run_id}", daemon=True)
-            self._watchers.append(t)
-            t.start()
+        deferred: list[str] = []      # launch failed and could not be recorded: kept, retried on the next pump
+        try:
+            while True:
+                with self._lock:
+                    if not self._waiting or len(self._running) >= self.cap:
+                        return
+                    run_id = self._waiting.popleft()
+                    try:
+                        proc = self.launcher(run_id)
+                    except Exception as e:  # noqa: BLE001 — a launch failure fails that run, not the queue
+                        log.exception("could not start run %s", run_id)
+                        if not self._record_launch_failure(run_id, e):
+                            deferred.append(run_id)
+                        continue
+                    self._running[run_id] = proc
+                t = threading.Thread(target=self._watch, args=(run_id, proc), name=f"test-run-{run_id}",
+                                     daemon=True)
+                self._watchers.append(t)
+                t.start()
+        finally:
+            if deferred:
+                with self._lock:
+                    self._waiting.extend(r for r in deferred if r not in self._waiting)
+
+    @staticmethod
+    def _record_launch_failure(run_id: str, e: Exception) -> bool:
+        from stockify import store, timeutil
+        try:
+            _write(store.update_run, run_id, status="failed", finished_ns=timeutil.now_ns(),
+                   error=f"{type(e).__name__}: could not start the runner: {e}", only_if_status="queued")
+            return True
+        except Exception:  # noqa: BLE001
+            log.exception("could not record that run %s failed to start; it stays queued", run_id)
+            return False
 
     def _watch(self, run_id: str, proc: Process) -> None:
         try:
-            proc.wait()
+            rc = proc.wait()
+            # A runner writes its own final status. One that died first (a crash, a kill, a bad environment)
+            # leaves the row queued or running for ever, so fail it here; a finished row is left as it is.
+            error = (f"runner exited {rc}; see runner.log" if not getattr(proc, "adopted", False) else
+                     "runner ended without finishing (adopted after an API restart); see runner.log")
+            try:
+                from stockify import store, timeutil
+                _write(store.update_run, run_id, status="failed", finished_ns=timeutil.now_ns(), error=error,
+                       only_if_status=("queued", "running"))
+            except Exception:  # noqa: BLE001 — one failed update must not stop the queue
+                log.exception("could not record the exit of run %s", run_id)
         finally:
             with self._lock:
                 self._running.pop(run_id, None)
@@ -120,7 +163,14 @@ class TestQueue:
                 was = None
                 proc = None
         if was == "queued":
-            ok = store.update_run(run_id, status="cancelled", finished_ns=timeutil.now_ns(), only_if_status="queued")
+            try:
+                ok = _write(store.update_run, run_id, status="cancelled", finished_ns=timeutil.now_ns(),
+                            only_if_status="queued")
+            except Exception:
+                with self._lock:              # not cancelled after all: keep it waiting (and cancellable)
+                    if run_id not in self._waiting:
+                        self._waiting.appendleft(run_id)
+                raise
             return "queued" if ok else None
         if was == "running" and proc is not None:
             if proc.poll() is None:
@@ -129,26 +179,44 @@ class TestQueue:
                 except OSError:
                     pass
             # the runner may have set running just now, or still be queued in the table
-            ok = store.update_run(run_id, status="cancelled", finished_ns=timeutil.now_ns(),
-                                  error="cancelled by the user", only_if_status=("queued", "running"))
+            ok = _write(store.update_run, run_id, status="cancelled", finished_ns=timeutil.now_ns(),
+                        error="cancelled by the user", only_if_status=("queued", "running"))
             return "running" if ok else None
         # not ours: a queued row from before a restart that has not been re-submitted yet
-        ok = store.update_run(run_id, status="cancelled", finished_ns=timeutil.now_ns(), only_if_status="queued")
+        ok = _write(store.update_run, run_id, status="cancelled", finished_ns=timeutil.now_ns(),
+                    only_if_status="queued")
         return "queued" if ok else None
 
     def recover(self) -> tuple[list[str], list[str]]:
-        """On API start: re-enqueue `queued` rows (oldest first) and fail `running` ones left by a dead API.
-        Returns (requeued, failed)."""
-        from stockify import store, timeutil
+        """On API start: re-enqueue `queued` rows (oldest first). A `running` row whose runner is still alive
+        (its `runner.pid` names a live process created at that moment) is adopted: watched, cancellable, and
+        counted against the cap. Any other `running` row is failed. Returns (requeued, failed)."""
+        from stockify import paths, proc, store, timeutil
         failed = []
         for row in store.list_runs(status="running", limit=10_000):
-            if store.update_run(row["run_id"], status="failed", finished_ns=timeutil.now_ns(), error=INTERRUPTED,
+            run_id = row["run_id"]
+            try:
+                who = proc.read_pidfile(paths.run_path(run_id))
+            except ValueError:
+                who = None
+            if who is not None and proc.is_alive(*who):
+                self._adopt(run_id, proc.Adopted(*who))
+                continue
+            if store.update_run(run_id, status="failed", finished_ns=timeutil.now_ns(), error=INTERRUPTED,
                                 only_if_status="running"):
-                failed.append(row["run_id"])
+                failed.append(run_id)
         queued = [r["run_id"] for r in reversed(store.list_runs(status="queued", limit=10_000))]
         for run_id in queued:
             self.submit(run_id)
         return queued, failed
+
+    def _adopt(self, run_id: str, process: Process) -> None:
+        process.adopted = True  # type: ignore[attr-defined]
+        with self._lock:
+            self._running[run_id] = process
+        t = threading.Thread(target=self._watch, args=(run_id, process), name=f"test-run-{run_id}", daemon=True)
+        self._watchers.append(t)
+        t.start()
 
     def join(self, timeout: float = 30.0) -> None:
         """Tests: wait until nothing is waiting or running (runs started while waiting included)."""
