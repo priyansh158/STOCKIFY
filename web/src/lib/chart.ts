@@ -58,9 +58,10 @@ export type MarkerPoint = {
 };
 export type CardModel = {
   title: string;
+  /** The note verbatim, or the "no note" sentence. Plain prose either way, never code. */
   reason: string;
-  reasonIsCode: boolean;
-  lines: { label: string; value: string }[];
+  /** `code` is true when the value is a code label (a strategy tag) the UI shows in the code style. */
+  lines: { label: string; value: string; code: boolean }[];
   pnl: { label: string; value: string; tone: "up" | "down" | "flat" } | null;
 };
 
@@ -87,11 +88,14 @@ export function toVolume(bar: ChartBar, daily: boolean): VolumePoint {
   return { time: timeOf(bar.t, bar.d, daily), value: bar.volume };
 }
 
-/** The on-chart marker: side and quantity only (B 50, S 50, X 50); the note lives on the card. */
-export function toMarker(m: ChartMarker, daily: boolean, tokens: MarkerTokens): MarkerPoint {
+/**
+ * The on-chart marker: side and quantity only (B 50, S 50, X 50); the note lives on the card. `index` is the marker's
+ * position in the list being drawn; it keeps settlement ids unique when two settle at the same instant and quantity.
+ */
+export function toMarker(m: ChartMarker, daily: boolean, tokens: MarkerTokens, index = 0): MarkerPoint {
   const base = {
     time: daily ? istDate(m.bar_t) : m.bar_t + istShift,
-    id: m.fill_id !== null ? `f${m.fill_id}` : `x${m.t}-${m.qty}`,
+    id: m.fill_id !== null ? `f${m.fill_id}` : `x${m.t}-${m.qty}-${index}`,
   };
   if (m.kind === "settlement") {
     return { ...base, position: "inBar", shape: "square", color: tokens.warn, text: `X ${m.qty}` };
@@ -113,12 +117,12 @@ function signedRupees(paise: number): string {
 /** What the card beside a marker shows. All values are plain text. */
 export function cardModel(m: ChartMarker): CardModel {
   const verb = m.kind === "settlement" ? "Settled" : isBuy(m) ? "Bought" : "Sold";
-  const lines: { label: string; value: string }[] = [
-    { label: "Quantity", value: String(m.qty) },
-    { label: "Price", value: rupees(m.price_paise) },
+  const lines: CardModel["lines"] = [
+    { label: "Quantity", value: String(m.qty), code: false },
+    { label: "Price", value: rupees(m.price_paise), code: false },
   ];
-  if (m.charges_paise !== null) lines.push({ label: "Costs", value: rupees(m.charges_paise) });
-  if (m.tag) lines.push({ label: "Tag", value: m.tag });
+  if (m.charges_paise !== null) lines.push({ label: "Costs", value: rupees(m.charges_paise), code: false });
+  if (m.tag) lines.push({ label: "Tag", value: m.tag, code: m.tag_is_code });
 
   const noNote = m.note === "";
   let pnl: CardModel["pnl"] = null;
@@ -134,7 +138,6 @@ export function cardModel(m: ChartMarker): CardModel {
   return {
     title: `${verb} ${m.qty} at ${rupees(m.price_paise)}`,
     reason: noNote ? `${verb} ${m.qty} (no note from the strategy)` : m.note,
-    reasonIsCode: noNote,
     lines,
     pnl,
   };
@@ -149,11 +152,11 @@ export function mergePages(have: ChartBar[], page: ChartBar[]): ChartBar[] {
 }
 
 /**
- * The `from_ns`/`to_ns` query for `bars` bars either side of an instant. A double holds integers exactly only up
- * to 2^53 (about 9.0e15), so epoch nanoseconds (about 1.8e18) are rounded to the nearest 256 ns: far finer than
- * any bar, and the server only uses the range to pick whole bars.
+ * The `from_ns`/`to_ns` query (UTC epoch nanoseconds) for `bars` bars either side of an instant given in UTC seconds.
+ * Whole seconds times 1e9 are exact in a double up to about 2.3e18, so nothing is rounded.
  */
-export function rangeAround(tNs: number, interval_s: number, bars: number): { from_ns: number; to_ns: number } {
-  const span = bars * interval_s * 1e9;
-  return { from_ns: Math.max(0, tNs - span), to_ns: tNs + span };
+export function rangeAround(tSec: number, interval_s: number, bars: number): { from_ns: number; to_ns: number } {
+  const t = Math.floor(tSec);
+  const span = Math.ceil(bars * interval_s);
+  return { from_ns: Math.max(0, t - span) * 1e9, to_ns: (t + span) * 1e9 };
 }

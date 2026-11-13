@@ -73,7 +73,6 @@ class ChartHelperChecks(unittest.TestCase):
     def test_card_for_a_note_shows_it_verbatim_with_costs_and_profit(self):
         c = self.r["cardNote"]
         self.assertEqual(c["reason"], "Opening range broke up")
-        self.assertFalse(c["reasonIsCode"])
         labels = {x["label"]: x["value"] for x in c["lines"]}
         self.assertEqual(labels["Price"], "₹2,418.40")
         self.assertEqual(labels["Quantity"], "50")
@@ -82,11 +81,13 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertTrue(c["pnl"]["value"].startswith("+"), c["pnl"])
         self.assertIn("₹1,250.00", c["pnl"]["value"])
 
-    def test_card_with_no_note_says_so_and_shows_the_tag_as_a_code_label(self):
+    def test_card_with_no_note_says_so_and_only_the_tag_line_is_code(self):
         c = self.r["cardNoNote"]
         self.assertEqual(c["reason"], "Sold 50 (no note from the strategy)")
-        self.assertTrue(c["reasonIsCode"])
-        self.assertIn({"label": "Tag", "value": "orb_exit"}, c["lines"])
+        self.assertNotIn("reasonIsCode", c)
+        self.assertIn({"label": "Tag", "value": "orb_exit", "code": True}, c["lines"])
+        self.assertEqual([x["label"] for x in c["lines"] if x["code"]], ["Tag"])
+        self.assertFalse(any(x["code"] for x in self.r["cardNote"]["lines"]))
 
     def test_an_opening_fill_has_no_profit_line(self):
         self.assertIsNone(self.r["cardOpening"]["pnl"])
@@ -113,9 +114,22 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(self.r["mergedEmpty"], 1)
 
     def test_range_around_is_symmetric_and_never_negative(self):
-        t = 1_762_913_100_000_000_000
-        self.assertEqual(self.r["rangeAround"], {"from_ns": t - 6000 * 10**9, "to_ns": t + 6000 * 10**9})
+        t = 1_762_913_100
+        self.assertEqual(self.r["rangeAround"], {"from_ns": (t - 6000) * 10**9, "to_ns": (t + 6000) * 10**9})
         self.assertEqual(self.r["rangeNearZero"]["from_ns"], 0)
+
+    def test_settlements_at_the_same_instant_and_quantity_get_different_ids(self):
+        a, b = self.r["settlementIds"]
+        self.assertNotEqual(a, b)
+
+    def test_generated_merge_pages_is_unique_sorted_idempotent_and_keeps_held_bars(self):
+        self.assertEqual(self.r["propMerge"], [])
+
+    def test_generated_pnl_tone_matches_the_sign(self):
+        self.assertEqual(self.r["propTone"], [])
+
+    def test_generated_marker_text_never_holds_the_note(self):
+        self.assertEqual(self.r["propMarkerText"], [])
 
 
 if __name__ == "__main__":
