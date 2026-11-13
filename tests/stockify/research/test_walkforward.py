@@ -88,6 +88,13 @@ class WindowTests(unittest.TestCase):
             nxt = start + timedelta(days=len(ws) * step)                            # the dropped next one overshoots
             self.assertGreater(nxt + timedelta(days=train + test - 1), end)
 
+    def test_step_below_test_is_refused_over_seeded_cases(self):
+        rng = random.Random(21)
+        for _ in range(200):
+            test = rng.randint(2, 60)
+            with self.assertRaises(ValueError):
+                wf.windows(D("2026-01-01"), D("2027-12-31"), rng.randint(1, 100), test, rng.randint(1, test - 1))
+
     def test_bad_sizes_refused(self):
         for args in ((0, 30, 30), (120, 0, 30), (120, 30, 0), (-1, 30, 30)):
             with self.assertRaises(ValueError):
@@ -215,7 +222,7 @@ class RunTests(SandboxedDBTest):
         self.assertEqual(len(fake.calls[1]), 1)                    # only window 0 was tested
         self.assertEqual(res.windows[0].test_status, "done")
         job = store.get_research_job(res.job_id)
-        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["status"], "running")        # Task 21 finish marks it done
         self.assertIsNone(json.loads(job["state_json"])["windows"][1]["chosen_params"])
 
     def test_a_failed_test_run_is_listed_with_its_error(self):
@@ -248,6 +255,7 @@ class RunTests(SandboxedDBTest):
         self.assertEqual(final[0]["test_status"], "done")
         spec = json.loads(store.get_research_job(res.job_id)["spec_json"])
         self.assertEqual((spec["train"], spec["test"], spec["step"], spec["objective"]), (120, 30, 30, "net_pnl"))
+        self.assertIs(spec["unlock_given"], False)
 
     def test_span_defaults_to_the_base_config_and_can_be_narrowed(self):
         res = wf.run_windows(spec_of(), pool_run=FakePool(), **self.KW)
@@ -282,7 +290,7 @@ class RunTests(SandboxedDBTest):
         with mock.patch.object(research, "settings", return_value=patched):
             res = wf.run_windows(spec_of(), pool_run=FakePool(), **self.KW)
         self.assertEqual(store.holdout_unlock_rows(), [])
-        self.assertEqual(store.get_research_job(res.job_id)["status"], "done")
+        self.assertEqual(store.get_research_job(res.job_id)["status"], "running")
 
     def test_job_row_is_updated_when_the_pool_raises(self):
         for which in (1, 2):
@@ -298,6 +306,36 @@ class RunTests(SandboxedDBTest):
         with self.assertRaisesRegex(wf.WalkforwardError, "no window fits"):
             wf.run_windows(spec_of(to="2026-03-01"), pool_run=FakePool(), **self.KW)
         self.assertEqual(store.list_research_jobs(kind="walkforward"), [])
+
+    def test_the_job_stays_running_until_finish_and_has_no_finish_time(self):
+        res = wf.run_windows(spec_of(), pool_run=FakePool(), **self.KW)
+        job = store.get_research_job(res.job_id)
+        self.assertEqual((job["status"], job["finished_ns"], job["error"]), ("running", None, None))
+        self.assertIsNotNone(job["state_json"])
+
+    def test_windows_times_grid_above_max_trials_is_refused_before_a_job(self):
+        sw = {**research.settings()["sweep"], "max_trials": 5}
+        patched = {**research.settings(), "sweep": sw}
+        spec = spec_of()
+        with mock.patch.object(research, "settings", return_value=patched),                 mock.patch.object(runconfig, "validate", side_effect=AssertionError("validated")):
+            fake = FakePool()
+            with self.assertRaises(wf.WalkforwardError) as cm:
+                wf.run_windows(spec, pool_run=fake, **self.KW)    # 2 windows x 3 points = 6 > 5
+        msg = str(cm.exception)
+        for part in ("2 windows", "3 grid points", "6", "5"):
+            self.assertIn(part, msg)
+        self.assertEqual((fake.calls, store.list_research_jobs(kind="walkforward")), ([], []))
+
+    def test_windows_times_grid_at_max_trials_is_allowed(self):
+        sw = {**research.settings()["sweep"], "max_trials": 6}
+        with mock.patch.object(research, "settings", return_value={**research.settings(), "sweep": sw}):
+            wf.run_windows(spec_of(), pool_run=FakePool(), **self.KW)
+
+    def test_a_failing_status_update_does_not_mask_the_original_error(self):
+        with mock.patch.object(store, "update_research_job", side_effect=OSError("db locked")):
+            with self.assertRaisesRegex(RuntimeError, "fell over") as cm:
+                wf.run_windows(spec_of(), pool_run=FakePool(boom_on=1), **self.KW)
+        self.assertIsNone(cm.exception.__cause__)
 
     def test_an_unknown_objective_is_refused_before_a_job_is_made(self):
         with self.assertRaises(ValueError):

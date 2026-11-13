@@ -17,7 +17,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from stockify import runconfig, store
+from stockify import runconfig, store, timeutil
 from stockify.research import holdout, pool, registry, sweep
 
 _SPAN = re.compile(r"[0-9]+d", re.ASCII)
@@ -61,7 +61,7 @@ class WalkforwardResult:
 
 
 def parse_span(text: str) -> int:
-    """`"120d"` is 120 calendar days. Anything but whole digits and a `d` is refused (months and trading days
+    """`"120d"` is 120 calendar days. Anything but whole digits and a `d` is refused (months and trading-day counts
     are not units here)."""
     if not isinstance(text, str) or not _SPAN.fullmatch(text) or int(text[:-1]) < 1:
         raise ValueError(f"{text!r} is not a span: write a whole number of calendar days, like 120d")
@@ -135,7 +135,6 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
     """Walk `spec` forward. WalkforwardError / ValueError before a job exists (bad sizes, no window fits, an
     unknown objective); from then on any failure (a locked holdout, a pool that raises) marks the job `failed`
     with the message and is re-raised."""
-    from stockify import timeutil
     if objective not in registry.OBJECTIVES:
         raise ValueError(f"objective must be one of {list(registry.OBJECTIVES)}, not {objective!r}")
     if start is None or end is None:
@@ -150,6 +149,13 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
         raise WalkforwardError(f"no window fits: {train}d of training and {test}d of testing need "
                                f"{train + test} days, and {start.isoformat()} to {end.isoformat()} has "
                                f"{(end - start).days + 1}")
+    size = math.prod(len(v) for v in spec.axes.values())          # the grid's size, before any config is built
+    grid = size if spec.search["kind"] == "grid" else min(size, spec.search["trials"])
+    runs = len(wins) * grid
+    if runs > sweep.max_trials():
+        raise WalkforwardError(f"{len(wins)} windows x {grid} grid points is {runs} training runs, above "
+                               f"research.json sweep.max_trials ({sweep.max_trials()}): narrow the grid, lengthen "
+                               "the windows or shorten the span")
     points = sweep.expand(spec)
     now = timeutil.now_ns() if now_ns is None else now_ns
     job_id = _job_id(spec.name, now)
@@ -161,7 +167,7 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
         "created_ns": now,
         "spec_json": json.dumps({"name": spec.name, "train": train, "test": test, "step": step,
                                  "objective": objective, "span": list(span), "grid": len(points),
-                                 "windows": len(wins), "unlocked": unlock_reason is not None}, sort_keys=True)})
+                                 "windows": len(wins), "unlock_given": unlock_reason is not None}, sort_keys=True)})
     state: list[dict] = []
     try:
         def cfg_for(point, frm, to, name):  # noqa: ANN001, ANN202
@@ -215,11 +221,13 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
             r["test_run_id"], r["test_status"] = o.run_id, o.status
             r["error"] = None if o.status == "done" else (o.error or "the run failed")
         state = _dump(results)
-        store.update_research_job(job_id, state_json=_state(state), status="done",
-                                  finished_ns=timeutil.now_ns())
+        store.update_research_job(job_id, state_json=_state(state))   # `running` until Task 21's finish
     except BaseException as e:
-        store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
-                                  error=f"{type(e).__name__}: {e}"[:500])
+        try:
+            store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
+                                      error=f"{type(e).__name__}: {e}"[:500])
+        except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
+            pass
         raise
     return WalkforwardResult(
         job_id=job_id, name=spec.name, family_id=family, objective=objective, train=train, test=test, step=step,
