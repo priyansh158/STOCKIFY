@@ -557,6 +557,72 @@ class FamilyDetailDTO(BaseModel):
     pbo_flat: list[str] = []
 
 
+# ── Parameter sweeps (WF 6.3) ────────────────────────────────────────────────
+
+class ResearchJobDTO(BaseModel):
+    job_id: str
+    kind: str
+    name: str | None = None
+    family_id: str | None = None
+    status: str
+    created_ns: int
+    finished_ns: int | None = None
+    error: str | None = None
+
+
+class SweepAxisDTO(BaseModel):
+    path: str
+    labels: list[str]
+    values: list[Any]
+
+
+class SweepRowDTO(BaseModel):
+    index: int
+    params: dict[str, Any]
+    run_id: str | None = None
+    status: str
+    objective_value: float | None = None
+    sharpe: float | None = None
+    net_pnl_paise: int | None = None
+    trades: int | None = None
+    max_drawdown: float | None = None
+    error: str | None = None
+
+
+class SweepBestCellDTO(BaseModel):
+    xi: int
+    yi: int
+    run_id: str
+    value: float
+
+
+class SweepHeatmapDTO(BaseModel):
+    x: str
+    y: str | None = None
+    xs: list[str]
+    ys: list[str]
+    x_values: list[Any]
+    y_values: list[Any]
+    cells: list[list[float | None]]
+    run_ids: list[list[str | None]]
+    best: SweepBestCellDTO | None = None
+    signed: bool
+    format: str
+    hidden_axes: list[str]
+
+
+class SweepDTO(BaseModel):
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    axes: list[SweepAxisDTO]
+    rows: list[SweepRowDTO]
+    best_run_id: str | None = None
+    cells: SweepHeatmapDTO
+    plain: str
+
+
 class CompareMetricDTO(BaseModel):
     key: str
     label: str
