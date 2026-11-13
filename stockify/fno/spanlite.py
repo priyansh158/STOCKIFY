@@ -149,7 +149,7 @@ class SpanLiteMargin:
             valued.append((units, False, f_paise / 100.0, row["strike_paise"] / 100.0, t, sigma, row["kind"] == "CE"))
             if units < 0:
                 lot = e.spec(row["id"], date)["lot"] if e.spec(row["id"], date) else 1
-                somc_lots += -(-abs(units) // lot)       # lots, rounded up
+                somc_lots += -(-numerics.check_int64(abs(units)) // lot)       # lots, rounded up
 
         def value(f: float, k: float, t: float, sigma: float, is_call: bool) -> float:
             return B.price(is_call, f, k, t, rate, sigma)
@@ -175,7 +175,7 @@ class SpanLiteMargin:
                 if not fut:
                     nov += units * v0
             worst = max(0.0, worst - nov)
-        scan = int(math.ceil(worst)) * 100              # rupees → paise, rounded up to the rupee
+        scan = numerics.check_int64(int(math.ceil(worst))) * 100              # rupees → paise, rounded up to the rupee
         somc = numerics.ceil_to(p["somc_per_lot_paise"] * somc_lots, 100)
         elm, addons = self.rule_elm(legs, price, date, und_paise)
         return UnderlyingMargin(uid, scan, somc, elm, addons, step=step_of(p))
@@ -201,10 +201,10 @@ class SpanLiteMargin:
             if row["kind"] == "FUT":
                 f_paise = price(row["id"]) or und_paise
                 if f_paise is not None:
-                    out.append((row, f_paise * abs(units)))
+                    out.append((row, f_paise * numerics.check_int64(abs(units))))
             elif units < 0:
-                base = und_paise if und_paise is not None else int(self._forward(row, self._chain(row), und_paise))
-                out.append((row, base * abs(units)))
+                base = und_paise if und_paise is not None else numerics.check_int64(int(self._forward(row, self._chain(row), und_paise)))
+                out.append((row, base * numerics.check_int64(abs(units))))
         return out
 
     def rule_elm(self, legs: list[tuple[dict, int]], price, date: str,  # noqa: ANN001

@@ -93,6 +93,12 @@ def check_int64(value: int) -> int:
     return value
 
 
+def traded_pnl(realised: int, d: int, gross: int, cost: int) -> int:
+    """realised + d·(gross − cost), each step int64-checked as the engine's Position.pnl is (d is +1 or −1)."""
+    value = check_int64(check_int64(gross) - cost)
+    return check_int64(realised + (value if d > 0 else check_int64(-value)))
+
+
 def floor_div(a: int, d: int) -> int:
     """Mathematical floor for any sign (Python `//` already floors)."""
     if d == 0:

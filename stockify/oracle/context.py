@@ -275,7 +275,7 @@ class Context:
     def _quote(self, iid: int) -> tuple[int | None, int | None, float | None]:
         m = self._e.market.get(iid)
         bid, ask = (m.bid, m.ask) if m else (None, None)
-        return bid, ask, ((bid + ask) / 2 if bid is not None and ask is not None else None)
+        return bid, ask, (numerics.check_int64(bid + ask) / 2 if bid is not None and ask is not None else None)
 
     def _compute_chain(self, underlying: str, expiry: str) -> tuple:
         from stockify.fno import black76 as B

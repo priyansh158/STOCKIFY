@@ -99,6 +99,11 @@ PackReader::PackReader(const std::filesystem::path& path) : path_(path) {
         CloseHandle(mapping_);
         CloseHandle(file_);
         throw FormatError(path.string() + ": " + e.what());
+    } catch (...) {  // bad_alloc from an error message: the destructor will not run for a half-built reader
+        UnmapViewOfFile(data_);
+        CloseHandle(mapping_);
+        CloseHandle(file_);
+        throw;
     }
 }
 

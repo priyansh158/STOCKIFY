@@ -826,7 +826,7 @@ std::optional<Evidence> Engine::evidence(const MarketState& m) {  // runner._evi
     const Snapshot& s0 = *m.s0;
     const Snapshot& s1 = *m.s1;
     Evidence ev;
-    ev.dv = s1.volume - s0.volume;
+    ev.dv = checked_sub(s1.volume, s0.volume);
     if (ev.dv < 0) {
         log("WARN", "day volume decreased; treated as 0");
         ev.dv = 0;
@@ -866,19 +866,19 @@ void Engine::build_bars(InstrumentId iid, TimeNs t, Paise price, std::optional<Q
             continue;
         }
         const TimeNs step = checked_mul(isec, kNsPerSecond);
-        const TimeNs start = *cs + floor_div(t - *cs, step) * step;
+        const TimeNs start = checked_add(*cs, checked_mul(floor_div(checked_sub(t, *cs), step), step));
         auto& acc = built_[{iid, isec}];
         // dv = vol if prev_vol is None else (max(0, vol - prev_vol) if vol is not None else 0); None counts as 0.
         std::int64_t dv = 0;
         if (!prev_vol) {
             dv = vol.value_or(0);
         } else if (vol) {
-            dv = std::max<std::int64_t>(0, *vol - *prev_vol);
+            dv = std::max<std::int64_t>(0, checked_sub(*vol, *prev_vol));
         }
         const auto it = acc.find(start);
         if (it == acc.end()) {
             acc[start] = {price, price, price, price, dv, 0};
-            InternalEvent ev{EventKey{start + step, kRankBarBuilt, 0, 0}, InternalKind::BarBuilt};
+            InternalEvent ev{EventKey{checked_add(start, step), kRankBarBuilt, 0, 0}, InternalKind::BarBuilt};
             ev.instrument = iid;
             ev.interval_s = isec;
             ev.start = start;
@@ -888,7 +888,7 @@ void Engine::build_bars(InstrumentId iid, TimeNs t, Paise price, std::optional<Q
             b[1] = std::max(b[1], price);
             b[2] = std::min(b[2], price);
             b[3] = price;
-            b[4] += dv;
+            b[4] = checked_add(b[4], dv);
         }
     }
 }
@@ -1120,8 +1120,9 @@ void Engine::on_timer(const InternalEvent& ev) {  // runner._on_timer
     }
     const auto [t, period] = it->second;
     if (period != 0) {
-        it->second = {t + period, period};
-        InternalEvent next{EventKey{t + period, kRankTimer, 0, 0}, InternalKind::Timer};
+        const TimeNs next_t = checked_add(t, period);
+        it->second = {next_t, period};
+        InternalEvent next{EventKey{next_t, kRankTimer, 0, 0}, InternalKind::Timer};
         next.timer = ev.timer;
         push_internal(std::move(next));
     } else {
@@ -1423,7 +1424,7 @@ std::optional<double> Context::quote_mid(InstrumentId iid) const {
     if (it == e_.market_.end() || !it->second.bid || !it->second.ask) {
         return std::nullopt;
     }
-    return static_cast<double>(*it->second.bid + *it->second.ask) / 2;
+    return static_cast<double>(checked_add(*it->second.bid, *it->second.ask)) / 2;
 }
 
 Context::ChainView Context::chain(std::string_view underlying, std::string_view expiry) const {  // context.chain

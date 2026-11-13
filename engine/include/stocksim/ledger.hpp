@@ -34,8 +34,10 @@ struct Position {
     std::string mark_source;
 
     Qty qty() const { return d * q; }
+    // d is +1 or -1: the sign flip of a value, where INT64_MIN has no negation (overflow is an error).
+    Paise signed_by_side(Paise v) const { return d > 0 ? v : checked_neg(v); }
     Paise avg_price() const { return q != 0 ? floor_div(c, q) : 0; }
-    Paise pnl(Paise price) const { return checked_add(realised, d * checked_sub(checked_mul(q, price), c)); }
+    Paise pnl(Paise price) const { return checked_add(realised, signed_by_side(checked_sub(checked_mul(q, price), c))); }
 };
 
 class Ledger {

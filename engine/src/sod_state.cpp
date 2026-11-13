@@ -19,6 +19,7 @@
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/json_out.hpp"
+#include "stocksim/notes.hpp"
 #include "stocksim/session.hpp"
 
 namespace stocksim {
@@ -968,7 +969,7 @@ Order order_from(const Json& given, std::string_view group, const InstrumentTabl
         out.protection = as_i32(prot, where + "protection");
     }
     out.tag = as_str(o.at("tag"), where + "tag");
-    out.note = as_str(o.at("note"), where + "note");
+    out.note = clean_note(as_str(o.at("note"), where + "note"));  // CH 6.22: a carried note is cleaned on load
     out.t_submit = as_int(o.at("t_submit"), where + "t_submit");
     out.t_activate = as_int(o.at("t_activate"), where + "t_activate");
     out.filled_qty = as_nonneg(o.at("filled_qty"), where + "filled_qty");

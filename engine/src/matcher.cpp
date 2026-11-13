@@ -15,10 +15,10 @@ Frac Frac::of(std::int64_t num, std::int64_t den) {
         throw NumericError("Fraction with a zero denominator");
     }
     if (den < 0) {
-        num = -num;
-        den = -den;
+        num = checked_neg(num);
+        den = checked_neg(den);
     }
-    const std::int64_t g = std::gcd(num < 0 ? -num : num, den);
+    const std::int64_t g = std::gcd(num < 0 ? checked_neg(num) : num, den);
     return Frac{num / g, den / g};
 }
 
@@ -114,7 +114,7 @@ PathValue path_value(const PathPoints& points, const PathPos& pos) {  // matcher
     const Paise a = points[static_cast<std::size_t>(pos.k)];
     const Paise b = points[static_cast<std::size_t>(pos.k + 1)];
     // a + (b − a)·n/d = (a·d + (b − a)·n) / d
-    return PathValue{Int128::mul(a, pos.f.d) + Int128::mul(b - a, pos.f.n), pos.f.d};
+    return PathValue{Int128::mul(a, pos.f.d) + Int128::mul(checked_sub(b, a), pos.f.n), pos.f.d};
 }
 
 std::optional<PathPos> first_reach(const PathPoints& points, Paise x, bool down, PathPos after) {
@@ -128,7 +128,7 @@ std::optional<PathPos> first_reach(const PathPoints& points, Paise x, bool down,
         const Paise a = points[static_cast<std::size_t>(k)];
         const Paise b = points[static_cast<std::size_t>(k + 1)];
         if (a != b && ok_int(b)) {
-            const Frac f = Frac::of(a - x, a - b);
+            const Frac f = Frac::of(checked_sub(a, x), checked_sub(a, b));
             if (f >= start) {
                 return PathPos{k, f};
             }
