@@ -4,6 +4,7 @@
  * Server components may call these; the base URL is handled by `api`.
  */
 import { api, ApiError } from "./api";
+import { sweepMissingKind, type SweepGone } from "./researchHelpers";
 import type {
   ComparisonDTO,
   CoverageMatrixDTO,
@@ -12,10 +13,11 @@ import type {
   GapPageDTO,
   RunResearchDTO,
   SensitivityDTO,
+  SweepDTO,
 } from "./types";
 
-export { bucketTone, heatColourStep, sentenceOrDash } from "./researchHelpers";
-export type { BucketTone } from "./researchHelpers";
+export { bucketTone, heatColourStep, heatFormat, heatGridProps, sentenceOrDash, sweepMissingKind } from "./researchHelpers";
+export type { BucketTone, SweepGone } from "./researchHelpers";
 
 const enc = encodeURIComponent;
 
@@ -65,4 +67,25 @@ export function getCoverage(from?: string, to?: string): Promise<CoverageMatrixD
 /** One page of a recorded day's gaps, or null when nothing was recorded that day. */
 export function getGaps(date: string, offset = 0, limit = 200): Promise<GapPageDTO | null> {
   return orNull(api<GapPageDTO>(`/api/data/gaps?date=${enc(date)}&offset=${offset}&limit=${limit}`));
+}
+
+/** One sweep with its heatmap for the chosen axes (the server picks the first two when none are given). A 404 comes back as
+ * a plain state (still running, failed, unreadable, or no such sweep) rather than an error; a 422 (an axis it does not have)
+ * is `bad_axes` with the server's sentence; any other failure throws. */
+export async function getSweep(
+  id: string,
+  x?: string,
+  y?: string,
+): Promise<{ kind: "ready"; sweep: SweepDTO } | { kind: SweepGone } | { kind: "bad_axes"; detail: string }> {
+  const q = new URLSearchParams();
+  if (x) q.set("x", x);
+  if (y) q.set("y", y);
+  const s = q.toString();
+  try {
+    return { kind: "ready", sweep: await api<SweepDTO>(`/api/research/sweeps/${enc(id)}${s ? `?${s}` : ""}`) };
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { kind: sweepMissingKind(e.message) };
+    if (e instanceof ApiError && e.status === 422) return { kind: "bad_axes", detail: e.message };
+    throw e;
+  }
 }

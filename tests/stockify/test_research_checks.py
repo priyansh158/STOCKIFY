@@ -48,6 +48,48 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["scheme"], "dark")
         self.assertEqual(self.answers["more"], ["brighter", "darker"])
 
+    def test_diverging_step_is_centred_on_zero_with_three_levels_each_side(self):
+        # (value, max |value|): a tenth is the first level, a half the second, the full range the third, and the
+        # sign is kept; zero, NaN and a zero range are the neutral 0; beyond the range clamps.
+        self.assertEqual(self.answers["div"], [1, -1, 0, 3, -3, 2, -2, 2, 3, 0, 0])
+
+    def test_heat_formats_carry_the_sign_when_signed_and_use_rupees_for_paise(self):
+        self.assertEqual(self.answers["fmt"], ["+1.23", "−0.20", "0.00", "−0.20", "+12.34 %", "−5.00 %",
+                                               "+₹4,120", "−₹31,000", "₹1,23,456", "—", "+1.5"])
+
+    def test_heat_grid_props_adapt_the_sweep_cells(self):
+        g = self.answers["grid"]
+        self.assertEqual(g["x"], {"x": 0, "y": 1})                      # best {xi, yi} becomes {x, y}
+        self.assertTrue(g["signed"])
+        self.assertEqual((g["xs"], g["ys"]), (["5", "10"], ["20", "30"]))
+        self.assertEqual(g["cells"], [[0.5, -0.2], [1.0, None]])         # cells[yi][xi] pass as they are, null stays null
+        self.assertEqual((g["xLabel"], g["yLabel"]), ("fast", "slow"))
+        self.assertEqual(g["f"], "+1.00")
+        m = self.answers["money"]
+        self.assertEqual((m["signed"], m["f"]), (False, "₹4,120"))
+
+    def test_one_axis_sweep_is_one_row_named_by_the_objective(self):
+        o = self.answers["one"]
+        self.assertEqual((o["ys"], o["best"], o["cells"]), (["sharpe"], None, [[0.5, -0.2]]))
+        self.assertEqual(o["yLabel"], "Objective")
+
+    def test_diverging_palette_words_and_css_agree(self):
+        # info above zero, warn below: the validated colour-blind-safe pair (dataviz validator, deutan/protan/tritan
+        # separation 22 to 25). The caption's colour words come from DIVERGING; the stylesheet must use the same tokens.
+        self.assertEqual(self.answers["diverging"], {"positive": {"token": "info", "word": "blue"},
+                                                     "negative": {"token": "warn", "word": "orange"}})
+        css = self.answers["divCss"]
+        self.assertEqual(len(css), 6)
+        for sign, token in (("pos", "info"), ("neg", "warn")):
+            arm = [c for c in css if c[0] == sign]
+            self.assertEqual([c[1] for c in arm], [1, 2, 3])
+            self.assertEqual({c[2] for c in arm}, {token})
+            self.assertEqual([c[3] for c in arm], sorted(c[3] for c in arm))
+
+    def test_missing_sweep_detail_maps_to_running_failed_missing_or_unreadable(self):
+        self.assertEqual(self.answers["missing"],
+                         ["missing", "running", "failed", "running", "unreadable", "missing", "missing"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -286,6 +286,8 @@ class SweepApiTests(SandboxedDBTest):
         self.assertEqual(c["run_ids"], [["r1", "r5"], ["r2", "r7"]])
         self.assertIn("best", j["plain"])
         self.assertIn("c", j["plain"])
+        self.assertIn("Each square is the best steadiness of returns (Sharpe) over every setting of c", j["plain"])
+        self.assertNotIn("sharpe ", j["plain"])                 # the objective's code never reaches the sentence
         picked = self.client.get("/api/research/sweeps/sweep-t-1", params={"x": "c", "y": "a"}).json()["cells"]
         self.assertEqual(picked["xs"], ["true", "false"])
         self.assertEqual(picked["hidden_axes"], ["b"])
@@ -338,13 +340,23 @@ class SweepApiTests(SandboxedDBTest):
             r = self.client.get(f"/api/research/sweeps/{jid}")
             self.assertEqual((r.status_code, r.json()["detail"]), (404, text), jid)
 
+    def test_a_failed_trials_error_is_a_plain_reason_or_nothing(self):
+        # a short clean message passes; a code name, a path or a traceback is dropped (None), as for walk-forward windows
+        axes = {self.X: [5, 10, 15]}
+        rows = [_row(0, {self.X: 5}, None), _row(1, {self.X: 10}, None), _row(2, {self.X: 15}, None)]
+        for r, err in zip(rows, ("the run did not report its folder", "KeyError: fast_period in x/y.py", None)):
+            r.update(status="failed", error=err)
+        add_sweep_job(sweep_doc(axes=axes, rows=rows))
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual([r["error"] for r in j["rows"]], ["the run did not report its folder", None, None])
+
     def test_net_pnl_plain_sentence_is_in_rupees(self):
         axes = {self.X: [5, 10]}
         add_sweep_job(sweep_doc(objective="net_pnl", axes=axes,
                                 rows=[_row(0, {self.X: 5}, 412_000.0), _row(1, {self.X: 10}, -31_000.0)]))
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
-        self.assertEqual(j["plain"], f"Each square is the net_pnl of one trial. The best of all 2 trials has "
-                                     f"{self.X} = 5, with net_pnl ₹4,120.")
+        self.assertEqual(j["plain"], f"Each square is the profit after costs of one trial. The best of all 2 trials "
+                                     f"has {self.X} = 5, with profit after costs ₹4,120.")
         self.assertNotIn("412000", j["plain"])
 
     def test_sweep_response_has_no_nan(self):

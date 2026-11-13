@@ -586,7 +586,7 @@ class SweepRowDTO(BaseModel):
     net_pnl_paise: int | None = None
     trades: int | None = None
     max_drawdown: float | None = None
-    error: str | None = None
+    error: str | None = None        # a short plain clause, or None when the stored error looks like a raw log line
 
 
 class SweepBestCellDTO(BaseModel):

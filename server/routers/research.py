@@ -186,7 +186,7 @@ def _heatmap(doc: dict, x: str, y: str | None) -> SweepHeatmapDTO:
 
 def _sweep_sentence(doc: dict, h: SweepHeatmapDTO) -> str:
     from stockify.research import plain as words
-    obj = doc["objective"]
+    obj = words.OBJECTIVE_LABELS.get(doc["objective"], doc["objective"])       # a name a reader knows, never a code
     if h.hidden_axes:
         what = (f"Each square is the best {obj} over every setting of {', '.join(h.hidden_axes)}, "
                 "not an average and not one fixed value.")
@@ -195,9 +195,15 @@ def _sweep_sentence(doc: dict, h: SweepHeatmapDTO) -> str:
     b = h.best
     if b is None:
         return f"{what} No trial finished with a usable {obj}, so there is no best one."
-    value = words.rupees(b.value / 100) if obj == "net_pnl" else f"{b.value:.4g}"
+    value = words.rupees(b.value / 100) if doc["objective"] == "net_pnl" else f"{b.value:.4g}"
     where = f"{h.x} = {h.xs[b.xi]}" + (f" and {h.y} = {h.ys[b.yi]}" if h.y is not None else "")
     return f"{what} The best of all {len(doc['rows'])} trials has {where}, with {obj} {value}."
+
+
+def _plain_error(error: object) -> str | None:
+    """A failed trial's stored error as a plain clause, or None when it looks like a raw log line (as for walk-forward windows)."""
+    from stockify.research import plain
+    return plain.plain_reason(error if isinstance(error, str) else None)
 
 
 @router.get("/api/research/sweeps/{job_id}", response_model=SweepDTO)
@@ -210,7 +216,8 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
         job_id=job_id, name=str(doc.get("name", "")), family_id=str(doc.get("family_id", "")),
         objective=doc["objective"],
         axes=[SweepAxisDTO(path=a, labels=[_label(v) for v in vs], values=vs) for a, vs in doc["axes"].items()],
-        rows=[SweepRowDTO(**{k: r.get(k) for k in SweepRowDTO.model_fields}) for r in doc["rows"]],
+        rows=[SweepRowDTO(**{**{k: r.get(k) for k in SweepRowDTO.model_fields}, "error": _plain_error(r.get("error"))})
+              for r in doc["rows"]],
         best_run_id=doc.get("best_run_id"), cells=h, plain=_sweep_sentence(doc, h))
 
 # ---- walk-forward report (M6.5, WF 6.6; Task 22) ----------------------------------------------------------------
