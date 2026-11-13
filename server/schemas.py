@@ -746,6 +746,7 @@ class WalkforwardWindowDTO(BaseModel):
     chosen_run_id: str | None = None
     test_run_id: str | None = None
     test_status: str
+    result: str = ""
     error: str | None = None
     train: dict[str, Any] | None = None
     test: dict[str, Any] | None = None

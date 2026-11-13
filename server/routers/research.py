@@ -13,6 +13,7 @@ import math
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
                             ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
@@ -217,6 +218,18 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
 # The prefix `/api/research/walkforward/` is its own: no `{job_id}` route of another kind can shadow it, and the
 # family route above (`/api/research/families/{family_id:path}`) lives under a different prefix.
 
+def _not_done(job_id: str, message: str) -> JSONResponse:
+    """The 409 for a job that is not finished: the plain message, its status and, for a failed job, the stored
+    error only when it reads as a plain clause (`plain.plain_reason`: no paths, no code names), so the page can
+    say "still running" or "failed: <reason>" without ever echoing a raw error."""
+    from stockify import store
+    from stockify.research import plain
+    job = store.get_research_job(job_id) or {}
+    status = str(job.get("status", ""))
+    reason = plain.plain_reason(job.get("error")) if status == "failed" else None
+    return JSONResponse(status_code=409, content={"detail": message, "status": status, "reason": reason})
+
+
 @router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO)
 def walkforward_detail(job_id: str) -> WalkforwardDTO:
     """A finished walk-forward job, read from its walkforward.json: 404 for an unknown job (or one of another
@@ -226,6 +239,8 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     try:
         d = _clean(wf_report.detail(job_id))
     except wf_report.WfReportError as e:
+        if e.kind == "not_done":
+            return _not_done(job_id, str(e))
         raise HTTPException(status_code=404 if e.kind == "unknown" else 409, detail=str(e))
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None

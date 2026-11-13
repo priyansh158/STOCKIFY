@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, heatColourStep, heatMoreWord, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
+import { SERIES_TOKENS, bucketTone, heatColourStep, heatMoreWord, sentenceOrDash, splitSegments, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 const css = readFileSync(new URL("../../web/src/app/globals.css", import.meta.url), "utf-8");
 const colourRules = [...css.matchAll(/\.stk-lc-line\[data-c="(\d)"\]\s*\{\s*stroke:\s*var\(--color-([a-z0-9-]+)\)/g)].map((m) => [m[1], m[2]]);
@@ -23,6 +23,19 @@ const out = {
   heatMixes,
   scheme: /:root\s*\{[^}]*color-scheme:\s*(\w+)/.exec(css)?.[1] ?? null,
   more: [heatMoreWord("dark"), heatMoreWord("light")],
+  segments: [
+    splitSegments([[3, 1.3], [1, 1.1], [2, 1.2], [5, 1.5], [9, 0.9]], [5, 9]).map((s) => s.map((p) => p[0])),
+    splitSegments([[1, 1], [2, 1]]).map((s) => s.length),
+    splitSegments([]).length,
+  ],
+  curve: wfCurve(
+    ["2024-01-01", "2024-01-02", "2024-01-10", "2024-01-11", "2024-01-12"], [1.01, 1.02, 1.0, 0.99, 1.03],
+    [
+      { test_from: "2024-01-01", test: { from: "2024-01-01", to: "2024-01-02" } },
+      { test_from: "2024-01-05", test: null },
+      { test_from: "2024-01-09", test: { from: "2024-01-10", to: "2024-01-12" } },
+    ],
+  ),
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

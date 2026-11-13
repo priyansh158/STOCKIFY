@@ -717,6 +717,7 @@ export interface WalkforwardWindowDTO {
   chosen_run_id?: string | null;
   test_run_id?: string | null;
   test_status: string;
+  result: string;
   error?: string | null;
   train?: Record<string, unknown> | null;
   test?: Record<string, unknown> | null;
