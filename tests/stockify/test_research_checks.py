@@ -124,6 +124,12 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(d["parse"], ["2026-10-07", None, None, None, None, None, None])
         self.assertEqual(d["range"], [60, 30, 60, 180, 60, 60, 60])
 
+    def test_earlier_stops_at_the_earliest_day_the_lab_holds_and_the_links_say_their_size(self):
+        d = self.answers["days"]
+        # the window starts 2026-09-15: a day before it is held -> the previous window ends the day before; none held -> no link
+        self.assertEqual(d["earlier"], ["2026-09-14", None, None, "2026-09-14"])
+        self.assertEqual(d["linkLabels"], ["Earlier 60 days", "Later 30 days"])
+
     def test_the_data_window_pages_back_by_whole_windows_and_never_into_the_future(self):
         from datetime import date, timedelta
         d = self.answers["days"]

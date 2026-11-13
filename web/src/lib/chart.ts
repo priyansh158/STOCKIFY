@@ -172,6 +172,8 @@ export type ChartWindow = {
   label: string;
   /** True for a window with no bars to shade (excluded, no trades, failed): it is shaded by day instead. */
   gap?: boolean;
+  /** Seconds after IST midnight at which the session opens on this window's first day (the server's dated config). */
+  open_s?: number | null;
 };
 
 /** A run's chart as the API sends it, plus the session and walk-forward fields (C12, C13) that a run does not have. */
@@ -182,7 +184,6 @@ export type ChartModel = RunChartDTO & {
   days?: string[];
   paper?: boolean;
   windows?: WalkforwardChartWindowDTO[];
-  session_open_s?: number | null;
 };
 
 export type ChartViewState = "loading" | "error" | "pruned" | "empty" | "full";
@@ -403,6 +404,7 @@ export function windowBands(windows: WalkforwardChartWindowDTO[]): ChartWindow[]
     to_ns: w.to_t * 1e9,
     label: windowLabel(w),
     gap: w.excluded != null || w.status !== "done",
+    open_s: w.session_open_s,
   }));
 }
 
@@ -410,15 +412,14 @@ const GAP_DAYS_MAX = 400;
 
 /**
  * The shading for the histogram under the candles: every bar inside a window gets that window's position; a gap window has
- * no bars, so it gets one point on each weekday of its days (at `openS` seconds after IST midnight, the session open the server
- * reads from its dated config, or the date on a daily chart; with no open known, the day's start). Sorted, one per time.
+ * no bars, so it gets one point on each weekday of its days (at the window's `open_s` seconds after IST midnight, the session open the server
+ * reads from its dated config for that day, or the date on a daily chart; with no open known, the day's start). Sorted, one per time.
  * A holiday inside a gap window still gets its point, which is why the shading is a band and never a claim about trading days.
  */
 export function shadePoints(
   bars: ChartBar[],
   windows: ChartWindow[],
   daily: boolean,
-  openS: number | null = null,
 ): { time: ChartTime; index: number; gap: boolean }[] {
   const byTime = new Map<ChartTime, { time: ChartTime; index: number; gap: boolean }>();
   for (const b of bars) {
@@ -432,7 +433,7 @@ export function shadePoints(
     for (let t = w.from_ns / 1e9, n = 0; t < end && n < GAP_DAYS_MAX; t += 86400, n++) {
       const weekday = new Date((t + istShift) * 1000).getUTCDay();
       if (weekday === 0 || weekday === 6) continue;
-      const time = daily ? istDate(t) : t + (openS ?? 0) + istShift;
+      const time = daily ? istDate(t) : t + (w.open_s ?? 0) + istShift;
       if (!byTime.has(time)) byTime.set(time, { time, index, gap: true });
     }
   });

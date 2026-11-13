@@ -7,7 +7,7 @@ import { COMPARE_MAX, COMPARE_MIN, DIVERGING, SERIES_TOKENS, bucketTone, compare
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, recorderWords, windowBounds, windowEnd, worstCoverage,
+  gapScopeWords, istToday, earlierEnd, laterEnd, parseDay, qualityNotice, rangeDays, recorderWords, windowBounds, windowEnd, windowLinkLabel, worstCoverage,
 } from "../../web/src/lib/data.ts";
 
 // The reasons the recorder can write, read from the gap-reasons block of A1 (so a new reason there fails the check below).
@@ -97,6 +97,10 @@ const out = {
     range: [undefined, "30", "60", "180", "90", "abc", "30.5"].map((x) => rangeDays(x)),
     // REQ-113: the window the page shows ends at `to` (an IST day, never after today), `days` long; Earlier and Later step by a window.
     windowEnd: [undefined, "2026-06-30", "2026-11-13", "2027-01-01", "2026-02-30", "x"].map((x) => windowEnd(x, "2026-11-13")),
+    // M5: Earlier is offered only while the lab holds a day before the window; the links say how far they go.
+    earlier: [earlierEnd("2026-09-15", "2026-09-14"), earlierEnd("2026-09-15", "2026-09-15"), earlierEnd("2026-09-15", null),
+      earlierEnd("2026-09-15", "2020-01-01")],
+    linkLabels: [windowLinkLabel("Earlier", 60), windowLinkLabel("Later", 30)],
     windows: [30, 60, 180].map((n) => {
       const a = windowBounds(n, "2026-11-13");
       const b = windowBounds(n, a.earlier!);

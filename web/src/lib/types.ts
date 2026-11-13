@@ -689,6 +689,7 @@ export interface CoverageMatrixDTO {
   recorder?: RecorderStatus | null;
   errors: string[];
   error_stores: string[];
+  earliest_date?: string | null;
 }
 
 export interface GapDTO {
@@ -844,11 +845,11 @@ export interface WalkforwardChartWindowDTO {
   result: string;
   no_sharpe: string;
   excluded: string | null;
+  session_open_s: number | null;
 }
 
 export interface WalkforwardChartDTO extends RunChartDTO {
   windows: WalkforwardChartWindowDTO[];
-  session_open_s: number | null;
 }
 
 export interface SessionChartDTO extends RunChartDTO {

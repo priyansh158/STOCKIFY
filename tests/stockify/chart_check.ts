@@ -242,7 +242,7 @@ out.trialHrefOneAxis = chart.trialHref("sw1", "fast", null, "r1");
 const W0 = 1_762_885_800; // IST midnight of Wed 12 Nov 2025
 const wfw = (index: number, over: Record<string, unknown>) => ({
   index, from_t: W0 + index * 7 * 86400, to_t: W0 + (index + 1) * 7 * 86400, from_d: "d", to_d: "d",
-  run_id: `r${index}`, status: "done", result: "ok", no_sharpe: "", excluded: null, ...over,
+  run_id: `r${index}`, status: "done", result: "ok", no_sharpe: "", excluded: null, session_open_s: 33300, ...over,
 });
 const wfs = [
   wfw(0, {}),
@@ -259,12 +259,13 @@ out.view = [
 ];
 out.bandsEmpty = chart.windowBands([]);
 const wb = chart.windowBands(wfs);
-out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, false, 33300);
+out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, false);
 // The session open is the server's, not a constant: a 09:30 open moves every gap point by 900 s.
-out.shadeGapOpen0930 = chart.shadePoints([], [wb[1]], false, 34200);
-out.shadeGapNoOpen = chart.shadePoints([], [wb[1]], false, null);
+// Each window carries the open of its own day: a 09:30 open moves that window's points by 900 s; none known: the day's start.
+out.shadeGapOpen0930 = chart.shadePoints([], chart.windowBands([wfs[1], wfw(1, { run_id: null, excluded: "x", session_open_s: 34200 })].slice(1) as never), false);
+out.shadeGapNoOpen = chart.shadePoints([], chart.windowBands([wfw(1, { run_id: null, excluded: "x", session_open_s: null })] as never), false);
 out.notCharted = chart.windowLabel(wfw(4, { run_id: null, excluded: "not charted: different price basis or interval" }) as never);
-out.shadeGapDaily = chart.shadePoints([], [wb[1]], true, 33300);
+out.shadeGapDaily = chart.shadePoints([], [wb[1]], true);
 
 // The paper session page (CH 6.17): polling only while the day is live and the tab visible; the plain states.
 out.pollLive = chart.pollDelay(true, false, 5000);

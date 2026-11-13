@@ -67,6 +67,7 @@ class CoverageMatrix:
     recorder: dict | None = field(default=None)
     errors: list[str] = field(default_factory=list)
     error_stores: list[str] = field(default_factory=list)   # the `STORE_NAMES` keys of the stores `errors` names
+    earliest_date: str | None = None     # the oldest IST day the lab holds anything for (tick day, NSE file, price bars)
 
 
 def _num(x) -> float | None:  # noqa: ANN001
@@ -188,6 +189,19 @@ def _bars(limit: int, errors: list[str]) -> list[dict]:
     return out
 
 
+def _earliest(errors: list[str]) -> str | None:
+    """The oldest IST day with a recorded tick day, a fetched NSE file (any outcome) or fetched price bars, or None."""
+    days = []
+    for table in ("tick_days", "nse_fetch_log"):
+        for r in _rows(paths.refdata_db(), f"SELECT MIN(trade_date) AS d FROM {table}", errors=errors):
+            if r["d"]:
+                days.append(str(r["d"]))
+    for r in _rows(paths.bars_db(), "SELECT MIN(from_ns) AS a FROM bar_fetch_log WHERE outcome='ok'", errors=errors, store_key="bars"):
+        if r["a"] is not None:
+            days.append(timeutil.ns_to_ist(int(r["a"])).date().isoformat())
+    return min(days) if days else None
+
+
 def _size(path) -> int:  # noqa: ANN001
     total = 0
     for suffix in ("", "-wal", "-shm"):
@@ -262,7 +276,7 @@ def matrix(from_: date, to: date, *, bar_limit: int = _BAR_LIMIT) -> CoverageMat
     if lab_unreadable:
         _unreadable(errors, "lab")
     error_stores = [key for key in STORE_NAMES if unreadable_sentence(key) in errors]
-    return CoverageMatrix(from_, to, listed, days, bars, storage, recorder, errors, error_stores)
+    return CoverageMatrix(from_, to, listed, days, bars, storage, recorder, errors, error_stores, _earliest(errors))
 
 
 def gaps(day: date) -> list[dict]:
@@ -290,4 +304,4 @@ def to_dict(m: CoverageMatrix) -> dict:
             "days": [{"date": d.date.isoformat(), "trading": d.trading,
                       "cells": {k: _cell_dict(c) for k, c in d.cells.items()}} for d in m.days],
             "bars": m.bars, "storage": m.storage, "recorder": m.recorder, "errors": m.errors,
-            "error_stores": m.error_stores}
+            "error_stores": m.error_stores, "earliest_date": m.earliest_date}

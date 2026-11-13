@@ -294,6 +294,10 @@ class SettlementTests(unittest.TestCase):
         self.assertEqual(out["markers"][0]["bar_start_ns"], T(9, 16))
 
 
+NOT_RECORDED = ("This run does not record its bar interval, so these bars are rebuilt at 1 minute and may differ from "
+                "what the strategy used.")
+
+
 class G10GoldenTests(unittest.TestCase):
     """Index options held to expiry: a long ITM call, a long OTM call and a short ITM put (G10)."""
 
@@ -435,7 +439,7 @@ class DataStateTests(unittest.TestCase):
         self.assertEqual([chart(rid)["interval_s"], len(chart(rid)["bars"])], [60, 10])
         five = chart(rid, interval_s=300)
         self.assertEqual((five["interval_s"], len(five["bars"])), (300, 2))
-        self.assertIsNone(five["notice"])
+        self.assertEqual(five["notice"], NOT_RECORDED.replace("at 1 minute", "at 5 minutes"))
 
     def test_plots_come_with_their_series_inside_the_window(self):
         plots = [{"t_ns": T(9, 15, 5), "instrument_id": 1, "name": "sma", "kind": "price", "value": 10001},
@@ -510,6 +514,8 @@ class PagingTests(unittest.TestCase):
 
 
 SMA = "stockify.strategies.sma_cross:SmaCross"
+ORB = "stockify.strategies.opening_range_breakout:OpeningRangeBreakout"
+EOD = "stockify.strategies.eod_short_straddle:EodShortStraddle"
 
 
 def _tick_run(strategy: dict | None, *, minutes: int = 40) -> tuple[str, dict]:
@@ -565,10 +571,37 @@ class StrategyIntervalTests(unittest.TestCase):
         self.assertIsNone(strategy_interval({}))
         self.assertIsNone(strategy_interval(None))
 
-    def test_a_run_with_no_strategy_interval_stays_on_minute_bars(self):
+    def test_a_run_with_no_strategy_interval_stays_on_minute_bars_and_says_so(self):
         rid, _ = _tick_run(None)
         out = chart(rid)
         self.assertEqual((out["interval_s"], len(out["bars"])), (60, 40))
+        self.assertEqual(out["notice"], NOT_RECORDED)
+
+    def test_a_script_strategy_that_subscribes_to_many_intervals_gets_the_notice(self):
+        rid, _ = _tick_run({"kind": "script", "ref": None, "params": {}, "actions": []})
+        self.assertEqual(chart(rid)["notice"], NOT_RECORDED)
+
+    def test_a_strategy_with_a_fixed_subscription_declares_it(self):
+        from stockify.reporting.chart import strategy_interval
+        self.assertEqual(strategy_interval({"strategy": {"kind": "python", "ref": ORB, "params": {}}}), 60)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "python", "ref": EOD, "params": {}}}), 86400)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "cpp", "ref": "orb_cpp", "params": {}}}), 60)
+        self.assertEqual(strategy_interval({"strategy": {"kind": "cpp", "ref": "sma_cross_cpp", "params": {"interval_s": 300}}}), 300)
+
+    def test_a_fixed_subscription_strategy_is_charted_at_its_interval_without_a_notice(self):
+        rid, _ = _tick_run({"kind": "python", "ref": EOD, "params": {}})
+        out = chart(rid)
+        self.assertEqual((out["interval_s"], out["notice"]), (86400, None))
+        rid, _ = _tick_run({"kind": "python", "ref": ORB, "params": {}})
+        self.assertEqual((chart(rid)["interval_s"], chart(rid)["notice"]), (60, None))
+
+    def test_a_bar_pack_without_the_strategys_interval_says_which_bars_are_shown(self):
+        rid = make_run(world=bar_world(5), bundle={"strategy": {"kind": "python", "ref": SMA, "params": {"interval_s": 300}}})
+        out = chart(rid)
+        self.assertEqual(out["interval_s"], 60)
+        self.assertEqual(out["notice"], "The strategy used 5-minute bars, but this run holds 60-second bars only; they are shown instead.")
+        plain = make_run(world=bar_world(5))
+        self.assertIsNone(chart(plain)["notice"])                       # no strategy interval known: the bars it saw
 
     def test_a_caller_interval_that_differs_says_the_bars_were_rebuilt(self):
         rid, _ = _tick_run({"kind": "python", "ref": SMA, "params": {"interval_s": 300}})
@@ -580,9 +613,9 @@ class StrategyIntervalTests(unittest.TestCase):
         self.assertIsNone(chart(rid, interval_s=300)["notice"])
         self.assertIsNone(chart(rid)["notice"])
 
-    def test_a_caller_interval_with_no_known_strategy_interval_has_no_notice(self):
+    def test_a_caller_interval_with_no_known_strategy_interval_says_the_interval_is_not_recorded(self):
         rid, _ = _tick_run(None)
-        self.assertIsNone(chart(rid, interval_s=300)["notice"])
+        self.assertEqual(chart(rid, interval_s=300)["notice"], NOT_RECORDED.replace("at 1 minute", "at 5 minutes"))
 
 
 class PageCapTests(unittest.TestCase):

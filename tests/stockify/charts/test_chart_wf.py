@@ -139,8 +139,21 @@ class WfChartModelTests(SandboxedDBTest):
         self.assertIn("1 window was not charted: its price basis or bar interval differs from the first charted window's.",
                       out["notice"])
 
-    def test_the_session_open_comes_from_the_dated_config(self):
-        self.assertEqual(chart()["session_open_s"], 9 * 3600 + 15 * 60)
+    def test_each_window_takes_the_session_open_of_its_own_day_from_the_dated_config(self):
+        from unittest import mock
+        add_job([win(0, D0, self.a), win(1, D1, self.b), win(2, D2, None, "failed")], job_id="wf-open")
+        from stockify.data import calendar
+        real = calendar.continuous_open_s
+        seen = []
+
+        def spy(group, d):
+            seen.append((group, d.isoformat()))
+            return real(group, d) + (900 if d.isoformat() == D1 else 0)      # a rule change on the second day
+        with mock.patch.object(calendar, "continuous_open_s", spy):
+            out = chart("wf-open")
+        self.assertEqual([w["session_open_s"] for w in out["windows"]], [33300, 33300 + 900, 33300])
+        self.assertEqual(seen, [("CM", D0), ("CM", D1), ("CM", D2)])
+        self.assertNotIn("session_open_s", out)
 
     def test_window_bounds_match_the_state_json(self):
         from datetime import date, timedelta
@@ -297,12 +310,13 @@ class WfChartApiTests(SandboxedDBTest):
         w = d["windows"]
         self.assertEqual([(x["index"], x["run_id"], x["status"]) for x in w], [(0, self.a, "done"), (1, self.b, "done")])
         self.assertEqual(list(w[0]), ["index", "from_t", "to_t", "from_d", "to_d", "run_id", "status", "result",
-                                      "no_sharpe", "excluded"])
+                                      "no_sharpe", "excluded", "session_open_s"])
         self.assertEqual((w[0]["result"], w[0]["no_sharpe"], w[0]["excluded"]), ("tested", "", None))
         self.assertEqual((w[0]["from_d"], w[0]["to_d"]), (D0, D0))
         self.assertEqual(w[0]["to_t"] - w[0]["from_t"], 86400)
         self.assertNotIn("window", d["markers"][0])
-        self.assertEqual(d["session_open_s"], 33300)                      # 09:15 from sessions.json, not the page
+        self.assertEqual([x["session_open_s"] for x in w], [33300, 33300])   # 09:15 from sessions.json, not the page
+        self.assertNotIn("session_open_s", d)
 
     def test_walkforward_chart_404(self):
         for bad in ("wf-nothing", "..%2F..%2Fx", "a%5Cb", "%2E%2E", "x%00y", "a" * 65):
@@ -333,6 +347,12 @@ class WfChartApiTests(SandboxedDBTest):
         self.assertEqual(self.get("wf-nostate").status_code, 409)
         store.update_research_job("wf-nostate", state_json=json.dumps({"windows": [{"index": "x"}]}))
         self.assertEqual(self.get("wf-nostate").status_code, 409)
+
+    def test_an_interval_this_chart_cannot_honour_is_refused_not_ignored(self):
+        for v in ("60", "300", "0", "x"):
+            r = self.get(interval_s=v)
+            self.assertEqual(r.status_code, 422, v)
+            self.assertNotIn(v + '"', r.text)
 
     def test_bad_queries_are_422(self):
         for q in ({"instrument": -1}, {"from_ns": "x"}, {"to_ns": 2**63}, {"from_ns": 5, "to_ns": 5}):

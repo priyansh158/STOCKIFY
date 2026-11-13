@@ -322,13 +322,16 @@ _NS = 1_000_000_000
 @router.get("/api/research/walkforward/{job_id}/chart", response_model=WalkforwardChartDTO)
 def walkforward_chart(job_id: str, instrument: int | None = Query(None, ge=0, le=_INT64),
                       from_ns: int | None = Query(None, ge=0, le=_INT64),
-                      to_ns: int | None = Query(None, ge=0, le=_INT64)) -> WalkforwardChartDTO:
+                      to_ns: int | None = Query(None, ge=0, le=_INT64),
+                      interval_s: str | None = Query(None)) -> WalkforwardChartDTO:
     """The out-of-sample chart of a finished walk-forward job (CH 6.12): each window's test run, one after another,
     as `RunChartDTO` plus `windows`. Marker ids carry their window (`w1-f3`). 404 for an unknown or unsafe job id (the
     id is never echoed) or an instrument no window has, 409 for a job that is not finished or whose windows are gone,
     422 for a bad query; every message is fixed words, never stored or exception text. Read-only."""
     from server.routers.tests import _chart_dto
     from stockify.reporting import chart_wf
+    if interval_s is not None:                       # each window is drawn at its own run's interval: refuse, do not ignore
+        raise HTTPException(status_code=422, detail="this chart does not take interval_s")
     if from_ns is not None and to_ns is not None and from_ns >= to_ns:
         raise HTTPException(status_code=422, detail="from_ns must be before to_ns")
     try:
@@ -341,6 +344,7 @@ def walkforward_chart(job_id: str, instrument: int | None = Query(None, ge=0, le
     base = _chart_dto(model)
     windows = [WalkforwardChartWindowDTO(index=w["index"], from_t=w["from_ns"] // _NS, to_t=w["to_ns"] // _NS,
                                          from_d=w["from_d"], to_d=w["to_d"], run_id=w["run_id"], status=w["status"],
-                                         result=w["result"], no_sharpe=w["no_sharpe"], excluded=w["excluded"])
+                                         result=w["result"], no_sharpe=w["no_sharpe"], excluded=w["excluded"],
+                                         session_open_s=w["session_open_s"])
                for w in model["windows"]]
-    return WalkforwardChartDTO(**base.model_dump(), windows=windows, session_open_s=model.get("session_open_s"))
+    return WalkforwardChartDTO(**base.model_dump(), windows=windows)

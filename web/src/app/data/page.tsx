@@ -4,7 +4,8 @@ import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import {
   RANGE_CHOICES, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, windowBounds, windowEnd, worstCoverage,
+  earlierEnd, gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, windowBounds, windowEnd, windowLinkLabel,
+  worstCoverage,
 } from "@/lib/data";
 import { istWhen } from "@/lib/format";
 import { getCoverage, getGaps, getQuality } from "@/lib/research";
@@ -337,6 +338,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
   const to = end === today ? undefined : end;                      // links keep an older window; the newest needs no param
   const cov = await settle(getCoverage(win.from, win.to));
   const matrix = cov.ok ? cov.value : null;
+  const earlier = earlierEnd(win.from, matrix?.earliest_date);
   const stores = matrix?.errors ?? [];
   const badStores = matrix?.error_stores ?? [];
   const noDays = badStores.includes("refdata");
@@ -358,8 +360,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               ))}
             </nav>
             <nav className="stk-row" aria-label="Which days to show">
-              {win.earlier && (
-                <Link className="stk-btn" href={href(days, day, win.earlier)} rel="prev">
+              {earlier && (
+                <Link className="stk-btn" href={href(days, day, earlier)} rel="prev" aria-label={windowLinkLabel("Earlier", days)}>
                   Earlier
                 </Link>
               )}
@@ -367,7 +369,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                 {dayLabel(win.from)} {win.from.slice(0, 4)} to {dayLabel(win.to)} {win.to.slice(0, 4)}
               </span>
               {later && (
-                <Link className="stk-btn" href={href(days, day, later === today ? undefined : later)} rel="next">
+                <Link className="stk-btn" href={href(days, day, later === today ? undefined : later)} rel="next" aria-label={windowLinkLabel("Later", days)}>
                   Later
                 </Link>
               )}

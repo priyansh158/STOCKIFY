@@ -28,6 +28,7 @@ from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class EodShortStraddle(Strategy):
+    BAR_INTERVAL_S = 86400           # the one bar interval it subscribes to (the chart reads it)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
         {'name': 'underlying', 'label': 'Index for the options', 'type': 'underlying', 'default': 'NIFTY', 'required': False, 'help': 'the index whose options are sold'},
@@ -49,7 +50,7 @@ class EodShortStraddle(Strategy):
         self.legs: list[int] = []
         self.credit = 0
         self.pending_day = None
-        ctx.subscribe_bars(self.index, 86400)        # option closes are read with ctx.bars()
+        ctx.subscribe_bars(self.index, self.BAR_INTERVAL_S)        # option closes are read with ctx.bars()
 
     def on_bar(self, ctx, bar):  # noqa: ANN001
         if self.pending_day != ctx.today():

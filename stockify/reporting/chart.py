@@ -244,9 +244,11 @@ def _whole_seconds(v: object) -> int | None:
 
 def strategy_interval(bundle: dict | None) -> int | None:
     """The bar interval (seconds) the run's strategy subscribed to, as far as the bundle says: its `interval_s`
-    param, else that param's default in the strategy's own schema. None when the strategy has no such param (it
-    subscribes to a fixed interval, or to none, or the bundle names nothing): the chart then uses minute bars. A
-    param that is present but not a positive whole number is not guessed at (None)."""
+    param, else that param's default in the strategy's own schema, else the `BAR_INTERVAL_S` the strategy declares
+    for its one fixed subscription. None when none of these exists (a script strategy subscribes to many intervals, a
+    user's strategy declares nothing, the bundle names nothing): the chart then rebuilds minute bars and says the
+    run does not record its interval. A param that is present but not a positive whole number is not guessed at.
+    The durable fix is for the runner to write the intervals it subscribed to into the run folder (D-112)."""
     s = (bundle or {}).get("strategy")
     if not isinstance(s, dict):
         return None
@@ -256,12 +258,13 @@ def strategy_interval(bundle: dict | None) -> int | None:
     from stockify.strategies import _catalogue
     try:
         schema = _catalogue.schema_of(s.get("kind"), s.get("ref"))
+        declared = _catalogue.bar_interval_of(s.get("kind"), s.get("ref"))
     except Exception:                                                # a strategy that will not load has no default
         return None
     for row in schema or []:
         if isinstance(row, dict) and row.get("name") == "interval_s":
             return _whole_seconds(row.get("default"))
-    return None
+    return declared
 
 
 def _span_words(seconds: int) -> str:
@@ -314,9 +317,16 @@ def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str
         anchors = {}
     bars, got = chartbars.bars_from_records(records, iid, interval_s=want, anchors=anchors)
     notice = None
-    if got is not None and interval_s is not None and got != interval_s:
-        notice = f"This run holds {got}-second bars only, not {interval_s}-second bars; they are shown instead."
-    elif got is None and interval_s is not None and strategy_s is not None and interval_s != strategy_s:
+    if got is not None:
+        if interval_s is not None and got != interval_s:
+            notice = f"This run holds {got}-second bars only, not {interval_s}-second bars; they are shown instead."
+        elif interval_s is None and strategy_s is not None and got != strategy_s:
+            notice = (f"The strategy used {_span_adjective(strategy_s)} bars, but this run holds {got}-second bars "
+                      "only; they are shown instead.")
+    elif strategy_s is None and any(True for _ in bars):
+        notice = (f"This run does not record its bar interval, so these bars are rebuilt at "
+                  f"{_span_words(want or DEFAULT_INTERVAL_S)} and may differ from what the strategy used.")
+    elif interval_s is not None and interval_s != strategy_s:
         notice = (f"These bars were rebuilt at {_span_words(interval_s)}; the strategy traded on "
                   f"{_span_adjective(strategy_s)} bars.")
     return "ok", basis, bars, got if got is not None else (want or DEFAULT_INTERVAL_S), notice

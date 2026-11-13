@@ -25,13 +25,13 @@ _NOT_TESTED = "not tested, "
 _NOT_MIXED = "not charted: different price basis or interval"
 
 
-def _session_open_s(wins: list[dict]) -> int | None:
-    """Seconds after IST midnight at which the cash session opens on the first window's first day (dated config), for
-    the page's gap shading; None when the config has no session for it."""
+def _session_open_s(day: date) -> int | None:
+    """Seconds after IST midnight at which the cash (CM) session opens on `day`, from the dated session rules; None when
+    the config has no session for it. The shading of a window with no bars sits there."""
     from stockify.data import calendar
     try:
-        return calendar.continuous_open_s("CM", date.fromisoformat(wins[0]["from_d"]))
-    except (IndexError, ValueError, calendar.CalendarError):
+        return calendar.continuous_open_s("CM", day)
+    except (ValueError, calendar.CalendarError):
         return None
 
 
@@ -79,7 +79,8 @@ def _windows(job_id: str) -> list[dict]:
                         "from_ns": timeutil.ist_ns(first, "00:00"),
                         "to_ns": timeutil.ist_ns(last + timedelta(days=1), "00:00"), "run_id": run_id,
                         "status": status if status in _KNOWN else "unknown", "result": result,
-                        "no_sharpe": wf_report._no_sharpe(w), "excluded": excluded})
+                        "no_sharpe": wf_report._no_sharpe(w), "excluded": excluded,
+                        "session_open_s": _session_open_s(first)})
     except WfChartError:
         raise
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -128,7 +129,7 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
     listed = []
     for w in wins:
         listed.append({k: w[k] for k in ("index", "from_ns", "to_ns", "from_d", "to_d", "run_id", "status", "result",
-                                         "no_sharpe", "excluded")})
+                                         "no_sharpe", "excluded", "session_open_s")})
         run_id = w["run_id"]
         if w["excluded"] is not None:
             listed[-1]["run_id"] = None
@@ -218,4 +219,4 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
             "basis": basis, "interval_s": interval, "bars": bars, "markers": markers, "omitted_markers": omitted,
             "plots": list(plots.values()), "truncated": truncated, "next_from_ns": next_from, "data_state": state,
             "notice": " ".join(notices) or None, "pnl_complete": pnl_complete, "skipped_settlements": skipped,
-            "idle_settlements": idle, "windows": listed, "session_open_s": _session_open_s(wins)}
+            "idle_settlements": idle, "windows": listed}

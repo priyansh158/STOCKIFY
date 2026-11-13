@@ -216,6 +216,17 @@ export function windowBounds(days: number, end: string): { from: string; to: str
   return { from: addDays(end, -(days - 1)), to: end, earlier: parseDay(earlier) };
 }
 
+/** The end of the window before the one starting at `from`, or null when the lab holds no day before `from` (or none at all). */
+export function earlierEnd(from: string, earliest: string | null | undefined): string | null {
+  const e = parseDay(earliest);
+  return e !== null && e < from ? addDays(from, -1) : null;
+}
+
+/** An Earlier or Later link's accessible name, with the size it moves by ("Earlier 60 days"). */
+export function windowLinkLabel(which: "Earlier" | "Later", days: number): string {
+  return `${which} ${days} days`;
+}
+
 /** The end of the window after the one ending at `end`, stopping at today; null when `end` is today (nothing later). */
 export function laterEnd(end: string, days: number, today: string): string | null {
   if (end >= today) return null;

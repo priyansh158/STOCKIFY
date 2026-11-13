@@ -70,8 +70,6 @@ export type PriceChartProps = {
   paperBadge?: boolean;
   pollMs?: number;
   windows?: ChartWindow[];
-  /** Seconds after IST midnight at which the session opens (the server's dated config): where a gap window's points sit. */
-  sessionOpenS?: number | null;
   focusMarkerId?: string;
   onMarkerClick?: (id: string) => void;
   /** The title's heading level: 3 under a page section's h2 (the default), 2 when the chart is a section of its own. */
@@ -120,7 +118,7 @@ function visibleSeconds(t: Time): number {
   return Date.UTC(t.year, t.month - 1, t.day) / 1000 - istShift;
 }
 
-export function PriceChart({ load, title, paperBadge, pollMs, windows, sessionOpenS, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false }: PriceChartProps) {
+export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false }: PriceChartProps) {
   const Heading = headingLevel === 2 ? "h2" : "h3";
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -434,7 +432,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, sessionOp
 
     const tint = [readColour("--color-info", 0.1), readColour("--color-info", 0.04)];
     const gapTint = readColour("--color-warn", 0.18); // a window with nothing to draw (excluded, no trades, failed)
-    const shaded = windows ? shadePoints(bars, windows, daily, sessionOpenS ?? null) : [];
+    const shaded = windows ? shadePoints(bars, windows, daily) : [];
     gapRef.current = new Map(shaded.filter((p) => p.gap).map((p) => [String(p.time), windows?.[p.index]?.label ?? ""]));
     shade.setData(shaded.map((p) => ({ time: p.time, value: 1, color: p.gap ? gapTint : tint[p.index % 2] })) as unknown as HistogramData[]);
 
@@ -491,7 +489,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, sessionOp
       if (view.kind === "fit") chart.timeScale().fitContent();
       else chart.timeScale().setVisibleLogicalRange({ from: view.from, to: view.to });
     }
-  }, [bars, markers, meta, daily, showVolume, windows, sessionOpenS, themeTick]);
+  }, [bars, markers, meta, daily, showVolume, windows, themeTick]);
 
   // --- scroll to a marker when it is picked from the list or from outside ---------------------------------------
   const rows = useMemo(() => markerRows(markers, daily), [markers, daily]);
