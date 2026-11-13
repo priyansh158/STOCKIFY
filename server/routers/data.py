@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
-from server.schemas import (CoverageMatrixDTO, DataQualityResponse, GapDTO, InstrumentQualityDTO,
+from server.schemas import (CoverageMatrixDTO, DataQualityResponse, GapDTO, GapPageDTO, InstrumentQualityDTO,
                             RecorderStatusDTO, RecorderStatusResponse)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
+
+
+def _finite(x) -> float | None:  # noqa: ANN001
+    return x if isinstance(x, (int, float)) and math.isfinite(x) else None
 
 
 def _recorder_dto(row: dict) -> RecorderStatusDTO:
@@ -20,8 +25,8 @@ def _recorder_dto(row: dict) -> RecorderStatusDTO:
     return RecorderStatusDTO(
         wall_ns=row["wall_ns"], connected=bool(row["connected"]),
         subs_full=row["subs_full"] or 0, subs_quote=row["subs_quote"] or 0,
-        packets_per_s=row["packets_per_s"] or 0.0, queue_depth=row["queue_depth"] or 0,
-        writer_lag_ms=row["writer_lag_ms"], last_packet_age_ms=ages,
+        packets_per_s=_finite(row["packets_per_s"]) or 0.0, queue_depth=row["queue_depth"] or 0,
+        writer_lag_ms=_finite(row["writer_lag_ms"]), last_packet_age_ms=ages,
         bytes_today=row["bytes_today"] or 0,
         age_s=max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9),
     )
@@ -92,12 +97,16 @@ async def data_coverage(from_: str | None = Query(None, alias="from", descriptio
     return CoverageMatrixDTO(**body)
 
 
-@router.get("/gaps", response_model=list[GapDTO])
-async def data_gaps(date: str = Query(..., description="IST trade date YYYY-MM-DD")) -> list[GapDTO]:
+@router.get("/gaps", response_model=GapPageDTO)
+async def data_gaps(date: str = Query(..., description="IST trade date YYYY-MM-DD"),
+                    offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)) -> GapPageDTO:
+    """One page of the day's gaps in start order, with the day's total."""
     from stockify.reporting import coverage
 
     day = _day(date, "date")
     try:
-        return [GapDTO(**g) for g in coverage.gaps(day)]
+        found = coverage.gaps(day)
     except coverage.NoRecording:
         raise HTTPException(status_code=404, detail=f"no recording for {day.isoformat()}")
+    return GapPageDTO(total=len(found), offset=offset, limit=limit,
+                      gaps=[GapDTO(**g) for g in found[offset:offset + limit]])

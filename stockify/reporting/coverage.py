@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import shutil
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
@@ -87,12 +88,25 @@ def datasets() -> list[dict[str, str]]:
 
 
 def _rows(db_path, sql: str, args: tuple = ()) -> list:  # noqa: ANN001
-    """A read of refdata.sqlite or bars.sqlite that never creates the file."""
+    """A read of refdata.sqlite or bars.sqlite on its own READ-ONLY connection (`mode=ro`), closed after use.
+
+    Never through `refdata._connect()` / `history._connect()`: those open read-write, switch on WAL, create the
+    folder and apply migrations, and this runs while the daemon is writing the same files. A missing file or a
+    missing table or column (an older schema) reads as no rows.
+    """
     if not db_path.exists():
         return []
-    from stockify.data import history, refdata
-    conn = refdata._connect() if db_path == paths.refdata_db() else history._connect()
-    return conn.execute(sql, args).fetchall()
+    try:
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
 
 
 def _recorder_cell(group: str, tick_day, metrics: dict, ok_pct: float) -> Cell:  # noqa: ANN001
@@ -111,15 +125,17 @@ def _recorder_cell(group: str, tick_day, metrics: dict, ok_pct: float) -> Cell: 
     return Cell("ok" if pct >= ok_pct else "partial", pct, note)
 
 
-def _archive_cell(tick_day) -> Cell:  # noqa: ANN001
+def _archive_cell(tick_day, today: bool = False) -> Cell:  # noqa: ANN001
     if tick_day is None:
         return Cell("missing", None, "no recording for this day")
     status = tick_day["status"]
     if status in ("verified", "landing_deleted"):
         return Cell("ok", None, "verified")
+    if status in ("recording", "landing") and today:
+        return Cell("partial", None, "recording in progress")
     if status in ("recording", "landing", "archived"):
         return Cell("partial", None, status)
-    return Cell("partial", None, str(status))
+    return Cell("not_reported", None, f"unknown status {status}")
 
 
 def _nse_cell(row) -> Cell:  # noqa: ANN001
@@ -132,8 +148,8 @@ def _nse_cell(row) -> Cell:  # noqa: ANN001
         return Cell("ok")
     if outcome == "missing":
         return Cell("missing", None, "NSE has no file for this day")
-    return Cell("partial", None, f"download error (http {row['http_status']})" if row["http_status"]
-                else "download error")
+    return Cell("missing", None, f"download failed (http {row['http_status']})" if row["http_status"]
+                else "download failed")
 
 
 def _bars(limit: int) -> list[dict]:
@@ -142,11 +158,10 @@ def _bars(limit: int) -> list[dict]:
                  "FROM bar_fetch_log WHERE outcome='ok' GROUP BY instrument_id, interval "
                  "ORDER BY b DESC, instrument_id, interval LIMIT ?", (int(limit),))
     out = []
-    names = {}
-    if rows and paths.refdata_db().exists():
-        from stockify.data import instruments
-        names = {r["instrument_id"]: (instruments.get(r["instrument_id"]) or {}).get("tradingsymbol")
-                 for r in rows}
+    ids = sorted({int(r["instrument_id"]) for r in rows})
+    names = {r["instrument_id"]: r["tradingsymbol"] for r in _rows(
+        paths.refdata_db(), f"SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
+        f"({','.join('?' * len(ids))})", tuple(ids))} if ids else {}
     for r in rows:
         a, b = int(r["a"]), int(r["b"])
         first, last = timeutil.ns_to_ist(a).date(), timeutil.ns_to_ist(b).date()
@@ -169,6 +184,8 @@ def _size(path) -> int:  # noqa: ANN001
 
 
 def _storage() -> dict:
+    """`lab_bytes` is lab.sqlite plus bars.sqlite (with their -wal/-shm); the tick landing files, the archive and
+    the NSE folder are not in it (the first two are `landing_bytes` / `archive_bytes`, from `tick_days`)."""
     sums = _rows(paths.refdata_db(),
                  "SELECT COALESCE(SUM(CASE WHEN status != 'landing_deleted' THEN landing_bytes END), 0) AS l, "
                  "COALESCE(SUM(archive_bytes), 0) AS a FROM tick_days")
@@ -217,7 +234,7 @@ def matrix(from_: date, to: date, *, bar_limit: int = _BAR_LIMIT) -> CoverageMat
             elif key.startswith("recorder_"):
                 cells[key] = _recorder_cell(key.split("_", 1)[1], tick_days.get(iso), quality.get(iso, {}), ok_pct)
             elif key == "archive":
-                cells[key] = _archive_cell(tick_days.get(iso))
+                cells[key] = _archive_cell(tick_days.get(iso), d == today)
             else:
                 name = next(n for n, (k, _l, _s) in NSE_LABELS.items() if k == key)
                 cells[key] = _nse_cell(fetches.get((name, iso)))

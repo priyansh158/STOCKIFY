@@ -9,9 +9,9 @@ from unittest import mock
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
-from stockify import research, store
+from stockify import research, store, timeutil
 from stockify.daemon.landing import LandingDB
-from stockify.data import history, refdata
+from stockify.data import calendar, history, refdata
 from stockify.reporting import coverage
 
 FROM, TO = date(2026, 10, 1), date(2026, 10, 7)   # Thu, Fri (Gandhi Jayanti), Sat, Sun, Mon, Tue, Wed
@@ -126,9 +126,11 @@ class CoverageTest(SandboxedDBTest):
         m = coverage.matrix(FROM, TO)
         self.assertEqual(cell(m, WED, "nse_fo").state, "ok")
         self.assertEqual(cell(m, WED, "nse_cm").state, "missing")
-        self.assertEqual(cell(m, WED, "nse_idx").state, "partial")
-        self.assertIn("error", cell(m, WED, "nse_idx").detail)
+        self.assertEqual(cell(m, WED, "nse_idx").state, "missing")
+        self.assertIn("download failed", cell(m, WED, "nse_idx").detail)
+        self.assertIn("http 200", cell(m, WED, "nse_idx").detail)
         self.assertEqual(cell(m, THU, "nse_fo").state, "partial")
+        self.assertEqual(cell(m, THU, "nse_fo").detail, "downloaded, not parsed")
         self.assertEqual(cell(m, date(2026, 10, 6), "nse_fo").state, "missing")
         self.assertEqual([d["key"] for d in m.datasets if d["key"].startswith("nse_")],
                          ["nse_fo", "nse_cm", "nse_idx"])
@@ -191,6 +193,38 @@ class CoverageTest(SandboxedDBTest):
         self.assertEqual(cell(m, WED, "recorder_full").state, "not_reported")
         json.dumps(coverage.to_dict(m), allow_nan=False)
 
+    def test_unknown_archive_status_and_a_day_still_recording(self):
+        put_day(WED, "weird")
+        self.assertEqual((cell(coverage.matrix(FROM, TO), WED, "archive").state,
+                          cell(coverage.matrix(FROM, TO), WED, "archive").detail), ("not_reported", "unknown status weird"))
+        today = timeutil.ist_today()
+        if not calendar.is_trading_day("CM", today):
+            self.skipTest("today is not a trading day")
+        put_day(today, "landing")
+        c = cell(coverage.matrix(today, today), today, "archive")
+        self.assertEqual((c.state, c.detail), ("partial", "recording in progress"))
+
+    def test_an_outdated_schema_is_read_without_touching_the_files(self):
+        import sqlite3
+        from stockify import paths
+        for path, ddl in ((paths.refdata_db(), "CREATE TABLE tick_days (trade_date TEXT PRIMARY KEY, status TEXT);"
+                           "INSERT INTO tick_days VALUES ('2026-10-07', 'verified')"),
+                          (paths.bars_db(), "CREATE TABLE bars (instrument_id INTEGER)")):
+            c = sqlite3.connect(str(path))
+            c.executescript(ddl)
+            c.commit()
+            c.close()
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (paths.refdata_db(), paths.bars_db())}
+        m = coverage.matrix(FROM, TO)
+        self.assertEqual(cell(m, WED, "archive").state, "ok")
+        self.assertEqual(cell(m, WED, "recorder_full").state, "not_reported")
+        self.assertEqual(cell(m, WED, "nse_fo").state, "missing")
+        self.assertEqual((m.bars, m.storage["nse_bytes"]), ([], 0))
+        for p, (data, mtime) in before.items():
+            self.assertEqual((p.read_bytes(), p.stat().st_mtime_ns), (data, mtime), p.name)
+            for suffix in ("-wal", "-shm", "-journal"):
+                self.assertFalse(p.with_name(p.name + suffix).exists(), p.name + suffix)
+
     def test_reads_do_not_create_stores(self):
         from stockify import paths
         coverage.matrix(FROM, TO)
@@ -246,7 +280,21 @@ class CoverageApiTests(SandboxedDBTest):
         db.close()
         r = self.client.get("/api/data/gaps?date=2026-10-07")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()[0]["reason"], "disconnect")
+        j = r.json()
+        self.assertEqual((j["total"], j["offset"], j["limit"]), (1, 0, 200))
+        self.assertEqual(j["gaps"][0]["reason"], "disconnect")
+
+    def test_gaps_pages(self):
+        db = LandingDB(WED)
+        for i in range(5):
+            db.add_gap(T0 + i * 10**10, T0 + i * 10**10 + 10**9, f"g{i}")
+        db.close()
+        r = self.client.get("/api/data/gaps?date=2026-10-07&offset=1&limit=2").json()
+        self.assertEqual((r["total"], r["offset"], r["limit"]), (5, 1, 2))
+        self.assertEqual([g["reason"] for g in r["gaps"]], ["g1", "g2"])
+        self.assertEqual(self.client.get("/api/data/gaps?date=2026-10-07&offset=9").json()["gaps"], [])
+        for q in ("offset=-1", "limit=0", "limit=1001", "limit=x"):
+            self.assertEqual(self.client.get(f"/api/data/gaps?date=2026-10-07&{q}").status_code, 422, q)
 
     def test_matrix_is_finite_json(self):
         put_day(WED)

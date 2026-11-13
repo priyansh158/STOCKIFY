@@ -546,4 +546,11 @@ export interface GapDTO {
   scope?: string | null;
   frames?: number | null;
 }
+
+export interface GapPageDTO {
+  total: number;
+  offset: number;
+  limit: number;
+  gaps: GapDTO[];
+}
 // </block>

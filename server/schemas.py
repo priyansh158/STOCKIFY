@@ -572,4 +572,11 @@ class GapDTO(BaseModel):
     reason: str | None = None
     scope: str | None = None
     frames: int | None = None
+
+
+class GapPageDTO(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    gaps: list[GapDTO]
 # </block>
