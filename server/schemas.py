@@ -596,6 +596,7 @@ class SweepBestCellDTO(BaseModel):
     value: float
 
 
+# Plain data; the page feeds HeatGrid through an adapter (format kind -> formatter, best {xi, yi} -> {x, y}).
 class SweepHeatmapDTO(BaseModel):
     x: str
     y: str | None = None

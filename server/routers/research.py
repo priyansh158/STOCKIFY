@@ -109,6 +109,8 @@ def _stored_sweep(job_id: str) -> dict:
     job = store.get_research_job(job_id)
     if job is None or job.get("kind") != "sweep":
         raise HTTPException(status_code=404, detail="no such sweep")
+    if job.get("status") != "done":
+        raise HTTPException(status_code=404, detail=f"sweep not finished yet (status: {job.get('status')})")
     try:
         doc = json.loads(job.get("state_json") or "")
     except ValueError:
@@ -118,7 +120,7 @@ def _stored_sweep(job_id: str) -> dict:
             or not doc["axes"] or not isinstance(doc.get("rows"), list)
             or not all(isinstance(v, list) for v in doc["axes"].values())
             or not all(isinstance(r, dict) and isinstance(r.get("params"), dict) for r in doc["rows"])):
-        raise HTTPException(status_code=404, detail="the sweep has no stored result (not finished, or failed)")
+        raise HTTPException(status_code=404, detail="the sweep has no readable stored result")
     return _clean(doc)
 
 

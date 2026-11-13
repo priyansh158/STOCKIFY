@@ -568,7 +568,8 @@ export interface SweepBestCellDTO {
   value: number;
 }
 
-/** Maps onto HeatGrid({xs, ys, cells, format, best}): cells[yi][xi], null for a missing or failed trial. */
+/** Plain data for the heatmap; the page feeds HeatGrid through an adapter: xs, ys and cells (cells[yi][xi], null for a
+ * missing or failed trial) pass as they are, `format` (a kind) becomes a formatter, `best` {xi, yi} becomes {x, y}. */
 export interface SweepHeatmapDTO {
   x: string;
   y: string | null;

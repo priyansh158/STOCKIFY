@@ -186,7 +186,6 @@ class SensitivityApiTests(SandboxedDBTest):
             self.assertNotIn("Traceback", r.text)
 
 
-
 def sweep_doc(job_id="sweep-t-1", objective="sharpe", axes=None, rows=None, **over) -> dict:
     """A stored sweep result (stockify.research.sweep RESULT_SCHEMA) over a 2 x 3 grid by default."""
     axes = axes if axes is not None else {"strategy.params.fast": [5, 10], "strategy.params.slow": [20, 30, 40]}
@@ -325,6 +324,28 @@ class SweepApiTests(SandboxedDBTest):
             r = self.client.get(f"/api/research/sweeps/{jid}")
             self.assertEqual(r.status_code, 404, jid)
             self.assertNotIn("Traceback", r.text)
+
+    def test_sweep_404_says_which_case_it_is(self):
+        add_sweep_job(None, "wf-1", kind="walkforward", status="running")
+        add_sweep_job(None, "sweep-run", status="running")
+        add_sweep_job(None, "sweep-fail", status="failed")
+        add_sweep_job(sweep_doc("sweep-j"), "sweep-j")
+        store.update_research_job("sweep-j", state_json="{not json")
+        for jid, text in (("nope", "no such sweep"), ("wf-1", "no such sweep"),
+                          ("sweep-run", "sweep not finished yet (status: running)"),
+                          ("sweep-fail", "sweep not finished yet (status: failed)"),
+                          ("sweep-j", "the sweep has no readable stored result")):
+            r = self.client.get(f"/api/research/sweeps/{jid}")
+            self.assertEqual((r.status_code, r.json()["detail"]), (404, text), jid)
+
+    def test_net_pnl_plain_sentence_is_in_rupees(self):
+        axes = {self.X: [5, 10]}
+        add_sweep_job(sweep_doc(objective="net_pnl", axes=axes,
+                                rows=[_row(0, {self.X: 5}, 412_000.0), _row(1, {self.X: 10}, -31_000.0)]))
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual(j["plain"], f"Each square is the net_pnl of one trial. The best of all 2 trials has "
+                                     f"{self.X} = 5, with net_pnl ₹4,120.")
+        self.assertNotIn("412000", j["plain"])
 
     def test_sweep_response_has_no_nan(self):
         doc = sweep_doc()
