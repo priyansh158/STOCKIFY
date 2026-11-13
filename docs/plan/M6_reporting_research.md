@@ -91,6 +91,7 @@ cd web; npm run lint; npm run build
 
 - [x] CH 6.1 Note cleaning and Indian-grouped price and quantity text, the same in Python and C++ (`stockify/oracle/notes.py`, `engine/src/notes.cpp`; `fmt_price`, `fmt_qty`, `to_level` exported from `stockify.strategy`).
 - [x] CH 6.5 The FIFO trade loop is a public function, `stockify.oracle.metrics.fifo_trades` (returns `TradeChunk`s and the traded value), shared by `compute` and the chart's trade markers; `metrics.json` is byte-identical on every golden.
+- [x] CH 6.14 `lightweight-charts@5.2.1` is pinned (exact, with `fancy-canvas@2.1.0`; D-110), the pure chart helpers are in `web/src/lib/chart.ts` (checked by `test_chart_checks.py`), and the footer carries the TradingView notice. The chart types sit in `chart.ts` until C11's `types.ts` entries replace them.
 
 ## Definition of done
 
