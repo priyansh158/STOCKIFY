@@ -274,8 +274,11 @@ def _summarise(folder: Path) -> tuple[dict, dict]:
     if manifest.get("started_ns") is not None:
         fields["started_ns"] = manifest["started_ns"]
         fields["finished_ns"] = manifest["started_ns"] + manifest.get("duration_ms", 0) * 1_000_000
+    orders = read_csv(folder / "orders.csv")
+    for r in orders:
+        r["note"] = r.get("note") or ""       # an old folder has no note column, a no-note order an empty cell
     children = {
-        "orders": read_csv(folder / "orders.csv"),
+        "orders": orders,
         "fills": read_csv(folder / "fills.csv"),
         "equity": [{"trade_date": r["trade_date"], "nav_paise": r["nav_paise"], "cash_paise": r["cash_paise"],
                     "margin_paise": r["margin_blocked_paise"]} for r in read_csv(folder / "equity.csv")],
@@ -379,31 +382,86 @@ MARGIN_HEADER_BEFORE_D64 = "trade_date,underlying_id,model,scan,somc,elm,addons,
 STEP_COLUMN_NOTE = "margin_daily.csv gained the step column, D-64"
 
 
-def step_column_only(run_old: str, run_new: str) -> bool:
-    """Whether a re-run of a folder saved before D-64 differs from it only by margin_daily.csv's added `step`
-    column (final I-3): determinism.json differs in margin_daily.csv alone, the old file is the one its
-    determinism.json names, its header is the pre-D-64 one, the new one has today's header, and row by row the new
-    file without its `step` cell is the old file."""
-    import hashlib
+def _read_rows(path: Path) -> tuple[bytes, list[list[str]]]:
     import io
+    raw = path.read_bytes()
+    return raw, list(csv.reader(io.StringIO(raw.decode("utf-8"), newline="")))
+
+
+def _step_added(old_folder: Path, new_folder: Path, old_hashes: dict) -> bool:
+    """margin_daily.csv is the pre-D-64 file its determinism.json names, and the new one only added `step`."""
+    import hashlib
     from stockify.oracle.artifacts import MARGIN
-    if determinism_diff(run_old, run_new) != ["margin_daily.csv"]:
-        return False
-    old_folder, new_folder = paths.run_path(run_old), paths.run_path(run_new)
     try:
-        old_bytes = (old_folder / "margin_daily.csv").read_bytes()
-        hashes = json.loads((old_folder / "determinism.json").read_text(encoding="utf-8"))
-        old_rows = list(csv.reader(io.StringIO(old_bytes.decode("utf-8"), newline="")))
-        new_rows = list(csv.reader(io.StringIO((new_folder / "margin_daily.csv").read_text(encoding="utf-8"),
-                                               newline="")))
+        old_bytes, old_rows = _read_rows(old_folder / "margin_daily.csv")
+        _, new_rows = _read_rows(new_folder / "margin_daily.csv")
     except (OSError, ValueError):
         return False
-    if hashes.get("margin_daily.csv") != hashlib.sha256(old_bytes).hexdigest():
+    if old_hashes.get("margin_daily.csv") != hashlib.sha256(old_bytes).hexdigest():
         return False
-    if not old_rows or not new_rows or old_rows[0] != MARGIN_HEADER_BEFORE_D64.split(",")             or new_rows[0] != MARGIN.split(",") or len(old_rows) != len(new_rows):
+    if not old_rows or not new_rows or old_rows[0] != MARGIN_HEADER_BEFORE_D64.split(",") \
+            or new_rows[0] != MARGIN.split(",") or len(old_rows) != len(new_rows):
         return False
     step = new_rows[0].index("step")
     return all(new[:step] + new[step + 1:] == old for old, new in zip(old_rows[1:], new_rows[1:]))
+
+
+def _note_added(old_folder: Path, new_folder: Path, old_hashes: dict) -> bool:
+    """orders.csv is the pre-CH 6.2 file its determinism.json names, and the new one only added the last column."""
+    import hashlib
+    from stockify.oracle.artifacts import ORDERS
+    try:
+        old_bytes, old_rows = _read_rows(old_folder / "orders.csv")
+        _, new_rows = _read_rows(new_folder / "orders.csv")
+    except (OSError, ValueError):
+        return False
+    if old_hashes.get("orders.csv") != hashlib.sha256(old_bytes).hexdigest():
+        return False
+    header = ORDERS.split(",")
+    if header[-1] != "note" or not old_rows or not new_rows or old_rows[0] != header[:-1] \
+            or new_rows[0] != header or len(old_rows) != len(new_rows):
+        return False
+    return all(new[:-1] == old for old, new in zip(old_rows[1:], new_rows[1:]))
+
+
+def column_changes(run_old: str, run_new: str) -> list[str]:
+    """The known column additions (STEP_COLUMN_NOTE, NOTE_COLUMN_NOTE) that, together, are the whole of how a re-run
+    of an older folder differs from it; [] when it differs in anything else (or not at all). They compose: a folder
+    older than D-64 differs in margin_daily.csv and in orders.csv. A plots.csv only the new run lists is allowed
+    alongside. `determinism_diff` itself is unchanged: this only decides whether what it reports is these additions."""
+    old_folder, new_folder = paths.run_path(run_old), paths.run_path(run_new)
+    try:
+        old_hashes = json.loads((old_folder / "determinism.json").read_text(encoding="utf-8"))
+        new_hashes = json.loads((new_folder / "determinism.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    diff = set(determinism_diff(run_old, run_new))
+    if "plots.csv" in new_hashes and "plots.csv" not in old_hashes:
+        diff.discard("plots.csv")
+    notes = []
+    if "margin_daily.csv" in diff and _step_added(old_folder, new_folder, old_hashes):
+        diff.discard("margin_daily.csv")
+        notes.append(STEP_COLUMN_NOTE)
+    if "orders.csv" in diff and _note_added(old_folder, new_folder, old_hashes):
+        diff.discard("orders.csv")
+        notes.append(NOTE_COLUMN_NOTE)
+    return notes if not diff else []
+
+
+def step_column_only(run_old: str, run_new: str) -> bool:
+    """Whether a re-run of a folder saved before D-64 differs from it only by margin_daily.csv's added `step`
+    column (final I-3), possibly together with the note column (column_changes)."""
+    return STEP_COLUMN_NOTE in column_changes(run_old, run_new)
+
+
+# orders.csv's header before CH 6.2 added the last column, `note` (D-92).
+NOTE_COLUMN_NOTE = "orders.csv gained the note column, D-92"
+
+
+def note_column_only(run_old: str, run_new: str) -> bool:
+    """Whether a re-run of a folder saved before CH 6.2 differs from it only by orders.csv's added last column,
+    `note`, possibly together with the step column and a plots.csv only the new run lists (column_changes)."""
+    return NOTE_COLUMN_NOTE in column_changes(run_old, run_new)
 
 
 def determinism_diff(run_a: str, run_b: str) -> list[str]:

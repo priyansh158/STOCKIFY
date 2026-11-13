@@ -117,6 +117,29 @@ _ALPHABET = ["a", "Z", "7", " ", "  ", "\t", "\n", "\r", "\x00", "\x1f", "\x7f",
 
 @unittest.skipUnless(engine.available(), _ENGINE)
 class EngineParityTests(unittest.TestCase):
+    def test_the_engine_refuses_a_bool_for_fmt_price_fmt_qty_and_to_level_as_the_twins_do(self):
+        eng = engine.load()
+        for name in ("fmt_price", "fmt_qty", "to_level"):
+            for bad in (True, False):
+                with self.subTest(fn=name, bad=bad), self.assertRaises(TypeError):
+                    getattr(eng, name)(bad)
+        self.assertEqual((eng.fmt_price(5), eng.fmt_qty(1000), eng.to_level(1)), ("0.05", "1,000", 10000))
+
+    def test_plain_ints_are_not_taken_for_bools_and_past_int64_is_refused(self):
+        eng = engine.load()
+        for n in (0, 1, -1, -2**63, 2**63 - 1):
+            with self.subTest(n=n):
+                self.assertEqual(eng.fmt_price(n), fmt_price(n))
+                self.assertEqual(eng.fmt_qty(n), fmt_qty(n))
+        for n in (0, 1, -1):
+            with self.subTest(level=n):
+                self.assertEqual(eng.to_level(n), to_level(n))
+        for name in ("fmt_price", "fmt_qty"):
+            with self.subTest(fn=name), self.assertRaises(TypeError):
+                getattr(eng, name)(2**63)
+        with self.assertRaises(RuntimeError):      # to_level takes a float; a result past int64 is a ValueError there
+            eng.to_level(2**63)
+
     def test_clean_note_matches_engine_on_random_text(self):
         eng = engine.load()
         rng = random.Random(61)

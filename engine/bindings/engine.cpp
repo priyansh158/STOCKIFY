@@ -59,6 +59,21 @@ T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
     return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
 }
 
+// A note as Context.place takes it (CH 6.2): text only (TypeError otherwise). A str holding a lone surrogate cannot be
+// encoded as UTF-8, so this binding replaces each one with U+FFFD itself before encoding; the oracle does not: it
+// passes the str on and stockify.oracle.notes.clean_note makes the same replacement. The engine then cleans the bytes.
+std::string note_text(const py::object& v) {
+    if (!py::isinstance<py::str>(v)) {
+        throw py::type_error("ctx.place: note must be text");
+    }
+    // The compiled pattern's sub is looked up once, at the first note, and deliberately leaked (a static py::object
+    // would be destroyed after the interpreter has gone). The replacement is U+FFFD as UTF-8: a "\u" template is a
+    // bad escape to re.sub.
+    static const py::object* const sub =
+        new py::object(py::module_::import("re").attr("compile")(R"([\ud800-\udfff])").attr("sub"));
+    return (*sub)("\xEF\xBF\xBD", v).cast<std::string>();
+}
+
 // B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 10000 basis points; anything else is
 // refused, never taken as AUTO. The rule and the words are the oracle's (`_protection`).
 std::optional<stocksim::Bp> protection_arg(const py::object& v) {
@@ -331,7 +346,8 @@ void bind_engine(py::module_& m) {
         .def("place",
              [](CtxProxy& x, const py::object& instrument, const py::object& side, const py::object& qty,
                 const py::object& product, const py::object& type, const py::object& price, const py::object& trigger,
-                const py::object& validity, const py::object& protection, const py::object& tag) {
+                const py::object& validity, const py::object& protection, const py::object& tag,
+                const py::object& note) {
                  // The oracle's Context.place: int() of instrument; qty, price and trigger are whole numbers,
                  // checked in that order; the rest as given.
                  stocksim::PlaceRequest r;
@@ -345,11 +361,12 @@ void bind_engine(py::module_& m) {
                  r.validity = py::str(validity);
                  r.protection = protection_arg(protection);
                  r.tag = py::str(tag);
+                 r.note = note_text(note);
                  return x.c().place(r);
              },
              py::arg("instrument"), py::arg("side"), py::arg("qty"), py::arg("product"), py::arg("type"),
              py::arg("price") = 0, py::arg("trigger") = 0, py::arg("validity") = "DAY", py::arg("protection") = "AUTO",
-             py::arg("tag") = "")
+             py::kw_only(), py::arg("tag") = "", py::arg("note") = "")
         .def("modify",
              [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
                  // B2B 5.4: the oracle's Context.modify. qty, price and trigger are whole ints, checked in that order,
@@ -575,10 +592,21 @@ void bind_engine(py::module_& m) {
             return out;
         });
 
+    // clean_note takes UTF-8 bytes (a str is encoded to UTF-8 first): a str holding a lone surrogate cannot be encoded
+    // and raises UnicodeEncodeError, where the Python twin turns it into U+FFFD. place() below replaces lone
+    // surrogates first, so a strategy's note never reaches that error.
     m.def("clean_note", &stocksim::clean_note, py::arg("text"),
-          "CH 6.1: sanitise an order note (bytes or str; invalid UTF-8 becomes U+FFFD).");
+          "CH 6.1: sanitise an order note (UTF-8 bytes, or a str without lone surrogates; invalid UTF-8 becomes U+FFFD).");
+    // A bool is an int to pybind11 (even with noconvert), so each helper has a first overload that refuses it, as
+    // the Python twins do (TypeError).
+    m.def("fmt_price", [](const py::bool_&) -> std::string { throw py::type_error("paise must be an int, not a bool"); },
+          py::arg("paise"));
     m.def("fmt_price", &stocksim::fmt_price, py::arg("paise"), "Paise as Indian-grouped rupee text.");
+    m.def("fmt_qty", [](const py::bool_&) -> std::string { throw py::type_error("units must be an int, not a bool"); },
+          py::arg("units"));
     m.def("fmt_qty", &stocksim::fmt_qty, py::arg("units"), "Units as Indian-grouped text.");
+    m.def("to_level", [](const py::bool_&) -> stocksim::Paise { throw py::type_error("x must be an int or a float, not a bool"); },
+          py::arg("x"));
     m.def("to_level", &stocksim::to_level, py::arg("x"), "x * 10,000 rounded half to even.");
 
     m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");

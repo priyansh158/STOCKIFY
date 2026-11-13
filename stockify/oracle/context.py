@@ -28,6 +28,13 @@ def _whole(name: str, v, fn: str = "ctx.place") -> int:  # noqa: ANN001
     return v
 
 
+def _note(v) -> str:  # noqa: ANN001
+    """CH 6.2: a note is text and nothing else, refused before anything is placed. The engine's binding says the same."""
+    if not isinstance(v, str):
+        raise TypeError("ctx.place: note must be text")
+    return v
+
+
 def _protection(v):  # noqa: ANN001, ANN202
     """B2B 5.2 (audit M-2): `protection` is "AUTO" or an int from 1 to 10000 basis points. Anything else is refused,
     never taken as AUTO. The engine's binding (engine/bindings/engine.cpp, `protection_arg`) has the same rule."""
@@ -126,9 +133,9 @@ class Context:
 
     # orders
     def place(self, instrument: int, side: str, qty: int, product: str, type: str, price: int = 0, trigger: int = 0,  # noqa: A002
-              validity: str = "DAY", protection="AUTO", tag: str = "") -> int:  # noqa: ANN001
+              validity: str = "DAY", protection="AUTO", *, tag: str = "", note: str = "") -> int:  # noqa: ANN001
         o = self._e.place(int(instrument), side, _whole("qty", qty), product, type, _whole("price", price),
-                          _whole("trigger", trigger), validity, _protection(protection), tag)
+                          _whole("trigger", trigger), validity, _protection(protection), tag, note=_note(note))
         return o.order_id
 
     def modify(self, order_id: int, **changes) -> bool:  # noqa: ANN003

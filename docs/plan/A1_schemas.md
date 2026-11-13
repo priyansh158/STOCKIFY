@@ -368,6 +368,7 @@ The last two read NSE's SPAN files from the bundle (§6.2); both engines run the
   "broker_policy": { "...": "rows effective in range (§7.5)" },
   "margin_params": { "...": "§7.6" },
   "pricing": { "...": "§7.7" },
+  "system_notes": { "AUTO_SQOFF": "…", "RMS_SQOFF": "…", "SETTLEMENT": "… {price}" },
   "packs": [ { "sha256": "…", "path": "packs/….evt", "price_basis": "adjusted" } ],
   "strategy": { "kind": "python", "ref": "…", "source_sha256": "…", "params": {} },
   "labels": [ "fill:bar", "margin:flat(approx)", "charges:unverified_rows" ],
@@ -458,7 +459,7 @@ yet"), never a fallback to flat.
 | File | Deterministic (A4 §9) | Content |
 |---|---|---|
 | `run.json`, `bundle.json` | input | as above |
-| `orders.csv` | ✔ | `order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason` |
+| `orders.csv` | ✔ | `order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason,note` (`note`: the strategy's own cleaned text, `""` when none; a folder saved before CH 6.2, D-92, has no such column and reads as `""`) |
 | `order_events.csv` | ✔ | `t_ns,order_id,event,detail` |
 | `fills.csv` | ✔ | `fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence` (evidence: `bar_open`, `bar_path`, `vwap_int`, `ltp`, `book_lvl_<k>`, `book_cross`, `trade_through`, `eod_close`) |
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
@@ -527,6 +528,7 @@ An **order record** has exactly these fields (A4 §3; the enum spellings are the
 | `validity` | `"DAY"` \| `"IOC"` |
 | `protection` | `"AUTO"` or int bp |
 | `tag`, `reason` | string, `""` when none (never null) |
+| `note` | string, `""` when none (never null): the strategy's words for why, cleaned by `clean_note` (CH 6.2/6.3: carried in `sod_state` like the tag; the one key a reader treats as optional: a state written before CH 6.3 has none and loads with `""`, and both runners always write it) |
 | `status` | `"PENDING"` \| `"OPEN"` \| `"TRIGGER_PENDING"` \| `"COMPLETE"` \| `"CANCELLED"` \| `"REJECTED"` \| `"SLICED"` |
 | `limit`, `protection_bp` | int or null |
 | `from_market`, `triggered`, `first_eligible_done`, `charged` | boolean |

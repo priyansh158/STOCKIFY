@@ -95,6 +95,42 @@ class ParityJournalTest(_Base):
         self.assertEqual(store.get_session(SID)["pause_reasons"], [])
         self.assertEqual(jpath.read_bytes(), before, "parity never writes a journal")
 
+    def test_parity_ignores_a_missing_note_on_an_old_stored_day(self):
+        """CH 6.3: a stored day written before the note column has no `note` in its order rows; the regenerated twin has."""
+        self.finalised_day()
+        conn = store._connect()
+        rows = conn.execute("SELECT session_id, trade_date, order_id, row_json FROM session_orders "
+                            "WHERE session_id = ?", (SID,)).fetchall()
+        self.assertTrue(rows)
+        for r in rows:
+            data = json.loads(r["row_json"])
+            self.assertIn("note", data)
+            data.pop("note")
+            self.tamper("UPDATE session_orders SET row_json = ? WHERE session_id = ? AND trade_date = ? AND "
+                        "order_id = ?", json.dumps(data, sort_keys=True), r["session_id"], r["trade_date"],
+                        r["order_id"])
+        res = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(res.outcome, "pass", res.summary["first_difference"])
+        self.tamper_row("session_orders", "order_id", "status", "REJECTED")     # a real difference still fails
+        self.assertEqual(parity.journal_parity(SID, pf.DAY).outcome, "fail")
+
+    def test_the_note_rule_for_stored_orders(self):
+        """D-93: a stored order without the `note` key (written before CH 6.2) is compared on every other field; one
+        with the key compares exactly. The twin of an AUTO_SQOFF order carries the bundle's system note."""
+        sq = "Closed by the broker's 15:20 auto square-off"
+        twin = {7: {"order_id": "7", "tag": "AUTO_SQOFF", "qty": "50", "note": sq}}
+        old = {7: {"order_id": "7", "tag": "AUTO_SQOFF", "qty": "50"}}
+        self.assertIsNone(parity._first_difference("orders", old, twin))
+        wrong_qty = {7: {"order_id": "7", "tag": "AUTO_SQOFF", "qty": "51"}}
+        self.assertEqual(parity._first_difference("orders", wrong_qty, twin)["key"], 7)
+        self.assertIsNone(parity._first_difference("orders", {7: {**old[7], "note": sq}}, twin))
+        wrong_note = parity._first_difference("orders", {7: {**old[7], "note": "something else"}}, twin)
+        self.assertEqual((wrong_note["table"], wrong_note["key"]), ("orders", 7))
+        blank = parity._first_difference("orders", {7: {**old[7], "note": ""}}, twin)
+        self.assertIsNotNone(blank, "a stored note of '' is a stored note")
+        self.assertIsNone(parity._first_difference("orders", {7: old[7]}, {7: {**twin[7], "note": ""}}))
+        self.assertIsNotNone(parity._first_difference("fills", {1: {"a": 1}}, {1: {"a": 1, "note": "x"}}))
+
     def test_tampered_fill_fails_and_pauses(self):
         enable_logging(self)
         self.finalised_day()

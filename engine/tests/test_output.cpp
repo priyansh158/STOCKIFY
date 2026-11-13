@@ -59,9 +59,10 @@ TEST_CASE("CSV cells and rows match stockify.oracle.artifacts._csv") {
     CHECK(csv_cell(std::int64_t{-42}) == "-42");
     CHECK(csv_cell(std::string_view("entry")) == "entry");
     CHECK(csv_cell(std::string_view("a,b")) == "\"a,b\"");
+    CHECK(csv_cell(std::string_view("a\rb")) == "\"a\rb\"");  // M-4: a CR splits a row for a universal-newline reader
     CHECK(csv_cell(std::string_view("say \"hi\"")) == "\"say \"\"hi\"\"\"");
     CHECK(csv_cell(std::string_view("line\nbreak")) == "\"line\nbreak\"");
-    CHECK(csv_cell(std::string_view("cr\rstays")) == "cr\rstays");  // the oracle quotes only , " and \n
+    CHECK(csv_cell(std::string_view("cr\rstays")) == "\"cr\rstays\"");  // , " CR and LF are quoted
     CsvWriter w("a,b,c");
     CHECK(w.text() == "a,b,c\n");
     w.add_row({std::int64_t{1}, std::string_view("BUY"), CsvNull{}});

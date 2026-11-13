@@ -20,7 +20,7 @@ namespace stocksim {
 // Column headers, as stockify.oracle.artifacts writes them (A1 §6.3).
 inline constexpr std::string_view kOrdersHeader =
     "order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,"
-    "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason";
+    "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason,note";
 inline constexpr std::string_view kOrderEventsHeader = "t_ns,order_id,event,detail";
 inline constexpr std::string_view kFillsHeader = "fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence";
 inline constexpr std::string_view kChargesHeader =
@@ -41,7 +41,7 @@ void order_row(const Order& o, Sink&& sink) {
         std::string_view(o.product_text), std::string_view(o.type_text), std::string_view(o.validity_text), o.qty,
         o.price, o.trigger, o.protection_bp ? CsvCell(std::int64_t{*o.protection_bp}) : CsvCell(CsvNull{}),
         std::string_view(o.tag), o.t_submit, o.t_activate, std::string_view(status), o.filled_qty, o.avg_price(),
-        std::string_view(reason)});
+        std::string_view(reason), std::string_view(o.note)});
 }
 
 template <class Sink>

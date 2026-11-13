@@ -26,6 +26,7 @@ from datetime import date as _date
 
 from stockify import numerics, timeutil
 from stockify.oracle import costs as costs_mod
+from stockify.oracle import notes
 from stockify.oracle.ledger import Ledger
 from stockify.oracle.margin import DERIVATIVES, FlatMargin
 from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, extra_ticks_of, participation_cap, path_points, protection_limit,
@@ -146,7 +147,8 @@ class Engine:
         self.cal_days = list(prev or []) + self.days + list(nxt or [])
         self.cal_day_ends = [d["day_end_ns"] for d in self.cal_days]
         self.cal_by_date = {d["date"]: d for d in self.cal_days}
-        self.records = records                         # [(key, record)] sorted
+        self.system_notes = bundle.get("system_notes") or {}   # CH 6.2: {tag: text}; absent in an older bundle
+        self.records = records                       # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
         self._check_mis_rows(bundle["broker_policy"].get("mis_margin_pct"))
@@ -578,9 +580,11 @@ class Engine:
         return o
 
     def place(self, iid: int, side: str, qty: int, product: str, type_: str, price: int = 0, trigger: int = 0,
-              validity: str = "DAY", protection="AUTO", tag: str = "", parent: int = 0, system: bool = False) -> Order:  # noqa: ANN001
+              validity: str = "DAY", protection="AUTO", tag: str = "", parent: int = 0, system: bool = False,
+              note: str = "") -> Order:  # noqa: ANN001
+        note = notes.clean_note(note)                      # CH 6.2: cleaned once; a slice's children get the clean text
         o = Order(self.next_order, parent, iid, side, qty, product, type_, price, trigger, validity, protection, tag,
-                  self.now, 0)
+                  note, self.now, 0)
         self.next_order += 1
         self.book.orders[o.order_id] = o
         self.live_ids.append(o.order_id)
@@ -604,7 +608,7 @@ class Engine:
                 q = min(child, left)
                 left -= q
                 self.place(iid, side, q, product, type_, price, trigger, validity, protection, tag, parent=o.order_id,
-                           system=system)
+                           system=system, note=note)
             return o
         code = self._validate(o, system, start="R_HOLDINGS")
         if code:
@@ -1364,7 +1368,8 @@ class Engine:
             if _cutoff_key(self.group_of(iid, d)) != seg:
                 continue
             side = "SELL" if p.d > 0 else "BUY"
-            self.place(iid, side, p.q, "MIS", "MARKET", tag="AUTO_SQOFF", system=True)
+            self.place(iid, side, p.q, "MIS", "MARKET", tag="AUTO_SQOFF", system=True,
+                       note=self.system_notes.get("AUTO_SQOFF", ""))
         self._deliver()
 
     def _day_end(self, d: str) -> None:
