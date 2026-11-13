@@ -169,17 +169,26 @@ class ReadTests(TradeBase):
         self.assertEqual(self.client.get("/api/trade/sessions/nope").status_code, 404)
         self.assertEqual(self.client.get("/api/trade/sessions/nope/fills").status_code, 404)
 
-    def test_unreadable_refdata_is_an_error_not_missing_names(self):
-        # D-143 (M4): an unreadable refdata used to hand back no names at all, which reads as "no such instrument".
+    def test_unreadable_refdata_keeps_the_positions_and_says_the_names_are_missing(self):
+        # D-143 (M4): an unreadable refdata used to hand back no names, silently; it must not hide the positions
+        # either. They stay, nameless, with a note the page shows.
         import sqlite3
+        from server.routers import trade
         self.make("a")
         self.day("a", DAY, 10_000_000, positions=[{"instrument_id": 7, "product": "NRML", "qty": 65,
                                                   "avg_price_paise": 2_400_000, "mark_paise": 2_410_000,
                                                   "unrealised_paise": 650_000}])
         with patch.object(refdata, "_connect", side_effect=sqlite3.OperationalError("disk I/O error")):
             r = self.client.get("/api/trade/sessions/a/positions")
-        self.assertEqual(r.status_code, 409)
-        self.assertIn("cannot be read right now", r.json()["detail"])
+        self.assertEqual(r.status_code, 200)
+        (p,) = r.json()
+        self.assertEqual((p["instrument_id"], p["qty"], p["mark_paise"]), (7, 65, 2_410_000))
+        self.assertIsNone(p["tradingsymbol"])
+        self.assertIsNone(p["instrument_token"])
+        self.assertEqual(p["names_note"], trade.NAMES_UNREADABLE)
+        self.assertNotIn("right now", p["names_note"])
+        (ok,) = self.client.get("/api/trade/sessions/a/positions").json()      # readable again: no note
+        self.assertIsNone(ok["names_note"])
 
     def test_stats_twice_all_days_and_full_coverage(self):
         self.make("a")                                   # capital 10,000,000

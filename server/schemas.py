@@ -342,6 +342,7 @@ class SessionPositionDTO(BaseModel):
     mark_paise: int | None = None
     unrealised_paise: int | None = None
     source: Literal["eod", "fills"]
+    names_note: str | None = None
 
 
 class SessionTimelineDTO(BaseModel):

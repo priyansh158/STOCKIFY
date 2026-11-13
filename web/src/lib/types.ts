@@ -321,6 +321,7 @@ export interface SessionPositionDTO {
   mark_paise?: number | null;
   unrealised_paise?: number | null;
   source: "eod" | "fills";
+  names_note?: string | null;
 }
 
 export interface SessionTimelineDTO {

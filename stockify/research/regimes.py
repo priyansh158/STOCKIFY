@@ -177,7 +177,8 @@ def _recorded_close(day: date, vix_id: int) -> int | None:
         with recorded:
             for p in recorded.packets(["ltp", "recv_ns"], instrument_ids={vix_id}, kinds=("index",)):
                 if p["ltp"] is not None:
-                    last, last_ns = int(p["ltp"]), p.get("recv_ns")
+                    recv = p.get("recv_ns")
+                    last, last_ns = int(p["ltp"]), (int(recv) if recv is not None else None)   # all archive parsing here
     except (OSError, ValueError, sqlite3.Error):          # an unreadable tick archive is a miss, bhavcopy answers instead
         return None
     # outside the try: a refdata error is not a miss, it propagates and the report says it could not be worked out

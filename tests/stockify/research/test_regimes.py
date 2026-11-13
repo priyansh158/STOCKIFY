@@ -298,6 +298,16 @@ class VixTests(RegimeTest):
         with mock.patch.object(ticks, "open_day", side_effect=sqlite3.DatabaseError("corrupt archive")):
             self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))
 
+    def test_a_corrupt_recv_ns_in_the_archive_is_a_missing_close_not_a_500(self):
+        # R1: archive data that does not parse is an archive problem: bhavcopy answers, the report still builds.
+        day = FakeDay([1333])
+        day.recv_ns = "not a number"
+        with mock.patch.object(ticks, "open_day", return_value=day):
+            self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))
+            rep = regimes.report(self.mk(PNL6))
+        self.assertEqual(set(rep.vix_source.values()), {"bhavcopy"})
+        self.assertTrue(rep.month)
+
     def test_the_cache_version_moved_past_the_splits_cached_under_the_shared_connection(self):
         self.assertGreaterEqual(int(regimes.CODE_VERSION), 3)
 
