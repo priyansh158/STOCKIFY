@@ -12,13 +12,15 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import re
 import secrets
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from stockify import runconfig, store, timeutil
-from stockify.research import holdout, pool, registry, sweep
+from stockify import paths, runconfig, store, timeutil
+from stockify.research import fileio, holdout, pool, registry, stats, sweep
 
 _SPAN = re.compile(r"[0-9]+d", re.ASCII)
 _NAME_PART_IN_JOB = 24
@@ -246,3 +248,205 @@ def _dump(results: list[dict]) -> list[dict]:
                     "chosen_run_id": c["run_id"] if c else None, "test_run_id": r["test_run_id"],
                     "test_status": r["test_status"], "error": r["error"]})
     return out
+
+
+# ── M6.5 (WF 6.5): stitching, in-sample vs out-of-sample, finish ──────────────────────────────────────────────────
+
+SCHEMA = "stockify.walkforward/1"
+
+
+@dataclass(frozen=True)
+class WalkforwardSummary:
+    windows: int                       # every window of the job, tested or not
+    oos_days: int                      # days in the stitched series
+    is_sharpe: float | None            # annualised; mean over the stitched windows of the chosen training run's Sharpe
+    oos_sharpe: float | None           # annualised Sharpe of the stitched series (excess of the risk-free rate)
+    ratio: float | None                # oos_sharpe / is_sharpe; None when is_sharpe is undefined or <= 0
+    chosen_modal_share: float | None   # share of the windows with a chosen set that chose the most common set
+    n_trials: int                      # windows x grid: every training run is a try
+    var_sharpe: float                  # per-period variance of the training runs' Sharpes (V in the DSR)
+    dsr: stats.DsrResult | None
+
+
+@dataclass(frozen=True)
+class WalkforwardFinished:
+    summary: WalkforwardSummary
+    windows: list[dict]
+    stitched_dates: list[str]
+    stitched_index: list[float]
+
+
+def stitch(pieces: list[tuple[list[str], list[float]]]) -> tuple[list[str], list[float]]:
+    """The test windows' `(ISO dates, plain per-day returns)`, in window order, compounded into one index:
+    `index_d = index_{d-1} * (1 + r_d)` with the index at 1.0 before the first day (so `index[0] = 1 + r_0`, and the
+    lists are as long as the returns). Capital is reinvested and no state carries between windows; the gap between
+    two windows is not filled (I-7). Dates must increase through the pieces, else ValueError."""
+    dates: list[str] = []
+    index: list[float] = []
+    level = 1.0
+    for ds, rs in pieces:
+        if len(ds) != len(rs):
+            raise ValueError(f"a piece has {len(ds)} dates but {len(rs)} returns")
+        for d, r in zip(ds, rs):
+            if isinstance(r, bool) or not isinstance(r, (int, float)) or not math.isfinite(r):
+                raise ValueError(f"a return is not a finite number: {r!r}")
+            if dates and d <= dates[-1]:
+                raise ValueError(f"pieces are not in window order: {d} comes after {dates[-1]}")
+            level *= 1 + r
+            dates.append(d)
+            index.append(level)
+    return dates, index
+
+
+def _series(run_id: str | None) -> tuple[int, list[str], list[int]] | None:
+    """`(capital paise, dates, NAV paise)` of a run from the database alone; None when it has no usable rows."""
+    if not run_id:
+        return None
+    row = store.get_run(run_id)
+    if not row:
+        return None
+    try:
+        capital = json.loads(row.get("config_json") or "{}").get("capital_paise")
+    except ValueError:
+        return None
+    nav = store.run_nav_series(run_id)
+    if isinstance(capital, bool) or not isinstance(capital, int) or capital <= 0 or not nav:
+        return None
+    return capital, [d for d, _ in nav], [n for _, n in nav]
+
+
+def _per_period_sharpe(series, rf_rows: list[dict]) -> float | None:  # noqa: ANN001
+    if series is None:
+        return None
+    capital, dates, navs = series
+    return stats.sharpe_per_period(stats.excess_returns(dates, stats.returns_from_nav(capital, navs), rf_rows))
+
+
+def _annual(sr: float | None) -> float | None:
+    return None if sr is None else stats.annualised(sr)
+
+
+def _period_metrics(series, rf_rows: list[dict]) -> dict:  # noqa: ANN001
+    capital, dates, navs = series
+    return {"from": dates[0], "to": dates[-1], "days": len(dates), "net_pnl_paise": navs[-1] - capital,
+            "sharpe": _annual(_per_period_sharpe(series, rf_rows))}
+
+
+def _mean(xs: list[float]) -> float:
+    total = 0.0
+    for v in xs:
+        total += v
+    return total / len(xs)
+
+
+def finish(job_id: str) -> WalkforwardFinished:
+    """Stitch the out-of-sample pieces, compare in-sample with out-of-sample, write `walkforward.json` and
+    `walkforward.png` in the job folder, then mark the job `done` (the only writer of `done` for a walk-forward
+    job: a job never reads done without its file). Reads only the database. On a `done` job it rewrites the same
+    files and leaves the job as it is; a `failed` job is refused. Any other failure marks a `running` job
+    `failed` and is re-raised. No `report.md` here: `wf_report.render` owns it."""
+    job = store.get_research_job(job_id)
+    if job is None:
+        raise WalkforwardError(f"no such research job: {job_id!r}")
+    if job["kind"] != "walkforward":
+        raise WalkforwardError(f"{job_id!r} is not a walk-forward job (it is a {job['kind']} job)")
+    if job["status"] == "failed":
+        raise WalkforwardError(f"{job_id!r} failed ({job.get('error') or 'no reason recorded'}): there is nothing "
+                               "to finish")
+    if job["status"] not in ("running", "done"):
+        raise WalkforwardError(f"{job_id!r} has status {job['status']!r}: finish works on a running or done job")
+    was_running = job["status"] == "running"
+    try:
+        finished = _compute(job)
+        folder = paths.research_path(job_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        spec = json.loads(job["spec_json"])
+        doc = {"schema": SCHEMA, "job_id": job_id, "name": job["name"], "objective": spec.get("objective"),
+               "train_days": spec.get("train"), "test_days": spec.get("test"), "step_days": spec.get("step"),
+               "span": spec.get("span"), "summary": asdict(finished.summary), "windows": finished.windows,
+               "dates": finished.stitched_dates, "index": finished.stitched_index}
+        fileio.atomic_write_text(folder / "walkforward.json",
+                                 json.dumps(doc, sort_keys=True, indent=2, allow_nan=False) + "\n")
+        _equity_png(folder / "walkforward.png", finished.stitched_dates, finished.stitched_index)
+        if was_running:
+            store.update_research_job(job_id, status="done", finished_ns=timeutil.now_ns(), error=None)
+    except BaseException as e:
+        if was_running:
+            try:
+                store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
+                                          error=f"{type(e).__name__}: {e}"[:500])
+            except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
+                pass
+        raise
+    return finished
+
+
+def _compute(job: dict) -> WalkforwardFinished:
+    try:
+        state = json.loads(job["state_json"] or "")["windows"]
+        spec = json.loads(job["spec_json"])
+    except (ValueError, KeyError, TypeError) as e:
+        raise WalkforwardError(f"the job has no stored windows to finish: {e}") from None
+    rf_rows = stats.risk_free_rows()
+    out_windows, pieces, is_srs, chosen_sets, trial_srs = [], [], [], [], []
+    for w in state:
+        row = {k: w[k] for k in ("index", "train_from", "train_to", "test_from", "test_to", "chosen_params",
+                                 "chosen_run_id", "test_run_id", "test_status", "error")}
+        row["train"], row["test"] = None, None
+        for rid in w["train_run_ids"]:                               # every training run is a try
+            trial_srs.append(_per_period_sharpe(_series(rid), rf_rows))
+        if w["chosen_params"] is not None:
+            chosen_sets.append(json.dumps(w["chosen_params"], sort_keys=True))
+        train = _series(w["chosen_run_id"])
+        if train is not None:
+            row["train"] = {"run_id": w["chosen_run_id"], **_period_metrics(train, rf_rows)}
+        if w["test_run_id"] and w["test_status"] == "done":
+            test = _series(w["test_run_id"])
+            if test is None:
+                row["test_status"], row["error"] = "failed", "the test run has no stored equity"
+            else:
+                capital, dates, navs = test
+                row["test"] = {"run_id": w["test_run_id"], **_period_metrics(test, rf_rows)}
+                pieces.append((dates, stats.returns_from_nav(capital, navs)))
+                srs = _per_period_sharpe(train, rf_rows)
+                if srs is not None:
+                    is_srs.append(stats.annualised(srs))
+        out_windows.append(row)
+    dates, index = stitch(pieces)
+    flat = [r for _, rs in pieces for r in rs]
+    x = stats.excess_returns(dates, flat, rf_rows)
+    oos = _annual(stats.sharpe_per_period(x))
+    is_sharpe = _mean(is_srs) if is_srs else None
+    ratio = oos / is_sharpe if oos is not None and is_sharpe is not None and is_sharpe > 0 else None
+    n_trials = int(spec["windows"]) * int(spec["grid"]) if "windows" in spec and "grid" in spec else len(trial_srs)
+    modal = max(Counter(chosen_sets).values()) / len(chosen_sets) if chosen_sets else None
+    summary = WalkforwardSummary(
+        windows=len(state), oos_days=len(dates), is_sharpe=is_sharpe, oos_sharpe=oos, ratio=ratio,
+        chosen_modal_share=modal, n_trials=n_trials, var_sharpe=stats.sharpe_variance(trial_srs),
+        dsr=stats.deflated_sharpe(x, trial_srs, n_trials))
+    return WalkforwardFinished(summary, out_windows, dates, index)
+
+
+def _equity_png(path, dates: list[str], index: list[float]) -> None:  # noqa: ANN001
+    """The stitched out-of-sample curve (1.0 = the capital before the first day). Not drawn when the stitch is
+    empty."""
+    if not dates:
+        return
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(8, 3.2), dpi=110)
+    ax.plot([date.fromisoformat(d) for d in dates], index, linewidth=1.2, color="#2f6fdf")
+    ax.axhline(1.0, linewidth=0.8, color="#999999")
+    ax.set_ylabel("Out-of-sample index (start = 1.0)")
+    ax.grid(alpha=0.3)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    tmp = path.with_name(path.name + ".tmp.png")
+    try:
+        fig.savefig(tmp)
+        os.replace(tmp, path)
+    finally:
+        plt.close(fig)
+        tmp.unlink(missing_ok=True)
