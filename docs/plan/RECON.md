@@ -1382,7 +1382,7 @@ M6 is "built (open: live gates)" in `00_overview.md` §4. Everything below ran o
 4. 🛑 Fetch minute bars, about 330 days of the demo stock, so the demo walk-forward has at least `min_oos_days` (60) out-of-sample days (D-102).
 5. 🛑 Run the demo (`sweep`, `walkforward`, `sensitivity`, `research report`) on those bars and read `research/<job>/report.md` (the Definition of done asks for it).
 6. 🛑 Look at each page at 1024 px: a run, a paper session, a walk-forward, a sweep trial, `/data`, `/research`, `/tests/compare`.
-7. 🛑 Confirm the TradingView attribution reads acceptably (the footer notice and the chart logo).
+7. 🛑 Confirm the TradingView attribution reads acceptably (the chart logo and the `NOTICE` file; the footer notice was removed, D-141).
 8. 🛑 Decide the durable fix for recording bar intervals (D-112): the run config does not record the interval a strategy subscribed to; the chart reads the strategy's `BAR_INTERVAL_S` or parameter default and says so.
 9. 🛑 Rebuild the engine on every machine (`.\run.ps1 -BuildEngine`) before comparing runs.
 10. The stuck-process note is resolved: the old `sod` filter process (pid 37796) ended on its own and the worktree's `.pyd` is free. Nothing to do.

@@ -36,15 +36,6 @@ export default function RootLayout({
         </a>
         <AppNav />
         <main id="main" tabIndex={-1} className="stk-main">{children}</main>
-        <footer className="stk-foot">
-          <p>
-            Simulation only: STOCKIFY never places real orders. Not investment advice. Charts by{" "}
-            <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">
-              TradingView Lightweight Charts™
-            </a>
-            . Copyright © 2025 TradingView, Inc.
-          </p>
-        </footer>
       </body>
     </html>
   );
