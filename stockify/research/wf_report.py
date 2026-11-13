@@ -15,9 +15,10 @@ import math
 from pathlib import Path
 
 from stockify import paths, store
+from stockify.commands import stockify_command
 from stockify.research import fileio, pbo, plain, sensitivity, walkforward
 
-_NOT_RUN = "not run yet: `python -m stockify sensitivity --run {run}`"
+_NOT_RUN = "not run yet: `" + stockify_command("sensitivity --run {run}") + "`"
 SENSITIVITY_MARK = "Costs and fills changed one at a time"     # starts the cost table's section in report.md
 _YEAR_OF_DAYS = 252             # trading days in the year the Sharpe is scaled to (stats.annualised)
 
@@ -287,8 +288,9 @@ def notes(doc: dict) -> dict[str, str]:
         "ratio_lead": "Out-of-sample against in-sample",
         "stability_lead": "Stability",
         "pbo_lead": "Overfitting",
-        "sensitivity": ("The cost check isn't stored with a walk-forward job. Run `python -m stockify research report "
-                        f"--walkforward {doc['job_id']} --sensitivity-run RUN_ID` to add it to the report file."),
+        "sensitivity": ("The cost check isn't stored with a walk-forward job. Run `"
+                        + stockify_command(f"research report --walkforward {doc['job_id']} --sensitivity-run RUN_ID")
+                        + "` to add it to the report file."),
     }
     caution = _paragraph_for_days(s)
     if caution:
