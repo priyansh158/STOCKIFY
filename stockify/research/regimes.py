@@ -30,8 +30,9 @@ from stockify.config import loader
 from stockify.data import calendar, instruments, refdata, ticks
 from stockify.research import settings
 
-CODE_VERSION = "2"            # bump when the buckets or the way they are built change: it invalidates the cache
+CODE_VERSION = "3"            # bump when the buckets or the way they are built change: it invalidates the cache
                               # (2: expiries from the calendar outside refdata's span; only a full day sets the VIX)
+                              # (3: D-143, splits cached while a shared connection returned rows as None)
 NO_DATA = "no data"
 EXPIRY_DAY = "expiry day"
 OTHER_DAYS = "other days"
@@ -177,9 +178,10 @@ def _recorded_close(day: date, vix_id: int) -> int | None:
             for p in recorded.packets(["ltp", "recv_ns"], instrument_ids={vix_id}, kinds=("index",)):
                 if p["ltp"] is not None:
                     last, last_ns = int(p["ltp"]), p.get("recv_ns")
-        return last if last is not None and _day_is_complete(day, last_ns) else None
-    except (OSError, ValueError, sqlite3.Error):          # an unreadable archive is a miss, bhavcopy answers instead
+    except (OSError, ValueError, sqlite3.Error):          # an unreadable tick archive is a miss, bhavcopy answers instead
         return None
+    # outside the try: a refdata error is not a miss, it propagates and the report says it could not be worked out
+    return last if last is not None and _day_is_complete(day, last_ns) else None
 
 
 def vix_close(day: date) -> tuple[int, str] | None:

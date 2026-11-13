@@ -288,6 +288,19 @@ class VixTests(RegimeTest):
         with mock.patch.object(regimes.calendar, "session_close_ns", side_effect=regimes.calendar.CalendarError("x")),                 mock.patch.object(ticks, "open_day", return_value=FakeDay([1333], at="15:31")):
             self.assertEqual(regimes.vix_close(date(2026, 1, 27))[1], "bhavcopy")
 
+    def test_a_refdata_error_is_not_a_missing_close_but_an_unreadable_tick_archive_is(self):
+        # D-143 (I3): only the tick archive's own errors fall back to bhavcopy; a refdata error propagates, so the
+        # report can say the split could not be worked out instead of caching a "bhavcopy" answer.
+        import sqlite3
+        with mock.patch.object(ticks, "open_day", return_value=FakeDay([1333])),                 mock.patch.object(regimes, "_day_is_complete", side_effect=sqlite3.InterfaceError("misuse")):
+            with self.assertRaises(sqlite3.InterfaceError):
+                regimes.vix_close(date(2026, 1, 27))
+        with mock.patch.object(ticks, "open_day", side_effect=sqlite3.DatabaseError("corrupt archive")):
+            self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))
+
+    def test_the_cache_version_moved_past_the_splits_cached_under_the_shared_connection(self):
+        self.assertGreaterEqual(int(regimes.CODE_VERSION), 3)
+
     def test_vix_falls_back_to_bhavcopy(self):
         with mock.patch.object(ticks, "open_day", return_value=None):
             self.assertEqual(regimes.vix_close(date(2026, 1, 27)), (1250, "bhavcopy"))
