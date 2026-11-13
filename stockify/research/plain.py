@@ -179,8 +179,9 @@ def _ci_phrase(ci: float) -> str:
 
 
 def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str = "sharpe",
-                 picked_name: str | None = None, flat: bool = False) -> str:
-    """Where this run stands among all the tries of its family, in one line.
+                 picked_name: str | None = None, flat: bool = False, n_finished: int | None = None) -> str:
+    """Where this run stands among all the tries of its family, in one line. Every setting tried counts, finished
+    or not (D-85); when some did not finish (`n_finished` below `n_trials`) the line says "N tries (M finished)".
 
     The deflated Sharpe is only meaningful for the best try, so a runner-up gets its rank instead.
     """
@@ -194,13 +195,17 @@ def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str 
         label = OBJECTIVE_LABELS[objective]
     except KeyError:
         raise ValueError(f"objective must be one of {list(registry.OBJECTIVES)}, not {objective!r}") from None
+    tries = (f"{n_trials} tries ({n_finished} finished)" if n_finished is not None and n_finished < n_trials
+             else f"{n_trials} tries")
     if rank == 1:
         p = _usable(dsr)
         verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the edge beats luck"
         # the luck allowance is always computed on the picked run's Sharpe, whatever ranked the tries
         scope = "" if objective == "sharpe" else " on its Sharpe"
-        return f"best of {n_trials} tries by {label}, after allowing for luck{scope}: {verdict}"
-    head = f"{ordinal(rank)} best of {n_trials} tries by {label}"
+        partial = n_finished is not None and n_finished < n_trials
+        note = "; the luck allowance uses only the finished tries' results" if partial else ""
+        return f"best of {tries} by {label}, after allowing for luck{scope}: {verdict}{note}"
+    head = f"{ordinal(rank)} best of {tries} by {label}"
     if picked_name:
         name = picked_name if len(picked_name) <= _NAME_LIMIT else picked_name[:_NAME_LIMIT - 3] + "..."
         return f"{head}; the job picked {name}, so this is a runner-up"
@@ -363,7 +368,7 @@ GENERIC_FAILURE = "the run failed; see the log"
 PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
     ("HoldoutLocked", "the holdout is locked"),
     ("RunConfigError", "the settings were not accepted"),
-    ("SweepSpecError", "the run pool returned the wrong number of results"),
+    ("SweepSpecError", "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it"),
     ("WalkforwardRunError", "the run pool returned the wrong number of results"),
     ("SensitivityRunError", "the run pool returned the wrong number of results"),
 )
@@ -432,11 +437,12 @@ def not_run_reason(error: object) -> str | None:
     return GENERIC_FAILURE
 
 
-def family_best_sentence(n_trials: int, dsr: float | None, objective: str) -> str:
-    """The /research overview's line for a family: its best try and how likely its edge is more than luck."""
-    if n_trials < 1:
+def family_best_sentence(n_trials: int, dsr: float | None, objective: str, n_finished: int | None = None) -> str:
+    """The /research overview's line for a family: its best try and how likely its edge is more than luck. It says
+    "N tries (M finished)" when some tries did not finish (D-85)."""
+    if n_trials < 1 or n_finished == 0:
         return "no finished tries yet"
-    return dsr_sentence(n_trials, 1, dsr, objective=objective)
+    return dsr_sentence(n_trials, 1, dsr, objective=objective, n_finished=n_finished)
 
 
 def job_status_sentence(status: str, error: str | None) -> str:

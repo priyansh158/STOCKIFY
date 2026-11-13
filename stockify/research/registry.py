@@ -1,5 +1,6 @@
 """The trial registry (M6.4, AM 6.3): every run and session has a family, every run has a role, and only
-`trial` runs that finished (`done`) count as tries (N, V in the deflated Sharpe).
+`trial` runs that were tried (`done` or `failed`, D-85 as changed 2026-11-13) count toward N in the deflated Sharpe; V and
+the best run use only the ones that finished.
 
     registry.default_family_id(cfg)        # "<strategy>/<dataset>-<interval>-<universe>/<objective>"
     registry.trials(family_id)             # TrialRun list, from the database only (a pruned folder still counts)
@@ -197,6 +198,32 @@ def trials(family_id: str) -> list[TrialRun]:
                             seed=seed if isinstance(seed, int) else 0,
                             objective_value=objective_value(row, objective)))
     return out
+
+
+def counted_runs(family_id: str) -> list[dict]:
+    """The family's role-`trial` runs that were tried: finished or failed (a queued, running or cancelled run was
+    never tried). Newest rule, owner decision 2026-11-13 (D-85): a failed run still counts toward N."""
+    return [r for r in store.family_runs(family_id, roles=("trial",), status=None)
+            if r.get("status") in ("done", "failed")]
+
+
+def n_tries(family_id: str) -> int:
+    """N for the deflated Sharpe: every setting tried, finished or not (D-85, D-133). The tried trial runs, or for
+    a finished sweep or walk-forward job the number its own spec says (a point that never made a run still
+    counts: sweep `trials`, walk-forward windows x grid), whichever is larger."""
+    n = len(counted_runs(family_id))
+    kind, _, job_id = family_id.partition("/")
+    if kind in ("sweep", "walkforward") and job_id:
+        job = store.get_research_job(job_id)
+        if job and job.get("status") == "done":
+            try:
+                spec = json.loads(job.get("spec_json") or "")
+                planned = (int(spec["trials"]) if kind == "sweep"
+                           else int(spec["windows"]) * int(spec["grid"]))
+            except (ValueError, KeyError, TypeError):
+                planned = 0
+            n = max(n, planned)
+    return n
 
 
 def best_trial(family_id: str) -> TrialRun | None:

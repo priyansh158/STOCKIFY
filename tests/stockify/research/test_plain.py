@@ -290,12 +290,33 @@ class PlainReasonTests(unittest.TestCase):
             got = plain.plain_reason(raw)
             self.assertEqual(got, plain.GENERIC_FAILURE, raw)
 
+    def test_the_dsr_line_says_how_many_tries_finished_only_when_some_did_not(self):
+        self.assertIn("best of 4 tries (3 finished) by ", plain.dsr_sentence(4, 1, 0.9, n_finished=3))
+        self.assertIn("best of 4 tries by", plain.dsr_sentence(4, 1, 0.9, n_finished=4))
+        self.assertIn("best of 4 tries by", plain.dsr_sentence(4, 1, 0.9))
+        self.assertIn("2nd best of 4 tries (3 finished) by", plain.dsr_sentence(4, 2, 0.9, n_finished=3))
+
+    def test_the_dsr_line_says_the_luck_allowance_uses_finished_tries_only_when_some_did_not_finish(self):
+        partial = plain.dsr_sentence(4, 1, 0.9, n_finished=3)
+        self.assertIn("the luck allowance uses only the finished tries' results", partial)
+        self.assertEqual(_bad_tokens(partial), [])
+        self.assertNotIn("luck allowance", plain.dsr_sentence(4, 1, 0.9, n_finished=4))
+        self.assertNotIn("luck allowance", plain.dsr_sentence(4, 1, 0.9))
+
+    def test_the_overview_line_says_how_many_tries_finished(self):
+        text = plain.family_best_sentence(4, 0.9, "sharpe", n_finished=3)
+        self.assertIn("best of 4 tries (3 finished) by", text)
+        self.assertEqual(plain.family_best_sentence(4, None, "sharpe", n_finished=0), "no finished tries yet")
+        self.assertIn("best of 4 tries by", plain.family_best_sentence(4, 0.9, "sharpe", n_finished=4))
+
     def test_a_leading_class_name_maps_through_the_fixed_table(self):
         self.assertEqual(plain.plain_reason("HoldoutLocked: the holdout starts 2026-08-01 and this run reaches it"),
                          "the holdout is locked")
         self.assertEqual(plain.plain_reason("RunConfigError: strategy.params.slow must be above fast"),
                          "the settings were not accepted")
         self.assertEqual(plain.plain_reason("SweepSpecError: the pool returned 2 outcomes for 3 runs"),
+                         "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it")
+        self.assertEqual(plain.plain_reason("WalkforwardRunError: the pool returned 2 outcomes for 3 runs"),
                          "the run pool returned the wrong number of results")
         for text in set(dict(plain.PLAIN_FAILURES).values()):
             self.assertIn(text, plain.PLAIN_SENTENCES)

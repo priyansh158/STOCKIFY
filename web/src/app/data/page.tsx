@@ -381,7 +381,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                 ))}
                 <p className="stk-fine">
                   Check that the lab data folder can be read and that nothing else is locking it, then reload this page.
-                  {hidden && ` Meanwhile ${hidden} ${noDays ? "are" : "is"} hidden, because a store that cannot be read looks the same as an empty one.`}
+                  {hidden && ` ${hidden[0].toUpperCase()}${hidden.slice(1)} ${noDays ? "are" : "is"} hidden until the data can be read.`}
                 </p>
               </ErrorPanel>
             )}
