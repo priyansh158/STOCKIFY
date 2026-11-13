@@ -167,6 +167,43 @@ class ChartHelperChecks(unittest.TestCase):
     def test_window_shading_follows_the_window_bounds(self):
         self.assertEqual(self.r["shade"], [[100 + 19800, 0], [199 + 19800, 0], [200 + 19800, 1]])
 
+    def test_window_bands_from_windows(self):
+        b = self.r["bands"]
+        self.assertEqual([x["label"] for x in b], [
+            "Window 1 (out of sample)",
+            "Window 2 (out of sample), excluded: too few trading days to rank",
+            "Window 3 (out of sample), no trades in this window",
+            "Window 4 (out of sample), no chart: this window failed",
+        ])
+        self.assertEqual([x["gap"] for x in b], [False, True, True, True])
+        self.assertEqual(b[0]["from_ns"], (1_762_885_800) * 10**9)
+        self.assertEqual(b[0]["to_ns"], b[1]["from_ns"])
+        self.assertEqual(self.r["bandsEmpty"], [])
+
+    def test_first_view_of_a_chart_fits_all_or_ranges_round_the_first_trade(self):
+        fit = {"kind": "fit"}
+        v = self.r["view"]
+        self.assertEqual(v[0], fit)
+        self.assertEqual(v[1], fit)                       # a short chart fits everything
+        self.assertEqual(v[2], fit)                       # exactly the near limit still fits
+        self.assertEqual(v[3], {"kind": "range", "from": 5 - 150, "to": 5 + 150})
+        self.assertEqual(v[4], {"kind": "range", "from": 10 - 150, "to": 10 + 150})
+        self.assertEqual(v[5], {"kind": "range", "from": 1000 - 1 - 150, "to": 1000 - 1 + 150})   # trade not in the bars: the end
+        self.assertEqual(v[6], fit)                       # no trades: fit
+        self.assertEqual(v[7], {"kind": "range", "from": -150, "to": 150})
+
+    def test_gap_windows_are_shaded_by_day_without_bars(self):
+        w0 = 1_762_885_800
+        # window 1 (index 0) bars keep their index; window 2 (gap) gets one point per weekday at 09:15 IST
+        pts = self.r["shadeGap"]
+        self.assertEqual([p["index"] for p in pts if not p["gap"]], [0, 0])
+        gaps = [p for p in pts if p["gap"] and p["index"] == 1]
+        self.assertEqual([g["time"] for g in gaps], [w0 + 7 * 86400 + k * 86400 + 33300 + 19800 for k in (0, 1, 2, 5, 6)])
+        times = [p["time"] for p in pts]
+        self.assertEqual(times, sorted(times))
+        self.assertEqual(len(times), len(set(times)))
+        self.assertEqual([p["time"] for p in self.r["shadeGapDaily"]], ["2025-11-19", "2025-11-20", "2025-11-21", "2025-11-24", "2025-11-25"])
+
     def test_chart_query_lists_only_what_is_set(self):
         self.assertEqual(self.r["queryAll"], "")
         self.assertEqual(self.r["queryZero"], "?instrument=0")

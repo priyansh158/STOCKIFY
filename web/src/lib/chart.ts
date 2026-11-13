@@ -5,7 +5,15 @@
  * it as text (React escapes it), never as markup.
  */
 import { rupees } from "./format";
-import type { ChartBarDTO, ChartInstrumentDTO, ChartChunkDTO, ChartMarkerDTO, RunChartDTO, TestFill } from "./types";
+import type {
+  ChartBarDTO,
+  ChartInstrumentDTO,
+  ChartChunkDTO,
+  ChartMarkerDTO,
+  RunChartDTO,
+  TestFill,
+  WalkforwardChartWindowDTO,
+} from "./types";
 
 // The wire shapes are C11's DTOs in ./types (times UTC seconds, prices rupee strings, paise as integers).
 export type ChartInstrumentKind = ChartInstrumentDTO["kind"];
@@ -158,7 +166,13 @@ export function rangeAround(tSec: number, interval_s: number, bars: number): { f
 // short plain-words line about the chart, shown as is. Session and walk-forward fields are optional.
 // ---------------------------------------------------------------------------------------------------------
 export type ChartPlot = RunChartDTO["plots"][number];
-export type ChartWindow = { from_ns: number; to_ns: number; label: string };
+export type ChartWindow = {
+  from_ns: number;
+  to_ns: number;
+  label: string;
+  /** True for a window with no bars to shade (excluded, no trades, failed): it is shaded by day instead. */
+  gap?: boolean;
+};
 
 /** A run's chart as the API sends it, plus the session and walk-forward fields (C12, C13) that a run does not have. */
 export type ChartModel = RunChartDTO & {
@@ -167,7 +181,7 @@ export type ChartModel = RunChartDTO & {
   trade_date?: string;
   days?: string[];
   paper?: boolean;
-  windows?: { index: number; from_ns: number; to_ns: number; run_id: string | null; status: string }[];
+  windows?: WalkforwardChartWindowDTO[];
 };
 
 export type ChartViewState = "loading" | "error" | "pruned" | "empty" | "full";
@@ -359,4 +373,78 @@ export function trialWords(axes: { path: string; label: string }[], params: Tria
 export function trialHref(sweepId: string, x: string, y: string | null, runId: string): string {
   const q = [`x=${encodeURIComponent(x)}`, ...(y === null ? [] : [`y=${encodeURIComponent(y)}`]), `trial=${encodeURIComponent(runId)}`];
   return `/research/sweeps/${encodeURIComponent(sweepId)}?${q.join("&")}#trial-chart`;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The walk-forward page (CH 6.18): the out-of-sample windows as bands on the chart.
+// ---------------------------------------------------------------------------------------------------------
+const NO_CHART_WHY: Record<string, string> = {
+  failed: "this window failed",
+  skipped: "this window was skipped",
+  pending: "this window has not run yet",
+  missing: "the files of its run are gone",
+};
+
+/** The band's words, plain: drawn windows say "out of sample"; the others say why nothing is drawn. The server's `excluded` text is used as it came. */
+export function windowLabel(w: WalkforwardChartWindowDTO): string {
+  const head = `Window ${w.index + 1} (out of sample)`;
+  if (w.excluded) return `${head}, excluded: ${w.excluded}`;
+  if (w.status === "no_trades") return `${head}, no trades in this window`;
+  if (w.status === "done") return head;
+  return `${head}, no chart: ${NO_CHART_WHY[w.status] ?? "its state is not known"}`;
+}
+
+/** The server's windows as bands (UTC ns bounds, the test days as the server clipped them), in the server's order. */
+export function windowBands(windows: WalkforwardChartWindowDTO[]): ChartWindow[] {
+  return windows.map((w) => ({
+    from_ns: w.from_t * 1e9,
+    to_ns: w.to_t * 1e9,
+    label: windowLabel(w),
+    gap: w.excluded != null || w.status !== "done",
+  }));
+}
+
+const GAP_DAYS_MAX = 400;
+const OPEN_AFTER_MIDNIGHT_S = 33300; // 09:15 IST
+
+/**
+ * The shading for the histogram under the candles: every bar inside a window gets that window's position; a gap window has
+ * no bars, so it gets one point on each weekday of its days (09:15 IST, or the date on a daily chart). Sorted, one per time.
+ * A holiday inside a gap window still gets its point, which is why the shading is a band and never a claim about trading days.
+ */
+export function shadePoints(
+  bars: ChartBar[],
+  windows: ChartWindow[],
+  daily: boolean,
+): { time: ChartTime; index: number; gap: boolean }[] {
+  const byTime = new Map<ChartTime, { time: ChartTime; index: number; gap: boolean }>();
+  for (const b of bars) {
+    const ns = b.t * 1e9;
+    const index = windows.findIndex((w) => ns >= w.from_ns && ns < w.to_ns);
+    if (index >= 0) byTime.set(timeOf(b.t, b.d, daily), { time: timeOf(b.t, b.d, daily), index, gap: windows[index].gap === true });
+  }
+  windows.forEach((w, index) => {
+    if (!w.gap) return;
+    const end = w.to_ns / 1e9;
+    for (let t = w.from_ns / 1e9, n = 0; t < end && n < GAP_DAYS_MAX; t += 86400, n++) {
+      const weekday = new Date((t + istShift) * 1000).getUTCDay();
+      if (weekday === 0 || weekday === 6) continue;
+      const time = daily ? istDate(t) : t + OPEN_AFTER_MIDNIGHT_S + istShift;
+      if (!byTime.has(time)) byTime.set(time, { time, index, gap: true });
+    }
+  });
+  return [...byTime.values()].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+}
+
+export type FirstView = { kind: "fit" } | { kind: "range"; from: number; to: number };
+
+/**
+ * How a chart first looks: everything fitted, or, for a long chart with trades, `near` bars round the first trade (`at` is the
+ * index of the first bar at or after it, -1 when there is none, which shows the end). The chart re-applies the same view
+ * when its box gets its width late, until the person pans or zooms.
+ */
+export function initialView(barCount: number, at: number, markerCount: number, near: number): FirstView {
+  if (barCount <= near || markerCount === 0) return { kind: "fit" };
+  const i = at < 0 ? barCount - 1 : at;
+  return { kind: "range", from: i - near / 2, to: i + near / 2 };
 }
