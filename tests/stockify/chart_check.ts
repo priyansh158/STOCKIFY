@@ -213,6 +213,9 @@ out.join = chart.joinFillsAndMarkers(
   [fl(1), fl(2), fl(3), fl(4)],
   [mk(2, "Range broke up"), mk(3, "", "orb_exit", true), mk(null, "Settled", "", false, "x9-1-0")],
 );
+out.joinStrategyTag = chart.joinFillsAndMarkers([fl(5), fl(6)], [mk(5, "", "sma_exit", false), mk(6, "", "", false)]);
+out.cardStrategyTag = chart.cardModel(fill({ side: "SELL", note: "", tag: "sma_exit", tag_is_code: false })).lines;
+out.cardNoteTag = chart.cardModel(fill({ note: "Range broke up", tag: "orb_entry", tag_is_code: false })).lines;
 out.joinNone = chart.joinFillsAndMarkers([fl(5)], []);
 out.joinEmpty = chart.joinFillsAndMarkers([], [mk(1, "n")]);
 out.joinOrder = chart.joinFillsAndMarkers([fl(9), fl(3)], [mk(3, "c"), mk(9, "n")]).map((r: { fill: { fill_id: number } }) => r.fill.fill_id);

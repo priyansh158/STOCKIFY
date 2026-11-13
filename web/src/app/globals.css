@@ -335,6 +335,9 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-costs-banner svg { flex: none; }
 .stk-costs-banner p { max-width: var(--measure); font-size: var(--text-md); }
 .stk-costs-banner strong { font-size: var(--text-lg); }
+.stk-regime > summary { cursor: pointer; min-height: var(--hit); display: flex; align-items: baseline; gap: var(--space-sm); }
+.stk-regime > summary h4 { display: inline; }
+.stk-regime[open] > summary { margin-bottom: var(--space-xs); }
 .stk-trust-details { font-size: var(--text-sm); color: var(--color-muted); }
 .stk-trust-details summary { cursor: pointer; min-height: var(--hit); display: flex; align-items: center; }
 

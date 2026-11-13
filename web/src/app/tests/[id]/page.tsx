@@ -59,11 +59,12 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   const [chartMarkers, setChartMarkers] = useState<ChartMarker[]>([]);
   const [focusId, setFocusId] = useState<string | undefined>(undefined);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [chartLoaded, setChartLoaded] = useState(false); // the chart's first answer has come (the Why column can say more)
   const chartRef = useRef<HTMLDivElement>(null);
 
   const loadChart = useCallback<NonNullable<React.ComponentProps<typeof PriceChartLazy>["load"]>>(
     async (range, opts) => {
-      const model = await getRunChart(id, { ...opts, ...range });
+      const model = await getRunChart(id, { ...opts, ...range }).finally(() => setChartLoaded(true));
       if (model) {
         setChartMarkers((have) => {
           const seen = new Set(have.map((m) => m.id));
@@ -275,17 +276,17 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                 </StatGrid>
               </Panel>
 
+              <Panel>
+                <div ref={chartRef}>
+                  <PriceChartLazy load={loadChart} title="Price and trades" headingLevel={2} hideTradesList focusMarkerId={focusId} onMarkerClick={markerClicked} />
+                </div>
+              </Panel>
+
               <ResearchPanel runId={id} />
 
               <Panel>
                 <h2>Money over time</h2>
                 <EquityChart rows={extra.equity} start={run.nav_start_paise} />
-              </Panel>
-
-              <Panel>
-                <div ref={chartRef}>
-                  <PriceChartLazy load={loadChart} title="Price and trades" headingLevel={2} focusMarkerId={focusId} onMarkerClick={markerClicked} />
-                </div>
               </Panel>
 
               <div className="stk-cols-split">
@@ -317,7 +318,16 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                               </button>
                             )}
                           </td>
-                          <td data-wrap>{why === null ? "—" : why.code ? <code>{why.text}</code> : why.text}</td>
+                          <td data-wrap>
+                            {why === null ? (
+                              <span className="stk-muted">{chartLoaded ? "Not on the loaded chart; pan to load it" : "Loading…"}</span>
+                            ) : (
+                              <>
+                                {why.text}
+                                {why.tag !== null && <> <code>{why.tag}</code></>}
+                              </>
+                            )}
+                          </td>
                           <td className="num">{rupees(f.price_paise)}</td>
                           <td className="num">{f.order_id}</td>
                         </tr>

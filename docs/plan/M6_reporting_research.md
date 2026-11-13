@@ -101,7 +101,7 @@ cd web; npm run lint; npm run build
 - [x] CH 6.11 `GET /api/tests/{id}/chart` and its DTOs (`RunChartDTO`, mirrored in `web/src/lib/types.ts`; D-125).
 - [x] CH 6.14 `lightweight-charts@5.2.1` is pinned (exact, with `fancy-canvas@2.1.0`; D-110), the pure chart helpers are in `web/src/lib/chart.ts` (checked by `test_chart_checks.py`), and the footer carries the TradingView notice. The chart types are C11's DTOs in `web/src/lib/types.ts`.
 - [x] CH 6.15 `PriceChart` (client-only, loaded through `PriceChartLazy`) draws candles, volume, buy/sell markers with the strategy's note on a card, and the strategy's own lines; every trade is also a button in a list under the chart. `chart_api.ts` reads the run, walk-forward and session chart endpoints (a 404 gives null). The owner's look at 1024 px is still open (STOP, not a blocker).
-- [x] CH 6.16 The run page shows the chart ("Price and trades", between the equity panel and the fills); the Fills table has a Why column (the note, else the tag) joined to the chart's markers by `fill_id`, a row's "Show on chart" opens that marker, and a marker click highlights its row. A run that is not finished shows the panel with its status. The owner's look at 1024 px is still open (STOP, not a blocker).
+- [x] CH 6.16 The run page shows the chart ("Price and trades", between the equity panel and the fills); the Fills table has a Why column (the note, else the tag) joined to the chart's markers by `fill_id`, a row's "Show on chart" opens that marker, and a marker click highlights its row. A run that is not finished shows the panel with its status. Page order and the collapsed regime tables: D-111. The owner's look at 1024 px is still open (STOP, not a blocker).
 
 ## Definition of done
 

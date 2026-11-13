@@ -70,6 +70,8 @@ export type PriceChartProps = {
   onMarkerClick?: (id: string) => void;
   /** The title's heading level: 3 under a page section's h2 (the default), 2 when the chart is a section of its own. */
   headingLevel?: 2 | 3;
+  /** Hide the "Trades on this chart" list when the page already has its own table of the same trades. */
+  hideTradesList?: boolean;
 };
 
 const PAGE_BARS = 2000;
@@ -112,7 +114,7 @@ function visibleSeconds(t: Time): number {
   return Date.UTC(t.year, t.month - 1, t.day) / 1000 - istShift;
 }
 
-export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3 }: PriceChartProps) {
+export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false }: PriceChartProps) {
   const Heading = headingLevel === 2 ? "h2" : "h3";
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -128,6 +130,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const cardRef = useRef<HTMLElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const fitRef = useRef(false);
+  const autoFit = useRef(false); // the last fit was "fit everything", so a resize may redo it
+  const moved = useRef(false); // the user panned or zoomed since the last fit
 
   const [model, setModel] = useState<ChartModel | null | "error">(null);
   const [problem, setProblem] = useState("");
@@ -323,12 +327,27 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         });
     });
 
+    // The box can get its width after the first fit (it is hidden until data arrives) or change later: refit,
+    // but only while the user has not panned or zoomed. Created after the library's own observer, so it runs after it.
+    const refit = new ResizeObserver(() => {
+      if (autoFit.current && !moved.current) chart.timeScale().fitContent();
+    });
+    refit.observe(box);
+    const touched = () => {
+      moved.current = true;
+    };
+    box.addEventListener("wheel", touched, { passive: true });
+    box.addEventListener("pointerdown", touched);
+
     const theme = () => setThemeTick((n) => n + 1);
     const watch = new MutationObserver(theme);
     watch.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "style"] });
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     media.addEventListener("change", theme);
     return () => {
+      refit.disconnect();
+      box.removeEventListener("wheel", touched);
+      box.removeEventListener("pointerdown", touched);
       watch.disconnect();
       media.removeEventListener("change", theme);
       alive.current = false;
@@ -421,6 +440,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
 
     if (fitRef.current && (bars.length > 0 || markers.length > 0)) {
       fitRef.current = false;
+      moved.current = false;
+      autoFit.current = bars.length === 0 || bars.length <= NEAR_BARS || markers.length === 0;
       if (bars.length === 0) {
         chart.timeScale().fitContent();
       } else if (bars.length > NEAR_BARS && markers.length > 0) {
@@ -429,10 +450,6 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         chart.timeScale().setVisibleLogicalRange({ from: i - NEAR_BARS / 2, to: i + NEAR_BARS / 2 });
       } else {
         chart.timeScale().fitContent();
-        // The box may still be laying out (it was hidden until the data came): fit again once it has its width.
-        requestAnimationFrame(() => {
-          if (alive.current && chartRef.current === chart) chart.timeScale().fitContent();
-        });
       }
     }
   }, [bars, markers, meta, daily, showVolume, windows, themeTick]);
@@ -659,7 +676,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         </p>
       )}
 
-      {rows.length > 0 && (
+      {rows.length > 0 && !hideTradesList && (
         <div className="stk-pricechart-trades">
           <h4>Trades on this chart</h4>
           <ul>

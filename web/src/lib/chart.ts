@@ -86,6 +86,13 @@ export function contractOf(kind: ChartInstrumentKind | undefined): "option" | "f
   return kind === "option" || kind === "future" ? kind : undefined;
 }
 
+/** The note verbatim, or the "no note" sentence: the one wording the card, the hover tip and the run page's Why column share. */
+export function reasonOf(m: ChartMarker): string {
+  if (m.note !== "") return m.note;
+  const verb = m.kind === "settlement" ? "Settled" : isBuy(m) ? "Bought" : "Sold";
+  return `${verb} ${m.qty} (no note from the strategy)`;
+}
+
 /** What the card beside a marker shows. All values are plain text. */
 export function cardModel(m: ChartMarker, contract?: "option" | "future"): CardModel {
   const verb = m.kind === "settlement" ? "Settled" : isBuy(m) ? "Bought" : "Sold";
@@ -98,9 +105,10 @@ export function cardModel(m: ChartMarker, contract?: "option" | "future"): CardM
     lines.push({ label: m.kind === "settlement" ? "Settlement price" : "Price", value: rupees(m.price_paise), code: false });
   }
   if (m.charges_paise !== null) lines.push({ label: "Costs", value: rupees(m.charges_paise), code: false });
-  if (m.tag) lines.push({ label: "Tag", value: m.tag, code: m.tag_is_code });
-
+  // A note-less fill's tag is all the strategy said, so it is shown as a code label whatever the API's flag says.
   const noNote = m.note === "";
+  if (m.tag) lines.push({ label: "Tag", value: m.tag, code: m.tag_is_code || noNote });
+
   let pnl: CardModel["pnl"] = null;
   if (m.trade_pnl_paise !== null) {
     const p = m.trade_pnl_paise;
@@ -119,7 +127,7 @@ export function cardModel(m: ChartMarker, contract?: "option" | "future"): CardM
   return {
     chunks,
     title: `${verb} ${m.qty} at ${rupees(m.price_paise)}`,
-    reason: noNote ? `${verb} ${m.qty} (no note from the strategy)` : m.note,
+    reason: reasonOf(m),
     lines,
     pnl,
   };
@@ -300,8 +308,8 @@ export type JoinedFill = {
   fill: TestFill;
   /** The chart marker for this fill, for the row click and the highlight; null when the chart has none (yet). */
   markerId: string | null;
-  /** The note, else the strategy's tag (a code label when the API says it is one); null when there is neither. */
-  why: { text: string; code: boolean } | null;
+  /** The note, or the "no note" sentence with the strategy's tag (always a code label) beside it; null: no marker. */
+  why: { text: string; tag: string | null } | null;
 };
 
 /** One row per fill, in the fills' order, joined to the chart's markers by `fill_id`. */
@@ -311,7 +319,6 @@ export function joinFillsAndMarkers(fills: TestFill[], markers: ChartMarker[]): 
   return fills.map((fill) => {
     const m = byFill.get(fill.fill_id);
     if (!m) return { fill, markerId: null, why: null };
-    const why = m.note !== "" ? { text: m.note, code: false } : m.tag !== "" ? { text: m.tag, code: m.tag_is_code } : null;
-    return { fill, markerId: m.id, why };
+    return { fill, markerId: m.id, why: { text: reasonOf(m), tag: m.note === "" && m.tag !== "" ? m.tag : null } };
   });
 }
