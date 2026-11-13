@@ -33,6 +33,16 @@ TEST_CASE("clean_note hand cases") {
     CHECK(clean_note(std::string(201, 'x')) == std::string(199, 'x') + kEllipsis);
 }
 
+TEST_CASE("clean_note removes bidi controls outright (CH 6.25)") {
+    CHECK(clean_note("aâ®" "b") == "ab");                       // U+202E
+    CHECK(clean_note("aâ¦" "bâ©" "c") == "abc");    // U+2066, U+2069
+    CHECK(clean_note("â x â") == "x");           // U+200E, U+200F, then trimmed
+    CHECK(clean_note("aØ" "b") == "ab");                           // U+061C
+    CHECK(clean_note("âªâ«â¬â­") == "");
+    CHECK(clean_note("=1+1") == "=1+1");
+    CHECK(clean_note("â®" + std::string(201, 'x')) == std::string(199, 'x') + kEllipsis);
+}
+
 TEST_CASE("clean_note replaces invalid UTF-8 with U+FFFD") {
     CHECK(clean_note("\xC3(") == std::string(kFffd) + "(");
     CHECK(clean_note("a\xFF\xFE" "b") == std::string("a") + kFffd + kFffd + "b");

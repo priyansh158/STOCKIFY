@@ -77,6 +77,12 @@ constexpr bool is_blanked(char32_t cp) {
     return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029;
 }
 
+// Unicode bidi controls (CH 6.25, D-127): removed outright, so a note cannot reorder the text around it.
+constexpr bool is_bidi_control(char32_t cp) {
+    return (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069) || cp == 0x200E || cp == 0x200F ||
+           cp == 0x061C;
+}
+
 // The magnitude of v as an unsigned value: well defined for INT64_MIN too (unsigned negation wraps by definition).
 constexpr std::uint64_t magnitude(std::int64_t v) {
     const auto u = static_cast<std::uint64_t>(v);
@@ -108,7 +114,7 @@ std::string clean_note(std::string_view text) {
     while (!text.empty()) {
         std::size_t used = 1;
         const char32_t cp = decode_one(text, used);
-        cps.push_back(is_blanked(cp) ? U' ' : cp);
+        if (!is_bidi_control(cp)) cps.push_back(is_blanked(cp) ? U' ' : cp);
         text.remove_prefix(used);
     }
     const auto is_space = [](char32_t c) { return c == U' '; };

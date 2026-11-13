@@ -13,6 +13,7 @@ from stockify import engine
 from stockify.oracle.notes import NOTE_MAX, clean_note
 from stockify.strategy import StrategyCodeError, check_source, fmt_price, fmt_qty, to_level
 
+_BIDI = frozenset(map(chr, [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]))
 _SURROGATE = re.compile("[\ud800-\udfff]")
 _ENGINE = "stockify._engine is not built; run `.\\run.ps1 -BuildEngine`"
 
@@ -37,6 +38,17 @@ class CleanNoteTests(unittest.TestCase):
             clean_note(None)  # type: ignore[arg-type]
         with self.assertRaises(TypeError):
             clean_note(b"x")  # type: ignore[arg-type]
+
+    def test_bidi_control_characters_are_removed_not_blanked(self):
+        """CH 6.25 (D-127): U+202A-202E, U+2066-2069, U+200E, U+200F and U+061C could reorder the text a chart card
+        shows, so they are dropped outright (no space left behind); a formula prefix is left alone."""
+        for cp in [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]:
+            with self.subTest(cp=hex(cp)):
+                self.assertEqual(clean_note(f"a{chr(cp)}b"), "ab")
+                self.assertEqual(clean_note(f"{chr(cp)}  x {chr(cp)}"), "x")
+        self.assertEqual(clean_note("‮evil‬ ok"), "evil ok")
+        self.assertEqual(clean_note("=1+1"), "=1+1")
+        self.assertEqual(len(clean_note("‮" * 300 + "y" * 250)), 200)    # removal comes before the cap
 
     def test_fmt_price_and_qty_hand_cases(self):
         self.assertEqual(fmt_price(241840), "2,418.40")
@@ -112,7 +124,7 @@ class CleanNoteTests(unittest.TestCase):
 
 _ALPHABET = ["a", "Z", "7", " ", "  ", "\t", "\n", "\r", "\x00", "\x1f", "\x7f", "\x85", "\x9f", ",", '"', " ",
              " ", " ", "‏", "א", "ا", "\U0001F600", "\U0001F468‍\U0001F4BB", "…",
-             "<script>", "é", "\ud800", "\udfff"]
+             "‮", "‬", "⁦", "⁩", "‎", "؜", "<script>", "é", "\ud800", "\udfff"]
 
 
 @unittest.skipUnless(engine.available(), _ENGINE)
@@ -150,8 +162,17 @@ class EngineParityTests(unittest.TestCase):
             self.assertEqual(got, eng.clean_note(_SURROGATE.sub("�", s).encode("utf-8")), f"case {i}: {s!r}")
             self.assertLessEqual(len(got), NOTE_MAX)
             self.assertFalse(any(unicodedata.category(c) == "Cc" for c in got), repr(got))
+            self.assertFalse(any(c in _BIDI for c in got), repr(got))
             self.assertEqual(got, got.strip(" "))
             self.assertEqual(clean_note(got), got)
+
+    def test_clean_note_drops_every_bidi_control_alike_in_the_engine(self):
+        eng = engine.load()
+        for ch in sorted(_BIDI):
+            for text in (f"a{ch}b", f"{ch} x {ch}", ch * 3, "q" * 199 + ch + "zz"):
+                with self.subTest(cp=hex(ord(ch)), text=text):
+                    self.assertEqual(eng.clean_note(text.encode("utf-8")), clean_note(text))
+        self.assertEqual(eng.clean_note("‮evil‬ ok".encode("utf-8")), "evil ok")
 
     def test_clean_note_replaces_invalid_utf8_in_the_engine(self):
         eng = engine.load()

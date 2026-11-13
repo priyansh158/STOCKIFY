@@ -284,7 +284,8 @@ class NoteStateTests(unittest.TestCase):
         """CH 6.22: both runners pass a loaded note through clean_note (control characters, U+2028, the 200-character
         cap), so a hand-edited or old state cannot put a raw note into orders.csv."""
         n, st = self._first_state_with_orders()
-        dirty = ["  start\x01mid\x7f end\n  ", "z" * 300, "\x00\x1f", "plain note"]
+        dirty = ["  start\x01mid\x7f end\n  ", "z" * 300, "\x00\x1f", "plain note",
+                 "‮evil‬ note ⁦x⁩ ‏؜"]
         want = {}
         for i, o in enumerate(st["pending_orders"]):
             o["note"] = dirty[i % len(dirty)]
