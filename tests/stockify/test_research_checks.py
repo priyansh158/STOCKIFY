@@ -123,6 +123,17 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(d["range"], [60, 30, 60, 180, 60, 60, 60])
         self.assertEqual(self.answers["worst"], [1, 4, 5, 3])  # lowest coverage first, ties by id, no figure last
 
+    def test_a_quality_report_with_errors_says_so_and_names_what_is_hidden(self):
+        none, refdata, lab, nostores = self.answers["qualityNotice"]
+        self.assertIsNone(none)
+        self.assertEqual(refdata["sentences"], ["Couldn't read the recorded-day and download store."])
+        self.assertIn("the list of lowest-coverage instruments", refdata["hidden"])
+        self.assertIn("looks the same as an empty one", refdata["hidden"])
+        self.assertEqual(lab["sentences"], ["Couldn't read the recorder status."])
+        self.assertEqual(lab["hidden"], "")        # the lab store is not part of this list
+        self.assertEqual(nostores["sentences"], ["Couldn't read the bar store."])
+        self.assertIn("lowest-coverage", nostores["hidden"])   # no store key given: assume the list is hidden
+
     # ---- /research overview helpers (web/src/lib/researchHelpers.ts), M6 Task 33 ----
 
     def test_family_and_job_links_encode_what_the_ids_hold(self):

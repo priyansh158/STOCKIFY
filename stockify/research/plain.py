@@ -357,8 +357,8 @@ def _words_ticks(ticks: int, kind: str) -> str:
 
 # What a failed run or job may say about itself on a page or in the API. A fixed table keyed by the error class (the
 # class name a stored `ClassName: text` starts with), so exception text (a path, a value, a message) never leaves the
-# machine; the raw text stays in the stored row and the log. The same shape as walkforward.py's `_PLAIN_FAILURES`
-# (error class -> sentence), kept apart on purpose so the two tables can be merged later.
+# machine; the raw text stays in the stored row and the log. This is the only such table: walkforward.py's
+# `plain_failure` and `plain_error` read it.
 GENERIC_FAILURE = "the run failed; see the log"
 PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
     ("HoldoutLocked", "the holdout is locked"),
@@ -390,6 +390,13 @@ PLAIN_SENTENCES: frozenset[str] = frozenset({
     *(text for _cls, text in PLAIN_FAILURES),
     *NOT_RUN_REASONS,
 })
+
+
+def failure_line(class_name: str) -> str | None:
+    """The table's line for an error class name, or None when the table does not name it."""
+    return next((line for cls, line in PLAIN_FAILURES if cls == class_name), None)
+
+
 _CLASS_PREFIX = re.compile(r"([A-Za-z_][A-Za-z0-9_]*):")
 
 
@@ -405,11 +412,8 @@ def plain_reason(error: object, *, fallback: str | None = GENERIC_FAILURE) -> st
     if text in PLAIN_SENTENCES:
         return text
     m = _CLASS_PREFIX.match(text)
-    if m:
-        for cls, line in PLAIN_FAILURES:
-            if cls == m.group(1):
-                return line
-    return fallback
+    line = failure_line(m.group(1)) if m else None
+    return line if line is not None else fallback
 
 
 def not_run_reason(error: object) -> str | None:

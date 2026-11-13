@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from stockify import paths, research, runconfig, store, timeutil
-from stockify.research import fileio, holdout, pool, registry, stats, sweep
+from stockify.research import fileio, holdout, plain, pool, registry, stats, sweep
 
 _SPAN = re.compile(r"[0-9]+d", re.ASCII)
 _NAME_PART_IN_JOB = 24
@@ -38,21 +38,18 @@ class WalkforwardRunError(WalkforwardError):
 
 _log = logging.getLogger(__name__)
 
-# What a failed job says about itself to the page and the API: a fixed table keyed by the error class, so no
-# exception text (a path, a value, a message) ever leaves the machine. The raw text stays in the job's `error`
-# column (the command's retry message reads it) and in the log.
-_PLAIN_FAILURES: tuple[tuple[type, str], ...] = (
-    (WalkforwardRunError, "the run pool returned the wrong number of results"),
-    (holdout.HoldoutLocked, "the holdout is locked"),
-)
+# What a failed job says about itself to the page and the API comes from plain.py's one table (`PLAIN_FAILURES`,
+# keyed by the error class name), so no exception text (a path, a value, a message) ever leaves the machine. The raw
+# text stays in the job's `error` column (the command's retry message reads it) and in the log.
 _PLAIN_FAILURE_OTHER = "an internal error; see the log"
 
 
 def plain_failure(e: BaseException) -> str:
-    """The plain reason for a failure: the first table entry the error is an instance of, else the generic line."""
-    for cls, text in _PLAIN_FAILURES:
-        if isinstance(e, cls):
-            return text
+    """The plain reason for a failure: plain.py's line for the first class in the error's MRO it names, else the generic line."""
+    for cls in type(e).__mro__:
+        line = plain.failure_line(cls.__name__)
+        if line is not None:
+            return line
     return _PLAIN_FAILURE_OTHER
 
 
@@ -76,12 +73,7 @@ def plain_error(job: dict) -> str | None:
     raw = job.get("error")
     if not raw:
         return None
-    m = re.match(r"([A-Za-z_][A-Za-z0-9_]*):", str(raw))
-    if m:
-        for cls, text in _PLAIN_FAILURES:
-            if cls.__name__ == m.group(1):
-                return text
-    return "Failed"
+    return plain.plain_reason(str(raw), fallback="Failed")
 
 
 def _mark_failed(job_id: str, e: BaseException) -> None:

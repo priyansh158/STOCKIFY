@@ -6,7 +6,7 @@ import { COMPARE_MAX, COMPARE_MIN, DIVERGING, SERIES_TOKENS, bucketTone, compare
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, parseDay, rangeDays, recorderWords, worstCoverage,
+  gapScopeWords, istToday, parseDay, qualityNotice, rangeDays, recorderWords, worstCoverage,
 } from "../../web/src/lib/data.ts";
 
 // The reasons the recorder can write, read from the gap-reasons block of A1 (so a new reason there fails the check below).
@@ -99,6 +99,12 @@ const out = {
     { instrument_id: 3, metrics: { coverage_pct: 99 } }, { instrument_id: 1, metrics: { coverage_pct: 40 } },
     { instrument_id: 2, metrics: {} }, { instrument_id: 4, metrics: { coverage_pct: 40 } }, { instrument_id: 5, metrics: { coverage_pct: 70 } },
   ], 4).map((i) => i.instrument_id),
+  qualityNotice: [
+    qualityNotice({ errors: [], error_stores: [] }),
+    qualityNotice({ errors: ["Couldn't read the recorded-day and download store."], error_stores: ["refdata"] }),
+    qualityNotice({ errors: ["Couldn't read the recorder status."], error_stores: ["lab"] }),
+    qualityNotice({ errors: ["Couldn't read the bar store."] }),
+  ],
   hrefs: {
     family: ["sweep/ab12", "a b&c=d?e#f", "plain", "100%"].map(familyHref),
     job: [["sweep", "sweep-1"], ["walkforward", "wf/1 x"], ["sensitivity", "s1"], ["", "x"]].map(([k, i]) => jobHref(k, i)),

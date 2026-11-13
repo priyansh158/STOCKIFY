@@ -270,15 +270,34 @@ class CoverageTest(SandboxedDBTest):
         self.assertEqual((m.errors, m.error_stores), ([], []))
 
     def test_an_unreadable_recorder_status_names_the_lab_store(self):
-        for exc in (OSError("disk gone"), sqlite3.OperationalError("database is locked")):
-            with self.subTest(type(exc).__name__):
-                with mock.patch.object(coverage.store, "latest_recorder_status", side_effect=exc):
-                    m = coverage.matrix(FROM, TO)
+        from stockify import paths
+        from stockify.data import quality
+        for make_bad, name in ((lambda p: p.write_bytes(b"not a database " * 50), "corrupt"),
+                               (lambda p: p.mkdir(), "unopenable")):
+            with self.subTest(name):
+                lab = paths.lab_db()
+                if lab.is_dir():
+                    lab.rmdir()
+                elif lab.exists():
+                    lab.unlink()
+                make_bad(lab)
+                m = coverage.matrix(FROM, TO)
                 self.assertEqual(m.error_stores, ["lab"])
+                self.assertEqual(m.errors, [quality.unreadable_sentence("lab")])
                 self.assertEqual(m.errors, ["Couldn't read the recorder status."])
                 self.assertIsNone(m.recorder)
-                for bad in ("disk gone", "locked", "\\", ".sqlite"):
+                for bad in ("\\", "/", ".sqlite", "sqlite3", "Error"):
                     self.assertNotIn(bad, m.errors[0])
+
+    def test_a_missing_or_old_lab_store_is_not_an_error(self):
+        m = coverage.matrix(FROM, TO)
+        self.assertEqual((m.errors, m.error_stores, m.recorder), ([], [], None))
+
+    def test_coverage_shares_the_store_names_and_sentence_with_quality(self):
+        from stockify.data import quality
+        self.assertFalse(hasattr(coverage, "_STORE_NAMES"))
+        self.assertFalse(hasattr(coverage, "_sentence"))
+        self.assertIs(coverage.STORE_NAMES, quality.STORE_NAMES)
 
     def test_two_reads_of_one_bad_store_say_it_once(self):
         from stockify import paths

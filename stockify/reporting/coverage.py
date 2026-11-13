@@ -23,6 +23,7 @@ from decimal import Decimal
 from stockify import paths, store, timeutil
 from stockify.config import loader
 from stockify.data import calendar, compact, ticks
+from stockify.data.quality import STORE_NAMES, unreadable_sentence
 
 STATES = ("ok", "partial", "missing", "not_reported", "closed", "not_applicable")
 NSE_LABELS = {"fo": ("nse_fo", "NSE F&O bhavcopy", "FO"),
@@ -34,8 +35,6 @@ _DAY_METRICS = ("coverage_full_n", "coverage_quote_n", "coverage_unlogged_n", "c
                 "coverage_quote_pct")
 _BAR_LIMIT = 100
 _TIMEOUT_S = 5.0
-# What each store is called in the plain sentences of `CoverageMatrix.errors` (no file names or paths).
-_STORE_NAMES = {"refdata": "recorded-day and download store", "bars": "bar store", "lab": "recorder status"}
 _DAY_NS = 86_400 * timeutil.NS_PER_S
 
 
@@ -67,7 +66,7 @@ class CoverageMatrix:
     storage: dict
     recorder: dict | None = field(default=None)
     errors: list[str] = field(default_factory=list)
-    error_stores: list[str] = field(default_factory=list)   # the `_STORE_NAMES` keys of the stores `errors` names
+    error_stores: list[str] = field(default_factory=list)   # the `STORE_NAMES` keys of the stores `errors` names
 
 
 def _num(x) -> float | None:  # noqa: ANN001
@@ -92,13 +91,9 @@ def datasets() -> list[dict[str, str]]:
     return out
 
 
-def _sentence(store_key: str) -> str:
-    return f"Couldn't read the {_STORE_NAMES[store_key]}."
-
-
 def _unreadable(errors: list[str] | None, store_key: str) -> None:
-    """Record, once per store, that it could not be read (the sentence is `_sentence(store_key)`)."""
-    sentence = _sentence(store_key)
+    """Record, once per store, that it could not be read (the sentence is `quality.unreadable_sentence`)."""
+    sentence = unreadable_sentence(store_key)
     if errors is not None and sentence not in errors:
         errors.append(sentence)
 
@@ -115,7 +110,7 @@ def _rows(db_path, sql: str, args: tuple = (), *, errors: list[str] | None = Non
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=_TIMEOUT_S)
+        conn = sqlite3.connect(paths.readonly_uri(db_path), uri=True, timeout=_TIMEOUT_S)
     except sqlite3.Error:
         _unreadable(errors, store_key)
         return []
@@ -263,12 +258,10 @@ def matrix(from_: date, to: date, *, bar_limit: int = _BAR_LIMIT) -> CoverageMat
         days.append(CoverageDay(d, trading, cells))
         d += timedelta(days=1)
     bars, storage = _bars(bar_limit, errors), _storage(errors)
-    try:
-        recorder = store.latest_recorder_status()
-    except (sqlite3.Error, OSError):
-        recorder = None
+    recorder, lab_unreadable = store.recorder_status_read()     # never raises: (None, True) is a lab store that cannot be read
+    if lab_unreadable:
         _unreadable(errors, "lab")
-    error_stores = [key for key in _STORE_NAMES if _sentence(key) in errors]
+    error_stores = [key for key in STORE_NAMES if unreadable_sentence(key) in errors]
     return CoverageMatrix(from_, to, listed, days, bars, storage, recorder, errors, error_stores)
 
 

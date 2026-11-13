@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import {
   RANGE_CHOICES, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, parseDay, rangeDays, worstCoverage,
+  gapScopeWords, istToday, parseDay, qualityNotice, rangeDays, worstCoverage,
 } from "@/lib/data";
 import { istWhen } from "@/lib/format";
 import { getCoverage, getGaps, getQuality } from "@/lib/research";
@@ -221,6 +221,17 @@ function WorstBlock({ quality }: { quality: Settled<Awaited<ReturnType<typeof ge
     );
   }
   if (!quality.value.report) return <Empty>{withCode(quality.value.reason ?? "There is no quality report for this day yet.")}</Empty>;
+  const notice = qualityNotice(quality.value.report);
+  if (notice) {
+    return (
+      <ErrorPanel>
+        {notice.sentences.map((t) => (
+          <p key={t}>{t}</p>
+        ))}
+        {notice.hidden && <p className="stk-fine">Meanwhile {notice.hidden}</p>}
+      </ErrorPanel>
+    );
+  }
   const worst = worstCoverage(quality.value.report.instruments, 10);
   if (worst.length === 0) return <Empty>The quality report lists no instruments for this day.</Empty>;
   return (
