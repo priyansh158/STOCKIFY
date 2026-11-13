@@ -462,6 +462,17 @@ export interface TrialRowDTO {
   job_id: string | null;
 }
 
+export interface PboDTO {
+  pbo: number;
+  n_trials: number;
+  n_days: number;
+  slices: number;
+  combinations: number;
+  rows_dropped: number;
+  median_logit: number | null;
+  prob_loss: number;
+}
+
 export interface FamilySummaryDTO {
   family_id: string;
   description: string | null;
@@ -489,6 +500,10 @@ export interface FamilyDetailDTO {
   sessions: Record<string, unknown>[];
   holdout_unlocks: Record<string, unknown>[];
   plain: Record<string, string>;
+  pbo: PboDTO | null;
+  pbo_note: string | null;
+  pbo_dropped: string[];
+  pbo_flat: string[];
 }
 
 export interface CompareMetricDTO {

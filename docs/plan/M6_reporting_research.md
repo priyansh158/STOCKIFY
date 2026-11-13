@@ -67,7 +67,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.11 Probability of backtest overfitting (stretch, M)
 
-- [ ] Combinatorially symmetric cross-validation (Bailey, Borwein, López de Prado and Zhu, 2015) over a family's trial return matrix; report the PBO estimate.
+- [x] (done, `stockify/research/pbo.py`, on the family report as `pbo` / `pbo_note`; a walk-forward family gets a note, its windows share no days) Combinatorially symmetric cross-validation (Bailey, Borwein, López de Prado and Zhu, 2015) over a family's trial return matrix; report the PBO estimate.
 
 ## M6.12 Project write-up (S, optional)
 
