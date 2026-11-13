@@ -558,6 +558,73 @@ class FamilyDetailDTO(BaseModel):
     pbo_flat: list[str] = []
 
 
+# ── Parameter sweeps (WF 6.3) ────────────────────────────────────────────────
+
+class ResearchJobDTO(BaseModel):
+    job_id: str
+    kind: str
+    name: str | None = None
+    family_id: str | None = None
+    status: str
+    created_ns: int
+    finished_ns: int | None = None
+    error: str | None = None
+
+
+class SweepAxisDTO(BaseModel):
+    path: str
+    labels: list[str]
+    values: list[Any]
+
+
+class SweepRowDTO(BaseModel):
+    index: int
+    params: dict[str, Any]
+    run_id: str | None = None
+    status: str
+    objective_value: float | None = None
+    sharpe: float | None = None
+    net_pnl_paise: int | None = None
+    trades: int | None = None
+    max_drawdown: float | None = None
+    error: str | None = None
+
+
+class SweepBestCellDTO(BaseModel):
+    xi: int
+    yi: int
+    run_id: str
+    value: float
+
+
+# Plain data; the page feeds HeatGrid through an adapter (format kind -> formatter, best {xi, yi} -> {x, y}).
+class SweepHeatmapDTO(BaseModel):
+    x: str
+    y: str | None = None
+    xs: list[str]
+    ys: list[str]
+    x_values: list[Any]
+    y_values: list[Any]
+    cells: list[list[float | None]]
+    run_ids: list[list[str | None]]
+    best: SweepBestCellDTO | None = None
+    signed: bool
+    format: str
+    hidden_axes: list[str]
+
+
+class SweepDTO(BaseModel):
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    axes: list[SweepAxisDTO]
+    rows: list[SweepRowDTO]
+    best_run_id: str | None = None
+    cells: SweepHeatmapDTO
+    plain: str
+
+
 class CompareMetricDTO(BaseModel):
     key: str
     label: str
@@ -652,4 +719,52 @@ class GapPageDTO(BaseModel):
     offset: int
     limit: int
     gaps: list[GapDTO]
+
+
+# ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
+
+class WalkforwardSummaryDTO(BaseModel):
+    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive."""
+    windows: int
+    is_windows: int
+    oos_days: int
+    is_sharpe: float | None = None
+    oos_sharpe: float | None = None
+    ratio: float | None = None
+    chosen_modal_share: float | None = None
+    n_trials: int
+    var_sharpe: float | None = None
+    dsr: DsrDTO | None = None
+
+
+class WalkforwardWindowDTO(BaseModel):
+    """One window. `train` and `test` hold run_id, from, to, days, net_pnl_paise (int paise) and sharpe, or are
+    absent when that part did not run. Calendar-day dates, inclusive."""
+    index: int
+    train_from: str
+    train_to: str
+    test_from: str
+    test_to: str
+    chosen_params: dict[str, Any] | None = None
+    chosen_run_id: str | None = None
+    test_run_id: str | None = None
+    test_status: str
+    error: str | None = None
+    train: dict[str, Any] | None = None
+    test: dict[str, Any] | None = None
+
+
+class WalkforwardDTO(BaseModel):
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    train: int
+    test: int
+    step: int
+    summary: WalkforwardSummaryDTO
+    windows: list[WalkforwardWindowDTO]
+    stitched_dates: list[str]
+    stitched_index: list[float]
+    plain: dict[str, str]
 # </block>
