@@ -22,7 +22,8 @@ const bar = (t: number, d: string, close = "2418.40") => ({
   t, d, open: "2400.00", high: "2420.50", low: "2399.95", close, volume: 1200,
 });
 const fill = (over: Record<string, unknown>) => ({
-  kind: "fill", t: 1_762_913_100, bar_t: 1_762_913_100, side: "BUY", qty: 50, price: "2418.40", price_paise: 241840,
+  id: `f${(over.fill_id as number | undefined) ?? 11}`, kind: "fill", t: 1_762_913_100, bar_t: 1_762_913_100,
+  bar_d: "2025-11-12", side: "BUY", qty: 50, price: "2418.40", price_paise: 241840, fsp_paise: null,
   order_id: 7, fill_id: 11, note: "", tag: "", tag_is_code: false, charges_paise: null, trade_pnl_paise: null,
   chunks: [], ...over,
 });
@@ -58,9 +59,9 @@ out.mergedEmpty = chart.mergePages([], [bar(5, "d")]).length;
 out.rangeAround = chart.rangeAround(1_762_913_100, 60, 100);
 out.rangeNearZero = chart.rangeAround(1_000, 60, 100);
 
-// Two settlements at the same instant and quantity (two legs of one expiry) must not share an id.
-const sx = fill({ kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 });
-out.settlementIds = [chart.toMarker(sx, false, TOKENS, 0).id, chart.toMarker(sx, false, TOKENS, 1).id];
+// The chart marker carries the DTO's id as is (a settlement's id is opaque), so two legs of one expiry stay apart.
+const sx = (id: string) => fill({ id, kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 });
+out.settlementIds = [chart.toMarker(sx("x1-75-0"), false, TOKENS).id, chart.toMarker(sx("x1-75-1"), false, TOKENS).id];
 
 // Seeded generated properties (a fixed-seed PRNG, no package). Each list holds the violations found; empty is a pass.
 function rng(seed: number): () => number {
@@ -115,7 +116,7 @@ for (let i = 0; i < 300; i++) {
   const note = text();
   const kind = rand() < 0.3 ? "settlement" : "fill";
   const side = rand() < 0.5 ? "BUY" : "SELL";
-  const m = chart.toMarker(fill({ note, kind, qty: int(1, 100000), side }), rand() < 0.5, TOKENS, i);
+  const m = chart.toMarker(fill({ note, kind, qty: int(1, 100000), side }), rand() < 0.5, TOKENS);
   if (!/^[BSX] \d+$/.test(m.text)) noteText.push(`${JSON.stringify(note)} -> ${m.text}`);
   if ((kind === "settlement") !== (m.shape === "square")) noteText.push(`${kind} has shape ${m.shape}`);
 }
@@ -123,7 +124,7 @@ out.propMarkerText = noteText;
 
 // The view state of the component (CH 6.15): null is "not loaded yet", "error" is a failed load.
 const model = (over: Record<string, unknown>) => ({
-  instruments: [{ id: 1, symbol: "RELIANCE" }], instrument_id: 1, basis: "adjusted", interval_s: 60,
+  instruments: [{ id: 1, symbol: "RELIANCE", kind: "equity" }], instrument_id: 1, basis: "adjusted", interval_s: 60,
   bars: [bar(60, "d")], markers: [fill({})], plots: [], truncated: false, next_from_ns: null, data_state: "ok",
   omitted_markers: 0, plain: "", ...over,
 });
@@ -141,13 +142,13 @@ out.viewState = {
 // Every marker has a list row, with the id the chart marker carries, in the same order.
 const listed = [
   fill({ fill_id: 1, note: "one" }), fill({ fill_id: 2, side: "SELL" }),
-  fill({ kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 }),
-  fill({ kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 }),
+  fill({ id: "x1-75-0", kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 }),
+  fill({ id: "x1-75-1", kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 }),
 ];
-out.listRows = chart.markerRows(listed, false, TOKENS);
-out.listIds = listed.map((m: unknown, i: number) => chart.toMarker(m, false, TOKENS, i).id);
-out.listDaily = chart.markerRows([fill({ bar_t: 1_762_913_100 })], true, TOKENS)[0].when;
-out.listEmpty = chart.markerRows([], false, TOKENS);
+out.listRows = chart.markerRows(listed, false);
+out.listIds = listed.map((m: unknown, i: number) => chart.toMarker(m, false, TOKENS).id);
+out.listDaily = chart.markerRows([fill({ bar_t: 1_762_913_100 })], true)[0].when;
+out.listEmpty = chart.markerRows([], false);
 
 // A plot point shifts like a candle; a daily chart uses the IST date.
 out.plotIntraday = chart.toPlotPoint({ t: 1_762_913_100, value: "2412.50" }, false);
@@ -179,7 +180,7 @@ out.cardSettleOption = chart.cardModel(settle, "option");
 out.cardSettleFuture = chart.cardModel(settle, "future");
 out.cardSettleUnknown = chart.cardModel(settle);
 out.cardFillWithFsp = chart.cardModel(fill({ fsp_paise: null }), "option");
-out.kinds = ["NIFTY25NOV24500CE", "NIFTY25NOV24500PE", "NIFTY25NOVFUT", "RELIANCE"].map(chart.settlementKindOf);
+out.kinds = ["option", "future", "equity", "index", null].map(chart.contractOf);
 
 // Fix round 1: the card lists each chunk a closing fill closed; the canvas has a text summary; a pruned chart
 // still gets an axis; hover shows the same title and reason as the card.
@@ -203,5 +204,17 @@ out.axisHuge = chart.axisTimes([fill({ bar_t: 0 }), fill({ bar_t: 60 * 100_000 }
 out.tip = chart.tipModel([fill({ note: "Range broke up", side: "BUY" })], "future");
 out.tipMore = chart.tipModel([fill({ note: "one" }), fill({ fill_id: 2, note: "two" }), fill({ fill_id: 3 })], "future");
 out.tipNone = chart.tipModel([], "future");
+
+// The run page's Why column: one row per fill, in the fills' order, the note from the chart marker with the same fill_id.
+const fl = (fill_id: number) => ({ fill_id, order_id: fill_id, t_ns: 1, t_ist: "x", instrument_id: 1, side: "BUY", qty: 1, price_paise: 100 });
+const mk = (fill_id: number | null, note: string, tag = "", tag_is_code = false, id = `f${fill_id}`) =>
+  fill({ id, fill_id, note, tag, tag_is_code });
+out.join = chart.joinFillsAndMarkers(
+  [fl(1), fl(2), fl(3), fl(4)],
+  [mk(2, "Range broke up"), mk(3, "", "orb_exit", true), mk(null, "Settled", "", false, "x9-1-0")],
+);
+out.joinNone = chart.joinFillsAndMarkers([fl(5)], []);
+out.joinEmpty = chart.joinFillsAndMarkers([], [mk(1, "n")]);
+out.joinOrder = chart.joinFillsAndMarkers([fl(9), fl(3)], [mk(3, "c"), mk(9, "n")]).map((r: { fill: { fill_id: number } }) => r.fill.fill_id);
 
 process.stdout.write(JSON.stringify(out));

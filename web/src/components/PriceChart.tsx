@@ -40,7 +40,8 @@ import {
   markerRows,
   mergePages,
   rangeAround,
-  settlementKindOf,
+  contractOf,
+  DEFAULT_INTERVAL_S,
   shadeWindows,
   toCandle,
   toMarker,
@@ -67,6 +68,8 @@ export type PriceChartProps = {
   windows?: ChartWindow[];
   focusMarkerId?: string;
   onMarkerClick?: (id: string) => void;
+  /** The title's heading level: 3 under a page section's h2 (the default), 2 when the chart is a section of its own. */
+  headingLevel?: 2 | 3;
 };
 
 const PAGE_BARS = 2000;
@@ -79,7 +82,6 @@ const LINE_DASH = [0, 2, 1, 3] as const; // the library's LineStyle: solid, dash
 const DASH_CSS = ["solid", "dashed", "dotted", "dashed"] as const;
 const lineToken = (i: number) => LINE_TOKENS[i % LINE_TOKENS.length];
 const lineDash = (i: number) => Math.floor(i / LINE_TOKENS.length) % LINE_DASH.length;
-const NO_TOKENS = { up: "", down: "", warn: "" };
 const PRICE = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 let scratch: CanvasRenderingContext2D | null | undefined;
@@ -96,7 +98,7 @@ function readColour(name: string, alpha = 1): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-const markerKey = (m: ChartMarker) => `${m.kind}|${m.fill_id}|${m.t}|${m.qty}|${m.side}`;
+const markerKey = (m: ChartMarker) => m.id;
 function mergeMarkers(have: ChartMarker[], page: ChartMarker[]): ChartMarker[] {
   const seen = new Set(have.map(markerKey));
   const add = page.filter((m) => !seen.has(markerKey(m)));
@@ -110,7 +112,8 @@ function visibleSeconds(t: Time): number {
   return Date.UTC(t.year, t.month - 1, t.day) / 1000 - istShift;
 }
 
-export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick }: PriceChartProps) {
+export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3 }: PriceChartProps) {
+  const Heading = headingLevel === 2 ? "h2" : "h3";
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -143,14 +146,15 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const [tip, setTip] = useState<{ title: string; reason: string; more: number; x: number; y: number } | null>(null);
 
   const meta = model !== null && model !== "error" ? model : null;
-  const daily = meta ? isDaily(meta.interval_s) : false;
+  const daily = meta ? isDaily(meta.interval_s ?? DEFAULT_INTERVAL_S) : false;
   const ctrl = meta ?? lastMeta; // the pickers stay mounted while a reload is under way
   const state = busy ? "loading" : chartViewState(model);
-  const symbol = meta?.instruments.find((i) => i.id === meta.instrument_id)?.symbol ?? "";
-  const contract = settlementKindOf(symbol);
+  const picked = meta?.instruments.find((i) => i.id === meta.instrument_id);
+  const symbol = picked?.symbol ?? "";
+  const contract = contractOf(picked?.kind);
 
   // The latest values for handlers the library holds; set after render, read only from events and timers.
-  const live = useRef({ load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract: "future" as "option" | "future" });
+  const live = useRef({ load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract: undefined as "option" | "future" | undefined });
   useEffect(() => {
     live.current = { load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract };
   });
@@ -291,7 +295,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       const reqs = edgeRequests(
         { from: visibleSeconds(range.from), to: visibleSeconds(range.to) },
         held,
-        m.interval_s,
+        m.interval_s ?? DEFAULT_INTERVAL_S,
         PAGE_BARS,
       ).filter((r) => !exhausted.current[r.side] && !(poll && r.side === "after"));
       if (reqs.length === 0) return;
@@ -372,7 +376,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     );
 
     const tokens = { up: readColour("--color-up"), down: readColour("--color-down"), warn: readColour("--color-warn") };
-    const points = markers.map((m, i) => toMarker(m, daily, tokens, i));
+    const points = markers.map((m) => toMarker(m, daily, tokens));
     const byTime = new Map<string, ChartMarker[]>();
     points.forEach((pt, i) => byTime.set(String(pt.time), [...(byTime.get(String(pt.time)) ?? []), markers[i]]));
     byTimeRef.current = byTime;
@@ -381,7 +385,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     const axis = axisRef.current;
     if (bars.length === 0 && axis) {
       // No price data (a pruned run, a day with no recording): the markers go on an empty, flat time axis.
-      axis.setData(axisTimes(markers, meta.interval_s, daily).map((time) => ({ time, value: 0 })) as unknown as LineData[]);
+      axis.setData(axisTimes(markers, meta.interval_s ?? DEFAULT_INTERVAL_S, daily).map((time) => ({ time, value: 0 })) as unknown as LineData[]);
       axisMarkersRef.current?.setMarkers(drawn);
       markersRef.current?.setMarkers([]);
     } else {
@@ -425,12 +429,16 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         chart.timeScale().setVisibleLogicalRange({ from: i - NEAR_BARS / 2, to: i + NEAR_BARS / 2 });
       } else {
         chart.timeScale().fitContent();
+        // The box may still be laying out (it was hidden until the data came): fit again once it has its width.
+        requestAnimationFrame(() => {
+          if (alive.current && chartRef.current === chart) chart.timeScale().fitContent();
+        });
       }
     }
   }, [bars, markers, meta, daily, showVolume, windows, themeTick]);
 
   // --- scroll to a marker when it is picked from the list or from outside ---------------------------------------
-  const rows = useMemo(() => markerRows(markers, daily, NO_TOKENS), [markers, daily]);
+  const rows = useMemo(() => markerRows(markers, daily), [markers, daily]);
   useEffect(() => {
     if (revealTick === 0 || selected === null) return;
     const chart = chartRef.current;
@@ -496,7 +504,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   return (
     <section className="stk-pricechart" aria-label={`${title}: price chart`}>
       <header className="stk-pricechart-head">
-        <h3>{title}</h3>
+        <Heading>{title}</Heading>
         {paperBadge && <span className="stk-chip" data-tone="warn">Paper trading: no real orders</span>}
         {ctrl && (
           <div className="stk-pricechart-controls">
@@ -542,7 +550,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       </header>
       {meta && (
         <p className="stk-label">
-          {intervalWords(meta.interval_s)} bars
+          {intervalWords(meta.interval_s ?? DEFAULT_INTERVAL_S)} bars
           {meta.basis ? `, ${meta.basis} prices` : ""}
           {meta.live ? ", live" : ""}
           {meta.plain ? `. ${meta.plain}` : ""}

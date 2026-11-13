@@ -183,7 +183,19 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(line(fut, "Value at expiry"), [])
         self.assertEqual(line(unk, "Settlement price"), ["₹112.00"])
         self.assertEqual(line(self.r["cardFillWithFsp"], "Price"), ["₹2,418.40"])
-        self.assertEqual(self.r["kinds"], ["option", "option", "future", "future"])
+        self.assertEqual(self.r["kinds"], ["option", "future", None, None, None])
+
+    def test_marker_row_join_keeps_one_row_per_fill_with_the_note_when_there_is_one(self):
+        rows = self.r["join"]
+        self.assertEqual([r["fill"]["fill_id"] for r in rows], [1, 2, 3, 4])
+        self.assertEqual([r["markerId"] for r in rows], [None, "f2", "f3", None])
+        self.assertIsNone(rows[0]["why"])
+        self.assertEqual(rows[1]["why"], {"text": "Range broke up", "code": False})
+        # no note: the tag, shown as a code label when the API says it is one
+        self.assertEqual(rows[2]["why"], {"text": "orb_exit", "code": True})
+        self.assertEqual(self.r["joinNone"][0]["markerId"], None)
+        self.assertEqual(self.r["joinEmpty"], [])
+        self.assertEqual(self.r["joinOrder"], [9, 3])
 
     def test_card_lists_each_closed_chunk_with_its_profit_or_loss(self):
         rows = self.r["cardChunks"]["chunks"]

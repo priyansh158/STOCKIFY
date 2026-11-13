@@ -5,44 +5,13 @@
  * it as text (React escapes it), never as markup.
  */
 import { rupees } from "./format";
+import type { ChartBarDTO, ChartInstrumentDTO, ChartChunkDTO, ChartMarkerDTO, RunChartDTO, TestFill } from "./types";
 
-// ---------------------------------------------------------------------------------------------------------
-// Chart types. They follow the DTO shapes in task C11 (RunChartDTO, MarkerDTO). C11 owns web/src/lib/types.ts
-// and its blockwatch tie to server/schemas.py: its entries replace these at integration.
-// Guessed where C11's brief is silent: `side` is the oracle's "BUY" | "SELL" (matched case-insensitively here),
-// `qty` is a number, `volume` is a number, and `chunks` has the C10 model's keys.
-// ---------------------------------------------------------------------------------------------------------
-export type ChartBar = {
-  t: number; // UTC seconds
-  d: string; // IST date, YYYY-MM-DD (daily bars use it)
-  open: string; // rupee decimal strings
-  high: string;
-  low: string;
-  close: string;
-  volume: number;
-};
-
-export type ChartMarkerChunk = { qty: number; open_price_paise: number; pnl_paise: number };
-
-export type ChartMarker = {
-  kind: "fill" | "settlement";
-  t: number;
-  bar_t: number;
-  side: string;
-  qty: number;
-  price: string;
-  price_paise: number;
-  /** A settlement's exchange settlement price (the underlying's, for an option); null or absent otherwise. */
-  fsp_paise?: number | null;
-  order_id: number | null;
-  fill_id: number | null;
-  note: string;
-  tag: string;
-  tag_is_code: boolean;
-  charges_paise: number | null;
-  trade_pnl_paise: number | null;
-  chunks: ChartMarkerChunk[];
-};
+// The wire shapes are C11's DTOs in ./types (times UTC seconds, prices rupee strings, paise as integers).
+export type ChartInstrumentKind = ChartInstrumentDTO["kind"];
+export type ChartBar = ChartBarDTO;
+export type ChartMarkerChunk = ChartChunkDTO;
+export type ChartMarker = ChartMarkerDTO;
 
 /** Colour values (resolved from the CSS tokens by the caller; the library cannot read `var(...)`). */
 export type MarkerTokens = { up: string; down: string; warn: string };
@@ -92,15 +61,9 @@ export function toVolume(bar: ChartBar, daily: boolean): VolumePoint {
   return { time: timeOf(bar.t, bar.d, daily), value: bar.volume };
 }
 
-/**
- * The on-chart marker: side and quantity only (B 50, S 50, X 50); the note lives on the card. `index` is the marker's
- * position in the list being drawn; it keeps settlement ids unique when two settle at the same instant and quantity.
- */
-export function toMarker(m: ChartMarker, daily: boolean, tokens: MarkerTokens, index = 0): MarkerPoint {
-  const base = {
-    time: daily ? istDate(m.bar_t) : m.bar_t + istShift,
-    id: m.fill_id !== null ? `f${m.fill_id}` : `x${m.t}-${m.qty}-${index}`,
-  };
+/** The on-chart marker: side and quantity only (B 50, S 50, X 50); the note lives on the card. The id is the API's, opaque. */
+export function toMarker(m: ChartMarker, daily: boolean, tokens: MarkerTokens): MarkerPoint {
+  const base = { time: daily ? m.bar_d : m.bar_t + istShift, id: m.id };
   if (m.kind === "settlement") {
     return { ...base, position: "inBar", shape: "square", color: tokens.warn, text: `X ${m.qty}` };
   }
@@ -118,9 +81,9 @@ function signedRupees(paise: number): string {
   return paise > 0 ? `+${rupees(paise)}` : rupees(paise);
 }
 
-/** An option's symbol ends in a strike then CE or PE; anything else settled here is a future. */
-export function settlementKindOf(symbol: string): "option" | "future" {
-  return /\d(CE|PE)$/.test(symbol) ? "option" : "future";
+/** What a settlement's price is called depends on the instrument's kind from the API; other kinds have no special label. */
+export function contractOf(kind: ChartInstrumentKind | undefined): "option" | "future" | undefined {
+  return kind === "option" || kind === "future" ? kind : undefined;
 }
 
 /** What the card beside a marker shows. All values are plain text. */
@@ -186,33 +149,16 @@ export function rangeAround(tSec: number, interval_s: number, bars: number): { f
 // for missing prices ("pruned" for a pruned run, "no_pack" for a session day without a recording); `plain` is a
 // short plain-words line about the chart, shown as is. Session and walk-forward fields are optional.
 // ---------------------------------------------------------------------------------------------------------
-export type ChartPlotPoint = { t: number; value: string };
-export type ChartPlot = { name: string; kind: "price" | "level"; instrument_id: number | null; points: ChartPlotPoint[] };
+export type ChartPlot = RunChartDTO["plots"][number];
 export type ChartWindow = { from_ns: number; to_ns: number; label: string };
 
-export type ChartModel = {
-  instruments: { id: number; symbol: string }[];
-  instrument_id: number | null;
-  basis: string;
-  interval_s: number;
-  bars: ChartBar[];
-  markers: ChartMarker[];
-  plots: ChartPlot[];
-  truncated: boolean;
-  next_from_ns: number | null;
-  data_state: string;
-  omitted_markers: number;
-  plain?: string;
-  /** A plain sentence to show above the chart (a different interval, an unpriced settlement, delivery); null when none. */
-  notice?: string | null;
-  /** False when some profit is not on the markers (delivery, an unpriced settlement). */
-  pnl_complete?: boolean;
-  // sessions (C13)
+/** A run's chart as the API sends it, plus the session and walk-forward fields (C12, C13) that a run does not have. */
+export type ChartModel = RunChartDTO & {
+  /** Present on a live session. */
+  live?: boolean;
   trade_date?: string;
   days?: string[];
   paper?: boolean;
-  live?: boolean;
-  // walk-forward (C12)
   windows?: { index: number; from_ns: number; to_ns: number; run_id: string | null; status: string }[];
 };
 
@@ -226,6 +172,9 @@ export function chartViewState(model: ChartModel | null | "error"): ChartViewSta
   return model.markers.length === 0 ? "empty" : "full";
 }
 
+/** The interval the API leaves null when there are no bars (no recording); a minute, the runner's default. */
+export const DEFAULT_INTERVAL_S = 60;
+
 /** A daily chart uses dates, not instants. */
 export const isDaily = (interval_s: number): boolean => interval_s >= 86400;
 
@@ -237,15 +186,15 @@ function istStamp(t: number, daily: boolean): string {
 export type MarkerRow = { id: string; when: string; title: string; reason: string };
 
 /** One row per marker, the same ids and order as the chart's markers, for the keyboard-reachable list. */
-export function markerRows(markers: ChartMarker[], daily: boolean, tokens: MarkerTokens): MarkerRow[] {
-  return markers.map((m, i) => {
+export function markerRows(markers: ChartMarker[], daily: boolean): MarkerRow[] {
+  return markers.map((m) => {
     const card = cardModel(m);
-    return { id: toMarker(m, daily, tokens, i).id, when: istStamp(m.t, daily), title: card.title, reason: card.reason };
+    return { id: m.id, when: istStamp(m.t, daily), title: card.title, reason: card.reason };
   });
 }
 
 /** A plot point on the chart's time rule; the value arrives as a decimal string. */
-export function toPlotPoint(p: ChartPlotPoint, daily: boolean): { time: ChartTime; value: number } {
+export function toPlotPoint(p: ChartPlot["points"][number], daily: boolean): { time: ChartTime; value: number } {
   return { time: daily ? istDate(p.t) : p.t + istShift, value: Number(p.value) };
 }
 
@@ -315,7 +264,7 @@ export function chartSummary(model: ChartModel, symbol: string): string {
   const m = model.markers.length;
   const trades = m === 0 ? "" : `${m} trade${m === 1 ? "" : "s"}`;
   if (n === 0) return `${head} with no price data${m ? "; the trades are listed below." : "."}`;
-  const bars = `${n} ${intervalWords(model.interval_s)} bar${n === 1 ? "" : "s"}`;
+  const bars = `${n} ${intervalWords(model.interval_s ?? DEFAULT_INTERVAL_S)} bar${n === 1 ? "" : "s"}`;
   return m === 0 ? `${head}, ${bars}, no trades.` : `${head}, ${bars}, ${trades}; the trades are listed below.`;
 }
 
@@ -342,4 +291,27 @@ export function tipModel(ms: ChartMarker[], contract?: "option" | "future"): { t
   if (ms.length === 0) return null;
   const c = cardModel(ms[0], contract);
   return { title: c.title, reason: c.reason, more: ms.length - 1 };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The run page's Fills table and the chart tell one story (CH 6.16).
+// ---------------------------------------------------------------------------------------------------------
+export type JoinedFill = {
+  fill: TestFill;
+  /** The chart marker for this fill, for the row click and the highlight; null when the chart has none (yet). */
+  markerId: string | null;
+  /** The note, else the strategy's tag (a code label when the API says it is one); null when there is neither. */
+  why: { text: string; code: boolean } | null;
+};
+
+/** One row per fill, in the fills' order, joined to the chart's markers by `fill_id`. */
+export function joinFillsAndMarkers(fills: TestFill[], markers: ChartMarker[]): JoinedFill[] {
+  const byFill = new Map<number, ChartMarker>();
+  for (const m of markers) if (m.fill_id !== null) byFill.set(m.fill_id, m);
+  return fills.map((fill) => {
+    const m = byFill.get(fill.fill_id);
+    if (!m) return { fill, markerId: null, why: null };
+    const why = m.note !== "" ? { text: m.note, code: false } : m.tag !== "" ? { text: m.tag, code: m.tag_is_code } : null;
+    return { fill, markerId: m.id, why };
+  });
 }
