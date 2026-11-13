@@ -230,6 +230,28 @@ class SweepApiTests(SandboxedDBTest):
         from server.main import app
         self.client = TestClient(app, base_url=support.API_BASE_URL)
 
+    def test_the_jobs_list_carries_a_plain_reason_never_the_raw_error(self):
+        b = chr(92)
+        raw = {"sweep-v": "ValueError: bad window", "sens-p": "boom at C:" + b + "secret" + b + "path",
+               "wf-h": "HoldoutLocked: the span C:/x/y crosses the holdout", "wf-r": "WalkforwardRunError: 1 for 2",
+               "wf-k": "KeyError: 'secret-key'"}
+        for i, (jid, err) in enumerate(raw.items()):
+            kind = "walkforward" if jid.startswith("wf") else "sweep"
+            add_sweep_job(None, jid, kind=kind, status="failed", created_ns=i + 1)
+            store.update_research_job(jid, error=err)
+        add_sweep_job(None, "wf-new", kind="walkforward", status="failed", created_ns=9)
+        store.update_research_job("wf-new", error="ValueError: bad window",
+                                  state_json=json.dumps({"windows": [], "failure_reason": "the holdout is locked"}))
+        add_sweep_job(None, "wf-ok", kind="walkforward", status="running", created_ns=10)
+        r = self.client.get("/api/research/jobs")
+        for needle in ("bad window", "ValueError", "secret", "KeyError", "crosses the holdout", "1 for 2"):
+            self.assertNotIn(needle, r.text, needle)
+        got = {j["job_id"]: j["error"] for j in r.json()}
+        self.assertEqual(got, {
+            "sweep-v": "Failed", "sens-p": "Failed", "wf-h": "the holdout is locked",
+            "wf-r": "the run pool returned the wrong number of results", "wf-k": "Failed",
+            "wf-new": "the holdout is locked", "wf-ok": None})
+
     def test_jobs_list_filters_by_kind(self):
         add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
         add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)

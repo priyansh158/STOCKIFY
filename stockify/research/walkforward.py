@@ -65,6 +65,25 @@ def failure_reason(job: dict) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
+def plain_error(job: dict) -> str | None:
+    """What a job list may say about a job's failure, for any kind of research job (sweep, sensitivity, walk-forward):
+    the stored plain reason; else, for an older row, the table's line for the error class its raw text starts with
+    (`ClassName: ...`); else "Failed" when there is an error at all; None when there is none. The raw text is never
+    returned."""
+    stored = failure_reason(job)
+    if stored:
+        return stored
+    raw = job.get("error")
+    if not raw:
+        return None
+    m = re.match(r"([A-Za-z_][A-Za-z0-9_]*):", str(raw))
+    if m:
+        for cls, text in _PLAIN_FAILURES:
+            if cls.__name__ == m.group(1):
+                return text
+    return "Failed"
+
+
 def _mark_failed(job_id: str, e: BaseException) -> None:
     """Mark a job failed: raw text in the `error` column and the log, the plain reason in the state beside the windows."""
     raw = f"{type(e).__name__}: {e}"

@@ -89,7 +89,9 @@ _KIND = r"^[a-z0-9_]{1,32}$"
 def list_jobs(kind: str | None = Query(None, pattern=_KIND), offset: int = Query(0, ge=0, le=1_000_000),
               limit: int = Query(50, ge=1, le=500)) -> list[ResearchJobDTO]:
     from stockify import store
-    return [ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields})
+    from stockify.research import walkforward
+    return [ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields}
+                           | {"error": walkforward.plain_error(j)})          # a plain reason, never the raw error
             for j in store.list_research_jobs(kind, offset, limit)]
 
 
