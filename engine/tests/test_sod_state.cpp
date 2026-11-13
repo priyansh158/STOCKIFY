@@ -110,7 +110,7 @@ TEST_CASE("an order's note round-trips through the state; a state without the ke
     const Json st = Json::parse(read_text(kFixtures + "day0_state.json"));
     REQUIRE(!st.at("final_orders").empty());
     REQUIRE(st.at("final_orders").at(0).contains("note"));
-    const std::string hostile = "say \"hi\", then\xE2\x80\xA8 \xC3\xA9 \xF0\x9F\x98\x80";
+    const std::string hostile = "say \"hi\", then  \xC3\xA9 \xF0\x9F\x98\x80";  // CH 6.22: already clean (a U+2028 loads as a space)
 
     SUBCASE("a note is written back byte for byte") {
         Json with = st;

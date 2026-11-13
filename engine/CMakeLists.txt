@@ -138,7 +138,8 @@ add_executable(stocksim_tests
   tests/test_span_exact.cpp
   tests/test_margin_live.cpp
   tests/test_matcher_extra_ticks.cpp
-  tests/test_notes.cpp)
+  tests/test_notes.cpp
+  tests/test_strategy_state.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_strategies stocksim_core)
 target_compile_definitions(stocksim_tests PRIVATE STOCKSIM_FIXTURES_DIR="${REPO_ROOT}/tests/fixtures")
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
