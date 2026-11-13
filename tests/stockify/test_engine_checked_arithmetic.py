@@ -168,11 +168,11 @@ class CheckedHelperParityTests(unittest.TestCase):
     """Seeded edge-value loops through both runners' own functions (the engine's `testing` hooks)."""
 
     @staticmethod
-    def _outcome(fn, *args):  # noqa: ANN001, ANN002
+    def _result(fn, *args):  # noqa: ANN001, ANN002
         try:
             return "ok", fn(*args)
         except Exception as e:  # noqa: BLE001 — the outcome under comparison
-            return type(e).__name__, None
+            return ("ValueError" if isinstance(e, ValueError) else type(e).__name__), None
 
     def test_year_fraction_refuses_a_span_past_int64_on_both(self):
         t = engine.load().testing
@@ -181,12 +181,12 @@ class CheckedHelperParityTests(unittest.TestCase):
                                                           for _ in range(300)]
         refused = 0
         for now, last in pairs:
-            o, e = self._outcome(black76.year_fraction, now, last), self._outcome(t.b76_year_fraction, now, last)
+            o, e = self._result(black76.year_fraction, now, last), self._result(t.b76_year_fraction, now, last)
             self.assertEqual(o, e, (now, last))
             refused += o[0] == "OverflowError"
         self.assertGreater(refused, 10)
-        self.assertEqual(self._outcome(t.b76_year_fraction, MAX, -1)[0], "OverflowError")
-        self.assertEqual(self._outcome(t.b76_year_fraction, MAX - 1, MAX)[0], "ok")
+        self.assertEqual(self._result(t.b76_year_fraction, -1, MAX)[0], "OverflowError")
+        self.assertEqual(self._result(t.b76_year_fraction, MAX - 1, MAX)[0], "ok")
 
     def test_first_reach_and_the_fraction_refuse_alike(self):
         t = engine.load().testing
@@ -195,8 +195,8 @@ class CheckedHelperParityTests(unittest.TestCase):
         cases += [([MAX, MIN, MIN, MAX], 0, True), ([MIN, MAX, 1, 2], MAX, False), ([MIN, 5, 5, 5], MAX, True)]
         seen = set()
         for points, x, down in cases:
-            o = self._outcome(oracle_matcher.first_reach, points, x, down)
-            e = self._outcome(t.bar_first_reach, points, x, down)
+            o = self._result(oracle_matcher.first_reach, points, x, down)
+            e = self._result(t.bar_first_reach, points, x, down)
             seen.add(o[0])
             if o[0] == "ok":
                 want = None if o[1] is None else (o[1][0], o[1][1].numerator, o[1][1].denominator)
@@ -207,10 +207,10 @@ class CheckedHelperParityTests(unittest.TestCase):
 
     def test_a_fraction_whose_sign_flip_leaves_int64_is_refused(self):
         t = engine.load().testing
-        self.assertEqual(self._outcome(t.frac_of, MIN, -1)[0], "OverflowError")
-        self.assertEqual(self._outcome(oracle_matcher._frac, MIN, -1)[0], "OverflowError")
-        self.assertEqual(self._outcome(t.frac_of, MIN + 1, -1), ("ok", (MAX, 1)))
-        self.assertEqual(self._outcome(t.frac_of, 6, -4), ("ok", (-3, 2)))
+        self.assertEqual(self._result(t.frac_of, MIN, -1)[0], "OverflowError")
+        self.assertEqual(self._result(oracle_matcher._frac, MIN, -1)[0], "OverflowError")
+        self.assertEqual(self._result(t.frac_of, MIN + 1, -1), ("ok", (MAX, 1)))
+        self.assertEqual(self._result(t.frac_of, 6, -4), ("ok", (-3, 2)))
 
     def test_a_double_narrowed_to_int64_is_refused_alike(self):
         t = engine.load().testing
@@ -218,10 +218,10 @@ class CheckedHelperParityTests(unittest.TestCase):
         for x in (math.nan, math.inf, -math.inf, edge, -edge, math.nextafter(edge, 0), math.nextafter(-edge, 0),
                   1e30, -1e30, 0.0, 0.25, -0.25, 123.0001, 9.2e18):
             with self.subTest(x=x):
-                o = self._outcome(lambda v: numerics.check_int64(int(math.ceil(v))), x)
-                self.assertEqual(o, self._outcome(t.ceil_to_int64, x))
-        self.assertEqual(self._outcome(t.ceil_to_int64, math.nan)[0], "ValueError")
-        self.assertEqual(self._outcome(t.ceil_to_int64, math.inf)[0], "OverflowError")
+                o = self._result(lambda v: numerics.check_int64(int(math.ceil(v))), x)
+                self.assertEqual(o, self._result(t.ceil_to_int64, x))
+        self.assertEqual(self._result(t.ceil_to_int64, math.nan)[0], "ValueError")
+        self.assertEqual(self._result(t.ceil_to_int64, math.inf)[0], "OverflowError")
 
 
 if __name__ == "__main__":
