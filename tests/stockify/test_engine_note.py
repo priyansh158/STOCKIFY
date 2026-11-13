@@ -21,7 +21,7 @@ from stockify.oracle import run_bundle as oracle_run
 from stockify.oracle.notes import clean_note
 from stockify.oracle.runner import load_records
 from stockify.strategy import Strategy
-from tests.stockify.test_engine_parity import _cases, assert_same_artifacts
+from tests.stockify.test_engine_parity import _cases, _tick_world, assert_same_artifacts
 from tests.stockify.test_engine_sod_state import engine_day_by_day, engine_run, split_pack
 from tests.stockify.test_engine_strategies import _materialise, daily_world
 from tests.stockify.test_sod_state import _run as oracle_day_run, day_bundles, run_day_by_day, slice_records
@@ -107,32 +107,61 @@ class NoteParityTests(unittest.TestCase):
         header, rows = _rows(e / "orders.csv")
         self.assertEqual(header[-1], "note")
         self.assertTrue(any(r[1] != "0" and r[-1] for r in rows), "a slice child carries its parent's note")
-        self.assertTrue(any(r[11] == "AUTO_SQOFF" and r[-1] for r in rows), "AUTO_SQOFF takes the system note")
         self.assertTrue(any(r[14] == "REJECTED" and r[-1] for r in rows))
 
+    def golden_pair(self, name, system_notes):  # noqa: ANN001, ANN202
+        g = dict(_cases())[name]
+        tmp = tempfile.TemporaryDirectory(prefix="engine-note-g-")
+        self.addCleanup(tmp.cleanup)
+        folder = Path(tmp.name)
+        pack = golden.build_pack(g, folder)
+        b = golden.build_bundle(g)
+        if not system_notes:
+            b.pop("system_notes", None)
+        oracle_run(b, [pack], folder / "oracle", report=False)
+        engine.run_bundle(b, [pack], folder / "engine", report=False)
+        assert_same_artifacts(self, folder / "oracle", folder / "engine")
+        return [r for r in _rows(folder / "engine" / "orders.csv")[1] if r[11] == "AUTO_SQOFF"]
+
+    def test_auto_sqoff_takes_the_bundles_system_note(self):
+        for name in ("G04", "G21"):
+            with self.subTest(golden=name):
+                sq = self.golden_pair(name, True)
+                self.assertTrue(sq)
+                self.assertTrue(all(r[-1] == "Closed by the broker's 15:20 auto square-off" for r in sq), sq)
+
     def test_a_bundle_without_system_notes_gives_an_empty_auto_sqoff_note(self):
-        folder, pack, b = self.world(system_notes=False)
-        o, e = self.both(folder, pack, b, lambda: _Noter(["x"], sqoff=True))
-        assert_same_artifacts(self, o, e)
-        _, rows = _rows(e / "orders.csv")
-        sq = [r for r in rows if r[11] == "AUTO_SQOFF"]
-        self.assertTrue(sq)
-        self.assertTrue(all(r[-1] == "" for r in sq))
+        for name in ("G04", "G21"):
+            with self.subTest(golden=name):
+                sq = self.golden_pair(name, False)
+                self.assertTrue(sq)
+                self.assertTrue(all(r[-1] == "" for r in sq))
 
     def test_a_snapshot_run_agrees_too(self):
-        done = 0
-        for name, g in _cases():
-            if g.get("expect", {}).get("error") or "snapshot" not in json.dumps(g.get("run", {})):
-                continue
-            with self.subTest(golden=name), tempfile.TemporaryDirectory(prefix="engine-note-snap-") as tmp:
+        class Ticker(Strategy):
+            def __init__(self):
+                self.n = 0
+
+            def on_start(self, ctx):  # noqa: ANN001
+                self.iid = ctx.resolve("NSE:AAA")
+                ctx.subscribe_ticks(self.iid)
+
+            def on_tick(self, ctx, tick):  # noqa: ANN001
+                self.n += 1
+                if self.n % 5 == 0 and self.n < 200:
+                    ctx.place(self.iid, "BUY", 1, "CNC", "MARKET", note=HOSTILE[self.n // 5 % len(HOSTILE)])
+        for seed in (3302, 3303, 3304):
+            g = _tick_world(seed)
+            with self.subTest(seed=seed), tempfile.TemporaryDirectory(prefix="engine-note-snap-") as tmp:
                 folder = Path(tmp)
                 pack = golden.build_pack(g, folder)
                 b = golden.build_bundle(g)
-                oracle_run(b, [pack], folder / "oracle", report=False)
-                engine.run_bundle(b, [pack], folder / "engine", report=False)
+                self.assertNotEqual(b["run"]["fill_model"]["kind"], "bar")
+                oracle_run(b, [pack], folder / "oracle", strategy=Ticker(), report=False)
+                engine.run_bundle(b, [pack], folder / "engine", strategy=Ticker(), report=False)
                 assert_same_artifacts(self, folder / "oracle", folder / "engine")
-                done += 1
-        self.assertGreater(done, 0)
+                _, rows = _rows(folder / "engine" / "orders.csv")
+                self.assertGreater(sum(1 for r in rows if r[-1]), 1)
 
     def test_orders_csv_has_one_row_per_order_with_hostile_notes(self):
         rng = random.Random(1630)
