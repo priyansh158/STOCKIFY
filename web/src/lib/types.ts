@@ -623,4 +623,49 @@ export interface GapPageDTO {
   limit: number;
   gaps: GapDTO[];
 }
+
+// ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
+
+export interface WalkforwardSummaryDTO {
+  windows: number;
+  is_windows: number;
+  oos_days: number;
+  is_sharpe?: number | null;
+  oos_sharpe?: number | null;
+  ratio?: number | null;
+  chosen_modal_share?: number | null;
+  n_trials: number;
+  var_sharpe?: number | null;
+  dsr?: DsrDTO | null;
+}
+
+export interface WalkforwardWindowDTO {
+  index: number;
+  train_from: string;
+  train_to: string;
+  test_from: string;
+  test_to: string;
+  chosen_params?: Record<string, unknown> | null;
+  chosen_run_id?: string | null;
+  test_run_id?: string | null;
+  test_status: string;
+  error?: string | null;
+  train?: Record<string, unknown> | null;
+  test?: Record<string, unknown> | null;
+}
+
+export interface WalkforwardDTO {
+  job_id: string;
+  name: string;
+  family_id: string;
+  objective: string;
+  train: number;
+  test: number;
+  step: number;
+  summary: WalkforwardSummaryDTO;
+  windows: WalkforwardWindowDTO[];
+  stitched_dates: string[];
+  stitched_index: number[];
+  plain: Record<string, string>;
+}
 // </block>

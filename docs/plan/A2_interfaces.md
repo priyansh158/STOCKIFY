@@ -295,6 +295,7 @@ All money fields are integer paise; times are UTC ns plus an ISO IST string for 
 | `GET /api/tests/{id}/sensitivity` | The stored `sensitivity.json` (rows, verdict fragile / robust / inconclusive / already_losing, reasons) plus one plain sentence; read-only; 404 for an unknown run or "not run yet; run `python -m stockify sensitivity --run <id>`" (also for an unreadable file) | M6.7 / FW 6.4 |
 | `GET /api/research/families` | Trial families with N, best run and its DSR (`offset`/`limit`) | M6.4 |
 | `GET /api/research/families/{family_id}` | One family's tries, other runs, sessions, holdout unlocks (the id contains `/`; 404 unknown) | M6.4 |
+| `GET /api/research/walkforward/{job_id}` | A finished walk-forward job from its `walkforward.json`: summary (in-sample and out-of-sample Sharpe, ratio, deflated Sharpe with N), per-window settings and results, the stitched out-of-sample index, plain sentences (`WalkforwardDTO`); 404 for an unknown job or one of another kind, 409 for a job that is not finished or whose file is gone; read-only, no stored error text echoed. Window lengths are calendar days | M6.5 / WF 6.6 |
 | `POST /api/trade/sessions` | Create a paper session → `{session_id}` | M5.12 |
 | `GET /api/trade/sessions` | Sessions with status, today's P&L, coverage, parity | M5.12 |
 | `GET /api/trade/sessions/{id}` (+ `/positions`, `/orders`, `/fills`, `/timeline`, `/margin`) | Session detail | M5.12 |

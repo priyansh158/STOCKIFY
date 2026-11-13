@@ -186,5 +186,99 @@ class SensitivityApiTests(SandboxedDBTest):
             self.assertNotIn("Traceback", r.text)
 
 
+
+@support.requires_fastapi
+class WalkforwardApiTests(SandboxedDBTest):
+    """WF 6.6: GET /api/research/walkforward/{job_id}."""
+    db_modules = (store, refdata)
+
+    def setUp(self):
+        super().setUp()
+        from fastapi.testclient import TestClient
+        from server.main import app
+        from stockify.research import stats, walkforward as wf
+        from tests.stockify.research.test_walkforward_finish import JOB, build_job, two_windows
+        self.job = JOB
+        p = mock.patch.object(stats, "risk_free_rows", return_value=[])
+        p.start()
+        self.addCleanup(p.stop)
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
+        self.build_job, self.two_windows, self.wf = build_job, two_windows, wf
+
+    def finished(self):
+        self.build_job(self.two_windows())
+        self.wf.finish(self.job)
+
+    def test_api_walkforward_detail_and_404(self):
+        self.finished()
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual(r.status_code, 200)
+        j = r.json()
+        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "train", "test", "step", "summary",
+                                   "windows", "stitched_dates", "stitched_index", "plain"])
+        self.assertEqual((j["job_id"], j["train"], j["test"], j["step"], j["objective"]),
+                         (self.job, 120, 30, 30, "sharpe"))
+        self.assertEqual(j["family_id"], f"walkforward/{self.job}")
+        self.assertEqual(list(j["summary"]), ["windows", "is_windows", "oos_days", "is_sharpe", "oos_sharpe", "ratio",
+                                              "chosen_modal_share", "n_trials", "var_sharpe", "dsr"])
+        self.assertEqual((j["summary"]["windows"], j["summary"]["oos_days"], j["summary"]["n_trials"]), (2, 12, 4))
+        self.assertEqual(list(j["summary"]["dsr"]), ["sr", "t", "skew", "kurt", "n_trials", "var_sharpe", "sr0",
+                                                     "dsr", "psr"])
+        self.assertEqual(len(j["windows"]), 2)
+        self.assertEqual(list(j["windows"][0]), ["index", "train_from", "train_to", "test_from", "test_to",
+                                                 "chosen_params", "chosen_run_id", "test_run_id", "test_status",
+                                                 "error", "train", "test"])
+        self.assertIsInstance(j["windows"][0]["test"]["net_pnl_paise"], int)
+        self.assertEqual((len(j["stitched_dates"]), len(j["stitched_index"])), (12, 12))
+        self.assertEqual(sorted(j["plain"]), ["dsr", "holdout", "pbo", "ratio", "stability"])
+        self.assertIn("of the in-sample Sharpe out of sample", j["plain"]["ratio"])
+        self.assertIn("the windows cover different days", j["plain"]["pbo"])
+        # unknown, unsafe and other-kind jobs are 404
+        for bad in ("wf-nothing", "..%2F..%2Fx", "a%5Cb"):
+            self.assertEqual(self.client.get(f"/api/research/walkforward/{bad}").status_code, 404, bad)
+        self.assertEqual(self.client.get("/api/research/walkforward/").status_code, 404)
+        store.create_research_job({"job_id": "sw-9", "kind": "sweep", "name": "s", "status": "done", "created_ns": 1})
+        self.assertEqual(self.client.get("/api/research/walkforward/sw-9").status_code, 404)
+
+    def test_a_job_that_is_not_finished_is_409_and_says_nothing_of_its_error(self):
+        self.build_job(self.two_windows())                       # still running
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("not finished", r.json()["detail"])
+        store.update_research_job(self.job, status="failed", error="boom at C:\\secret\\path")
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual(r.status_code, 409)
+        self.assertNotIn("secret", r.text)
+
+    def test_a_done_job_whose_file_is_gone_is_409_not_500(self):
+        self.finished()
+        (paths.research_path(self.job) / "walkforward.json").unlink()
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual(r.status_code, 409)
+        self.assertNotIn("Traceback", r.text)
+
+    def test_a_window_error_with_a_path_is_not_echoed(self):
+        self.build_job(self.two_windows(w1=dict(test=None, chosen=0)))
+        state = json.loads(store.get_research_job(self.job)["state_json"])
+        state["windows"][1]["error"] = "crashed in C:\\Users\\x\\file.py"
+        store.update_research_job(self.job, state_json=json.dumps(state))
+        self.wf.finish(self.job)
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertIsNone(j["windows"][1]["error"])
+        self.assertEqual(j["windows"][1]["test_status"], "failed")
+        self.assertNotIn("Users", json.dumps(j))
+
+    def test_walkforward_route_is_not_shadowed_by_the_family_route(self):
+        self.finished()
+        fam = f"walkforward/{self.job}"
+        self.assertEqual(self.client.get(f"/api/research/families/{fam}").status_code, 200)     # the family path
+        self.assertEqual(self.client.get(f"/api/research/walkforward/{self.job}").json()["job_id"], self.job)
+
+    def test_non_loopback_host_refused(self):
+        self.finished()
+        r = self.client.get(f"/api/research/walkforward/{self.job}", headers={"Host": "evil.example"})
+        self.assertEqual(r.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

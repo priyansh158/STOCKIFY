@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
-                            RunResearchDTO, TrialRowDTO)
+                            RunResearchDTO, TrialRowDTO, WalkforwardDTO, WalkforwardSummaryDTO, WalkforwardWindowDTO)
 
 router = APIRouter(tags=["research"])
 
@@ -69,3 +69,24 @@ def family_detail(family_id: str) -> FamilyDetailDTO:
     d["trials"] = [TrialRowDTO(**t) for t in d["trials"]]
     d["others"] = [TrialRowDTO(**t) for t in d["others"]]
     return FamilyDetailDTO(**d)
+
+
+# ---- walk-forward report (M6.5, WF 6.6; Task 22) ----------------------------------------------------------------
+# The prefix `/api/research/walkforward/` is its own: no `{job_id}` route of another kind can shadow it, and the
+# family route above (`/api/research/families/{family_id:path}`) lives under a different prefix.
+
+@router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO)
+def walkforward_detail(job_id: str) -> WalkforwardDTO:
+    """A finished walk-forward job, read from its walkforward.json: 404 for an unknown job (or one of another
+    kind), 409 for a job that is not finished or whose file is gone. Read-only; a stored error text is never
+    echoed, and a window's own error only when it is a plain line (no paths)."""
+    from stockify.research import plain, wf_report
+    try:
+        d = _clean(wf_report.detail(job_id))
+    except wf_report.WfReportError as e:
+        raise HTTPException(status_code=404 if e.kind == "unknown" else 409, detail=str(e))
+    s = d["summary"]
+    s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
+    d["summary"] = WalkforwardSummaryDTO(**s)
+    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain._plain_reason(w.get("error"))}) for w in d["windows"]]
+    return WalkforwardDTO(**d)

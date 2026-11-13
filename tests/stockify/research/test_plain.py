@@ -343,3 +343,62 @@ class FragileSentenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WfSentenceTests(unittest.TestCase):
+    """WF 6.6: the out-of-sample ratio and the stability of the chosen settings, in plain words."""
+
+    @staticmethod
+    def summary(**kw):
+        from stockify.research import walkforward as wf
+        base = dict(windows=7, is_windows=7, oos_days=120, is_sharpe=2.0, oos_sharpe=0.76, ratio=0.38,
+                    chosen_modal_share=4 / 7, n_trials=28, var_sharpe=0.001, dsr=None)
+        base.update(kw)
+        return wf.WalkforwardSummary(**base)
+
+    def test_wf_sentence_ratio_none_and_stability(self):
+        s = plain.wf_sentence(self.summary())
+        self.assertIn("kept 38% of the in-sample Sharpe out of sample", s)
+        self.assertIn("the same settings won 4 of 7 windows", s)
+        self.assertNotIn("\n", s)
+        # in-sample not positive: there is no ratio, and the sentence says why
+        s = plain.wf_sentence(self.summary(is_sharpe=-0.4, ratio=None))
+        self.assertIn("in-sample was not positive, so there is no ratio", s)
+        self.assertNotIn("kept", s)
+        # nothing to compare at all
+        self.assertIn("no out-of-sample days", plain.wf_sentence(self.summary(oos_days=0, oos_sharpe=None, ratio=None,
+                                                                              is_sharpe=None, is_windows=0)))
+        self.assertIn("no in-sample Sharpe", plain.wf_sentence(self.summary(is_sharpe=None, ratio=None)))
+
+    def test_a_negative_out_of_sample_sharpe_is_not_a_kept_share(self):
+        s = plain.wf_ratio_sentence(self.summary(oos_sharpe=-0.5, ratio=-0.25))
+        self.assertNotIn("kept ", s.replace("was kept", ""))       # no "kept N%" share for a loss
+        self.assertNotIn("%", s)
+        self.assertIn("below zero", s)
+
+    def test_stability_counts_the_windows_that_chose_a_setting(self):
+        s = self.summary(windows=7, chosen_modal_share=3 / 5)
+        self.assertEqual(plain.wf_stability_sentence(s, chosen_windows=5),
+                         "the same settings won 3 of 5 windows that picked one")
+        self.assertEqual(plain.wf_stability_sentence(self.summary(chosen_modal_share=None)),
+                         "no window picked settings, so there is no stability to report")
+        # a share that is not a whole count of the windows is shown as a percentage, never a made-up count
+        self.assertEqual(plain.wf_stability_sentence(self.summary(windows=7, chosen_modal_share=0.5)),
+                         "the same settings won 50% of the windows")
+
+    def test_one_window_has_no_stability_to_speak_of(self):
+        self.assertEqual(plain.wf_stability_sentence(self.summary(windows=1, chosen_modal_share=1.0)),
+                         "only one window, so there is no stability to report")
+
+    def test_wf_sentences_are_plain_over_seeded_summaries(self):
+        rng = random.Random(22)
+        for _ in range(200):
+            n = rng.randint(1, 9)
+            is_sr = rng.choice([None, rng.uniform(-2, 3)])
+            oos = rng.choice([None, rng.uniform(-2, 3)])
+            ratio = oos / is_sr if is_sr is not None and oos is not None and is_sr > 0 else None
+            s = self.summary(windows=n, is_sharpe=is_sr, oos_sharpe=oos, ratio=ratio, oos_days=rng.choice([0, 20]),
+                             chosen_modal_share=rng.choice([None, rng.randint(1, n) / n]))
+            text = plain.wf_sentence(s)
+            self.assertEqual(_bad_tokens(text), [], text)
+            self.assertNotIn("\n", text)

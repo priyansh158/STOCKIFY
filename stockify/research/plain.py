@@ -9,7 +9,7 @@ interval_sentence accepts `label` (the brief's signature) but does not show it, 
 table row that already names the statistic. Its unit "%" takes fractions (0.021 prints as 2.1%).
 
 Later tasks add only their own builder: fragile_sentence (Task 16),
-wf_sentence (Task 22). pbo_sentence is here (Task 23). Their meanings are already in KEYS.
+wf_sentence (Task 22, done). pbo_sentence is here (Task 23). Their meanings are already in KEYS.
 """
 from __future__ import annotations
 
@@ -253,6 +253,50 @@ def pbo_sentence(pbo: float | None, n_trials: int, n_total: int | None = None) -
     tries = f"based on {n_trials} of {n_total} tries" if n_total and n_total > n_trials else f"{n_trials} tries"
     return (f"in {_percent_text(p)} of the ways to split your days in two, the try that looked best on one half "
             f"landed at or below the middle on the other ({tries})")
+
+
+# ---- walk-forward (M6.5, WF 6.6) ---------------------------------------------------------------------------------
+
+def wf_ratio_sentence(summary) -> str:  # noqa: ANN001
+    """What the days the settings never saw kept of the result on the days they were fitted to. The share is only
+    quoted when the in-sample Sharpe is positive (the summary's ratio is None otherwise) and the out-of-sample one
+    is not below zero: a ratio of a loss is not a share that was "kept"."""
+    if summary.oos_days <= 0 or summary.oos_sharpe is None or not math.isfinite(summary.oos_sharpe):
+        return "no out-of-sample days with a usable Sharpe, so there is no ratio"
+    if summary.is_sharpe is None or not math.isfinite(summary.is_sharpe):
+        return "no in-sample Sharpe to compare with, so there is no ratio"
+    if summary.is_sharpe <= 0:
+        return "in-sample was not positive, so there is no ratio"
+    if summary.oos_sharpe < 0:
+        return "the Sharpe out of sample was below zero, so no part of the in-sample Sharpe was kept"
+    ratio = summary.ratio if summary.ratio is not None else summary.oos_sharpe / summary.is_sharpe
+    return f"kept {_percent_text(ratio)} of the in-sample Sharpe out of sample"
+
+
+def wf_stability_sentence(summary, *, chosen_windows: int | None = None) -> str:  # noqa: ANN001
+    """How often the same settings won. `chosen_windows` is the number of windows that picked any settings; with it
+    the line reads "N of M windows that picked one", without it the share is counted over every window and shown
+    as a percentage when it is not a whole number of them."""
+    share = summary.chosen_modal_share
+    if share is None or not math.isfinite(share):
+        return "no window picked settings, so there is no stability to report"
+    if chosen_windows is None and summary.windows <= 1:
+        return "only one window, so there is no stability to report"
+    if chosen_windows is not None:
+        n = chosen_windows
+        if n <= 1:
+            return "only one window picked settings, so there is no stability to report"
+        return f"the same settings won {round(share * n)} of {n} windows that picked one"
+    n = summary.windows
+    won = share * n
+    if math.isclose(won, round(won), abs_tol=1e-9):
+        return f"the same settings won {round(won)} of {n} windows"
+    return f"the same settings won {_percent_text(min(1.0, max(0.0, share)))} of the windows"
+
+
+def wf_sentence(summary, *, chosen_windows: int | None = None) -> str:  # noqa: ANN001
+    """The ratio and the stability of a walk-forward summary, in one line (a WalkforwardSummary)."""
+    return f"{wf_ratio_sentence(summary)}; {wf_stability_sentence(summary, chosen_windows=chosen_windows)}"
 
 
 # ---- sensitivity (M6.7, FW 6.4) ---------------------------------------------------------------------------------

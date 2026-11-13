@@ -16,7 +16,6 @@ from stockify import log
 # command -> (milestone, help)
 _STUBS = {
     "sweep": ("M6", "parameter sweep"),
-    "walkforward": ("M6", "walk-forward analysis"),
 }
 
 
@@ -431,6 +430,11 @@ def _summary_line(m: dict, labels) -> str:  # noqa: ANN001
             f"labels {', '.join(labels)}")
 
 
+def _objectives() -> tuple[str, ...]:
+    from stockify.research import registry
+    return tuple(registry.OBJECTIVES)
+
+
 def _run_roles() -> tuple[str, ...]:
     from stockify.research import registry
     return tuple(r for r in registry.ROLES if r != "rerun")      # only runs.rerun sets "rerun"
@@ -624,6 +628,55 @@ def _cmd_sensitivity(args) -> int:
         return 2
     _print_console(sensitivity.format_table(res))
     return 1 if res.verdict == "inconclusive" or any(r.status == "failed" for r in res.rows) else 0
+
+
+def _cmd_walkforward(args) -> int:
+    """M6.5 (WF 6.6): walk a sweep forward, finish it and write its report. Exit 0 finished, 1 finished but a window
+    could not be tested (or the run itself broke), 2 bad arguments, an unusable sweep file, a locked holdout or no
+    window that fits. Every argument is checked before the first run starts."""
+    from datetime import date
+    from pathlib import Path
+    from stockify import paths, research, runconfig
+    from stockify.research import pool, sweep, walkforward, wf_report
+    cfg = research.settings()["walk_forward"]
+    try:
+        train = walkforward.parse_span(args.train or f"{cfg['train_days']}d")
+        test = walkforward.parse_span(args.test or f"{cfg['test_days']}d")
+        step = walkforward.parse_span(args.step or f"{cfg['step_days']}d")
+        start = date.fromisoformat(args.date_from) if args.date_from else None
+        end = date.fromisoformat(args.date_to) if args.date_to else None
+        if args.workers is not None and args.workers < 1:
+            raise ValueError("--workers must be a whole number of 1 or more")
+        if step < test:
+            raise ValueError(f"--step ({step}d) is smaller than --test ({test}d): the out-of-sample pieces would "
+                             "overlap")
+        if args.sensitivity_run is not None:
+            paths.run_path(args.sensitivity_run)
+        spec = sweep.load_spec(Path(args.sweep))
+        res = walkforward.run_windows(spec, train=train, test=test, step=step, objective=args.objective or cfg["objective"],
+                                      start=start, end=end, unlock_reason=args.unlock_holdout, workers=args.workers,
+                                      pool_run=pool.run_all)      # looked up here, so a test can patch it
+    except (sweep.SweepSpecError, walkforward.WalkforwardError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 — a run or the pool broke: the job is already marked failed
+        print(f"the walk-forward job failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    try:
+        fin = walkforward.finish(res.job_id)
+        report = wf_report.render(res.job_id, sensitivity_run=args.sensitivity_run)
+        text = wf_report.summary_text(res.job_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"the walk-forward job {res.job_id} ran but could not be finished: {type(e).__name__}: {e}",
+              file=sys.stderr)
+        return 1
+    _print_console(text)
+    print(report.parent)
+    untested = [w["index"] + 1 for w in fin.windows if w["test"] is None]
+    if untested:
+        print(f"window {', '.join(map(str, untested))} could not be tested; the report says why", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _cmd_margin_check(args) -> int:
@@ -1154,6 +1207,27 @@ def main(argv: list[str] | None = None) -> int:
     sn.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
     sn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
     sn.set_defaults(func=_cmd_sensitivity)
+
+    wk = sub.add_parser("walkforward", help="walk a sweep forward: train, pick the best, test on the days after; "
+                                            "writes report.md (M6.5)",
+                        description="Walk-forward analysis. For each window the sweep's grid runs on the training "
+                                    "days, the best by the objective is run on the test days after them, and the "
+                                    "test pieces are stitched into one out-of-sample record. All lengths are "
+                                    "calendar days (120d). Defaults come from research.json walk_forward. Exit 0 "
+                                    "finished, 1 finished but a window could not be tested or a run broke, 2 bad "
+                                    "arguments or a locked holdout.")
+    wk.add_argument("--sweep", required=True, metavar="FILE", help="the sweep.yaml (its grid is run in every window)")
+    wk.add_argument("--train", metavar="Nd", help="training days, e.g. 120d")
+    wk.add_argument("--test", metavar="Nd", help="test days, e.g. 30d")
+    wk.add_argument("--step", metavar="Nd", help="days between window starts, e.g. 30d (not below --test)")
+    wk.add_argument("--objective", choices=_objectives(), help="how the best training run is picked")
+    wk.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD", help="first day (default: the base config's)")
+    wk.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="last day (default: the base config's)")
+    wk.add_argument("--workers", type=int, default=None, help="runs at once (default: the sweep's, else the pool's)")
+    wk.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    wk.add_argument("--sensitivity-run", metavar="RUN_ID",
+                    help="a finished run whose sensitivity.json goes into the report's cost table")
+    wk.set_defaults(func=_cmd_walkforward)
 
     se = sub.add_parser("session", help="paper session maintenance")
     sesub = se.add_subparsers(dest="session_command", required=True)
