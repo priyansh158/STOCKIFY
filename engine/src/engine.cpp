@@ -137,6 +137,17 @@ Engine::Engine(Bundle bundle)
     fill_kind_ = require_string(fill_cfg_, "kind", "run.fill_model");
     policies_ = require(run, "policies", "run");
     mark_kind_ = require_string(run, "mark", "run");
+    if (const auto sn = bundle_.root.find("system_notes"); sn != bundle_.root.end() && !sn->is_null()) {
+        if (!sn->is_object()) {
+            throw RunError("bundle: system_notes must be an object");
+        }
+        for (const auto& [tag, text] : sn->items()) {
+            if (!text.is_string()) {
+                throw RunError("bundle: system_notes." + tag + " must be text");
+            }
+            system_notes_.emplace(tag, text.get<std::string>());
+        }
+    }
     latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
     for (std::size_t i = 0; i < bundle_.day_seeds.size() && i < calendar_.days().size(); ++i) {
@@ -1024,6 +1035,7 @@ void Engine::mis_sqoff(const InternalEvent& ev) {  // runner._mis_sqoff
         r.product = "MIS";
         r.type = "MARKET";
         r.tag = "AUTO_SQOFF";
+        r.note = system_note("AUTO_SQOFF");
         place(r, 0, true);
     }
     deliver();

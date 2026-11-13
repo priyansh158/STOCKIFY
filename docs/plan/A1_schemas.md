@@ -528,7 +528,7 @@ An **order record** has exactly these fields (A4 §3; the enum spellings are the
 | `validity` | `"DAY"` \| `"IOC"` |
 | `protection` | `"AUTO"` or int bp |
 | `tag`, `reason` | string, `""` when none (never null) |
-| `note` | string, `""` when none (never null): the strategy's words for why, cleaned by `clean_note` (CH 6.2; not yet in `sod_state`, so a paper day's note does not cross a day boundary until C3) |
+| `note` | string, `""` when none (never null): the strategy's words for why, cleaned by `clean_note` (CH 6.2/6.3: carried in `sod_state` like the tag; the one key a reader treats as optional: a state written before CH 6.3 has none and loads with `""`, and both runners always write it) |
 | `status` | `"PENDING"` \| `"OPEN"` \| `"TRIGGER_PENDING"` \| `"COMPLETE"` \| `"CANCELLED"` \| `"REJECTED"` \| `"SLICED"` |
 | `limit`, `protection_bp` | int or null |
 | `from_market`, `triggered`, `first_eligible_done`, `charged` | boolean |

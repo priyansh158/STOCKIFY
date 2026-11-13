@@ -95,6 +95,25 @@ class ParityJournalTest(_Base):
         self.assertEqual(store.get_session(SID)["pause_reasons"], [])
         self.assertEqual(jpath.read_bytes(), before, "parity never writes a journal")
 
+    def test_parity_ignores_a_missing_note_on_an_old_stored_day(self):
+        """CH 6.3: a stored day written before the note column has no `note` in its order rows; the regenerated twin has."""
+        self.finalised_day()
+        conn = store._connect()
+        rows = conn.execute("SELECT session_id, trade_date, order_id, row_json FROM session_orders "
+                            "WHERE session_id = ?", (SID,)).fetchall()
+        self.assertTrue(rows)
+        for r in rows:
+            data = json.loads(r["row_json"])
+            self.assertIn("note", data)
+            data.pop("note")
+            self.tamper("UPDATE session_orders SET row_json = ? WHERE session_id = ? AND trade_date = ? AND "
+                        "order_id = ?", json.dumps(data, sort_keys=True), r["session_id"], r["trade_date"],
+                        r["order_id"])
+        res = parity.journal_parity(SID, pf.DAY)
+        self.assertEqual(res.outcome, "pass", res.summary["first_difference"])
+        self.tamper_row("session_orders", "order_id", "status", "REJECTED")     # a real difference still fails
+        self.assertEqual(parity.journal_parity(SID, pf.DAY).outcome, "fail")
+
     def test_tampered_fill_fails_and_pauses(self):
         enable_logging(self)
         self.finalised_day()

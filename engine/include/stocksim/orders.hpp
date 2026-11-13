@@ -33,6 +33,7 @@ struct Order {
     Validity validity = Validity::Day;
     std::optional<Bp> protection;  // nullopt = AUTO
     std::string tag;
+    std::string note;  // CH 6.3: the strategy's cleaned note (clean_note); orders.csv writes it last
     TimeNs t_submit = 0;
     TimeNs t_activate = 0;
     OrderStatus status = OrderStatus::Pending;

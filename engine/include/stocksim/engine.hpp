@@ -128,6 +128,7 @@ struct PlaceRequest {
     std::string validity = "DAY";
     std::optional<Bp> protection;  // nullopt = AUTO
     std::string tag;
+    std::string note;  // UTF-8 bytes; the engine cleans it once (clean_note)
 };
 
 struct ModifyRequest {
@@ -427,6 +428,12 @@ class Engine {
     Json fill_cfg_;
     Json policies_;
     std::string mark_kind_;  // ltp | mid
+    std::map<std::string, std::string> system_notes_;  // bundle "system_notes" (CH 6.2): {system tag: note text}
+    // The note a system order (AUTO_SQOFF) carries; "" when the bundle has none for the tag.
+    std::string system_note(const std::string& tag) const {
+        const auto it = system_notes_.find(tag);
+        return it == system_notes_.end() ? std::string() : it->second;
+    }
     TimeNs latency_ns_ = 0;
     Costs costs_;
     const LiveWithFallbackMargin* live_margin_ = nullptr;  // margin_ when the model is live_with_fallback

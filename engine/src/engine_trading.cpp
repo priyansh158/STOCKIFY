@@ -8,6 +8,7 @@
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/matcher.hpp"
+#include "stocksim/notes.hpp"
 
 namespace stocksim {
 
@@ -242,6 +243,7 @@ OrderId Engine::place(const PlaceRequest& r, OrderId parent, bool system) {  // 
     o.trigger = r.trigger;
     o.protection = r.protection;
     o.tag = r.tag;
+    o.note = clean_note(r.note);  // a slice child gets the parent's already-clean note back (clean is idempotent)
     o.t_submit = now_;
     const OrderId id = o.order_id;
     Order& ord = book_.orders.emplace(id, std::move(o)).first->second;

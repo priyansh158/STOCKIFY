@@ -117,6 +117,14 @@ _ALPHABET = ["a", "Z", "7", " ", "  ", "\t", "\n", "\r", "\x00", "\x1f", "\x7f",
 
 @unittest.skipUnless(engine.available(), _ENGINE)
 class EngineParityTests(unittest.TestCase):
+    def test_the_engine_refuses_a_bool_for_fmt_price_fmt_qty_and_to_level_as_the_twins_do(self):
+        eng = engine.load()
+        for name in ("fmt_price", "fmt_qty", "to_level"):
+            for bad in (True, False):
+                with self.subTest(fn=name, bad=bad), self.assertRaises(TypeError):
+                    getattr(eng, name)(bad)
+        self.assertEqual((eng.fmt_price(5), eng.fmt_qty(1000), eng.to_level(1)), ("0.05", "1,000", 10000))
+
     def test_clean_note_matches_engine_on_random_text(self):
         eng = engine.load()
         rng = random.Random(61)
