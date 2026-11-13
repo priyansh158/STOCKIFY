@@ -185,6 +185,8 @@ It keeps DAY validity, so an unfilled remainder rests as a limit. Every fill of 
 
 **4.4 Slippage** (bar and LTP models only): `none`, `fixed_ticks(k)`, `random_ticks(k)` = `below(k+1)` ticks from stream 1, or `bps(x)` (ceil to tick). Always adverse; never beyond the protection limit.
 
+**Extra ticks (FW 6.2, D-91):** `slippage.extra_ticks` (an integer 0 to 1000, any kind, default 0) adds `extra_ticks · tick` to the move: `move = move_kind + extra_ticks · tick`, where `move_kind` is computed as above (a `random_ticks` draw is made exactly as without the key, so stream 1 does not shift), and then the adverse sign (buy up, sell down) and the cap apply. A fill that takes no slippage (a resting limit order's fill) is unchanged. Example: buy at 10000, tick 5, `bps` 10 gives ceil_to(10, 5) = 10, plus 2 extra ticks = +20, so 10020; `fixed_ticks` k 1 plus 2 extra ticks gives 10015.
+
 **4.5 Randomness: PCG32**, exactly as the reference `pcg_basic.c`:
 - Seeding `srandom(initstate, initseq)`: `state = 0; inc = (initseq << 1) | 1; next(); state += initstate; next()`.
 - `next_u32()`: `old = state; state = old·6364136223846793005 + inc (mod 2⁶⁴); x = (((old >> 18) ^ old) >> 27) mod 2³²; r = old >> 59; return (x >> r) | (x << ((−r) & 31)) mod 2³²`.

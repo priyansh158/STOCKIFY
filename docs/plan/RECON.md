@@ -1249,3 +1249,7 @@ Opened with `mode=ro`; no token store or secret was read.
 ### M6.9 regime breakdown: VIX source timing (Task 10)
 
 Read-only on the real lab (refdata opened `mode=ro`, the tick archive read through `stockify.data.ticks`; nothing written). `regimes._recorded_close` on the one recorded day, 2026-11-05 (`INDIA VIX` = refdata instrument 43549; the tick packets' `instrument_id` is the refdata id): first call 1.2 s (cold start, pyarrow import included), later calls 0.002 to 0.003 s; 598 VIX packets; recorded close 1516 (15.16 points) against the bhavcopy close 1519 for the day before. Far under the 5 s line, so the order stays recorded first, bhavcopy second, and no D-row was needed. A recorded day that holds only part of a session gives the last VIX print it has, not the official close: the `vix_source` map on the report says which days used which source.
+
+### M6.7 extra slippage ticks (Task 14)
+
+🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.un.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.

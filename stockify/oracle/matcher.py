@@ -34,6 +34,8 @@ def slipped(side: str, price: int, tick: int, slip: dict, rng, cap: int | None) 
         move = numerics.ceil_to(numerics.ceil_div(price * slip["bp"], 10000), tick)
     else:
         raise ValueError(f"slippage {kind!r}")
+    if "extra_ticks" in slip:                       # FW 6.2: after the kind's own draw, before the sign and the cap
+        move += slip["extra_ticks"] * tick
     out = price + move if side == "BUY" else price - move
     if cap is not None:
         out = min(out, cap) if side == "BUY" else max(out, cap)

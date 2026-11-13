@@ -33,7 +33,7 @@ class UnknownKeyTests(unittest.TestCase):
         ({"policies": {"max_slice": 3}}, "policies", "max_slice", "max_slices"),
         ({"fill_model": {"kind": "bar", "slipage": {"kind": "none"}}}, "fill_model", "slipage", "slippage"),
         ({"fill_model": {"kind": "bar", "slippage": {"kind": "fixed_ticks", "k": 1, "ticks": 2}}},
-         "fill_model.slippage", "ticks", None),
+         "fill_model.slippage", "ticks", "extra_ticks"),   # FW 6.2: extra_ticks is now a known key
         ({"fill_model": {"kind": "bar", "slippage": {"kind": "none", "k": 1}}}, "fill_model.slippage", "k", None),
         ({"fill_model": {"kind": "bar", "slippage": {"kind": "bps", "x": "0.0005", "k": 1}}},
          "fill_model.slippage", "k", None),

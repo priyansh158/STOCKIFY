@@ -54,8 +54,9 @@ FILL_KEYS = ("kind", *FILL_DEFAULTS)
 # validated again when its run starts (runs.launch), so a derived key is accepted when it is what its source
 # gives, and refused when it is anything else.
 FILL_DERIVED = {"participation": "participation_ppm", "depth_take": "depth_take_ppm"}
-SLIPPAGE_KEYS = {"none": ("kind",), "fixed_ticks": ("kind", "k"), "random_ticks": ("kind", "k"),
-                 "bps": ("kind", "x", "bp")}                                        # bp is derived from x
+MAX_EXTRA_TICKS = 1000
+SLIPPAGE_KEYS = {"none": ("kind", "extra_ticks"), "fixed_ticks": ("kind", "k", "extra_ticks"),
+                 "random_ticks": ("kind", "k", "extra_ticks"), "bps": ("kind", "x", "bp", "extra_ticks")}   # bp is derived from x
 STRATEGY_KEYS = {"python": ("kind", "ref", "params"), "cpp": ("kind", "ref", "params"),
                  "script": ("kind", "actions", "params")}
 DATA_KEYS = ("packs",)
@@ -253,6 +254,12 @@ def _fill(f: dict) -> dict:
     _need(isinstance(slip, dict), "fill_model.slippage", "must be an object")
     _known(slip, SLIPPAGE_KEYS[_choice(slip.get("kind"), SLIPPAGE_KINDS, "fill_model.slippage.kind")],
            "fill_model.slippage")
+    if "extra_ticks" in slip:                       # FW 6.2: left out of the normalised form when 0
+        _int(slip["extra_ticks"], "fill_model.slippage.extra_ticks", 0)
+        _need(slip["extra_ticks"] <= MAX_EXTRA_TICKS, "fill_model.slippage.extra_ticks",
+              f"must be <= {MAX_EXTRA_TICKS}")
+        if slip["extra_ticks"] == 0:
+            del slip["extra_ticks"]
     if slip["kind"] in ("fixed_ticks", "random_ticks"):
         _int(slip.get("k"), "fill_model.slippage.k", 0)
     if slip["kind"] == "bps":
