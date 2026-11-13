@@ -13,6 +13,7 @@ import copy
 import difflib
 import json
 import re
+from decimal import Decimal
 from pathlib import Path
 
 from stockify import numerics, paths
@@ -33,7 +34,8 @@ DEFAULTS = {
     "family_id": None,
     "price_basis": None,
     "latency_ms": 0,
-    "costs": {"broker": "zerodha", "allow_unverified": False, "auto_square_off_fee": True, "dp_charges": True},
+    "costs": {"broker": "zerodha", "allow_unverified": False, "auto_square_off_fee": True, "dp_charges": True,
+              "scale": "1"},
     "margin": {"model": "staircase"},
     "policies": {"preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": False},
     "mark": "ltp",
@@ -76,6 +78,25 @@ class RunConfigError(ValueError):
     def __init__(self, message: str, problems: list[str] | None = None) -> None:
         super().__init__(message)
         self.problems = list(problems) if problems else [str(message)]
+
+
+COST_SCALE_MAX = Decimal(10)
+_COST_SCALE_RE = re.compile(r"[0-9]+(\.[0-9]{1,4})?")
+
+
+def _cost_scale(value) -> Decimal:  # noqa: ANN001
+    """`costs.scale` (FW 6.1): a plain decimal string, 0 to 10, at most 4 decimal places. A number, an exponent, a
+    sign or a space is refused, so that what a config says is exactly what is multiplied."""
+    _need(isinstance(value, str) and _COST_SCALE_RE.fullmatch(value) is not None, "costs.scale",
+          f'must be a decimal string like "1.5" with at most 4 decimal places, got {value!r}')
+    scale = Decimal(value)
+    _need(scale <= COST_SCALE_MAX, "costs.scale", f"must be between 0 and 10, got {value!r}")
+    return scale
+
+
+def cost_scale(cfg: dict) -> Decimal:
+    """The multiplier on every charge in the run's bundle (1 when the config has no `costs.scale`)."""
+    return _cost_scale(cfg["costs"].get("scale", "1"))
 
 
 def seed_mode(cfg: dict) -> str:
@@ -277,6 +298,11 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     cfg["fill_model"] = _fill(raw.get("fill_model"))
     _int(cfg["latency_ms"], "latency_ms", 0)
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
+    # Like seed_mode: 1 is left out (in any spelling) so that every config and bundle made without the key is
+    # unchanged byte for byte; any other value is kept in its shortest form.
+    scale = _cost_scale(cfg["costs"].pop("scale", "1"))
+    if scale != 1:
+        cfg["costs"]["scale"] = format(scale.normalize(), "f")
     _choice(cfg["margin"]["model"], MARGIN_MODELS, "margin.model")
     if "live_fresh_s" in cfg["margin"]:
         check_live_fresh(cfg["margin"]["live_fresh_s"], cfg["margin"]["model"])

@@ -9,6 +9,7 @@ LABEL_TEXT = {
     "eod_approx": "fills at the next day's close from end-of-day files (approximate, A4 §4.9)",
     "fill:approximate": "snapshot LTP fills (approximate, A4 §4.2)",
     "charges:unverified_rows": "some charge rows are not yet verified against Zerodha (Z-3)",
+    "costs:scaled": "every brokerage, tax and fee was multiplied by costs.scale for a what-if test (FW 6.1)",
     "settlement_fallback": "an expiry settled at the last underlying price: no FSP arrived (A4 §7.2)",
     "specs:equity_tick_assumed": "equity tick assumed 1 paisa before its first recorded spec (D-43)",
 }

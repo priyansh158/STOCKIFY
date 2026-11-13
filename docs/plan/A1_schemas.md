@@ -321,7 +321,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
   "fill_model": { "kind": "bar", "limit_touch_policy": "through", "participation": "0.10",
                   "slippage": { "kind": "fixed_ticks", "k": 1 } },
   "latency_ms": 0,
-  "costs": { "broker": "zerodha", "allow_unverified": true, "auto_square_off_fee": true, "dp_charges": true },
+  "costs": { "broker": "zerodha", "allow_unverified": true, "auto_square_off_fee": true, "dp_charges": true, "scale": "1" },
   "margin": { "model": "flat" },
   "policies": { "preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": false },
   "mark": "ltp",
@@ -334,6 +334,8 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 `unlock_holdout` (M6.6, D-88): `null`, or a written reason of at least 3 non-space characters that lets this run use data on or after `research.json` `holdout_from`. It is checked only when the run's last day reaches the holdout (or has no end date); `--unlock-holdout "<reason>"` sets it on `run` and `oracle run`. Leave it `null` in saved and example configs: a reason left in a file unlocks every run made from it.
 
 `seed_mode` (VOL 5.1): `run` (the default) seeds both PCG32 streams once from `seed`; `per_day` re-creates them each trading day from that day's seed (A4 §4.5), as paper sessions do. The validated form leaves `run` out, so configs and bundles without it are unchanged byte for byte.
+
+`costs.scale` (FW 6.1, D-90): a decimal string from `"0"` to `"10"` with at most 4 decimal places, default `"1"`; every brokerage, tax and fee of the bundle's `charges` section is multiplied by it, for what-if tests (`"0"` is cost-free, `"2"` doubles every charge). Rates are multiplied exactly and a result that parts per billion cannot hold is refused; each whole-paise amount is rounded once, half-up. The validated form leaves out a scale of 1 (in any spelling), so configs and bundles without it are unchanged byte for byte; any other value labels the bundle `costs:scaled`. Leave it `"1"` (or out) in saved and example configs: a scale left in a file changes every run made from it.
 
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
 

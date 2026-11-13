@@ -15,6 +15,7 @@ Validation happens here, before anything runs (I-5, I-8, I-14).
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -23,6 +24,7 @@ import os
 import zipfile
 import zlib
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from stockify import numerics, paths, runconfig, timeutil
@@ -71,6 +73,63 @@ def _dated_section(doc: dict, start: date, end: date) -> dict:
         else:
             out[k] = v
     return out
+
+
+def _scale_leaf(node, path: str, key: str, siblings: dict, scale: Decimal, places: int):  # noqa: ANN001, ANN202
+    """One leaf of a charge row. Rates: scaled in Decimal and written back as a string (the `_ppb` beside it is
+    re-derived by the caller). Whole paise: value x scale, rounded once, half-up. Text, flags, None: as they are."""
+    from stockify.config import loader
+    if isinstance(node, (str, bool)) or node is None:
+        if key in loader.CHARGE_RATE_FIELDS and isinstance(node, str):
+            try:
+                return format((Decimal(node) * scale).normalize(), "f")
+            except ArithmeticError as e:                 # decimal.InvalidOperation: not a number at all
+                raise runconfig.RunConfigError(f"charges {path}: {node!r} is not a decimal string") from e
+        return node
+    if isinstance(node, int) and key.endswith("_paise"):
+        k = max(places, 1)
+        return numerics.mul_div_round_half_up(node, int(scale.scaleb(k)), 10 ** k)
+    if isinstance(node, int) and key.endswith("_ppb") and key[:-4] in loader.CHARGE_RATE_FIELDS:
+        if not isinstance(siblings.get(key[:-4]), str):
+            raise runconfig.RunConfigError(f"charges {path}: {key} has no {key[:-4]!r} string beside it to scale")
+        return node                                     # replaced from the scaled string by _scale_node
+    raise runconfig.RunConfigError(f"charges {path}: a {type(node).__name__} leaf of a kind costs.scale does not "
+                                   "know how to scale; teach bundle.scale_charges before using it")
+
+
+def _scale_node(node, path: str, key: str, siblings: dict, scale: Decimal, places: int):  # noqa: ANN001, ANN202
+    from stockify.config import loader
+    if isinstance(node, dict):
+        out = {k: _scale_node(v, f"{path}.{k}", k, node, scale, places) for k, v in node.items()}
+        for field in loader.CHARGE_RATE_FIELDS:         # the derived integer follows its string, never the reverse
+            if isinstance(out.get(field), str) and f"{field}_ppb" in node:
+                try:
+                    out[f"{field}_ppb"] = numerics.to_ppb(out[field])
+                except (ArithmeticError, ValueError) as e:
+                    raise runconfig.RunConfigError(
+                        f"charges {path}.{field}: {node[field]!r} x {format(scale, 'f')} = {out[field]!r} does not "
+                        f"fit whole parts per billion ({e}); use a scale that keeps every rate exact") from e
+        return out
+    if isinstance(node, list):
+        return [_scale_node(v, f"{path}[{i}]", key, siblings, scale, places) for i, v in enumerate(node)]
+    return _scale_leaf(node, path, key, siblings, scale, places)
+
+
+def scale_charges(charges: dict, scale: Decimal) -> dict:
+    """FW 6.1 (D-90): a copy of the dated `charges` section with every brokerage, tax and fee multiplied by `scale`.
+    Rate strings are multiplied exactly and their `_ppb` re-derived from the result (a rate ppb cannot hold exactly
+    is refused, never rounded); whole-paise amounts are rounded once, half-up. A numeric leaf of an unknown kind
+    raises, so a field added to charges.json later cannot be skipped by accident."""
+    exponent = scale.normalize().as_tuple().exponent
+    places = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+    return {key: _scale_node(value, key, key, charges, scale, places) if key == "components" else copy.deepcopy(value)
+            for key, value in charges.items()}
+
+
+def apply_cost_scale(cfg: dict, charges: dict) -> dict:
+    """The charges a run uses: untouched at scale 1, else `scale_charges`."""
+    scale = runconfig.cost_scale(cfg)
+    return charges if scale == 1 else scale_charges(charges, scale)
 
 
 def _ppb_fields(doc: dict, fields: tuple[str, ...]) -> None:
@@ -681,7 +740,7 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
     days = resolve_days(start, end, policy)
     if not days:
         raise BundleError(f"no trading days between {start} and {end}")
-    charges = _dated_section(loader.load_json("charges.json"), start, end)
+    charges = apply_cost_scale(cfg, _dated_section(loader.load_json("charges.json"), start, end))   # FW 6.1, once
     margin = _dated_section(loader.load_json("margin_params.json"), start, end)
     _ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "psr_futures_pct", "vsr_pct", "extreme_weight",
                          "elm_pct", "default_iv"))
@@ -696,6 +755,8 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
                                                                           instruments_rows, days)))
     if cfg["fill_model"]["kind"] == "eod_close":
         labels.append("eod_approx")
+    if runconfig.cost_scale(cfg) != 1:
+        labels.append("costs:scaled")
     gap_days = {d for p in pack_rows for d in p.get("gaps", {}).get("days", {})}
     if gap_days:                                 # CAM 5.3: instruments with no data on a day; nothing is filled in (I-7)
         labels.append(f"data:gaps={len(gap_days)}")
