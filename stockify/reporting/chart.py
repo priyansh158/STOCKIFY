@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import json
 from bisect import bisect_left, bisect_right
+from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -93,7 +94,7 @@ def _settlement_close(row: dict | None, fsp: int) -> int | None:
     return None
 
 
-def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) -> tuple[list[tuple], dict[int, int]]:
+def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) -> tuple[list[tuple], dict[int, int], dict[int, int]]:
     """The runner's `settle_closes` of the cash settlements: (t, iid, product, closing side, units, price). The units
     and side are what is open then in that (instrument, product), by the fills up to the settlement's time; a
     settlement with nothing open makes none. A contract that cannot be priced makes none either and is counted per
@@ -103,6 +104,7 @@ def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) 
     nxt = 0
     out = []
     skipped: dict[int, int] = {}
+    idle: dict[int, int] = {}
     for st in sorted((s for s in settles if s.kind == "cash"), key=lambda s: s.t_ns):
         while nxt < len(by_t) and fills[by_t[nxt]].t_ns <= st.t_ns:
             f = fills[by_t[nxt]]
@@ -112,6 +114,7 @@ def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) 
         key = (st.instrument_id, st.product)
         net = pos.get(key, 0)
         if net == 0:
+            idle[st.instrument_id] = idle.get(st.instrument_id, 0) + 1     # nothing open: no marker, but counted
             continue
         close = _settlement_close(inst.get(st.instrument_id), st.price_paise)
         if close is None:
@@ -119,7 +122,7 @@ def _cash_closes(fills: list[_Fill], products: dict, settles: list, inst: dict) 
             continue
         out.append((st.t_ns, st.instrument_id, st.product, "SELL" if net > 0 else "BUY", abs(net), close))
         pos[key] = 0
-    return out, skipped
+    return out, skipped, idle
 
 
 def _trade(cs: list) -> tuple[int | None, list[dict]]:
@@ -129,7 +132,7 @@ def _trade(cs: list) -> tuple[int | None, list[dict]]:
             [{"qty": c.qty, "open_price_paise": c.open_price, "pnl_paise": c.pnl} for c in cs])
 
 
-def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, int], bool]:
+def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, int], bool, dict[int, int]]:
     """Every marker of the run (all instruments), ordered by (t_ns, kind == "settlement", fill_id), each with its
     FIFO trade profit from the whole run's fills; also the settlements skipped per instrument and whether the run
     has a physical delivery."""
@@ -139,7 +142,7 @@ def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, i
     products = _Products({oid: o.get("product") or "" for oid, o in orders.items()})
     inst = {i["id"]: i for i in (bundle or {}).get("instruments", []) if isinstance(i, dict) and "id" in i}
     settles = read_settlements(folder)
-    closes, skipped = _cash_closes(fills, products, settles, inst)
+    closes, skipped, idle = _cash_closes(fills, products, settles, inst)
     chunks, _ = metrics.fifo_trades(fills, closes, products)
     by_fill: dict[int, list] = {}
     by_close: dict[tuple, list] = {}
@@ -199,7 +202,7 @@ def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, i
                     "charges_paise": settle_cost.get((st.instrument_id, _ist_date(st.t_ns))),
                     "trade_pnl_paise": pnl, "chunks": cks})
     out.sort(key=lambda m: (m["t_ns"], m["kind"] == "settlement", m["fill_id"] or 0))
-    return out, skipped, delivered
+    return out, skipped, delivered, idle
 
 
 def _plots(folder: Path) -> list[dict]:
@@ -215,6 +218,13 @@ def _plots(folder: Path) -> list[dict]:
                                                      "points": []})
             s["points"].append([int(r["t_ns"]), int(r["value"])])
     return list(series.values())
+
+
+@lru_cache(maxsize=2)
+def _read_pack(sha: str) -> tuple[dict, list]:
+    """(header, records) of a stored pack. A pack is named by its own hash, so a cached read cannot go stale; callers
+    must not change the list."""
+    return packs.read(packs.pack_path(sha))
 
 
 def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str | None, list, int | None, str | None]:
@@ -233,7 +243,7 @@ def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str
         if not path.is_file():
             return "pruned", fallback, [], interval_s, None
         try:
-            header, recs = packs.read(path)
+            header, recs = _read_pack(p["sha256"])
         except (packs.PackError, OSError):
             return "pack unreadable", fallback, [], interval_s, None
         basis = basis or header["price_basis"]
@@ -286,7 +296,7 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
         raise LookupError(f"no run {run_id!r}")
     bundle = _bundle(folder)
     inst = {i["id"]: i for i in (bundle or {}).get("instruments", []) if isinstance(i, dict) and "id" in i}
-    everything, skipped, delivered = _markers(folder, bundle)
+    everything, skipped, delivered, idle = _markers(folder, bundle)
     traded = sorted({m["instrument_id"] for m in everything})
     listed = traded or sorted(inst)
     instruments = [{"id": i, "symbol": (inst.get(i) or {}).get("tradingsymbol") or str(i)} for i in listed]
@@ -344,4 +354,5 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
                       "volume": b.volume} for b in shown],
             "markers": out_markers, "omitted_markers": omitted, "plots": plots, "truncated": truncated,
             "next_from_ns": next_from, "data_state": state, "notice": " ".join(notes) or None,
-            "pnl_complete": not delivered and not skipped, "skipped_settlements": here}
+            "pnl_complete": not delivered and not skipped, "skipped_settlements": here,
+            "idle_settlements": idle.get(instrument_id, 0)}

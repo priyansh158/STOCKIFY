@@ -211,6 +211,7 @@ class SettlementTests(unittest.TestCase):
                        instruments=FUT)
         out = chart(rid)
         self.assertEqual((out["skipped_settlements"], out["pnl_complete"], out["notice"]), (0, True, None))
+        self.assertEqual(out["idle_settlements"], 1)                      # nothing open: no marker, but counted
         self.assertEqual([m["kind"] for m in out["markers"]], ["fill", "fill"])
 
     def test_settlement_of_an_open_position_closes_it_in_the_fifo_loop(self):
