@@ -156,6 +156,17 @@ def phases(group: str, d: date, *, preopen: bool = True) -> list[Phase]:
     return sorted(out, key=lambda p: p.start_ns)
 
 
+def continuous_open_s(group: str, d: date) -> int | None:
+    """Seconds after IST midnight at which the group's CONTINUOUS phase opens on `d` under the dated session rules
+    (sessions.json; special sessions are not consulted), or None when the group has no version or phase then."""
+    version = _version(group, d)
+    for ph in (version or {}).get("phases", []):
+        if ph["phase"] == "CONTINUOUS":
+            hh, mm = ph["start"].split(":")[:2]
+            return int(hh) * 3600 + int(mm) * 60
+    return None
+
+
 def session_close_ns(group: str, d: date) -> int:
     """End of the group's last CONTINUOUS or CAS phase on `d` under the dated session rules (special_sessions.csv,
     else sessions.json), without consulting the holiday list. For a contract's expiry date (D-61): NSE's record of

@@ -110,6 +110,38 @@ class WfChartModelTests(SandboxedDBTest):
         self.assertEqual(len(out["bars"]), 3)
         self.assertIn("3 of 4 windows have no chart", out["notice"])
 
+    def test_windows_whose_interval_or_basis_differ_are_not_mixed_in(self):
+        from tests.stockify.charts.test_chart_model import install_pack
+        five = make_run(orders=[order(1, note="five")], fills=[fill(1, 1, T(9, 16, 5, day=D2), "BUY", 10, 777)],
+                        world=bar_world(3, first=T(9, 15, day=D2), interval_s=300))
+        store.create_run({"run_id": five, "status": "done", "role": "oos"})
+        adj = make_run(orders=[order(1, note="adj")], fills=[fill(1, 1, T(9, 16, 5, day=D3), "BUY", 10, 888)],
+                       sha=install_pack(bar_world(3, first=T(9, 15, day=D3)), basis=1))
+        store.create_run({"run_id": adj, "status": "done", "role": "oos"})
+        add_job([win(0, D0, self.a), win(1, D1, self.b), win(2, D2, five), win(3, D3, adj)], job_id="wf-mixed")
+        out = chart("wf-mixed")
+        self.assertEqual(out["interval_s"], 60)
+        self.assertEqual([b["start_ns"] for b in out["bars"]], [T(9, 15 + k, day=d) for d in (D0, D1) for k in range(3)])
+        self.assertEqual({m["window"] for m in out["markers"]}, {0, 1})
+        w = {x["index"]: x for x in out["windows"]}
+        for k in (2, 3):
+            self.assertEqual(w[k]["excluded"], "not charted: different price basis or interval", k)
+            self.assertIsNone(w[k]["run_id"])
+        self.assertIsNone(w[0]["excluded"])
+        self.assertIn("2 windows were not charted: their price basis or bar interval differs from the first charted window's.",
+                      out["notice"])
+
+    def test_one_window_that_differs_is_counted_in_the_singular(self):
+        five = make_run(world=bar_world(3, first=T(9, 15, day=D2), interval_s=300))
+        store.create_run({"run_id": five, "status": "done", "role": "oos"})
+        add_job([win(0, D0, self.a), win(1, D2, five)], job_id="wf-mixed1")
+        out = chart("wf-mixed1")
+        self.assertIn("1 window was not charted: its price basis or bar interval differs from the first charted window's.",
+                      out["notice"])
+
+    def test_the_session_open_comes_from_the_dated_config(self):
+        self.assertEqual(chart()["session_open_s"], 9 * 3600 + 15 * 60)
+
     def test_window_bounds_match_the_state_json(self):
         from datetime import date, timedelta
         w = chart()["windows"]
@@ -270,6 +302,7 @@ class WfChartApiTests(SandboxedDBTest):
         self.assertEqual((w[0]["from_d"], w[0]["to_d"]), (D0, D0))
         self.assertEqual(w[0]["to_t"] - w[0]["from_t"], 86400)
         self.assertNotIn("window", d["markers"][0])
+        self.assertEqual(d["session_open_s"], 33300)                      # 09:15 from sessions.json, not the page
 
     def test_walkforward_chart_404(self):
         for bad in ("wf-nothing", "..%2F..%2Fx", "a%5Cb", "%2E%2E", "x%00y", "a" * 65):

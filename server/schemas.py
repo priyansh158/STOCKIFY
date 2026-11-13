@@ -884,7 +884,10 @@ class WalkforwardChartWindowDTO(BaseModel):
 
 
 class WalkforwardChartDTO(RunChartDTO):
+    """`session_open_s`: seconds after IST midnight at which the cash session opens (sessions.json, dated), where the
+    page puts the shading point of a day with no bars; None when the config has none."""
     windows: list[WalkforwardChartWindowDTO]
+    session_open_s: int | None = None
 
 
 class SessionChartDTO(RunChartDTO):

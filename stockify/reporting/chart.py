@@ -236,9 +236,58 @@ def _read_pack(sha: str) -> tuple[dict, list]:
     return packs.read(packs.pack_path(sha))
 
 
+def _whole_seconds(v: object) -> int | None:
+    if isinstance(v, str) and v.isascii() and v.isdecimal():
+        v = int(v)
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
+def strategy_interval(bundle: dict | None) -> int | None:
+    """The bar interval (seconds) the run's strategy subscribed to, as far as the bundle says: its `interval_s`
+    param, else that param's default in the strategy's own schema. None when the strategy has no such param (it
+    subscribes to a fixed interval, or to none, or the bundle names nothing): the chart then uses minute bars. A
+    param that is present but not a positive whole number is not guessed at (None)."""
+    s = (bundle or {}).get("strategy")
+    if not isinstance(s, dict):
+        return None
+    params = s.get("params")
+    if isinstance(params, dict) and "interval_s" in params:
+        return _whole_seconds(params["interval_s"])
+    from stockify.strategies import _catalogue
+    try:
+        schema = _catalogue.schema_of(s.get("kind"), s.get("ref"))
+    except Exception:                                                # a strategy that will not load has no default
+        return None
+    for row in schema or []:
+        if isinstance(row, dict) and row.get("name") == "interval_s":
+            return _whole_seconds(row.get("default"))
+    return None
+
+
+def _span_words(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        n = seconds // 86400
+        return f"{n} day{'s' if n > 1 else ''}"
+    if seconds % 60 == 0:
+        n = seconds // 60
+        return f"{n} minute{'s' if n > 1 else ''}"
+    return f"{seconds} seconds"
+
+
+def _span_adjective(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}-day"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}-minute"
+    return f"{seconds}-second"
+
+
 def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str | None, list, int | None, str | None]:
-    """(data_state, basis, bars, interval, notice). A pack that is gone is "pruned", one that cannot be read
+    """(data_state, basis, bars, interval, notice). `interval_s` is the caller's; None builds at the strategy's own
+    interval (`strategy_interval`), else a minute. A pack that is gone is "pruned", one that cannot be read
     "pack unreadable", no pack at all "no_pack"."""
+    strategy_s = strategy_interval(bundle)
+    want = interval_s or strategy_s
     rows = [p for p in (bundle.get("packs") or []) if isinstance(p, dict) and p.get("sha256")]
     fallback = (bundle.get("run") or {}).get("price_basis")
     if not rows:
@@ -263,11 +312,14 @@ def _pack_bars(bundle: dict, iid: int, interval_s: int | None) -> tuple[str, str
         anchors = chartbars.anchors_from_bundle(bundle, iid)
     except (KeyError, StopIteration, TypeError):
         anchors = {}
-    bars, got = chartbars.bars_from_records(records, iid, interval_s=interval_s, anchors=anchors)
+    bars, got = chartbars.bars_from_records(records, iid, interval_s=want, anchors=anchors)
     notice = None
     if got is not None and interval_s is not None and got != interval_s:
         notice = f"This run holds {got}-second bars only, not {interval_s}-second bars; they are shown instead."
-    return "ok", basis, bars, got if got is not None else (interval_s or DEFAULT_INTERVAL_S), notice
+    elif got is None and interval_s is not None and strategy_s is not None and interval_s != strategy_s:
+        notice = (f"These bars were rebuilt at {_span_words(interval_s)}; the strategy traded on "
+                  f"{_span_adjective(strategy_s)} bars.")
+    return "ok", basis, bars, got if got is not None else (want or DEFAULT_INTERVAL_S), notice
 
 
 def _window(starts: list[int], first_t: int | None, from_ns: int | None, to_ns: int | None) -> tuple[int, int, bool]:
@@ -286,6 +338,26 @@ def _window(starts: list[int], first_t: int | None, from_ns: int | None, to_ns: 
     i = min(max(0, at - MAX_BARS // 2), max(0, n - MAX_BARS))
     j = min(n, i + MAX_BARS)
     return i, j, j < n
+
+
+def _cut_for_caps(starts: list[int], i: int, j: int, more: bool, lo: int, hi: int | None,
+                  series: list[list[int]]) -> tuple[int, bool, bool]:
+    """(j, more, capped): the window's end, pulled back to a bar start when the markers, or the points of one plot,
+    in [lo, hi) would pass MAX_BARS. `series` holds each list of times, sorted. A cap that falls inside the first bar
+    cannot move the end (j stays one bar past i) and the caller drops the surplus."""
+    cut = None
+    for times in series:
+        k = bisect_left(times, lo)
+        end = len(times) if hi is None else bisect_left(times, hi)
+        if end - k > MAX_BARS:
+            at = times[k + MAX_BARS]
+            cut = at if cut is None else min(cut, at)
+    if cut is None:
+        return j, more, False
+    bar = bisect_right(starts, cut) - 1
+    if bar < j:
+        return max(bar, i + 1), True, True
+    return j, more, True
 
 
 def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None = None, to_ns: int | None = None,
@@ -321,6 +393,12 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
         state, basis, bars, interval, notice = _pack_bars(bundle, instrument_id, interval_s)
     starts = [b.start_ns for b in bars]
     i, j, truncated = _window(starts, mine[0]["t_ns"] if mine else None, from_ns, to_ns) if bars else (0, 0, False)
+    series = [s for s in _plots(folder) if s["instrument_id"] in (0, instrument_id)]
+    capped = False
+    if bars and j > i:
+        edge = starts[j] if truncated else to_ns
+        j, truncated, capped = _cut_for_caps(starts, i, j, truncated, starts[i], edge,
+                                             [[m["t_ns"] for m in mine], *([p[0] for p in s["points"]] for s in series)])
     shown = bars[i:j]
     next_from = starts[j] if truncated else None
 
@@ -335,6 +413,9 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
             if t < lo or (hi is not None and t >= hi):
                 omitted += 1
                 continue
+            if len(out_markers) >= MAX_BARS:                # the surplus of one bar that alone holds more than a page
+                omitted += 1
+                continue
             out_markers.append({**m, "bar_start_ns": wstarts[bisect_right(wstarts, t) - 1]})
     elif bars:                                      # a range that holds no bar: nothing to place a marker on
         lo, hi, out_markers, omitted = 0, 0, [], len(mine)
@@ -345,14 +426,17 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
         del m["instrument_id"]
 
     plots = []
-    for s in _plots(folder):
-        if s["instrument_id"] not in (0, instrument_id):
-            continue
+    for s in series:
         pts = [p for p in s["points"] if lo is None or (p[0] >= lo and (hi is None or p[0] < hi))]
+        if lo is not None:
+            pts = pts[:MAX_BARS]
         if pts:
             plots.append({**s, "points": pts})
     here = skipped.get(instrument_id, 0)
     notes = [notice] if notice else []
+    if capped:
+        notes.append(f"This stretch has more markers or plotted points than one page can show ({MAX_BARS:,}), so the "
+                     "chart is cut short; load the next part to continue.")
     if delivered:
         notes.append("Profit for contracts settled by delivery isn't shown per trade; the run's total in its metrics "
                      "includes it.")

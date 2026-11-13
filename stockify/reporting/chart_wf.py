@@ -22,6 +22,17 @@ from stockify.reporting import chart
 
 _KNOWN = ("done", "failed", "skipped", "pending")
 _NOT_TESTED = "not tested, "
+_NOT_MIXED = "not charted: different price basis or interval"
+
+
+def _session_open_s(wins: list[dict]) -> int | None:
+    """Seconds after IST midnight at which the cash session opens on the first window's first day (dated config), for
+    the page's gap shading; None when the config has no session for it."""
+    from stockify.data import calendar
+    try:
+        return calendar.continuous_open_s("CM", date.fromisoformat(wins[0]["from_d"]))
+    except (IndexError, ValueError, calendar.CalendarError):
+        return None
 
 
 class WfChartError(ValueError):
@@ -112,7 +123,7 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
     truncated, next_from = False, None
     chosen = instrument_id
     queried = found = 0
-    uncharted = no_trades = 0
+    uncharted = no_trades = mixed = 0
     prev_hi = None
     listed = []
     for w in wins:
@@ -145,13 +156,21 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
             listed[-1]["status"] = "no_trades"                   # this run has not traded that instrument
             no_trades += 1
             continue
+        if out["data_state"] == "ok" and basis is not None and interval is not None and (
+                out["basis"], out["interval_s"]) != (basis, interval):
+            listed[-1]["run_id"], listed[-1]["excluded"] = None, _NOT_MIXED      # never drawn on the same axis
+            mixed += 1
+            continue
         found += 1
         chosen = out["instrument_id"]
         states.append(out["data_state"])
         for i in out["instruments"]:
             instruments.setdefault(i["id"], i)
-        basis = basis or out["basis"]
-        interval = interval or out["interval_s"]
+        if out["data_state"] == "ok":
+            basis = basis or out["basis"]
+            interval = interval or out["interval_s"]
+        else:
+            basis = basis or out["basis"]
         if out["notice"] and out["notice"] not in notices:
             notices.append(out["notice"])
         pnl_complete = pnl_complete and out["pnl_complete"]
@@ -184,6 +203,10 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
     if uncharted:
         notices.append(f"{uncharted} of {len(wins)} windows have no chart: their test run failed, was skipped, is "
                        "gone or is left out of the summary.")
+    if mixed:
+        notices.append(f"{mixed} window{'s were' if mixed > 1 else ' was'} not charted: "
+                       f"{'their' if mixed > 1 else 'its'} price basis or bar interval differs from the first charted "
+                       "window's.")
     if no_trades:
         notices.append(f"{no_trades} window{'s' if no_trades > 1 else ''} did not trade this instrument, so "
                        f"{'they have' if no_trades > 1 else 'it has'} no markers here.")
@@ -195,4 +218,4 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
             "basis": basis, "interval_s": interval, "bars": bars, "markers": markers, "omitted_markers": omitted,
             "plots": list(plots.values()), "truncated": truncated, "next_from_ns": next_from, "data_state": state,
             "notice": " ".join(notices) or None, "pnl_complete": pnl_complete, "skipped_settlements": skipped,
-            "idle_settlements": idle, "windows": listed}
+            "idle_settlements": idle, "windows": listed, "session_open_s": _session_open_s(wins)}

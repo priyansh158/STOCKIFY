@@ -343,4 +343,4 @@ def walkforward_chart(job_id: str, instrument: int | None = Query(None, ge=0, le
                                          from_d=w["from_d"], to_d=w["to_d"], run_id=w["run_id"], status=w["status"],
                                          result=w["result"], no_sharpe=w["no_sharpe"], excluded=w["excluded"])
                for w in model["windows"]]
-    return WalkforwardChartDTO(**base.model_dump(), windows=windows)
+    return WalkforwardChartDTO(**base.model_dump(), windows=windows, session_open_s=model.get("session_open_s"))

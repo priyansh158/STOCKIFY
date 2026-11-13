@@ -848,6 +848,7 @@ export interface WalkforwardChartWindowDTO {
 
 export interface WalkforwardChartDTO extends RunChartDTO {
   windows: WalkforwardChartWindowDTO[];
+  session_open_s: number | null;
 }
 
 export interface SessionChartDTO extends RunChartDTO {
