@@ -330,7 +330,6 @@ def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int
     """Run every grid point through the pool (role `trial`) as one job and one family of its own. A locked holdout
     (no `unlock_reason`) or a pool that raises marks the job `failed` with the message and re-raises; a trial that
     fails is a row with its error, not an exception. `pool_run` is looked up late (pool.run_all) so tests can patch."""
-    from stockify.research.walkforward import select_best
     points = expand(spec)
     now = timeutil.now_ns() if now_ns is None else now_ns
     job_id = _job_id(spec.name, now)
@@ -342,7 +341,8 @@ def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int
         "created_ns": now, "folder": str(folder),
         "spec_json": json.dumps({"name": spec.name, "objective": spec.objective, "search": spec.search,
                                  "axes": spec.axes, "workers": spec.workers, "trials": len(points),
-                                 "base": spec.base, "unlock_given": unlock_reason is not None},
+                                 "base": {k: v for k, v in spec.base.items() if k != "unlock_holdout"},
+                                 "unlock_given": unlock_reason is not None},
                                 sort_keys=True, allow_nan=False)})
     try:
         jobs = []
@@ -371,7 +371,7 @@ def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int
             elif row["error"] is None:
                 row["error"] = "the run failed"
             rows.append(row)
-        best = select_best(rows, spec.objective)
+        best = registry.select_best(rows, spec.objective)
         res = SweepResult(job_id, spec.name, family, spec.objective, spec.axes, rows,
                           best["run_id"] if best else None)
         doc = json.dumps({"schema": RESULT_SCHEMA, "job_id": job_id, "name": spec.name, "family_id": family,
@@ -394,7 +394,8 @@ def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int
 def ranked(res: SweepResult) -> list[dict]:
     """Rows best first: eligible rows by objective (ties by grid index), then the rest by grid index."""
     ok = [r for r in res.rows if r["status"] == "done" and r["objective_value"] is not None]
-    rest = [r for r in res.rows if r not in ok]
+    taken = {id(r) for r in ok}
+    rest = [r for r in res.rows if id(r) not in taken]
     return sorted(ok, key=lambda r: (-r["objective_value"], r["index"])) + sorted(rest, key=lambda r: r["index"])
 
 

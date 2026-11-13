@@ -130,6 +130,14 @@ class RunSweepTests(SandboxedDBTest):
         rows = store.holdout_unlock_rows(res.family_id)
         self.assertEqual((len(rows), rows[0]["job_id"]), (1, res.job_id))
 
+    def test_the_stored_spec_never_holds_the_unlock_reason(self):
+        spec = spec_of()
+        spec.base["unlock_holdout"] = "a reason that must not be kept"
+        res, _ = self.go(spec=spec)
+        text = store.get_research_job(res.job_id)["spec_json"]
+        self.assertNotIn("a reason that must not be kept", text)
+        self.assertNotIn("unlock_holdout", json.loads(text)["base"])
+
     def test_pool_that_raises_marks_the_job_failed_and_reraises(self):
         with self.assertRaisesRegex(RuntimeError, "fell over"):
             self.go(fake=FakePool(boom_on=1))
@@ -257,6 +265,24 @@ class CliTests(SandboxedDBTest):
             self.assertEqual((code, len(fake.calls)), (0, 1))
             code, _, _ = self.cli("sweep", "--config", path, "--yes")
             self.assertEqual((code, len(fake.calls)), (0, 2))
+
+    def test_end_of_input_at_the_prompt_is_a_refusal_naming_yes(self):
+        path = self.write(values=range(1, 52))
+        fake = FakePool()
+        with mock.patch.object(pool, "run_all", fake), mock.patch("builtins.input", side_effect=EOFError):
+            code, _, err = self.cli("sweep", "--config", path, stdin_tty=True)
+        self.assertEqual((code, fake.calls), (2, []))
+        self.assertIn("--yes", err)
+
+    def test_workers_below_one_is_refused_at_the_command_line(self):
+        for bad in ("0", "-3"):
+            with self.subTest(bad=bad):
+                fake = FakePool()
+                with mock.patch.object(pool, "run_all", fake):
+                    code, _, err = self.cli("sweep", "--config", self.write(), "--workers", bad)
+                self.assertEqual((code, fake.calls), (2, []))
+                self.assertIn("--workers", err)
+        self.assertEqual(store.list_research_jobs(kind="sweep"), [])
 
     def test_fifty_trials_run_without_asking(self):
         with mock.patch.object(pool, "run_all", FakePool()):

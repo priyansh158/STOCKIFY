@@ -631,6 +631,9 @@ def _cmd_sweep(args) -> int:
     from pathlib import Path
     from stockify import runconfig
     from stockify.research import sweep
+    if args.workers is not None and args.workers < 1:
+        print(f"--workers must be a whole number of 1 or more, not {args.workers}", file=sys.stderr)
+        return 2
     try:
         spec = sweep.load_spec(Path(args.config))
         count = len(sweep.expand(spec))
@@ -640,7 +643,12 @@ def _cmd_sweep(args) -> int:
                 print(f"{count} trials is more than {sweep.CONFIRM_ABOVE}: pass --yes to run without being asked "
                       "(there is no terminal to ask on)", file=sys.stderr)
                 return 2
-            if input(f"Run {count} trials? [y/N] ").strip().lower() not in ("y", "yes"):
+            try:
+                answer = input(f"Run {count} trials? [y/N] ").strip().lower()
+            except EOFError:
+                print("no answer was given: pass --yes to run without being asked", file=sys.stderr)
+                return 2
+            if answer not in ("y", "yes"):
                 print("not run", file=sys.stderr)
                 return 2
         res = sweep.run_sweep(spec, unlock_reason=args.unlock_holdout, workers=args.workers)
