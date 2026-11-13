@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -151,14 +152,14 @@ class NoteTests(Scenarios):
     def test_sma_cross_long_short_notes_say_sold_short_or_flipped(self):
         orders = _rows(self.runs["sma_cross_short"] / "orders.csv")
         # one lot is 50: flat and level averages (10000, 10000) sells short; the cross up buys 100 (closes 50 short,
-        # opens 50 long); the cross down sells 100
+        # opens 50 long: the note names the new position, 50); the cross down sells 100 (new short of 50)
         self.assertEqual([(o["side"], o["qty"], o["status"], o["note"]) for o in orders], [
             ("SELL", "50", "COMPLETE",
              "Sold short 50 TESTFUT: the 2-bar average 100.00 is level with the 3-bar average 100.00"),
             ("BUY", "100", "COMPLETE",
-             "Flipped to long 100 TESTFUT: the 2-bar average 100.50 rose above the 3-bar average 100.33"),
+             "Flipped to long 50 TESTFUT: the 2-bar average 100.50 rose above the 3-bar average 100.33"),
             ("SELL", "100", "COMPLETE",
-             "Flipped to short 100 TESTFUT: the 2-bar average 100.75 fell below the 3-bar average 101.50")])
+             "Flipped to short 50 TESTFUT: the 2-bar average 100.75 fell below the 3-bar average 101.50")])
 
     def test_orb_long_notes(self):
         by = _by_tag(self.runs["orb"])
@@ -183,7 +184,8 @@ class NoteTests(Scenarios):
                                    "Sold 65 NP: short straddle at the 24,000.00 strike, expires 2026-03-04"])
         stops = [o["note"] for o in orders if o["tag"] == "stop"]
         # credit 65 x (100.00 + 100.00) = 13,000.00; the legs close at 160.00 each: 65 x 320.00 = 20,800.00 > 1.5 x 13,000.00
-        self.assertEqual(stops, ["Bought back 65: the options cost 20,800.00 to close, over 1.5x the 13,000.00 received"] * 2)
+        self.assertEqual(stops, [f"Bought back 65 {leg}: the options cost 20,800.00 to close, over 1.5x the 13,000.00 received"
+                                 for leg in ("NC", "NP")])
 
     def test_option_legs_notes(self):
         for name in ("short_straddle_stop", "iron_fly"):
@@ -198,7 +200,8 @@ class NoteTests(Scenarios):
                 self.assertTrue(stops)
                 for stop in stops:
                     sale = next(o for o in entries if o["instrument_id"] == stop["instrument_id"])
-                    self.assertEqual(stop["note"], f"Stop-loss for the {fmt_qty(int(stop['qty']))} sold: buys back "
+                    leg = sale["note"].split(": ")[0].split(" ")[-1]                  # the tradingsymbol of the sale
+                    self.assertEqual(stop["note"], f"Stop-loss for the {fmt_qty(int(stop['qty']))} {leg} sold: buys back "
                                      f"if price rises to {fmt_price(int(stop['trigger_paise']))}, 7% above the sale "
                                      f"at {fmt_price(int(sale['avg_price_paise']))}")
                 for o in orders:
@@ -271,15 +274,86 @@ class PlotTests(Scenarios):
 
     def test_orb_plots_range_levels_from_the_first_breakout_bar(self):
         plots = _rows(self.runs["orb"] / "plots.csv")
-        # the bars from 09:17 on (09:17, 09:18, 15:10, 15:11) carry the range: high 100.60, low 99.50
-        self.assertEqual([p["value"] for p in plots if p["name"] == "range_high"], ["10060"] * 4)
-        self.assertEqual([p["value"] for p in plots if p["name"] == "range_low"], ["9950"] * 4)
+        # the bars from 09:17 on carry the range (high 100.60, low 99.50) until the 15:10 time exit closes the day:
+        # 09:17 and 09:18 plot, the two bars after the exit do not (D-95: no plot once the position is closed)
+        self.assertEqual([p["value"] for p in plots if p["name"] == "range_high"], ["10060"] * 2)
+        self.assertEqual([p["value"] for p in plots if p["name"] == "range_low"], ["9950"] * 2)
         self.assertEqual({(p["kind"], p["instrument_id"]) for p in plots}, {("price", "1")})
-        self.assertEqual(len({p["t_ns"] for p in plots}), 4)
+        self.assertEqual(len({p["t_ns"] for p in plots}), 2)
+
+    def test_orb_plots_stop_when_the_day_is_closed_and_stay_under_the_point_cap(self):
+        """Ten full minute sessions: half the days stop out early, half hold to the 15:10 exit. No point is drawn
+        after the position is closed; the worst day times 250 sessions stays under the 200,000-point cap."""
+        from stockify import timeutil
+        events, stop_days = [], set(DAYS[1::2])
+        for d in DAYS:
+            for m in range(376):                                   # 09:15 .. 15:30
+                hh, mm = divmod(9 * 60 + 15 + m, 60)
+                hhmm = f"{hh:02d}:{mm:02d}"
+                if m < 15:
+                    events.append(minute(d, hhmm, 10000, 10050, 9950, 10000))
+                elif m == 15:
+                    events.append(minute(d, hhmm, 10040, 10120, 10040, 10100))          # breakout above 100.50
+                elif d in stop_days and m == 45:
+                    events.append(minute(d, hhmm, 10100, 10100, 9900, 9900))            # through the 99.50 stop
+                elif d in stop_days and m > 45:
+                    events.append(minute(d, hhmm, 9900, 9900, 9900, 9900))
+                else:
+                    events.append(minute(d, hhmm, 10100, 10100, 10100, 10100))
+        g = world(events, dates=DAYS, mis_cutoff={"CM": "15:20"})
+        with tempfile.TemporaryDirectory(dir=str(support.SANDBOX_ROOT)) as tmp:
+            out = _run(g, OpeningRangeBreakout(), {"symbol": "NSE:TEST", "range_minutes": 15, "qty": 10}, Path(tmp))
+            plots, fills = _rows(out / "plots.csv"), _rows(out / "fills.csv")
+        stop_fills = [f for f in fills if f["side"] == "SELL" and f["price_paise"] != "10100"]
+        self.assertEqual(len(stop_fills), 5)
+        per_day: dict[str, list[int]] = {}
+        for p in plots:
+            day = str(timeutil.ns_to_ist(int(p["t_ns"])).date())
+            per_day.setdefault(day, []).append(int(p["t_ns"]))
+        self.assertEqual(sorted(per_day), sorted(DAYS))
+        stop_t = {str(timeutil.ns_to_ist(int(f["t_ns"])).date()): int(f["t_ns"]) for f in stop_fills}
+        for d in DAYS:
+            exit_ns = timeutil.ist_ns(date.fromisoformat(d), "15:10")
+            self.assertLessEqual(max(per_day[d]), exit_ns, d)
+            if d in stop_days:
+                self.assertLessEqual(max(per_day[d]), stop_t[d], d)
+        longest = max(len(v) for v in per_day.values())                # points (both series) on the longest day
+        shortest = min(len(v) for v in per_day.values())
+        naive = 2 * 361 * len(DAYS)                                    # every post-range bar, both series
+        self.assertLess(len(plots), naive)
+        self.assertLess(shortest, longest // 2)                        # a stopped-out day draws far fewer points
+        self.assertLessEqual(longest, 2 * 340)                         # 09:30 to the exit: 340 bars, two series
+        self.assertLess(longest * 250, 200_000)                        # a year of days that all hold to the exit
 
     def test_buy_and_hold_plots_nothing(self):
         self.assertEqual((self.runs["buy_and_hold"] / "plots.csv").read_text(encoding="utf-8").strip(),
                          "t_ns,instrument_id,name,kind,value")
+
+
+class NearTieTests(unittest.TestCase):
+    """The words follow the exact averages; when the printed (truncated) paise are equal they say `just`."""
+
+    def test_near_ties_say_just_above_and_just_below(self):
+        # SMA2 / SMA3 on 10000 10001 10002: 10001.5 over 10001.0, both print 100.01; then 10001 10001 gives
+        # SMA2 10001.0 under SMA3 10001.33, both print 100.01
+        closes = [10000, 10001, 10002, 10001, 10001]
+        with tempfile.TemporaryDirectory(dir=str(support.SANDBOX_ROOT)) as tmp:
+            out = _run(world(walk(closes), dates=DAYS[:5]), SmaCross(), {"symbol": "NSE:TEST", "fast": 2, "slow": 3},
+                       Path(tmp))
+            notes = [o["note"] for o in _rows(out / "orders.csv")]
+        # 9,500,000 // (10002 * 103 // 100) = 922
+        self.assertEqual(notes, [
+            "Bought 922 NSE:TEST: the 2-bar average 100.01 rose just above the 3-bar average 100.01",
+            "Sold 922 NSE:TEST: the 2-bar average 100.01 fell just below the 3-bar average 100.01"])
+
+    def test_a_wider_gap_and_an_exact_tie_keep_their_words(self):
+        # the existing fixtures: 100.50 over 100.33 is "rose above"; the long-short run starts on an exact tie
+        with tempfile.TemporaryDirectory(dir=str(support.SANDBOX_ROOT)) as tmp:
+            out = _run(world(walk(SMA_CLOSES), dates=DAYS), SmaCross(), {"symbol": "NSE:TEST", "fast": 2, "slow": 3},
+                       Path(tmp))
+            notes = [o["note"] for o in _rows(out / "orders.csv")]
+        self.assertIn("rose above the 3-bar average", notes[0])
+        self.assertNotIn("just", notes[0] + notes[1])
 
 
 class ForwardingTests(unittest.TestCase):

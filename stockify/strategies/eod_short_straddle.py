@@ -83,9 +83,10 @@ class EodShortStraddle(Strategy):
             if Decimal(value) > self.stop * self.credit:
                 why = (f"the options cost {fmt_price(value)} to close, over {self.stop}x the "
                        f"{fmt_price(self.credit)} received")
+                names = {r["id"]: r["tradingsymbol"] for r in ctx._rows()}
                 for p in held:
                     ctx.place(p.instrument, "BUY", abs(p.qty), "NRML", "MARKET", protection=self.bp, tag="stop",
-                              note=f"Bought back {fmt_qty(abs(p.qty))}: {why}")
+                              note=f"Bought back {fmt_qty(abs(p.qty))} {names[p.instrument]}: {why}")
                 ctx.log("INFO", f"stop: legs worth {value} vs credit {self.credit}")
                 self.legs = []
             return

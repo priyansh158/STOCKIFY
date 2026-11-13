@@ -58,15 +58,16 @@ class SmaCross(Strategy):
         if delta == 0:
             return
         qty = fmt_qty(abs(delta))
-        move = "rose above" if fast > slow else "fell below" if fast < slow else "is level with"
+        near = " just" if int(fast) == int(slow) else ""          # the printed paise are equal, the averages are not
+        move = f"rose{near} above" if fast > slow else f"fell{near} below" if fast < slow else "is level with"
         why = (f"the {self.fast}-bar average {fmt_price(int(fast))} {move} "
                f"the {self.slow}-bar average {fmt_price(int(slow))}")
         if delta > 0:
-            lead = f"Bought {qty} {self.symbol}" if held >= 0 else f"Flipped to long {qty} {self.symbol}"
+            lead = f"Bought {qty} {self.symbol}" if held >= 0 else f"Flipped to long {fmt_qty(want)} {self.symbol}"
             ctx.place(self.iid, "BUY", delta, self.product, "MARKET", tag="entry" if held >= 0 else "flip",
                       note=f"{lead}: {why}")
         else:
-            lead = (f"Sold {qty} {self.symbol}" if want >= 0 else f"Flipped to short {qty} {self.symbol}"
+            lead = (f"Sold {qty} {self.symbol}" if want >= 0 else f"Flipped to short {fmt_qty(-want)} {self.symbol}"
                     if held > 0 else f"Sold short {qty} {self.symbol}")
             ctx.place(self.iid, "SELL", -delta, self.product, "MARKET", tag="exit" if want >= 0 else "flip",
                       note=f"{lead}: {why}")

@@ -162,7 +162,8 @@ class OptionLegs(Strategy):
         raw = Decimal(order.avg_price) * (1 + self.stop_pct)
         trigger = int((raw / tick).to_integral_value(rounding=ROUND_CEILING)) * tick
         pct = format((self.stop_pct * 100).normalize(), "f")             # "30", not 3E+1
-        note = (f"Stop-loss for the {fmt_qty(order.filled_qty)} sold: buys back if price rises to "
+        name = next(row["tradingsymbol"] for row in ctx._rows() if row["id"] == iid)
+        note = (f"Stop-loss for the {fmt_qty(order.filled_qty)} {name} sold: buys back if price rises to "
                 f"{fmt_price(trigger)}, {pct}% above the sale at {fmt_price(order.avg_price)}")
         self.stops[iid] = ctx.place(iid, "BUY", order.filled_qty, "NRML", "SL-M", trigger=trigger,
                                     protection=self.protection_bp, tag="stop", note=note)

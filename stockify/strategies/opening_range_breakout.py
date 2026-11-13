@@ -15,6 +15,7 @@ from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class OpeningRangeBreakout(Strategy):
+    closed = False                      # the day's position is closed (or the time exit passed): no more range lines
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
         {'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to trade intraday, e.g. NSE:RELIANCE'},
@@ -40,6 +41,7 @@ class OpeningRangeBreakout(Strategy):
         self.open_ns = timeutil.ist_ns(self.day, "09:15")
         self.hi = self.lo = None
         self.traded = False
+        self.closed = False
         self.entry_id = None
         self.stop_side = None
         self.stop_trigger = 0
@@ -57,7 +59,7 @@ class OpeningRangeBreakout(Strategy):
             self.hi = bar.high if self.hi is None else max(self.hi, bar.high)
             self.lo = bar.low if self.lo is None else min(self.lo, bar.low)
             return
-        if self.hi is None:
+        if self.hi is None or self.closed:
             return
         ctx.plot("range_high", self.hi, instrument=self.iid)     # paise: the range as the bars after it see it
         ctx.plot("range_low", self.lo, instrument=self.iid)
@@ -89,6 +91,9 @@ class OpeningRangeBreakout(Strategy):
                     else f"Stop-loss for the {qty} sold short: buys back if price rises to {trigger}")
             self.stop_ids.append(ctx.place(self.iid, self.stop_side, fill.qty, "MIS", "SL-M",
                                            trigger=self.stop_trigger, tag="orb_stop", note=note))
+        elif fill.order_id in self.stop_ids:
+            pos = ctx.position(self.iid, "MIS")                  # a stop filled: the day is closed once flat
+            self.closed = not (pos and pos.qty)
 
     # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
     def save_state(self) -> dict:
@@ -100,6 +105,7 @@ class OpeningRangeBreakout(Strategy):
         self.day = date.fromisoformat(self.day) if self.day else None
 
     def on_timer(self, ctx, timer_id):  # noqa: ANN001
+        self.closed = True                                      # the time exit ends the day's lines
         for stop_id in self.stop_ids:
             ctx.cancel(stop_id)
         pos = ctx.position(self.iid, "MIS")
