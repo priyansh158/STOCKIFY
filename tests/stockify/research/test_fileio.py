@@ -34,3 +34,23 @@ class AtomicWriteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AtomicWriteBytesTests(unittest.TestCase):
+    def test_bytes_replace_whole_file_and_leave_no_temp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "x.zip"
+            fileio.atomic_write_bytes(target, b"old\x00\xff")
+            fileio.atomic_write_bytes(target, b"new\r\n\x00")
+            self.assertEqual(target.read_bytes(), b"new\r\n\x00")
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["x.zip"])
+
+    def test_failed_bytes_write_keeps_old_and_no_temp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "x.zip"
+            fileio.atomic_write_bytes(target, b"old")
+            with mock.patch.object(os, "replace", side_effect=OSError("disk gone")):
+                with self.assertRaises(OSError):
+                    fileio.atomic_write_bytes(target, b"new")
+            self.assertEqual(target.read_bytes(), b"old")
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["x.zip"])

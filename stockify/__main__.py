@@ -15,7 +15,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "export": ("M6", "export a run"),
     "sweep": ("M6", "parameter sweep"),
     "walkforward": ("M6", "walk-forward analysis"),
     "sensitivity": ("M6", "cost and fill sensitivity"),
@@ -844,6 +843,19 @@ def _cmd_compare_runs(args) -> int:
     return 0
 
 
+def _cmd_export(args) -> int:
+    from pathlib import Path
+
+    from stockify.reporting import export
+    try:
+        out = export.build(args.run_id, with_packs=args.with_packs, out=Path(args.out) if args.out else None)
+    except export.ExportError as e:
+        print(f"stockify export: {e}", file=sys.stderr)
+        return 1
+    print(out)
+    return 0
+
+
 def _cmd_capture_charges(args) -> int:
     from pathlib import Path
 
@@ -1047,6 +1059,11 @@ def main(argv: list[str] | None = None) -> int:
     cr = sub.add_parser("compare", help="put 2 to 6 finished runs side by side (metrics, equity, config differences)")
     cr.add_argument("runs", nargs="+", metavar="RUN_ID", help="2 to 6 run ids")
     cr.set_defaults(func=_cmd_compare_runs)
+    ex = sub.add_parser("export", help="write a finished run as a reproducible zip (never holds a secret)")
+    ex.add_argument("run_id", metavar="RUN_ID")
+    ex.add_argument("--with-packs", action="store_true", help="also include the event packs the run used")
+    ex.add_argument("--out", help="write the zip here instead of the exports folder")
+    ex.set_defaults(func=_cmd_export)
     ca = sub.add_parser("compare-artifacts", help="diff two run folders' deterministic artifacts")
     ca.add_argument("run_a")
     ca.add_argument("run_b")

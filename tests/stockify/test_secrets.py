@@ -109,6 +109,20 @@ class SecretsTest(unittest.TestCase):
         self.assertIn("STOCKIFY/logs/x.log:2", str(ctx.exception))
         self.assertNotIn(SECRET, str(ctx.exception))
 
+    def test_a_run_export_holds_no_planted_secret(self):
+        """U-10 (DMF 6.2): an exported zip, unpacked, is clean of the planted secret (full cases: test_export.py)."""
+        import zipfile
+        from stockify import paths, store
+        from tests.stockify.research.fixtures import make_run
+        secret = plant_secrets(self)
+        make_run("sec1", None, with_folder=True)
+        (paths.run_dir("sec1") / "events_log.txt").write_text(secret, encoding="utf-8")
+        from stockify.reporting import export
+        out = export.build("sec1")
+        with zipfile.ZipFile(out) as z:
+            for n in z.namelist():
+                self.assertNotIn(secret.encode(), z.read(n))
+
     def test_the_token_file_itself_is_skipped(self):
         secret = plant_secrets(self)
         self.assertTrue((stockify_paths.state_dir() / TOKEN_FILE).exists())

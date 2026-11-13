@@ -1,0 +1,166 @@
+"""DMF 6.2: export a finished run as a reproducible zip that can never hold a secret.
+
+Data leaves the machine here, so three rules hold: only the names in `ALLOWED` (plus the generated summary.json and,
+on request, the pack files the bundle names) are ever read; every member's bytes and name are scanned for a secret
+before anything is written (`check_no_secret`); and the zip is built in memory and written in one atomic step, so a
+refusal leaves no file. The zip is byte-identical for the same run: members sorted, fixed timestamp, fixed level.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import zipfile
+from io import BytesIO
+from pathlib import Path
+from typing import Iterable, Mapping
+
+from stockify import numerics, paths, store
+from stockify.research import fileio
+
+ALLOWED = ("bundle.json", "run.json", "manifest.json", "metrics.json", "determinism.json", "orders.csv",
+           "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv", "margin_daily.csv",
+           "report.md", "equity.png")
+# Deliberately absent: events_log.txt (free text from strategies), request.json, runner.pid, research.json,
+# sensitivity.json, and anything else that happens to sit in the folder.
+
+_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+_LEVEL = 6
+_SHA = re.compile(r"[0-9a-f]{64}")
+_MIN_LITERAL = 4
+_SECRET_RE = re.compile(rb"api[_-]?secret|access[_-]?token|enctoken|request[_-]?token|Bearer\s+\S+", re.IGNORECASE)
+_TOKEN_FILE = "kite_token.json"
+
+
+class ExportError(Exception):
+    """A refusal. `code`: bad_id, not_found, not_done, pack_missing or secret (the API maps them to 404/409)."""
+
+    def __init__(self, message: str, code: str = "refused"):
+        super().__init__(message)
+        self.code = code
+
+
+# ── the secret scanner (one function, used by the build and by the tests) ────────────────────────────────────────
+
+def secret_literals() -> tuple[str, ...]:
+    """The literal secret values known to this process: KITE_API_KEY and KITE_API_SECRET from the environment and
+    every string value in the token file. Read only to compare; never logged or returned in an error."""
+    found: list[str] = []
+    for name in ("KITE_API_KEY", "KITE_API_SECRET"):
+        v = os.environ.get(name, "").strip()
+        if len(v) >= _MIN_LITERAL:
+            found.append(v)
+    try:
+        import stockify_paths
+        text = (stockify_paths.state_dir() / _TOKEN_FILE).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        text = ""
+    if text.strip():
+        try:
+            values = [v for v in _walk_strings(json.loads(text))]
+        except ValueError:
+            values = [text.strip()]
+        found.extend(v for v in values if len(v) >= _MIN_LITERAL)
+    return tuple(dict.fromkeys(found))
+
+
+def _walk_strings(node) -> Iterable[str]:  # noqa: ANN001
+    if isinstance(node, str):
+        yield node.strip()
+    elif isinstance(node, dict):
+        for v in node.values():
+            yield from _walk_strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_strings(v)
+
+
+def find_secret(members: Mapping[str, bytes], *, literals: Iterable[str] | None = None) -> str | None:
+    """The name of the first member (sorted) whose name or bytes hold a secret literal or secret-shaped text, else
+    None. Never returns or prints the matched text."""
+    needles = [s.encode("utf-8") for s in (secret_literals() if literals is None else literals) if s]
+    for name in sorted(members):
+        blob = name.encode("utf-8", "surrogatepass") + b"\n" + bytes(members[name])
+        if _SECRET_RE.search(blob) or any(n in blob for n in needles):
+            return name
+    return None
+
+
+def check_no_secret(members: Mapping[str, bytes], *, literals: Iterable[str] | None = None) -> None:
+    hit = find_secret(members, literals=literals)
+    if hit is not None:
+        raise ExportError(f"the export would contain something that looks like a secret: {hit}", "secret")
+
+
+# ── the build ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _json(text: str | None, default):  # noqa: ANN001, ANN202
+    try:
+        return json.loads(text) if text else default
+    except ValueError:
+        return default
+
+
+def _bundle_packs(folder: Path) -> list[str]:
+    """The pack hashes the bundle names, in bundle order; anything that is not a 64-hex hash is refused (it would
+    become a file name)."""
+    p = folder / "bundle.json"
+    if not p.is_file() or p.is_symlink():
+        return []
+    data = _json(p.read_text(encoding="utf-8"), {})
+    rows = data.get("packs", []) if isinstance(data, dict) else []
+    shas = []
+    for row in rows if isinstance(rows, list) else []:
+        sha = row.get("sha256") if isinstance(row, dict) else None
+        if not (isinstance(sha, str) and _SHA.fullmatch(sha)):
+            raise ExportError("the bundle names a pack that is not a 64-digit hash", "refused")
+        shas.append(sha)
+    return shas
+
+
+def build(run_id: str, *, with_packs: bool = False, out: Path | None = None) -> Path:
+    """Write the zip of a finished run and return its path (default `paths.export_path`)."""
+    try:
+        folder = paths.run_path(run_id)
+        target = Path(out) if out is not None else paths.export_path(run_id, with_packs)
+    except ValueError:
+        raise ExportError(f"not a valid run id: {str(run_id)[:60]!r}", "bad_id") from None
+    row = store.get_run(run_id)
+    if row is None or not folder.is_dir():
+        raise ExportError(f"no test run {run_id!r} (or its folder was removed)", "not_found")
+    if row.get("status") != "done":
+        raise ExportError(f"run {run_id!r} is {row.get('status')!r}; only a finished run can be exported", "not_done")
+
+    members: dict[str, bytes] = {}
+    for name in ALLOWED:
+        p = folder / name
+        if p.is_file() and not p.is_symlink():
+            members[name] = p.read_bytes()
+
+    pack_rows = []
+    for sha in dict.fromkeys(_bundle_packs(folder)):
+        pack = paths.packs_dir() / f"{sha}.evt"
+        size = pack.stat().st_size if pack.is_file() else None
+        pack_rows.append({"sha256": sha, "bytes": size, "included": with_packs})
+        if with_packs:
+            if size is None or pack.is_symlink():
+                raise ExportError(f"pack {sha} named by the run is not in the pack folder", "pack_missing")
+            members[f"packs/{sha}.evt"] = pack.read_bytes()
+
+    summary = {"run_id": run_id, "config": _json(row.get("config_json"), {}), "metrics": _json(row.get("metrics_json"), {}),
+               "labels": _json(row.get("labels_json"), []), "family_id": row.get("family_id"), "role": row.get("role"),
+               "packs": pack_rows}
+    members["summary.json"] = numerics.dumps_canonical(summary).encode("utf-8")
+
+    check_no_secret(members)                                 # before a single byte is written anywhere
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name in sorted(members):
+            info = zipfile.ZipInfo(name, _ZIP_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = 0o600 << 16
+            z.writestr(info, members[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=_LEVEL)
+    fileio.atomic_write_bytes(target, buf.getvalue())
+    return target
