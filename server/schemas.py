@@ -478,6 +478,29 @@ class RunResearchDTO(BaseModel):
     plain: dict[str, str]
 
 
+class SensitivityRowDTO(BaseModel):
+    key: str
+    axis: str
+    label: str
+    run_id: str | None = None
+    status: str
+    net_pnl_paise: int | None = None
+    sharpe: float | None = None
+    delta_net_paise: int | None = None
+    error: str | None = None
+
+
+class SensitivityDTO(BaseModel):
+    run_id: str
+    job_id: str
+    rows: list[SensitivityRowDTO]
+    baseline_net_paise: int
+    fragile: bool
+    verdict: str
+    reasons: list[str]
+    plain: str
+
+
 class TrialRowDTO(BaseModel):
     run_id: str
     name: str | None = None

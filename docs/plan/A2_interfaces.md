@@ -292,6 +292,7 @@ All money fields are integer paise; times are UTC ns plus an ISO IST string for 
 | `POST /api/tests/{id}/cancel` | Kill a queued or running run | M3.14 |
 | `GET /api/tests/{id}/export` | Zip export (CSV + JSON) | M6.2 |
 | `GET /api/tests/{id}/research` | A run's deflated Sharpe (with N, V, rank), bootstrap intervals, plain sentences; 404 for an unknown run. May write the derived `research.json` cache | M6.4 / M6.8 |
+| `GET /api/tests/{id}/sensitivity` | The stored `sensitivity.json` (rows, verdict fragile / robust / inconclusive / already_losing, reasons) plus one plain sentence; read-only; 404 for an unknown run or "not run yet; run `python -m stockify sensitivity --run <id>`" (also for an unreadable file) | M6.7 / FW 6.4 |
 | `GET /api/research/families` | Trial families with N, best run and its DSR (`offset`/`limit`) | M6.4 |
 | `GET /api/research/families/{family_id}` | One family's tries, other runs, sessions, holdout unlocks (the id contains `/`; 404 unknown) | M6.4 |
 | `POST /api/trade/sessions` | Create a paper session → `{session_id}` | M5.12 |

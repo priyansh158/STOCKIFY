@@ -264,5 +264,58 @@ class RegimeSentenceSweepTests(unittest.TestCase):
                 self.assertNotIn("take with care", s)
 
 
+def _sens(verdict, base, costs=("done", None), ticks=("done", None), ckey="costs_x1.5", tkey="slip_plus1"):
+    """A SensitivityResult whose 1.5-times-costs and +1-tick rows have the given (status, net) pairs."""
+    from stockify.research.sensitivity import SensitivityResult, SensitivityRow
+    rows = [SensitivityRow("baseline", "baseline", "Baseline", "r0", "baseline", base, None, None, None)]
+    for key, axis, (st, net) in ((ckey, "costs", costs), (tkey, "slippage", ticks)):
+        rows.append(SensitivityRow(key, axis, key, None if st != "done" else "x", st, net, None,
+                                   None if net is None else net - base, None if st == "done" else "it broke"))
+    return SensitivityResult("r0", "j", rows, base, verdict == "fragile", verdict, [])
+
+
+class FragileSentenceTests(unittest.TestCase):
+    K = dict(fragile_cost_scale="1.5", fragile_extra_ticks=1)
+
+    def test_fragile_sentence_for_each_verdict(self):
+        k = self.K
+        f = plain.fragile_sentence(_sens("fragile", 4_120_000, costs=("done", -310_000), ticks=("done", 100)), **k)
+        self.assertEqual(f, "Breaks if all costs rise by half: net P&L turns from +₹41,200 to -₹3,100.")
+        both = plain.fragile_sentence(_sens("fragile", 4_120_000, costs=("done", -310_000), ticks=("done", -5_000)), **k)
+        self.assertEqual(both, "Breaks if all costs rise by half: net P&L turns from +₹41,200 to -₹3,100. "
+                               "It also breaks with one extra tick of slippage: net P&L turns from +₹41,200 to -₹50.")
+        r = plain.fragile_sentence(_sens("robust", 4_120_000, costs=("done", 2_000_000), ticks=("done", 3_000_000)), **k)
+        self.assertEqual(r, "Survives 1.5 times all costs and one extra tick of slippage: net P&L does not turn negative "
+                            "(+₹20,000 and +₹30,000, from +₹41,200).")
+        a = plain.fragile_sentence(_sens("already_losing", -310_000), **k)
+        self.assertEqual(a, "Already losing money (-₹3,100), so there is nothing to break; it is not called fragile.")
+        i = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("failed", None), ticks=("done", 3_000_000)), **k)
+        self.assertEqual(i, "Can't say yet: the 1.5-times-costs run didn't finish, so it isn't called robust.")
+        i2 = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("failed", None),
+                                          ticks=("not_applicable", None)), **k)
+        self.assertEqual(i2, "Can't say yet: the 1.5-times-costs and one-extra-tick runs didn't finish, "
+                             "so it isn't called robust.")
+
+    def test_fragile_sentence_names_the_axis_and_both_rupee_figures(self):
+        k = self.K
+        only_ticks = plain.fragile_sentence(_sens("fragile", 4_120_000, costs=("done", 100_000),
+                                                  ticks=("done", -310_000)), **k)
+        self.assertEqual(only_ticks, "Breaks with one extra tick of slippage: net P&L turns from +₹41,200 to -₹3,100.")
+        self.assertNotIn("costs", only_ticks)
+        two = plain.fragile_sentence(_sens("fragile", 4_120_000, costs=("done", -310_000), ticks=("done", 5),
+                                              ckey="costs_x2", tkey="slip_plus2"),
+                                     fragile_cost_scale="2", fragile_extra_ticks=2)
+        self.assertTrue(two.startswith("Breaks if all costs double: "), two)
+        for text in (only_ticks, two):
+            self.assertNotIn("brokerage", text.lower())
+            self.assertNotIn("None", text)
+            self.assertNotIn("nan", text.lower())
+            self.assertEqual(_bad_tokens(text), [], text)
+
+    def test_unknown_verdict_raises(self):
+        with self.assertRaises(ValueError):
+            plain.fragile_sentence(_sens("maybe", 1), **self.K)
+
+
 if __name__ == "__main__":
     unittest.main()

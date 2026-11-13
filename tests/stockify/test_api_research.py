@@ -11,6 +11,7 @@ import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
 import stockify.store as store
+from stockify import paths
 from stockify.data import refdata
 from stockify.research import report
 from tests.stockify.research.fixtures import make_run
@@ -120,6 +121,67 @@ class ResearchApiTests(SandboxedDBTest):
             r = self.client.get(url, headers={"Host": "evil.example"})
             self.assertEqual(r.status_code, 400)
             self.assertNotIn("dsr", r.text)
+
+
+@support.requires_fastapi
+class SensitivityApiTests(SandboxedDBTest):
+    db_modules = (store, refdata)
+
+    def setUp(self):
+        super().setUp()
+        from fastapi.testclient import TestClient
+        from server.main import app
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
+        make_run("s0", None, with_folder=True, name="s0")
+        self.folder = paths.run_path("s0")
+
+    def _write(self, text):
+        (self.folder / "sensitivity.json").write_text(text, encoding="utf-8")
+
+    def _doc(self, **over):
+        def row(key, axis, st, net, err=None):
+            return {"key": key, "axis": axis, "label": key, "run_id": None if net is None else "x", "status": st,
+                    "net_pnl_paise": net, "sharpe": float("nan") if net is not None else None,
+                    "delta_net_paise": None if net is None else net - 4_120_000, "error": err}
+        d = {"schema": "stockify.sensitivity/1", "run_id": "s0", "job_id": "sens-s0", "verdict": "fragile",
+             "fragile": True, "reasons": ["r"], "baseline_net_paise": 4_120_000, "fragile_cost_scale": "1.5",
+             "fragile_extra_ticks": 1,
+             "rows": [row("baseline", "baseline", "baseline", 4_120_000), row("costs_x1.5", "costs", "done", -310_000),
+                      row("slip_plus1", "slippage", "done", 3_000_000)]}
+        d.update(over)
+        return json.dumps(d)          # the NaN sharpe is written as the bare token NaN, as a hand-edit might
+
+    def test_api_returns_404_until_run(self):
+        r = self.client.get("/api/tests/s0/sensitivity")
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(r.json()["detail"], "not run yet; run `python -m stockify sensitivity --run s0`")
+        self.assertEqual(self.client.get("/api/tests/nope/sensitivity").status_code, 404)
+        for bad in ("{not json", "[]", json.dumps({"rows": 3}), self._doc(verdict="maybe"), self._doc(run_id="other")):
+            self._write(bad)
+            r = self.client.get("/api/tests/s0/sensitivity")
+            self.assertEqual(r.status_code, 404, bad)
+            self.assertIn("not run yet", r.json()["detail"])
+
+    def test_api_returns_the_stored_result_without_nan(self):
+        self._write(self._doc())
+        r = self.client.get("/api/tests/s0/sensitivity")
+        self.assertEqual(r.status_code, 200)
+        json.loads(r.text, parse_constant=lambda c: self.fail(c))
+        j = r.json()
+        self.assertEqual(list(j), ["run_id", "job_id", "rows", "baseline_net_paise", "fragile", "verdict", "reasons",
+                                   "plain"])
+        self.assertEqual((j["run_id"], j["verdict"], j["fragile"], j["baseline_net_paise"]),
+                         ("s0", "fragile", True, 4_120_000))
+        self.assertEqual(list(j["rows"][0]), ["key", "axis", "label", "run_id", "status", "net_pnl_paise", "sharpe",
+                                              "delta_net_paise", "error"])
+        self.assertIsNone(j["rows"][0]["sharpe"])
+        self.assertEqual(j["plain"], "Breaks if all costs rise by half: net P&L turns from +₹41,200 to -₹3,100.")
+
+    def test_api_refuses_an_unsafe_run_id(self):
+        for rid in ("..", "%2e%2e", "a%5cb", "C%3A", "x" * 200, "..%2f..%2fetc"):
+            r = self.client.get(f"/api/tests/{rid}/sensitivity")
+            self.assertEqual(r.status_code, 404, rid)
+            self.assertNotIn("Traceback", r.text)
 
 
 if __name__ == "__main__":
