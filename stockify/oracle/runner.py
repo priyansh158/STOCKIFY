@@ -27,6 +27,7 @@ from datetime import date as _date
 from stockify import numerics, timeutil
 from stockify.oracle import costs as costs_mod
 from stockify.oracle import notes
+from stockify.oracle.bars import bucket_start, volume_delta
 from stockify.oracle.ledger import Ledger
 from stockify.oracle.margin import DERIVATIVES, FlatMargin
 from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, extra_ticks_of, participation_cap, path_points, protection_limit,
@@ -1220,16 +1221,16 @@ class Engine:
             if cs is None or t < cs:
                 continue
             step = isec * 1_000_000_000
-            start = cs + (t - cs) // step * step
+            start = bucket_start(cs, t, isec)
             acc = self.built.setdefault((iid, isec), {})
-            dv = vol if prev_vol is None else max(0, vol - prev_vol) if vol is not None else 0
+            dv = volume_delta(vol, prev_vol)
             if start not in acc:
-                acc[start] = [price, price, price, price, dv or 0, 0]
+                acc[start] = [price, price, price, price, dv, 0]
                 self.push(start + step, BAR_BUILT, "BAR_BUILT", (iid, isec, start))
             else:
                 b = acc[start]
                 b[1], b[2], b[3] = max(b[1], price), min(b[2], price), price
-                b[4] += dv or 0
+                b[4] += dv
 
     def _on_gap(self, rec: dict) -> None:
         targets = [rec["instrument_id"]] if rec["scope"] == 1 else list(self.market)
