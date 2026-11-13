@@ -109,6 +109,16 @@ cd web; npm run lint; npm run build
 - [x] CH 6.17 The paper session page shows its live chart ("Price and trades", `GET /api/trade/sessions/{id}/chart` through `PriceChartLazy`): today by default, a day picker from `days`, a "Paper trading: no real orders" badge, and polling every 5 s only while the day is open and the tab visible (pure `pollDelay` in `web/src/lib/chart.ts`; no WebSocket). A day with no recording says "No recording yet for this day", an unreadable one says so (`prunedWords`), and an incomplete profit and loss shows the notice.
 - [x] CH 6.18 The walk-forward page shows "Out-of-sample trades" under the stitched curve: the test windows' bars and the stitched fills from `GET /api/research/walkforward/{job_id}/chart`, each window a band (`windowBands`, `shadePoints` in `web/src/lib/chart.ts`), a window with nothing to draw (excluded, no trades, failed) shaded in the warning tint and named in plain words ("Window 3 (out of sample): excluded: <the server's reason>"), the trades list kept (the page has no Fills table); checked by `test_chart_checks.py`.
 - [x] CH 6.19 The sweep page charts the selected trial under the heatmap (`?trial=<run id>`, kept across a reload; no `trial` means the best trial; an unknown or unfinished one shows an empty state). A heat-grid cell (Enter or Space) and a table row's "Show chart" pick it; the chart is `GET /api/tests/{run_id}/chart` through `PriceChartLazy`, with the trades list on. Pure helpers `resolveTrial`, `trialWords`, `trialHref` in `web/src/lib/chart.ts`.
+- [x] CH 6.20 The charts are reviewed against the design and recorded (`RECON.md`; spec compliance, supply chain, differential review and c-review reports in `.superpowers/audits/`). The owner's look at 1024 px is still open (STOP, not a blocker).
+- [x] CH 6.21 Engine arithmetic on pack and bundle values is checked, the same refusal in both runners.
+- [x] CH 6.22 A carried order note is cleaned on load in both runners.
+- [x] CH 6.23 `lightweight-charts` moves from 5.2.1 to 5.3.0, pinned exactly with `fancy-canvas@2.1.0`; `next` and `eslint-config-next` move to 16.4.6 (D-110; `next-upgrade-2026-11-13.md`).
+- [x] CH 6.24 A tick run's chart is built at the strategy's own bar interval (`BAR_INTERVAL_S`, D-112), a page is capped on markers and plot points (D-115), and the C++ twins keep their in-day state across a restart.
+- [x] CH 6.25 `clean_note` removes Unicode bidi controls in both runners (D-127); a walk-forward chart never mixes price bases or intervals (D-115).
+- [x] CH 6.26 An id that is a dot segment is refused in an API path (D-113).
+- [x] CH 6.27 The data page pages back to older windows by whole windows (D-114).
+- [x] CH 6.28 The chart spec and plan say 5.3.0 and D-110 to D-115 are recorded.
+- [x] CH 6.29 No silent minute bars: an unrecorded bar interval is said, fixed-subscription strategies declare `BAR_INTERVAL_S`, a BAR pack's fallback is said.
 
 ## Definition of done
 

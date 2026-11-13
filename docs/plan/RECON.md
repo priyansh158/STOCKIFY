@@ -1311,3 +1311,22 @@ What the code really looks like after C1-C7 (`8985275~1..b43f2da`, plus one fix)
 - **c-review is deferred** to the final whole-branch review (owner ruling, 2026-11-12). The full suite is run by the
   integrator on the integration branch; this task ran focused filters only.
 - The reviews are in `.superpowers/audits/charts-C1-C7-engine-reviews.md`.
+
+## 2026-11-13 — candlestick charts close (CH 6.20)
+
+What the chart code looks like now (integration branch `stockify/m6-integration`, from `102dd7c`).
+
+- **Engine and runners.** `ctx.place(note=)` and `ctx.plot` exist in both runners (D-92, D-94); `clean_note` also drops Unicode bidi controls (D-127, CH 6.25); a carried note is cleaned on load (CH 6.22); engine arithmetic on pack and bundle values is checked, with the same refusal in both runners (CH 6.21); the C++ twins keep their in-day state across a restart (CH 6.24). Shipped strategies write the D-95 sentences. `BAR_INTERVAL_S` is declared by `opening_range_breakout` (60) and `eod_short_straddle` (86400); the HOWTO listing now shows it (XI 6.38).
+- **Server side.** `stockify/oracle/bars.py` (D-123), `stockify/reporting/chartbars.py`, `chart.py` (`run_chart`, D-124, D-112, D-115), `chart_wf.py` (D-126, no mixing of bases or intervals), `chart_session.py` (D-103); three routes `GET /api/tests/{id}/chart`, `GET /api/research/walkforward/{job_id}/chart`, `GET /api/trade/sessions/{id}/chart` (D-125; A2 rows exist for all three).
+- **Web side.** `lightweight-charts` 5.3.0 pinned exactly with `fancy-canvas` 2.1.0 (D-110); `web/src/lib/chart.ts` (pure helpers, checked by `test_chart_checks.py`), `chart_api.ts`, `pathSeg.ts` (D-113), `components/PriceChart.tsx` behind `PriceChartLazy.tsx` (client only), `TrialChart.tsx` (sweep), `WfChart.tsx` (walk-forward); the run page order is D-111; the `/data` page pages back by whole windows (D-114). The footer carries the TradingView notice and `attributionLogo` stays on.
+- **Audits (reports in `.superpowers/audits/`; none re-run for this close).**
+  - `spec-compliance-charts-2026-11-13.json`: sampled, 10 of 1073 requirements checked, 8 hold. REQ-02 (the spec said 5.2.1, the owner moved to 5.3.0 under D-110) is a documents fix, done in CH 6.28. Undocumented U-1 (a tick-run chart was always on 60 s bars) fixed in G2 (D-112); U-2 (re-bucketing without a notice) fixed with a notice; U-3 (a walk-forward chart took basis and interval from its first window) fixed, mixing is refused (D-115). About 1,060 requirements were not checked: their status is unknown, not compliant.
+  - `next-upgrade-2026-11-13.md` (supply chain, `next` and `eslint-config-next` 16.2.6 to 16.4.6, `lightweight-charts` 5.2.1 to 5.3.0): all 20 `next` advisories cleared, direct dependencies with advisories 1 to 0, production transitive 5 to 2 (`baseline-browser-mapping`, `source-map-js`, outside our control, no fix applied); `lightweight-charts` 5.3.0 has no advisories, no install script and no provenance, as 5.2.1.
+  - `c14-lockfile-supply-chain.md`: the lockfile diff added only `lightweight-charts` and `fancy-canvas`; no advisories, no install scripts.
+  - `differential-review-m6-branch-2026-11-13.md`: 0 Critical, 0 High, 1 Medium, 9 Low. The Medium (a CLI export scanned without the Kite key and secret literals) and the Lows (dot-segment ids, export memory, unbounded points, a path in a 422, bidi and CSV formulas, pool child timeout, journal delete sharing, bare 500s, log rotation) went to the final fix round G1/G2/G3 and are merged (XI 6.35 to 6.37).
+  - `c-review-engine-2026-11-13.md`: 25 LOW primaries, 3 reported. The arithmetic findings (unchecked int64 subtractions on pack values) were fixed in F1 (CH 6.21).
+- **Decisions.** D-110 (pin and the 5.3.0 timing: taken now, by the owner), D-111 (run page order), D-112 (strategy's own bar interval), D-113 (dot segments), D-114 (data page windows), D-115 (marker and point caps, no basis mixing), D-123 to D-126 (bars, run chart, wire format, walk-forward chart), D-127 (bidi), D-128 and D-129 (shared reads, rotating log), D-92 to D-95 (notes and plots).
+- **Owner steps (STOP, not blockers).**
+  1. Look at a run, a paper session, a walk-forward and a sweep trial at 1024 px.
+  2. Confirm the TradingView attribution reads acceptably.
+  3. The durable fix for recording bar intervals (D-112): a run that does not record its bar interval is charted from the strategy's declared `BAR_INTERVAL_S` or its parameter default, and says so; the run config should record it.
