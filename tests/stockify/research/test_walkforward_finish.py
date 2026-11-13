@@ -134,6 +134,33 @@ class StitchTests(unittest.TestCase):
                     self.assertAlmostEqual(a, b, places=9)
 
 
+class ChartTests(unittest.TestCase):
+    A = (["2026-05-04", "2026-05-05", "2026-05-06"], [1.01, 1.02, 1.01])
+    B = (["2026-06-01", "2026-06-02"], [1.03, 1.05])             # a month later: the gap must stay a gap
+
+    def test_each_test_piece_is_its_own_segment_and_nothing_bridges_the_gap(self):
+        fig = wf._figure([self.A, self.B], ["2026-05-01", "2026-05-30"])
+        try:
+            ax = fig.axes[0]
+            segs = [ln for ln in ax.get_lines() if ln.get_label() == "out-of-sample"]
+            self.assertEqual(len(segs), 2)
+            for ln, (dates, idx) in zip(segs, (self.A, self.B)):
+                self.assertEqual(list(ln.get_ydata()), idx)
+                self.assertEqual([x.isoformat() for x in ln.get_xdata()], dates)
+            last_a, first_b = max(segs[0].get_xdata()), min(segs[1].get_xdata())
+            self.assertGreater((first_b - last_a).days, 20)               # the days between are on the axis, unplotted
+            for ln in segs:                                        # no line holds points from both windows
+                xs = list(ln.get_xdata())
+                self.assertFalse(min(xs) <= last_a and max(xs) >= first_b)
+            bounds = [ln for ln in ax.get_lines() if ln.get_label() == "test start"]
+            self.assertEqual(len(bounds), 2)
+            self.assertEqual(ax.get_ylabel(), "growth of 1 (capital = 1.0)")
+            self.assertEqual(len({ln.get_color() for ln in segs}), 1)
+        finally:
+            import matplotlib.pyplot as plt
+            plt.close(fig)
+
+
 class FinishTests(SandboxedDBTest):
     db_modules = (store,)
 
@@ -304,16 +331,53 @@ class FinishTests(SandboxedDBTest):
                 wf.finish(JOB)
         self.assertEqual(store.get_research_job(JOB)["status"], "done")
 
-    def test_failed_missing_and_foreign_jobs_are_refused(self):
+    def test_missing_and_foreign_jobs_are_refused(self):
         with self.assertRaisesRegex(wf.WalkforwardError, "no such"):
             wf.finish("wf-nothing")
-        build_job(two_windows(), status="failed")
-        with self.assertRaisesRegex(wf.WalkforwardError, "failed"):
-            wf.finish(JOB)
-        self.assertEqual(store.get_research_job(JOB)["status"], "failed")
         store.create_research_job({"job_id": "sw-1", "kind": "sweep", "status": "running", "created_ns": 1})
         with self.assertRaisesRegex(wf.WalkforwardError, "not a walk-forward"):
             wf.finish("sw-1")
+
+    def test_a_failed_job_with_a_pending_window_is_refused_naming_the_window(self):
+        build_job(two_windows(w1=dict(test=None, test_status="pending")), status="failed")
+        with self.assertRaisesRegex(wf.WalkforwardError, r"window 1 .*run_windows"):
+            wf.finish(JOB)
+        self.assertEqual(store.get_research_job(JOB)["status"], "failed")
+        self.assertFalse((paths.research_path(JOB) / "walkforward.json").exists())
+
+    def test_a_failed_job_whose_windows_all_have_results_is_finished_again(self):
+        build_job(two_windows())
+        with mock.patch.object(fileio, "atomic_write_text", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                wf.finish(JOB)
+        self.assertEqual(store.get_research_job(JOB)["status"], "failed")
+        fin = wf.finish(JOB)                                      # the failure came from finish: retry works
+        job = store.get_research_job(JOB)
+        self.assertEqual((job["status"], job["error"]), ("done", None))
+        self.assertEqual(fin.summary.oos_days, 12)
+        self.assertTrue((paths.research_path(JOB) / "walkforward.json").is_file())
+
+    def test_two_finishes_give_byte_equal_files(self):
+        build_job(two_windows())
+        folder = paths.research_path(JOB)
+        wf.finish(JOB)
+        first = [(folder / n).read_bytes() for n in ("walkforward.json", "walkforward.png")]
+        wf.finish(JOB)
+        self.assertEqual([(folder / n).read_bytes() for n in ("walkforward.json", "walkforward.png")], first)
+
+    def test_n_trials_falls_back_to_the_training_runs_found_when_the_spec_lacks_the_grid(self):
+        build_job(two_windows())
+        spec = json.loads(store.get_research_job(JOB)["spec_json"])
+        del spec["windows"], spec["grid"]
+        store.update_research_job(JOB, spec_json=json.dumps(spec))
+        self.assertEqual(wf.finish(JOB).summary.n_trials, 4)
+
+    def test_is_windows_counts_the_windows_that_entered_is_sharpe(self):
+        build_job(two_windows(w0=dict(test=None, test_status="failed")))
+        fin = wf.finish(JOB)
+        self.assertEqual((fin.summary.windows, fin.summary.is_windows), (2, 1))
+        doc = json.loads((paths.research_path(JOB) / "walkforward.json").read_text(encoding="utf-8"))
+        self.assertEqual((doc["summary"]["windows"], doc["summary"]["is_windows"]), (2, 1))
 
     def test_no_window_with_a_test_run_gives_an_empty_stitch_and_no_nan(self):
         build_job(two_windows(w0=dict(test=None, test_status="failed"), w1=dict(test=None, test_status="failed")))

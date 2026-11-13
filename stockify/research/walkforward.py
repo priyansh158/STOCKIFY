@@ -258,6 +258,7 @@ SCHEMA = "stockify.walkforward/1"
 @dataclass(frozen=True)
 class WalkforwardSummary:
     windows: int                       # every window of the job, tested or not
+    is_windows: int                    # how many windows entered is_sharpe (a stitched test piece and a defined Sharpe)
     oos_days: int                      # days in the stitched series
     is_sharpe: float | None            # annualised; mean over the stitched windows of the chosen training run's Sharpe
     oos_sharpe: float | None           # annualised Sharpe of the stitched series (excess of the risk-free rate)
@@ -350,12 +351,16 @@ def finish(job_id: str) -> WalkforwardFinished:
         raise WalkforwardError(f"no such research job: {job_id!r}")
     if job["kind"] != "walkforward":
         raise WalkforwardError(f"{job_id!r} is not a walk-forward job (it is a {job['kind']} job)")
-    if job["status"] == "failed":
-        raise WalkforwardError(f"{job_id!r} failed ({job.get('error') or 'no reason recorded'}): there is nothing "
-                               "to finish")
-    if job["status"] not in ("running", "done"):
-        raise WalkforwardError(f"{job_id!r} has status {job['status']!r}: finish works on a running or done job")
-    was_running = job["status"] == "running"
+    if job["status"] not in ("running", "done", "failed"):
+        raise WalkforwardError(f"{job_id!r} has status {job['status']!r}: finish works on a running, done or "
+                               "failed job")
+    if job["status"] == "failed":      # retry only when the failure came from finish: every window has its result
+        missing = _pending_windows(job)
+        if missing:
+            raise WalkforwardError(f"{job_id!r} failed ({job.get('error') or 'no reason recorded'}) before every "
+                                   f"window had its test result: window {', '.join(map(str, missing))} is missing "
+                                   "it, so run_windows did not finish and there is nothing to finish")
+    was_running = job["status"] != "done"
     try:
         finished = _compute(job)
         folder = paths.research_path(job_id)
@@ -367,7 +372,7 @@ def finish(job_id: str) -> WalkforwardFinished:
                "dates": finished.stitched_dates, "index": finished.stitched_index}
         fileio.atomic_write_text(folder / "walkforward.json",
                                  json.dumps(doc, sort_keys=True, indent=2, allow_nan=False) + "\n")
-        _equity_png(folder / "walkforward.png", finished.stitched_dates, finished.stitched_index)
+        _equity_png(folder / "walkforward.png", finished)
         if was_running:
             store.update_research_job(job_id, status="done", finished_ns=timeutil.now_ns(), error=None)
     except BaseException as e:
@@ -379,6 +384,15 @@ def finish(job_id: str) -> WalkforwardFinished:
                 pass
         raise
     return finished
+
+
+def _pending_windows(job: dict) -> list[int]:
+    """Indexes of the windows whose test phase never ran (state `pending`); all of them when no state is stored."""
+    try:
+        state = json.loads(job["state_json"] or "")["windows"]
+    except (ValueError, KeyError, TypeError):
+        return [-1]
+    return [w["index"] for w in state if w.get("test_status") == "pending"]
 
 
 def _compute(job: dict) -> WalkforwardFinished:
@@ -421,28 +435,53 @@ def _compute(job: dict) -> WalkforwardFinished:
     n_trials = int(spec["windows"]) * int(spec["grid"]) if "windows" in spec and "grid" in spec else len(trial_srs)
     modal = max(Counter(chosen_sets).values()) / len(chosen_sets) if chosen_sets else None
     summary = WalkforwardSummary(
-        windows=len(state), oos_days=len(dates), is_sharpe=is_sharpe, oos_sharpe=oos, ratio=ratio,
+        windows=len(state), is_windows=len(is_srs), oos_days=len(dates), is_sharpe=is_sharpe, oos_sharpe=oos, ratio=ratio,
         chosen_modal_share=modal, n_trials=n_trials, var_sharpe=stats.sharpe_variance(trial_srs),
         dsr=stats.deflated_sharpe(x, trial_srs, n_trials))
     return WalkforwardFinished(summary, out_windows, dates, index)
 
 
-def _equity_png(path, dates: list[str], index: list[float]) -> None:  # noqa: ANN001
-    """The stitched out-of-sample curve (1.0 = the capital before the first day). Not drawn when the stitch is
-    empty."""
-    if not dates:
-        return
+def _segments(finished: WalkforwardFinished) -> tuple[list[tuple[list[str], list[float]]], list[str]]:
+    """The stitched index cut back into one piece per tested window, and each such window's test start."""
+    segs, starts = [], []
+    for w in finished.windows:
+        t = w["test"]
+        if t is None:
+            continue
+        pick = [i for i, d in enumerate(finished.stitched_dates) if t["from"] <= d <= t["to"]]
+        segs.append(([finished.stitched_dates[i] for i in pick], [finished.stitched_index[i] for i in pick]))
+        starts.append(w["test_from"])
+    return segs, starts
+
+
+def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str]):  # noqa: ANN202
+    """One line per out-of-sample piece (so a gap between windows is a gap, not a bridge), a light vertical line at
+    each test start, and a marker on every point so a one-day piece shows."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(8, 3.2), dpi=110)
-    ax.plot([date.fromisoformat(d) for d in dates], index, linewidth=1.2, color="#2f6fdf")
+    for d in starts:
+        ax.axvline(date.fromisoformat(d), linewidth=0.8, color="#bbbbbb", linestyle=":", label="test start")
+    for ds, idx in segments:
+        ax.plot([date.fromisoformat(d) for d in ds], idx, linewidth=1.2, color="#0072B2", marker="o", markersize=2.5,
+                label="out-of-sample")
     ax.axhline(1.0, linewidth=0.8, color="#999999")
-    ax.set_ylabel("Out-of-sample index (start = 1.0)")
+    ax.set_ylabel("growth of 1 (capital = 1.0)")
     ax.grid(alpha=0.3)
     ax.spines[["top", "right"]].set_visible(False)
     fig.autofmt_xdate()
     fig.tight_layout()
+    return fig
+
+
+def _equity_png(path, finished: WalkforwardFinished) -> None:  # noqa: ANN001
+    """The stitched out-of-sample curve, drawn piece by piece. Not drawn when the stitch is empty."""
+    if not finished.stitched_dates:
+        return
+    import matplotlib.pyplot as plt
+    segs, starts = _segments(finished)
+    fig = _figure(segs, starts)
     tmp = path.with_name(path.name + ".tmp.png")
     try:
         fig.savefig(tmp)
