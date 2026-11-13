@@ -24,7 +24,7 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy, encode_state
+from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class EodShortStraddle(Strategy):
@@ -81,8 +81,12 @@ class EodShortStraddle(Strategy):
             for c, p in zip(closes, held):
                 value += c * abs(p.qty)
             if Decimal(value) > self.stop * self.credit:
+                why = (f"the options cost {fmt_price(value)} to close, over {self.stop}x the "
+                       f"{fmt_price(self.credit)} received")
+                names = {r["id"]: r["tradingsymbol"] for r in ctx._rows()}
                 for p in held:
-                    ctx.place(p.instrument, "BUY", abs(p.qty), "NRML", "MARKET", protection=self.bp, tag="stop")
+                    ctx.place(p.instrument, "BUY", abs(p.qty), "NRML", "MARKET", protection=self.bp, tag="stop",
+                              note=f"Bought back {fmt_qty(abs(p.qty))} {names[p.instrument]}: {why}")
                 ctx.log("INFO", f"stop: legs worth {value} vs credit {self.credit}")
                 self.legs = []
             return
@@ -103,9 +107,12 @@ class EodShortStraddle(Strategy):
         if len(legs) != 2 or any(self._close(ctx, i) is None for i in legs):
             return
         credit = 0
+        names = {r["id"]: r["tradingsymbol"] for r in ctx._rows()}
         for iid in legs:
             qty = self.lots * ctx.spec(iid)["lot"]
-            ctx.place(iid, "SELL", qty, "NRML", "MARKET", protection=self.bp, tag="entry")
+            ctx.place(iid, "SELL", qty, "NRML", "MARKET", protection=self.bp, tag="entry",
+                      note=f"Sold {fmt_qty(qty)} {names[iid]}: short straddle at the {fmt_price(atm)} strike, "
+                           f"expires {expiries[0]}")
             credit += self._close(ctx, iid) * qty
         self.legs, self.credit = legs, credit
         ctx.log("INFO", f"sell straddle {expiries[0]} strike {atm} spot {spot}")

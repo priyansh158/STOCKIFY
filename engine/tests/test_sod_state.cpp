@@ -106,6 +106,41 @@ TEST_CASE("sod_state round trip keeps every counter") {
     }
 }
 
+TEST_CASE("an order's note round-trips through the state; a state without the key loads with an empty note") {
+    const Json st = Json::parse(read_text(kFixtures + "day0_state.json"));
+    REQUIRE(!st.at("final_orders").empty());
+    REQUIRE(st.at("final_orders").at(0).contains("note"));
+    const std::string hostile = "say \"hi\", then\xE2\x80\xA8 \xC3\xA9 \xF0\x9F\x98\x80";
+
+    SUBCASE("a note is written back byte for byte") {
+        Json with = st;
+        with["final_orders"][0]["note"] = hostile;
+        const auto e = fresh_engine();
+        load_sod_state_json(*e, with);
+        const Json back = Json::parse(eod_state_json(*e));
+        CHECK(back.at("final_orders").at(0).at("note").get<std::string>() == hostile);
+        CHECK(back == with);
+    }
+
+    SUBCASE("a state written before the note existed loads, and writes the key with an empty note") {
+        Json old = st;
+        for (const char* group : {"pending_orders", "final_orders"}) {
+            for (Json& o : old[group]) {
+                o.erase("note");
+            }
+        }
+        const auto e = fresh_engine();
+        load_sod_state_json(*e, old);
+        CHECK(Json::parse(eod_state_json(*e)) == st);
+    }
+
+    SUBCASE("a note that is not text is refused") {
+        Json bad = st;
+        bad["final_orders"][0]["note"] = 5;
+        CHECK_THROWS_WITH_AS(load_sod_state_json(*fresh_engine(), bad), doctest::Contains("final_orders.note"), RunError);
+    }
+}
+
 TEST_CASE("a state that is wrong is refused whole: the engine is left as it was") {
     const std::string text = read_text(kFixtures + "day0_state.json");
     const Json st = Json::parse(text);

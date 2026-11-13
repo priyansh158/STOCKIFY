@@ -221,6 +221,51 @@ class ReferenceStrategyTests(unittest.TestCase):
                 fills += self._same(REFS["orb"], g, params, cpp="orb_cpp")
         self.assertGreater(fills, 40)
 
+    def test_orb_cpp_and_python_write_the_same_notes(self):
+        notes = 0
+        for seed in range(5500, 5560):                         # more worlds than the parity test: shorts, stops, timers
+            g, params = minute_world(seed)
+            params["short"] = seed % 2 == 0
+            with self.subTest(seed=seed):
+                self._same(REFS["orb"], g, params, cpp="orb_cpp")
+                notes += self._count_notes(g, params, "orb_cpp")[0]
+        self.assertGreater(notes, 20)
+
+    def test_sma_cross_cpp_and_python_write_the_same_notes_and_plots(self):
+        notes = 0
+        for seed in range(5600, 5700):                         # every third is a long/short future; ties come from flat steps
+            g, params = daily_world(seed, future=seed % 3 == 0)
+            with self.subTest(seed=seed):
+                self._same(REFS["sma_cross"], g, params, cpp="sma_cross_cpp")
+                notes += self._count_notes(g, params, "sma_cross_cpp")[0]
+        self.assertGreater(notes, 100)
+
+    def test_cpp_strategy_notes_are_cleaned_and_at_most_200_characters(self):
+        from stockify.oracle.notes import NOTE_MAX, clean_note
+        seen = 0
+        for cpp, make, seeds in (("sma_cross_cpp", daily_world, range(5700, 5720)), ("orb_cpp", minute_world, range(5720, 5740))):
+            for seed in seeds:
+                g, params = make(seed)
+                with self.subTest(cpp=cpp, seed=seed), tempfile.TemporaryDirectory(prefix="notes-") as tmp:
+                    folder = Path(tmp)
+                    pack, b = _materialise(g, params, folder)
+                    engine_mod.run_bundle(b, [pack], folder / "cpp", strategy=cpp, report=False)
+                    with open(folder / "cpp" / "orders.csv", newline="", encoding="utf-8") as fh:
+                        for row in csv.DictReader(fh):
+                            self.assertTrue(row["note"], "a C++ order without a note")
+                            self.assertEqual(clean_note(row["note"]), row["note"])
+                            self.assertLessEqual(len(row["note"]), NOTE_MAX)
+                            seen += 1
+        self.assertGreater(seen, 50)
+
+    def _count_notes(self, g: dict, params: dict, cpp: str) -> tuple[int]:
+        with tempfile.TemporaryDirectory(prefix="notes-") as tmp:
+            folder = Path(tmp)
+            pack, b = _materialise(g, params, folder)
+            engine_mod.run_bundle(b, [pack], folder / "cpp", strategy=cpp, report=False)
+            with open(folder / "cpp" / "orders.csv", newline="", encoding="utf-8") as fh:
+                return (sum(1 for row in csv.DictReader(fh) if row["note"]),)
+
     def test_orb_partial_and_rejected_entries_agree_on_all_three_implementations(self):
         from tests.stockify.test_strategies import StrategyTests
         helper = StrategyTests("test_sources_pass_the_load_check")

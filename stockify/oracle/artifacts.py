@@ -17,7 +17,7 @@ from pathlib import Path
 from stockify import numerics
 
 ORDERS = ("order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,"
-          "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason")
+          "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason,note")
 ORDER_EVENTS = "t_ns,order_id,event,detail"
 FILLS = "fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence"
 CHARGES = ("row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,"
@@ -32,10 +32,11 @@ EQUITY = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,c
 # <block name="margin-daily-columns" same-as="engine/src/artifacts.cpp:margin-daily-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
 MARGIN = "trade_date,underlying_id,model,step,scan,somc,elm,addons,total"
 # </block>
+PLOTS = "t_ns,instrument_id,name,kind,value"
 # The ✔ rows of A1 §6.3, in order (checked by blockwatch).
 # <block name="deterministic-files" same-as="docs/plan/A1_schemas.md:deterministic-files" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+\.[a-z]+)"'>
 DETERMINISTIC = ("orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
-                 "margin_daily.csv", "metrics.json", "events_log.txt")
+                 "margin_daily.csv", "plots.csv", "metrics.json", "events_log.txt")
 # </block>
 
 
@@ -47,7 +48,7 @@ def _cell(v) -> str:  # noqa: ANN001
     if isinstance(v, float):
         raise TypeError("floats are not allowed in CSV artifacts (A4 §9.2)")
     s = str(v)
-    if any(c in s for c in ",\"\n"):
+    if any(c in s for c in ",\"\n\r"):
         s = '"' + s.replace('"', '""') + '"'
     return s
 
@@ -62,7 +63,7 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
     b = engine.book
     _csv(folder / "orders.csv", ORDERS, [
         (o.order_id, o.parent_id, o.instrument_id, o.side, o.product, o.type, o.validity, o.qty, o.price, o.trigger,
-         o.protection_bp, o.tag, o.t_submit, o.t_activate, o.status, o.filled_qty, o.avg_price, o.reason)
+         o.protection_bp, o.tag, o.t_submit, o.t_activate, o.status, o.filled_qty, o.avg_price, o.reason, o.note)
         for o in sorted(engine.day_orders().values(), key=lambda o: o.order_id)])
     _csv(folder / "order_events.csv", ORDER_EVENTS, b.order_events)
     _csv(folder / "fills.csv", FILLS, [(f.fill_id, f.order_id, f.t_ns, f.instrument_id, f.side, f.qty, f.price,
@@ -74,6 +75,7 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
     _csv(folder / "positions_eod.csv", POSITIONS, engine.positions_eod)
     _csv(folder / "equity.csv", EQUITY, engine.equity)
     _csv(folder / "margin_daily.csv", MARGIN, getattr(engine, "margin_daily", []))
+    _csv(folder / "plots.csv", PLOTS, engine.plot_rows())
     (folder / "metrics.json").write_bytes((numerics.dumps_canonical(metrics) + "\n").encode("utf-8"))
     (folder / "events_log.txt").write_bytes(("\n".join(engine.log_lines) + ("\n" if engine.log_lines else "")).encode())
     hashes = {}

@@ -5,6 +5,7 @@ import math
 from datetime import date
 
 from stockify import numerics, strategy as S, timeutil
+from stockify.oracle.notes import clean_note
 
 
 class _Rng:
@@ -26,6 +27,37 @@ def _whole(name: str, v, fn: str = "ctx.place") -> int:  # noqa: ANN001
         raise TypeError(f"{fn}: {name} must be an int, not {type(v).__name__} ({v!r}): "
                         "money is whole paise and quantity is whole units")
     return v
+
+
+def _note(v) -> str:  # noqa: ANN001
+    """CH 6.2: a note is text and nothing else, refused before anything is placed. The engine's binding says the same."""
+    if not isinstance(v, str):
+        raise TypeError("ctx.place: note must be text")
+    return v
+
+
+PLOT_KINDS = ("price", "level")     # CH 6.4: paise, or units of 1/10,000 (strategy.to_level)
+INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _plot_args(name, value, kind, instrument):  # noqa: ANN001, ANN202
+    """CH 6.4: the checks of ctx.plot, in this order: name is text, value and instrument are whole ints (TypeError),
+    value and instrument fit int64, kind is `price` or `level`, name is 1 to 32 characters that clean_note leaves as
+    they are (ValueError). The engine's binding (engine/bindings/engine.cpp, `plot_args`) has the same order and words."""
+    if not isinstance(name, str):
+        raise TypeError("ctx.plot: name must be text")
+    value, instrument = _whole("value", value, "ctx.plot"), _whole("instrument", instrument, "ctx.plot")
+    for what, v in (("value", value), ("instrument", instrument)):
+        if not INT64_MIN <= v <= INT64_MAX:
+            raise ValueError(f"ctx.plot: {what} does not fit in 64 bits")
+    if not isinstance(kind, str):
+        raise TypeError("ctx.plot: kind must be text")
+    if kind not in PLOT_KINDS:
+        raise ValueError('ctx.plot: kind must be "price" or "level"')
+    if not 1 <= len(name) <= 32 or clean_note(name) != name:
+        raise ValueError("ctx.plot: name must be 1 to 32 characters, with no control characters and no space at "
+                         "either end")
+    return name, value, kind, instrument
 
 
 def _protection(v):  # noqa: ANN001, ANN202
@@ -126,10 +158,16 @@ class Context:
 
     # orders
     def place(self, instrument: int, side: str, qty: int, product: str, type: str, price: int = 0, trigger: int = 0,  # noqa: A002
-              validity: str = "DAY", protection="AUTO", tag: str = "") -> int:  # noqa: ANN001
+              validity: str = "DAY", protection="AUTO", *, tag: str = "", note: str = "") -> int:  # noqa: ANN001
         o = self._e.place(int(instrument), side, _whole("qty", qty), product, type, _whole("price", price),
-                          _whole("trigger", trigger), validity, _protection(protection), tag)
+                          _whole("trigger", trigger), validity, _protection(protection), tag, note=_note(note))
         return o.order_id
+
+    def plot(self, name: str, value: int, *, kind: str = "price", instrument: int = 0) -> None:
+        """CH 6.4: one point of a named series at the engine's time (plots.csv). `value` is a whole int: paise for kind
+        "price", units of 1/10,000 for "level". `instrument` 0 is the whole run."""
+        name, value, kind, instrument = _plot_args(name, value, kind, instrument)
+        self._e.plot(name, value, kind, instrument)
 
     def modify(self, order_id: int, **changes) -> bool:  # noqa: ANN003
         # B2B 5.4: qty, price and trigger are whole ints, checked in that order; a quantity of 0 or less is refused
