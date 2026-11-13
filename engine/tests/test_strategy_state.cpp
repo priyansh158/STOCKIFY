@@ -19,7 +19,7 @@ void refused_load_changes_nothing(const char* name, const std::string& good, con
     const auto s = make_strategy(name);
     s->load_state(good);
     const std::string before = s->save_state();
-    CHECK(before == Json::parse(good).dump());  // what it read is what it writes
+    CHECK(nlohmann::json::parse(before) == nlohmann::json::parse(good));  // what it read is what it writes (key order aside)
     CHECK_THROWS_AS(s->load_state(bad), RunError);
     CHECK(s->save_state() == before);
 }
