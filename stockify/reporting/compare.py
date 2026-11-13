@@ -99,9 +99,11 @@ def _manifest(row: dict) -> dict | None:
         p = paths.run_path(row["run_id"]) / "manifest.json"
     except ValueError:
         return None
-    if not p.exists():
+    try:
+        text = p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):      # missing, a folder, locked, not text: the database fallback answers
         return None
-    m = _json(p.read_text(encoding="utf-8"), None)
+    m = _json(text, None)
     return m if isinstance(m, dict) else None
 
 

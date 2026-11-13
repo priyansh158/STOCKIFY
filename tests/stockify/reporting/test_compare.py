@@ -4,7 +4,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 import unittest
+from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
@@ -210,6 +212,24 @@ class CompareApiTests(CompareBase):
         r = self.client.get("/api/tests/compare", params=[("ids", "a"), ("ids", "r")])
         self.assertEqual(r.status_code, 422)
         self.assertIn("failed", r.json()["detail"])
+
+    def test_a_manifest_that_cannot_be_read_falls_back_to_the_database(self):
+        manifest = paths.run_path("a") / "manifest.json"
+        manifest.unlink(missing_ok=True)
+        manifest.mkdir()                                      # exists, but is not a readable file
+        r = self.client.get("/api/tests/compare", params=[("ids", "a"), ("ids", "b")])
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(rc.FALLBACK_NOTE, " ".join(r.json()["notes"]))
+        shutil.rmtree(paths.run_path("b"))                    # a removed folder is the same fallback
+        r = self.client.get("/api/tests/compare", params=[("ids", "a"), ("ids", "b")])
+        self.assertEqual(r.status_code, 200)
+
+    def test_an_unreadable_store_is_a_plain_409_not_a_bare_500(self):
+        import sqlite3
+        with mock.patch.object(store, "run_nav_series", side_effect=sqlite3.OperationalError("C:/secret/lab.sqlite")):
+            r = self.client.get("/api/tests/compare", params=[("ids", "a"), ("ids", "b")])
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json(), {"detail": "the runs could not be read right now"})
 
     def test_api_compare_accepts_a_comma_list(self):
         r = self.client.get("/api/tests/compare?ids=a,b")
