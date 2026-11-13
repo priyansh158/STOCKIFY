@@ -28,7 +28,7 @@ from typing import Callable
 
 from stockify import store
 from stockify.log import redact
-from stockify.daemon import exitcodes
+from stockify.daemon import exitcodes, recorder_health
 from stockify.daemon.clock import Clock
 from stockify.daemon.recorder import Recorder
 from stockify.daemon.subscriptions import FULL, Diff, SubscriptionManager
@@ -85,7 +85,7 @@ def direct_call(fn: Callable, *args) -> None:
 
 class RecorderSession:
     def __init__(self, ticker, recorder: Recorder, manager: SubscriptionManager, clock: Clock, *,
-                 call_in_ticker: Callable = direct_call, health_every_s: float = 5.0,
+                 call_in_ticker: Callable = direct_call, health_every_s: float = recorder_health.HEALTH_EVERY_S,
                  stall_s: float = 30.0, stall_group: str = "CM"):
         self.ticker = ticker
         self.recorder = recorder

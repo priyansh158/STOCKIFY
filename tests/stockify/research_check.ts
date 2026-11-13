@@ -1,13 +1,15 @@
 // Runs the pure helpers of web/src/lib/researchHelpers.ts on fixed inputs and prints one JSON object. Node >= 22.18
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
+import { canStopAll } from "../../web/src/lib/stopAll.ts";
+import { START_RECORDER, SWEEP_COMMAND, WALKFORWARD_COMMAND, nseFetchCommand, sensitivityCommand, stockifyCommand } from "../../web/src/lib/commands.ts";
 import { readFileSync } from "node:fs";
 import { pathSegment } from "../../web/src/lib/pathSeg.ts";
-import { COMPARE_MAX, COMPARE_MIN, DIVERGING, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, divergingStep, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatFormat, heatGridProps, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
+import { COMPARE_MAX, COMPARE_MIN, DIVERGING, compareReady, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, divergingStep, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatFormat, heatGridProps, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, earlierEnd, laterEnd, parseDay, qualityNotice, rangeDays, recorderWords, windowBounds, windowEnd, windowLinkLabel, worstCoverage,
+  gapScopeWords, istToday, earlierEnd, laterEnd, parseDay, qualityNotice, rangeDays, recorderWords, silenceSentence, silenceSince, windowBounds, windowEnd, windowLinkLabel, worstCoverage,
 } from "../../web/src/lib/data.ts";
 
 // The reasons the recorder can write, read from the gap-reasons block of A1 (so a new reason there fails the check below).
@@ -84,11 +86,34 @@ const out = {
   bytes: [null, 0, 999, 1500, 2_500_000, 12_345_678_901, 3_000_000_000_000, Number.NaN].map((x) => bytesWords(x)),
   recorder: [
     null,
-    { connected: true, packets_per_s: 12.34, last_packet_age_ms: { full: 340, quote: 2100 }, age_s: 3 },
-    { connected: true, packets_per_s: 0, last_packet_age_ms: {}, age_s: 3 },
-    { connected: false, packets_per_s: 0, last_packet_age_ms: { full: 125_000 }, age_s: 4 },
-    { connected: true, packets_per_s: 5, last_packet_age_ms: { full: null }, age_s: 400 },
+    { connected: true, packets_per_s: 12.34, last_packet_age_ms: { full: 340, quote: 2100 }, age_s: 3, stale: false, market_open: true },
+    { connected: true, packets_per_s: 0, last_packet_age_ms: {}, age_s: 3, stale: false, market_open: true },
+    { connected: false, packets_per_s: 0, last_packet_age_ms: { full: 125_000 }, age_s: 4, stale: false, market_open: true },
+    { connected: false, packets_per_s: 5, last_packet_age_ms: { full: null }, age_s: 400, stale: true, market_open: true },
+    { connected: false, packets_per_s: 204.3, last_packet_age_ms: { full: 94 }, age_s: 205 * 3600, stale: true, market_open: true },
+    { connected: false, packets_per_s: 204.3, last_packet_age_ms: { full: 94 }, age_s: 205 * 3600, stale: true, market_open: false },
+    { connected: true, packets_per_s: 204.3, last_packet_age_ms: { full: 94 }, age_s: 3, stale: false, market_open: false },
   ].map((r) => recorderWords(r as never)),
+  compareReady: [0, 1, 2, 6, 7, Number.NaN, 2.5].map((n) => compareReady(n)),
+  stopAll: [null, undefined, [], [{ status: "STOPPED" }], [{ status: "STOPPED" }, { status: "PAUSED" }], [{ status: "ARMED" }], [{ status: "RUNNING" }], [{ status: "CREATED" }]]
+    .map((x) => canStopAll(x as never)),
+  silence: (() => {
+    const day = (date: string, trading: boolean, rec: string, nse: string) => ({
+      date, trading, cells: { recorder_full: { state: rec }, archive: { state: rec }, nse_fo: { state: nse } },
+    });
+    const days = [
+      day("2026-11-04", true, "ok", "ok"), day("2026-11-05", true, "ok", "ok"), day("2026-11-07", false, "closed", "closed"),
+      day("2026-11-09", true, "missing", "ok"), day("2026-11-10", true, "missing", "missing"), day("2026-11-12", true, "missing", "missing"),
+      day("2026-11-13", true, "missing", "missing"),
+    ];
+    const fresh = [day("2026-11-12", true, "ok", "ok"), day("2026-11-13", true, "missing", "missing")];
+    const none = [day("2026-11-11", true, "missing", "missing")];
+    const r = silenceSince(days as never, "recorder", "2026-11-13");
+    const n = silenceSince(days as never, "nse", "2026-11-13");
+    return [r, n, silenceSince(fresh as never, "recorder", "2026-11-13"), silenceSince([] as never, "nse", "2026-11-13"),
+      silenceSince(none as never, "recorder", "2026-11-13"),
+      silenceSentence(r, "recorded"), silenceSentence(n, "downloaded from NSE"), silenceSentence(silenceSince(none as never, "recorder", "2026-11-13"), "recorded"), silenceSentence(null, "x")];
+  })(),
   days: {
     today: [istToday(new Date("2026-10-06T19:00:00Z")), istToday(new Date("2026-10-06T18:29:00Z"))],
     add: [addDays("2026-10-07", -29), addDays("2026-03-01", -1), addDays("2024-02-28", 1), addDays("2026-12-31", 1)],
@@ -122,9 +147,9 @@ const out = {
   },
   capNote: [[50, 50, "families", "first"], [50, 130, "sweeps", "latest"], [3, 3, "sweeps", "latest"], [50, 51, "walk-forward runs", "latest"], [0, 0, "sweeps", "latest"], [50, null, "sweeps", "latest"]]
     .map(([n, t, w, o]) => listCapNote(n as number, t as number | null, w as string, o as "first" | "latest")),
-  // the commands the data page prints, read from its source so a corrupted backslash shows up here
-  dataPageCommands: [...readFileSync(new URL("../../web/src/app/data/page.tsx", import.meta.url), "utf-8").matchAll(/<code>([^<]*)<\/code>/g)].map((m) => m[1]),
-  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/app/research/family/page.tsx", "web/src/lib/researchHelpers.ts"]
+  // the commands the UI prints, from the one helper (a corrupted backslash shows up here)
+  dataPageCommands: [START_RECORDER, nseFetchCommand("YYYY-MM-DD"), SWEEP_COMMAND, WALKFORWARD_COMMAND, sensitivityCommand(12), stockifyCommand("x")],
+  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/app/research/family/page.tsx", "web/src/lib/researchHelpers.ts", "web/src/lib/commands.ts"]
     .map((f) => /\r(?!\n)/.test(readFileSync(new URL(`../../${f}`, import.meta.url), "utf-8"))),
   // the family page's id: encoded once into the link, read once by the page (URLSearchParams decodes as Next does)
   familyRoundTrip: ["sweep/ab12/sharpe", "a b&c=d?e#f", "100%", "100%25", "strat/ds-1m-RELIANCE/sharpe", "ü/x+y"]

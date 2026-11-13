@@ -105,16 +105,41 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_durations_bytes_and_the_recorder_strip_are_in_words(self):
         self.assertEqual(self.answers["durations"], ["still open", "still open", "0 s", "12 s", "1 min", "2 min 5 s", "1 h", "1 h 2 min", "—"])
         self.assertEqual(self.answers["bytes"], ["—", "0 B", "999 B", "1.5 kB", "2.5 MB", "12.3 GB", "3 TB", "—"])
+        old = ("Its last report was {} ago, so nothing is being recorded now. Start it with .\\run.ps1 -DaemonOnly "
+               "in a terminal in the STOCKIFY folder.")
+        closed = ("The last report was {} ago. The recorder reports only while the market is open. If it should have run, "
+                  "start it with .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder.")
         none = {"headline": "The recorder has not reported yet", "tone": "warn", "rate": "—", "last": "—",
-                "note": "Start the recorder to see live figures."}
+                "note": "Start the recorder to see live figures: run .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder."}
         self.assertEqual(self.answers["recorder"], [
             none,
             {"headline": "Connected", "tone": "up", "rate": "12.3 packets a second", "last": "last packet 340 ms ago", "note": None},
             {"headline": "Connected", "tone": "up", "rate": "0 packets a second", "last": "no packet seen yet", "note": None},
             {"headline": "Not connected", "tone": "down", "rate": "0 packets a second", "last": "last packet 2 min 5 s ago", "note": None},
-            {"headline": "Not reporting", "tone": "warn", "rate": "5 packets a second", "last": "no packet seen yet",
-             "note": "The last report was 6 min 40 s ago, so these figures may be out of date."},
+            {"headline": "The recorder is not running", "tone": "warn", "rate": "—", "last": "—", "note": old.format("6 min 40 s")},
+            {"headline": "The recorder is not running", "tone": "warn", "rate": "—", "last": "—", "note": old.format("8 days")},
+            {"headline": "No report while the market is closed", "tone": "info", "rate": "—", "last": "—", "note": closed.format("8 days")},
+            {"headline": "Connected", "tone": "up", "rate": "204.3 packets a second", "last": "last packet 94 ms ago", "note": None},
         ])
+
+    def test_the_compare_button_is_ready_only_for_two_to_six_ticked_tests(self):
+        self.assertEqual(self.answers["compareReady"], [False, False, True, True, False, False, False])
+
+    def test_stop_all_is_offered_only_when_a_session_is_not_stopped(self):
+        self.assertEqual(self.answers["stopAll"], [False, False, False, False, True, True, True, True])
+
+    def test_silence_names_the_last_day_with_data_from_the_coverage_cells(self):
+        rec, nse, fresh, empty, never = self.answers["silence"][:5]
+        # the recorder last had data on Thu 5 Nov; 4 trading days since (today, 13 Nov, is left out)
+        self.assertEqual(rec, {"last": "2026-11-05", "missed": 3, "latestMissed": "2026-11-12"})
+        self.assertEqual(nse, {"last": "2026-11-09", "missed": 2, "latestMissed": "2026-11-12"})
+        self.assertIsNone(fresh)
+        self.assertIsNone(empty)
+        self.assertEqual(never, {"last": None, "missed": 1, "latestMissed": "2026-11-11"})
+        self.assertEqual(self.answers["silence"][5:], [
+            "Nothing has been recorded since Thu 5 Nov 2026 (3 trading days).",
+            "Nothing has been downloaded from NSE since Mon 9 Nov 2026 (2 trading days).",
+            "Nothing has been recorded in this range (1 trading day).", None])
 
     def test_day_helpers_use_ist_and_reject_what_is_not_a_date(self):
         d = self.answers["days"]
@@ -225,9 +250,12 @@ class ResearchHelperChecks(unittest.TestCase):
             None])
 
     def test_the_data_page_prints_the_launcher_command_with_its_backslash_and_no_stray_carriage_return(self):
-        self.assertIn(".\\run.ps1 -DaemonOnly", self.answers["dataPageCommands"])
-        self.assertIn("python -m stockify nse fetch --date YYYY-MM-DD", self.answers["dataPageCommands"])
-        self.assertEqual(self.answers["webSourceHasStrayCR"], [False, False, False, False])
+        py = ".\\.venv\\Scripts\\python.exe -m stockify"
+        self.assertEqual(self.answers["dataPageCommands"], [
+            ".\\run.ps1 -DaemonOnly", f"{py} nse fetch --date YYYY-MM-DD",
+            f"{py} sweep --config examples/sweeps/orb_grid.yaml", f"{py} walkforward --sweep examples/sweeps/orb_grid.yaml",
+            f"{py} sensitivity --run 12", f"{py} x"])
+        self.assertEqual(self.answers["webSourceHasStrayCR"], [False] * 5)
 
     def test_compare_link_keeps_two_to_six_encoded_ids(self):
         c = self.answers["compare"]

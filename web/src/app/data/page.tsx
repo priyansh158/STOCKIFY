@@ -4,9 +4,10 @@ import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import {
   RANGE_CHOICES, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  earlierEnd, gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, windowBounds, windowEnd, windowLinkLabel,
+  earlierEnd, gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, silenceSentence, silenceSince, windowBounds, windowEnd, windowLinkLabel,
   worstCoverage,
 } from "@/lib/data";
+import { START_RECORDER, nseFetchCommand } from "@/lib/commands";
 import { istWhen } from "@/lib/format";
 import { getCoverage, getGaps, getQuality } from "@/lib/research";
 import type { BarRangeDTO, CoverageCellDTO, CoverageDayDTO, CoverageMatrixDTO, GapPageDTO, StorageDTO } from "@/lib/types";
@@ -311,10 +312,33 @@ async function DayDetail({ day, days, matrix, hideNse, to }: { day: string; days
       )}
       {!hideNse && cells && files.some((f) => cells[f.key]?.state === "missing") && (
         <p className="stk-fine stk-gap-xs">
-          To download what is missing, run <code>python -m stockify nse fetch --date {day}</code>.
+          To download what is missing, run <code>{nseFetchCommand(day)}</code>.
         </p>
       )}
     </section>
+  );
+}
+
+/** Says plainly when the newest trading days hold no recording or no NSE file (the daemon was not running, or a fetch was missed). */
+function SilenceNote({ matrix, today }: { matrix: CoverageMatrixDTO; today: string }) {
+  const rec = silenceSince(matrix.days, "recorder", today);
+  const nse = silenceSince(matrix.days, "nse", today);
+  const recText = silenceSentence(rec, "recorded");
+  const nseText = silenceSentence(nse, "downloaded from NSE");
+  if (!recText && !nseText) return null;
+  return (
+    <Panel tone="amber">
+      {recText && (
+        <p>
+          {recText} The recorder runs inside the daemon: start it with <code>{START_RECORDER}</code>.
+        </p>
+      )}
+      {nseText && nse && (
+        <p>
+          {nseText} Download the missing days with <code>{nseFetchCommand(nse.latestMissed)}</code>.
+        </p>
+      )}
+    </Panel>
   );
 }
 
@@ -417,11 +441,12 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                 <h2>Day by day</h2>
                 {stores.length === 0 && nothingStored(matrix) ? (
                   <Empty>
-                    Nothing has been recorded or downloaded in this range. Start the recorder with <code>.\run.ps1 -DaemonOnly</code>, or download
-                    NSE files with <code>python -m stockify nse fetch --date YYYY-MM-DD</code>.
+                    Nothing has been recorded or downloaded in this range. Start the recorder with <code>{START_RECORDER}</code>, or download
+                    NSE files with <code>{nseFetchCommand("YYYY-MM-DD")}</code>.
                   </Empty>
                 ) : (
                   <div className="stk-stack-s">
+                    {to === undefined && <SilenceNote matrix={matrix} today={today} />}
                     <Legend />
                     <p className="stk-fine">Choose a day to see its gaps, its least-covered instruments and its NSE files.</p>
                     <Grid matrix={matrix} days={days} selected={day} to={to} />

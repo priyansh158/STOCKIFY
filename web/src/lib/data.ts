@@ -4,7 +4,8 @@
  * Sentences the API already carries (a cell's detail, the storage warnings, the store errors) are shown as they come;
  * these helpers only shorten a cell for its chip and name the codes the API gives as codes.
  */
-import type { CoverageCellDTO, InstrumentQuality, RecorderStatus } from "./types";
+import { START_RECORDER } from "./commands";
+import type { CoverageCellDTO, CoverageDayDTO, InstrumentQuality, RecorderStatus } from "./types";
 
 export type CellTone = "up" | "down" | "warn" | "info";
 
@@ -135,16 +136,36 @@ export function bytesWords(n: number | null | undefined): string {
   return `${Number(v.toFixed(1))} ${units[u]}`;
 }
 
-const STALE_REPORT_S = 60;
+/** "3 min", "5 h 2 min", "8 days": how long ago, coarse enough to read at a glance. */
+function agoWords(seconds: number): string {
+  if (seconds >= 2 * 86400) return `${Math.floor(seconds / 86400)} days`;
+  return durationWords(seconds);
+}
 
-/** The recorder strip in words: the state, the packet rate, the age of the freshest packet, and a note when the report is old or missing. */
+/**
+ * The recorder strip in words. A report that is too old (the API's `stale`) says, in market hours, that the recorder is not running and how to
+ * start it (outside them the recorder writes nothing, so the strip says only that the market is closed): its packet rate and packet age belong to the moment of that report, so they are not shown as if they were now.
+ */
 export function recorderWords(
-  s: Pick<RecorderStatus, "connected" | "packets_per_s" | "last_packet_age_ms" | "age_s"> | null | undefined,
-): { headline: string; tone: "up" | "down" | "warn"; rate: string; last: string; note: string | null } {
+  s: Pick<RecorderStatus, "connected" | "packets_per_s" | "last_packet_age_ms" | "age_s" | "stale" | "market_open"> | null | undefined,
+): { headline: string; tone: "up" | "down" | "warn" | "info"; rate: string; last: string; note: string | null } {
   if (!s) {
     return {
       headline: "The recorder has not reported yet", tone: "warn", rate: "—", last: "—",
-      note: "Start the recorder to see live figures.",
+      note: `Start the recorder to see live figures: run ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
+    };
+  }
+  if (s.stale && !s.market_open) {
+    // outside market hours the recorder writes nothing, running or not: say what is known, not that it is broken
+    return {
+      headline: "No report while the market is closed", tone: "info", rate: "—", last: "—",
+      note: `The last report was ${agoWords(s.age_s)} ago. The recorder reports only while the market is open. If it should have run, start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
+    };
+  }
+  if (s.stale) {
+    return {
+      headline: "The recorder is not running", tone: "warn", rate: "—", last: "—",
+      note: `Its last report was ${agoWords(s.age_s)} ago, so nothing is being recorded now. Start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
     };
   }
   const ages = Object.values(s.last_packet_age_ms ?? {}).filter((a): a is number => typeof a === "number" && Number.isFinite(a));
@@ -153,13 +174,39 @@ export function recorderWords(
     ? "no packet seen yet"
     : `last packet ${freshest < 1000 ? `${Math.round(freshest)} ms` : durationWords(freshest / 1000)} ago`;
   const rate = `${Number((Number.isFinite(s.packets_per_s) ? s.packets_per_s : 0).toFixed(1))} packets a second`;
-  if (s.age_s > STALE_REPORT_S) {
-    return {
-      headline: "Not reporting", tone: "warn", rate, last,
-      note: `The last report was ${durationWords(s.age_s)} ago, so these figures may be out of date.`,
-    };
-  }
   return { headline: s.connected ? "Connected" : "Not connected", tone: s.connected ? "up" : "down", rate, last, note: null };
+}
+
+/** True when this cell has something stored: a complete or partial recording or file. */
+function hasData(c: CoverageCellDTO | undefined): boolean {
+  return c?.state === "ok" || c?.state === "partial";
+}
+
+/**
+ * "Nothing has been recorded since Thu 5 Nov" from the coverage days, so a stopped daemon is plain on the page.
+ * `prefix` picks the datasets ("recorder" or "nse"). Today is left out (its day is still going). Null when the newest
+ * trading day (before today) has data, or when the window holds no such trading day.
+ */
+export function silenceSince(days: CoverageDayDTO[], prefix: "recorder" | "nse", today: string): { last: string | null; missed: number; latestMissed: string } | null {
+  const past = days.filter((d) => d.trading && d.date < today).sort((a, b) => a.date.localeCompare(b.date));
+  let missed = 0;
+  let latestMissed = "";
+  for (let i = past.length - 1; i >= 0; i--) {
+    const cells = Object.entries(past[i].cells).filter(([k]) => k.startsWith(prefix)).map(([, c]) => c);
+    if (cells.some(hasData)) return missed === 0 ? null : { last: past[i].date, missed, latestMissed };
+    if (missed === 0) latestMissed = past[i].date;
+    missed += 1;
+  }
+  return missed === 0 ? null : { last: null, missed, latestMissed };
+}
+
+/** The sentence for `silenceSince`, or null when there is nothing to say. `what` is "recorded" or "downloaded from NSE". */
+export function silenceSentence(r: ReturnType<typeof silenceSince>, what: string): string | null {
+  if (!r) return null;
+  const n = `${r.missed} trading day${r.missed === 1 ? "" : "s"}`;
+  return r.last
+    ? `Nothing has been ${what} since ${dayLabel(r.last)} ${r.last.slice(0, 4)} (${n}).`
+    : `Nothing has been ${what} in this range (${n}).`;
 }
 
 /** Today's date in India (YYYY-MM-DD), whatever the viewer's own time zone. */

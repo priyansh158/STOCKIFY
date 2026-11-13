@@ -129,7 +129,8 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 .stk-btn:active { transform: translateY(1px); background: var(--color-paper-3); }
 .stk-btn:disabled, .stk-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .stk-btn[data-tone="primary"] { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink); }
-.stk-btn[data-tone="primary"]:hover { background: color-mix(in oklab, var(--color-accent) 88%, var(--color-ink)); }
+.stk-btn[data-tone="primary"]:disabled { background: var(--color-paper-3); border-color: var(--color-edge); color: var(--color-ink-2); opacity: 0.6; }
+.stk-btn[data-tone="primary"]:not(:disabled):hover { background: color-mix(in oklab, var(--color-accent) 88%, var(--color-ink)); }
 .stk-btn[data-tone="danger"] { border-color: var(--color-down); color: var(--color-down); }
 .stk-btn[data-tone="danger"]:hover { background: var(--tint-down); }
 .stk-btn[data-tone="warn"] { border-color: var(--color-warn); color: var(--color-warn); }

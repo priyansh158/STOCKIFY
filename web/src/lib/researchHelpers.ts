@@ -223,6 +223,11 @@ export function pboHowText(p: { n_days: number; slices: number; combinations: nu
 export const COMPARE_MIN = 2;
 export const COMPARE_MAX = 6;
 
+/** The compare button works only with two to six ticked tests. */
+export function compareReady(count: number): boolean {
+  return Number.isInteger(count) && count >= COMPARE_MIN && count <= COMPARE_MAX;
+}
+
 /** `/tests/compare?ids=a&ids=b…`: repeated `ids`, each encoded, cut at six. No ids gives the bare path. */
 export function compareHref(ids: string[]): string {
   const q = ids.slice(0, COMPARE_MAX).map((i) => `ids=${encodeURIComponent(i)}`).join("&");
