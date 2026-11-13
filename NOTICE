@@ -1,0 +1,11 @@
+STOCKIFY
+
+This product includes software developed by TradingView, Inc.:
+
+  Lightweight Charts(TM), https://www.tradingview.com/
+  Copyright (c) 2025 TradingView, Inc.
+  Licensed under the Apache License, Version 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0).
+
+Every chart in the web UI shows the TradingView attribution logo (the library's
+`attributionLogo` option, left on), which links to https://www.tradingview.com/.

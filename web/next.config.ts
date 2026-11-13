@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const FASTAPI_ORIGIN = process.env.STOCKIFY_API_ORIGIN ?? "http://127.0.0.1:8001";
 
 const nextConfig: NextConfig = {
+  // No dev-mode route badge on screen (D-141); compile and runtime errors are still shown.
+  devIndicators: false,
   // Forward /api/* to the FastAPI backend during dev so the browser hits a
   // same-origin URL (avoids CORS preflight noise). In production the same
   // rewrite pattern works behind a reverse proxy.

@@ -440,6 +440,9 @@ export function shadePoints(
   return [...byTime.values()].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 }
 
+/** Bars of empty space allowed past the first and last bar (the chart's `rightOffset` is the same). */
+export const VIEW_MARGIN = 4;
+
 export type FirstView = { kind: "fit" } | { kind: "range"; from: number; to: number };
 
 /**
@@ -450,7 +453,17 @@ export type FirstView = { kind: "fit" } | { kind: "range"; from: number; to: num
 export function initialView(barCount: number, at: number, markerCount: number, near: number): FirstView {
   if (barCount <= near || markerCount === 0) return { kind: "fit" };
   const i = at < 0 ? barCount - 1 : at;
-  return { kind: "range", from: i - near / 2, to: i + near / 2 };
+  // A window of `near` bars round the trade, slid back inside the data (with a small margin at each end) so that it never
+  // reaches past the first or last bar: a window that overshoots would leave part of the chart empty.
+  let from = i - near / 2;
+  if (from < -VIEW_MARGIN) from = -VIEW_MARGIN;
+  let to = from + near;
+  const last = barCount - 1 + VIEW_MARGIN;
+  if (to > last) {
+    to = last;
+    from = Math.max(-VIEW_MARGIN, to - near);
+  }
+  return { kind: "range", from, to };
 }
 
 /** Poll delay in ms for a live chart: only while the day is open and the tab is visible; null means do not poll. */
