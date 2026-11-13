@@ -19,6 +19,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
 from stockify.research import registry
+from stockify.commands import stockify_command
 
 if TYPE_CHECKING:
     from stockify.research.regimes import Bucket
@@ -386,7 +387,7 @@ GENERIC_FAILURE = "the run failed; see the log"
 PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
     ("HoldoutLocked", "the holdout is locked"),
     ("RunConfigError", "the settings were not accepted"),
-    ("SweepSpecError", "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it"),
+    ("SweepSpecError", "the sweep file has a problem; run `" + stockify_command("sweep --config FILE") + "` to see it"),
     ("WalkforwardRunError", "the run pool returned the wrong number of results"),
     ("SensitivityRunError", "the run pool returned the wrong number of results"),
 )

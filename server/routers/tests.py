@@ -19,6 +19,7 @@ from server.schemas import (ChartBarDTO, ChartChunkDTO, ChartInstrumentDTO, Char
                             ComparisonDTO, RunChartDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 from stockify.reporting import figures
+from stockify.commands import stockify_command
 from stockify.reporting.settlements import DELIVERED as _DELIVERED  # noqa: F401  (still importable from here)
 from stockify.reporting.settlements import SETTLED as _SETTLED  # noqa: F401
 from stockify.reporting.settlements import read_settlements
@@ -323,7 +324,7 @@ def test_sensitivity(run_id: str) -> SensitivityDTO:
         raise HTTPException(status_code=404, detail=f"no test run {run_id!r}")
     _row_or_404(run_id)
     not_run = HTTPException(status_code=404,
-                            detail=f"not run yet; run `python -m stockify sensitivity --run {run_id}`")
+                            detail=f"not run yet; run `{stockify_command(f'sensitivity --run {run_id}')}`")
     try:
         d = _clean(json.loads((folder / "sensitivity.json").read_text(encoding="utf-8")))
         if d["run_id"] != run_id or d["verdict"] not in sensitivity.VERDICTS:
@@ -647,7 +648,7 @@ def cancel_test(run_id: str) -> TestRunDTO:
         if latest["status"] == "running" and run_id not in queue.running():
             raise HTTPException(status_code=409, detail=(
                 f"test run {run_id} is running but was not started by this API (for example by "
-                "`python -m stockify run` in a terminal); stop it where it was started"))
+                f"`{stockify_command('run')}` in a terminal); stop it where it was started"))
         raise HTTPException(status_code=409, detail=f"test run {run_id} is {latest['status']}; only waiting or "
                                                     "running tests can be cancelled")
     return run_dto(store.get_run(run_id) or row)

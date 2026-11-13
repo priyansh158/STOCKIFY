@@ -45,6 +45,12 @@ class InstrumentNamesTests(SandboxedDBTest):
         from server.main import app
         self.client = TestClient(app, base_url=support.API_BASE_URL)
 
+    def sql(self, text: str, args: tuple = ()) -> None:
+        with store._lock:
+            conn = store._connect()
+            conn.execute(text, args)
+            conn.commit()
+
     def run_id(self):
         o, f = order(1, iid=707289), fill(1, 1, T(9, 16), "SELL", 65, 18480, iid=707289)
         rid = make_run(orders=[o], fills=[f], instruments=[OPT, FUT])
@@ -91,6 +97,21 @@ class InstrumentNamesTests(SandboxedDBTest):
         got = self.client.get(f"/api/tests/{rid}/fills").json()
         self.assertEqual([(g["note"], g["tag"]) for g in got], [("Sell the straddle", "entry"), ("", "exit")])
         self.assertEqual([(g["evidence"], g["at_close"]) for g in got], [("eod_close", True), ("bar_open", False)])
+
+    def test_one_unreadable_order_row_costs_only_its_own_note(self):
+        """Review M4: a malformed stored order row (not JSON, or not an object) is "no note" for that order, not a 500."""
+        o1, o2, o3 = (order(1, iid=707289, note="Sell the straddle", tag="entry"), order(2, iid=5, note="n2"),
+                      order(3, iid=5, note="n3"))
+        fs = [fill(1, 1, T(9, 16), "SELL", 65, 18480, iid=707289), fill(2, 2, T(9, 17), "BUY", 65, 100, iid=5),
+              fill(3, 3, T(9, 18), "BUY", 65, 100, iid=5)]
+        rid = make_run(orders=[o1, o2, o3], fills=fs, instruments=[OPT, FUT])
+        store.create_run({"run_id": rid, "status": "done"})
+        store.replace_run_rows(rid, orders=[o1, o2, o3], fills=fs, equity=[], charges=[])
+        self.sql("UPDATE run_orders SET row_json = ? WHERE run_id = ? AND order_id = 2", ("{not json", rid))
+        self.sql("UPDATE run_orders SET row_json = ? WHERE run_id = ? AND order_id = 3", ("[1, 2]", rid))
+        r = self.client.get(f"/api/tests/{rid}/fills")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([(g["note"], g["tag"]) for g in r.json()], [("Sell the straddle", "entry"), ("", ""), ("", "")])
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed: the run page helper checks need node >= 22.18")

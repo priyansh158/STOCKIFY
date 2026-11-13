@@ -13,6 +13,7 @@ from tests.support import SandboxedDBTest
 
 import stockify.store as store
 from stockify import paths
+from stockify.commands import stockify_command
 from stockify.data import refdata
 from stockify.research import report
 from tests.stockify.research.fixtures import make_run
@@ -183,7 +184,7 @@ class SensitivityApiTests(SandboxedDBTest):
     def test_api_returns_404_until_run(self):
         r = self.client.get("/api/tests/s0/sensitivity")
         self.assertEqual(r.status_code, 404)
-        self.assertEqual(r.json()["detail"], "not run yet; run `python -m stockify sensitivity --run s0`")
+        self.assertEqual(r.json()["detail"], f"not run yet; run `{stockify_command("sensitivity --run s0")}`")
         self.assertEqual(self.client.get("/api/tests/nope/sensitivity").status_code, 404)
         for bad in ("{not json", "[]", json.dumps({"rows": 3}), self._doc(verdict="maybe"), self._doc(run_id="other"), self._doc(verdict="robust", fragile=False)):
             self._write(bad)

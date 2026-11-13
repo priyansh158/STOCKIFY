@@ -12,10 +12,11 @@ from __future__ import annotations
 from datetime import date
 
 from stockify import runconfig
+from stockify.commands import stockify_command
 
 MIN_REASON_CHARS = 3        # letters or digits
 UNLOCK_HOW = ('add "unlock_holdout": "<why you are looking at the holdout>" to the run config, or pass '
-              '--unlock-holdout "<why>" to `python -m stockify run`')
+              f'--unlock-holdout "<why>" to `{stockify_command("run")}`')
 
 
 class HoldoutLocked(runconfig.RunConfigError):

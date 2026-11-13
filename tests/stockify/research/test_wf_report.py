@@ -19,6 +19,7 @@ from tests.support import SandboxedDBTest
 
 import stockify.store as store
 from stockify import __main__ as cli, paths, runconfig
+from stockify.commands import stockify_command
 from stockify.research import holdout, pbo, plain, registry, stats, walkforward as wf, wf_report
 from stockify.research.pool import PoolOutcome
 from tests.stockify.research.fixtures import make_run
@@ -116,9 +117,9 @@ class RenderTests(ReportBase):
 
     def test_report_without_sensitivity_says_how_to_run_it(self):
         text = self.report_text()
-        self.assertIn("not run yet: `python -m stockify sensitivity --run <id>`", text)
+        self.assertIn(f"not run yet: `{stockify_command("sensitivity --run <id>")}`", text)
         text = wf_report.render(JOB, sensitivity_run="no-such-run").read_text(encoding="utf-8")
-        self.assertIn("not run yet: `python -m stockify sensitivity --run no-such-run`", text)
+        self.assertIn(f"not run yet: `{stockify_command("sensitivity --run no-such-run")}`", text)
 
     def test_report_with_sensitivity_has_the_table(self):
         write_sensitivity("base1")

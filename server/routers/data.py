@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (CoverageMatrixDTO, DataQualityResponse, GapDTO, GapPageDTO, InstrumentQualityDTO,
                             RecorderStatusDTO, RecorderStatusResponse)
+from stockify.commands import stockify_command
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -70,7 +71,7 @@ async def data_quality(date: str = Query(..., description="IST trade date YYYY-M
         # An unreadable store is named, not a 500; the sentence is fixed (no path, no exception text).
         return DataQualityResponse(date=day.isoformat(), errors=[str(e)], error_stores=[e.store_key])
     if not rows:
-        raise HTTPException(status_code=404, detail=f"no quality report for {day}; run `python -m stockify data report --date {day}`")
+        raise HTTPException(status_code=404, detail=f"no quality report for {day}; run `{stockify_command(f'data report --date {day}')}`")
     items = [InstrumentQualityDTO(instrument_id=iid, symbol=symbols.get(iid), metrics=metrics)
              for iid, metrics in sorted(rows.items()) if iid != 0]
     return DataQualityResponse(date=day.isoformat(), day=rows.get(0, {}), instruments=items)

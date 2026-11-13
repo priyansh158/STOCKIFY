@@ -29,6 +29,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from stockify import engine, golden, timeutil
+from stockify.commands import stockify_command
 from stockify.oracle import run_bundle as oracle_run
 from stockify.strategy import Strategy
 from stockify.tools.replay import REPLAYED
@@ -830,7 +831,7 @@ def save_golden(world: dict, failure: Failure, folder: Path | None = None) -> Pa
          "title": f"Fuzz seed {seed}: oracle and engine differ in {failure.file}"
                   + (f" line {failure.line}" if failure.line else "") + f" (oracle: {failure.oracle[:120]})",
          "semantics": ["A3 P-04"],
-         "notes": "Saved by `python -m stockify tools fuzz --shrink --save`. Expected values are the oracle's run; "
+         "notes": f"Saved by `{stockify_command('tools fuzz --shrink --save')}`. Expected values are the oracle's run; "
                   "decide from A4 which side is right before changing either.",
          "bundle": w["bundle"], "run": w["run"], "events": w["events"], "strategy": w["strategy"],
          "fuzz": w.get("fuzz", {})}

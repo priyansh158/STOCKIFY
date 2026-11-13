@@ -16,7 +16,10 @@ from stockify.oracle.metrics import drawdown_series
 from stockify.reporting import figures
 from stockify.research import plain
 
-MIN_RUNS, MAX_RUNS = 2, 6
+# <block name="compare-limits" same-as="web/src/lib/researchHelpers.ts:compare-limits" same-as-mode="sequence" same-as-pattern='= (?P<value>\d+)'>
+MIN_RUNS = 2
+MAX_RUNS = 6
+# </block>
 FALLBACK_NOTE = "manifest not available (folder removed)"
 
 

@@ -24,6 +24,7 @@ import kite_client  # noqa: F401  — first: patches the Kite SDK's client class
 from stockify import log as slog
 from stockify import paths, timeutil
 from stockify.daemon import exitcodes
+from stockify.commands import stockify_command
 
 IDLE_INTERVAL_SEC = 60
 
@@ -191,7 +192,7 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         elif all(r.outcome in ("ok", "skipped", "missing") and r.parsed_ok is not False for r in results)                 and now_ns >= scheduler.plan(day).nse_fetch_until_ns:
             # Past the retry window and NSE still has not published: stop asking for this day.
             log.warning("NSE files for %s still missing after the retry window; giving up "
-                        "(run `python -m stockify nse fetch --date %s` later)", day, day)
+                        "(run `%s` later)", day, stockify_command(f"nse fetch --date {day}"))
             state.mark(job, day)
     elif job == "margin_files":
         from stockify.daemon import scheduler
@@ -207,7 +208,7 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
             state.mark(job, day)
         elif now_ns >= scheduler.plan(day).margin_files_until_ns:
             log.warning("NSE margin files for %s still incomplete after the retry window; giving up "
-                        "(run `python -m stockify nse margin-files --date %s` later)", day, day)
+                        "(run `%s` later)", day, stockify_command(f"nse margin-files --date {day}"))
             state.mark(job, day)
     elif job == "prune":
         from stockify import store
