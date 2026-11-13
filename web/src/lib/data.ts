@@ -201,6 +201,28 @@ export function rangeDays(param: string | null | undefined): number {
   return (RANGE_CHOICES as readonly number[]).includes(n) ? n : 60;
 }
 
+/**
+ * The IST day a coverage window ends on: the `to` param when it is a real day that is not after today, else today. The window
+ * is `days` long and ends there ("Earlier" and "Later" move it by whole windows, within the API's max_days).
+ */
+export function windowEnd(param: string | null | undefined, today: string): string {
+  const d = parseDay(param);
+  return d !== null && d <= today ? d : today;
+}
+
+/** The window of `days` days ending at `end` (both ends inclusive), and the end of the window before it. */
+export function windowBounds(days: number, end: string): { from: string; to: string; earlier: string | null } {
+  const earlier = addDays(end, -days);
+  return { from: addDays(end, -(days - 1)), to: end, earlier: parseDay(earlier) };
+}
+
+/** The end of the window after the one ending at `end`, stopping at today; null when `end` is today (nothing later). */
+export function laterEnd(end: string, days: number, today: string): string | null {
+  if (end >= today) return null;
+  const next = addDays(end, days);
+  return next > today ? today : next;
+}
+
 /** The instruments with the lowest coverage first (ties by id, no figure last). */
 export function worstCoverage(items: InstrumentQuality[], n = 10): InstrumentQuality[] {
   const cov = (i: InstrumentQuality) => {

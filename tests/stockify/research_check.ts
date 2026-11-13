@@ -7,7 +7,7 @@ import { COMPARE_MAX, COMPARE_MIN, DIVERGING, SERIES_TOKENS, bucketTone, compare
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, parseDay, qualityNotice, rangeDays, recorderWords, worstCoverage,
+  gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, recorderWords, windowBounds, windowEnd, worstCoverage,
 } from "../../web/src/lib/data.ts";
 
 // The reasons the recorder can write, read from the gap-reasons block of A1 (so a new reason there fails the check below).
@@ -95,7 +95,13 @@ const out = {
     label: [dayLabel("2026-10-07"), dayLabel("2026-01-01"), dayLabel("nonsense")],
     parse: ["2026-10-07", "2026-02-30", "20261007", "2026-10-7", "", null, undefined].map((x) => parseDay(x)),
     range: [undefined, "30", "60", "180", "90", "abc", "30.5"].map((x) => rangeDays(x)),
-  },
+    // REQ-113: the window the page shows ends at `to` (an IST day, never after today), `days` long; Earlier and Later step by a window.
+    windowEnd: [undefined, "2026-06-30", "2026-11-13", "2027-01-01", "2026-02-30", "x"].map((x) => windowEnd(x, "2026-11-13")),
+    windows: [30, 60, 180].map((n) => {
+      const a = windowBounds(n, "2026-11-13");
+      const b = windowBounds(n, a.earlier!);
+      return { a, b, later: [laterEnd(a.to, n, "2026-11-13"), laterEnd(b.to, n, "2026-11-13"), laterEnd("2026-11-10", n, "2026-11-13")] };
+    }),  },
   worst: worstCoverage([
     { instrument_id: 3, metrics: { coverage_pct: 99 } }, { instrument_id: 1, metrics: { coverage_pct: 40 } },
     { instrument_id: 2, metrics: {} }, { instrument_id: 4, metrics: { coverage_pct: 40 } }, { instrument_id: 5, metrics: { coverage_pct: 70 } },

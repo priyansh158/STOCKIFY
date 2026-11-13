@@ -3,8 +3,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import {
-  RANGE_CHOICES, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
-  gapScopeWords, istToday, parseDay, qualityNotice, rangeDays, worstCoverage,
+  RANGE_CHOICES, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
+  gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, windowBounds, windowEnd, worstCoverage,
 } from "@/lib/data";
 import { istWhen } from "@/lib/format";
 import { getCoverage, getGaps, getQuality } from "@/lib/research";
@@ -42,8 +42,9 @@ function StateChip({ cell, datasetKey }: { cell: CoverageCellDTO; datasetKey?: s
   );
 }
 
-function href(days: number, day?: string): string {
-  return `/data?days=${days}${day ? `&day=${day}` : ""}`;
+/** A link to the page: `to` is the window's last day when it is not today (an older window), else left out. */
+function href(days: number, day?: string, to?: string): string {
+  return `/data?days=${days}${day ? `&day=${day}` : ""}${to ? `&to=${to}` : ""}`;
 }
 
 function ErrorPanel({ children }: { children: ReactNode }) {
@@ -56,7 +57,7 @@ function ErrorPanel({ children }: { children: ReactNode }) {
   );
 }
 
-function Grid({ matrix, days, selected }: { matrix: CoverageMatrixDTO; days: number; selected?: string }) {
+function Grid({ matrix, days, selected, to }: { matrix: CoverageMatrixDTO; days: number; selected?: string; to?: string }) {
   const rows = [...matrix.days].reverse();
   return (
     <div className="stk-table-wrap" tabIndex={0} role="region" aria-label="Coverage by day">
@@ -78,7 +79,7 @@ function Grid({ matrix, days, selected }: { matrix: CoverageMatrixDTO; days: num
           {rows.map((day: CoverageDayDTO) => (
             <tr key={day.date} data-closed={day.trading ? undefined : ""} aria-current={day.date === selected ? "true" : undefined}>
               <th scope="row">
-                <Link href={href(days, day.date)}>{dayLabel(day.date)}</Link> <span className="stk-label">{day.date.slice(0, 4)}</span>
+                <Link href={href(days, day.date, to)}>{dayLabel(day.date)}</Link> <span className="stk-label">{day.date.slice(0, 4)}</span>
                 {day.date === selected && <span className="stk-label"> (open)</span>}
               </th>
               {matrix.datasets.map((d) => {
@@ -256,7 +257,7 @@ function WorstBlock({ quality }: { quality: Settled<Awaited<ReturnType<typeof ge
   );
 }
 
-async function DayDetail({ day, days, matrix, hideNse }: { day: string; days: number; matrix: CoverageMatrixDTO; hideNse: boolean }) {
+async function DayDetail({ day, days, matrix, hideNse, to }: { day: string; days: number; matrix: CoverageMatrixDTO; hideNse: boolean; to?: string }) {
   const inRange = matrix.days.find((d) => d.date === day);
   const [own, gaps, quality] = await Promise.all([
     inRange || hideNse
@@ -273,7 +274,7 @@ async function DayDetail({ day, days, matrix, hideNse }: { day: string; days: nu
         <h2 id="day-h">
           {dayLabel(day)} {day.slice(0, 4)}
         </h2>
-        <Link className="stk-btn" href={href(days)}>
+        <Link className="stk-btn" href={href(days, undefined, to)}>
           Back to all days
         </Link>
       </div>
@@ -324,13 +325,17 @@ function nothingStored(m: CoverageMatrixDTO): boolean {
   );
 }
 
-export default async function DataPage({ searchParams }: { searchParams: Promise<{ days?: string; day?: string }> }) {
+export default async function DataPage({ searchParams }: { searchParams: Promise<{ days?: string; day?: string; to?: string }> }) {
   const sp = await searchParams;
   const days = rangeDays(sp.days);
   const day = parseDay(sp.day) ?? undefined;
   const badDay = sp.day !== undefined && sp.day !== "" && !day;
   const today = istToday(new Date());
-  const cov = await settle(getCoverage(addDays(today, -(days - 1)), today));
+  const end = windowEnd(sp.to, today);
+  const win = windowBounds(days, end);
+  const later = laterEnd(end, days, today);
+  const to = end === today ? undefined : end;                      // links keep an older window; the newest needs no param
+  const cov = await settle(getCoverage(win.from, win.to));
   const matrix = cov.ok ? cov.value : null;
   const stores = matrix?.errors ?? [];
   const badStores = matrix?.error_stores ?? [];
@@ -344,13 +349,30 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         title="Data coverage"
         lede="What STOCKIFY has recorded, archived and downloaded, day by day, and what is missing."
         actions={
-          <nav className="stk-row" aria-label="How many days to show">
-            {RANGE_CHOICES.map((n) => (
-              <Link key={n} className="stk-btn" href={href(n, day)} aria-current={n === days ? "true" : undefined}>
-                Last {n} days
-              </Link>
-            ))}
-          </nav>
+          <div className="stk-row">
+            <nav className="stk-row" aria-label="How many days to show">
+              {RANGE_CHOICES.map((n) => (
+                <Link key={n} className="stk-btn" href={href(n, day, to)} aria-current={n === days ? "true" : undefined}>
+                  {to ? `${n} days` : `Last ${n} days`}
+                </Link>
+              ))}
+            </nav>
+            <nav className="stk-row" aria-label="Which days to show">
+              {win.earlier && (
+                <Link className="stk-btn" href={href(days, day, win.earlier)} rel="prev">
+                  Earlier
+                </Link>
+              )}
+              <span className="stk-fine">
+                {dayLabel(win.from)} {win.from.slice(0, 4)} to {dayLabel(win.to)} {win.to.slice(0, 4)}
+              </span>
+              {later && (
+                <Link className="stk-btn" href={href(days, day, later === today ? undefined : later)} rel="next">
+                  Later
+                </Link>
+              )}
+            </nav>
+          </div>
         }
       />
 
@@ -359,7 +381,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
           <ErrorPanel>
             <p>Couldn&apos;t load the data coverage{cov.ok ? "" : `: ${cov.message}`}.</p>
             <p>
-              <Link className="stk-link" href={href(days, day)}>
+              <Link className="stk-link" href={href(days, day, to)}>
                 Try again
               </Link>
             </p>
@@ -386,21 +408,21 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               </ErrorPanel>
             )}
 
-            {day && <DayDetail day={day} days={days} matrix={matrix} hideNse={noDays} />}
+            {day && <DayDetail day={day} days={days} matrix={matrix} hideNse={noDays} to={to} />}
 
             {!noDays && (
               <section className="stk-section">
                 <h2>Day by day</h2>
                 {stores.length === 0 && nothingStored(matrix) ? (
                   <Empty>
-                    Nothing has been recorded or downloaded in this range yet. Start the recorder with <code>.\run.ps1 -DaemonOnly</code>, or download
+                    Nothing has been recorded or downloaded in this range. Start the recorder with <code>.\run.ps1 -DaemonOnly</code>, or download
                     NSE files with <code>python -m stockify nse fetch --date YYYY-MM-DD</code>.
                   </Empty>
                 ) : (
                   <div className="stk-stack-s">
                     <Legend />
                     <p className="stk-fine">Choose a day to see its gaps, its least-covered instruments and its NSE files.</p>
-                    <Grid matrix={matrix} days={days} selected={day} />
+                    <Grid matrix={matrix} days={days} selected={day} to={to} />
                   </div>
                 )}
               </section>

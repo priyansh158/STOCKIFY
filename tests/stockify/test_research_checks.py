@@ -123,6 +123,23 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(d["label"], ["Wed 7 Oct", "Thu 1 Jan", "nonsense"])
         self.assertEqual(d["parse"], ["2026-10-07", None, None, None, None, None, None])
         self.assertEqual(d["range"], [60, 30, 60, 180, 60, 60, 60])
+
+    def test_the_data_window_pages_back_by_whole_windows_and_never_into_the_future(self):
+        from datetime import date, timedelta
+        d = self.answers["days"]
+        # no date, a past date, today, a future date, an impossible date and rubbish: today unless the date is a real past day
+        self.assertEqual(d["windowEnd"], ["2026-11-13", "2026-06-30", "2026-11-13", "2026-11-13", "2026-11-13", "2026-11-13"])
+        for n, w in zip((30, 60, 180), d["windows"]):
+            a, b = w["a"], w["b"]
+            span = lambda x: (date.fromisoformat(x["to"]) - date.fromisoformat(x["from"])).days + 1   # noqa: E731
+            self.assertEqual((span(a), span(b)), (n, n))
+            self.assertEqual(a["to"], "2026-11-13")
+            self.assertEqual(date.fromisoformat(a["from"]) - timedelta(days=1), date.fromisoformat(b["to"]))   # no gap, no overlap
+            self.assertEqual(a["earlier"], b["to"])
+            self.assertLessEqual(n, 400)                                                                        # the API's max_days
+            self.assertEqual(w["later"][0], None)                      # the newest window has nothing later
+            self.assertEqual(w["later"][1], a["to"])                   # stepping later from the older one lands on it
+            self.assertEqual(w["later"][2], "2026-11-13")              # a step past today stops at today
         self.assertEqual(self.answers["worst"], [1, 4, 5, 3])  # lowest coverage first, ties by id, no figure last
 
     def test_a_quality_report_with_errors_says_so_and_names_what_is_hidden(self):
