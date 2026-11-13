@@ -209,3 +209,18 @@ export function worstCoverage(items: InstrumentQuality[], n = 10): InstrumentQua
   };
   return [...items].sort((a, b) => cov(a) - cov(b) || a.instrument_id - b.instrument_id).slice(0, n);
 }
+
+/** A stored quality report that came back 200 but with `errors`: the store it could not read. The sentences are the API's own,
+ * shown as they come; `hidden` names what the page then leaves out ("" when the unreadable store is not behind this list).
+ * Null for a clean report. The list of lowest-coverage instruments sits on the recorded-day store, so it is hidden
+ * unless the only store named is another one. */
+export function qualityNotice(report: { errors?: string[]; error_stores?: string[] }): { sentences: string[]; hidden: string } | null {
+  const sentences = report.errors ?? [];
+  if (sentences.length === 0) return null;
+  const stores = report.error_stores ?? [];
+  const behindList = stores.length === 0 || stores.includes("refdata");
+  return {
+    sentences,
+    hidden: behindList ? "the list of lowest-coverage instruments is hidden, because a store that cannot be read looks the same as an empty one." : "",
+  };
+}

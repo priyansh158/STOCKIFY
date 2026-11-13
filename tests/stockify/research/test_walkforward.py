@@ -305,6 +305,18 @@ class RunTests(SandboxedDBTest):
         # the stored plain reason is from the fixed table; the raw text is in the error column and the log only
         self.assertEqual({wf.failure_reason(j) for j in jobs}, {"an internal error; see the log"})
 
+    def test_the_plain_failure_table_lives_only_in_plain_py(self):
+        from stockify.research import plain
+        self.assertFalse(hasattr(wf, "_PLAIN_FAILURES"))
+        for raw, line in (("SensitivityRunError: /x/y bad", "the run pool returned the wrong number of results"),
+                          ("SweepSpecError: C:/p", "the run pool returned the wrong number of results"),
+                          ("RunConfigError: v=7", "the settings were not accepted"),
+                          ("HoldoutLocked: C:/x", "the holdout is locked")):
+            self.assertEqual(wf.plain_error({"error": raw}), line)
+        self.assertIn(wf.plain_failure(wf.WalkforwardRunError("x")), {t for _c, t in plain.PLAIN_FAILURES})
+        self.assertEqual(wf.plain_error({"error": "ValueError: C:/secret/path"}), "Failed")
+        self.assertEqual(wf.plain_error({"error": ""}), None)
+
     def test_plain_failure_is_a_fixed_table_keyed_by_the_error_class(self):
         self.assertEqual(wf.plain_failure(wf.WalkforwardRunError("the pool returned 1 outcomes for 2 runs")),
                          "the run pool returned the wrong number of results")
