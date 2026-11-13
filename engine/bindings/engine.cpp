@@ -65,7 +65,7 @@ std::string note_text(const py::object& v) {
     if (!py::isinstance<py::str>(v)) {
         throw py::type_error("ctx.place: note must be text");
     }
-    const py::object fixed = py::module_::import("re").attr("sub")(R"([\ud800-\udfff])", R"(\ufffd)", v);
+    const py::object fixed = py::module_::import("re").attr("sub")(R"([\ud800-\udfff])", "\xEF\xBF\xBD", v);  // U+FFFD; a "\u" template is a bad escape to re.sub
     return fixed.cast<std::string>();
 }
 
