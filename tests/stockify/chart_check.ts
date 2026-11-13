@@ -181,4 +181,27 @@ out.cardSettleUnknown = chart.cardModel(settle);
 out.cardFillWithFsp = chart.cardModel(fill({ fsp_paise: null }), "option");
 out.kinds = ["NIFTY25NOV24500CE", "NIFTY25NOV24500PE", "NIFTY25NOVFUT", "RELIANCE"].map(chart.settlementKindOf);
 
+// Fix round 1: the card lists each chunk a closing fill closed; the canvas has a text summary; a pruned chart
+// still gets an axis; hover shows the same title and reason as the card.
+out.cardChunks = chart.cardModel(fill({
+  side: "SELL", note: "Stop hit", trade_pnl_paise: 1000,
+  chunks: [{ qty: 20, open_price_paise: 240000, pnl_paise: 1500 }, { qty: 30, open_price_paise: 241000, pnl_paise: -500 },
+           { qty: 5, open_price_paise: 241840, pnl_paise: 0 }],
+}));
+out.cardNoChunks = chart.cardModel(fill({})).chunks;
+out.summary = [
+  chart.chartSummary(model({}), "RELIANCE"),
+  chart.chartSummary(model({ markers: [], bars: [bar(1, "d"), bar(2, "d")] }), "RELIANCE"),
+  chart.chartSummary(model({ interval_s: 86400, markers: [fill({}), fill({ fill_id: 2 })] }), ""),
+  chart.chartSummary(model({ interval_s: 300, bars: [], data_state: "pruned" }), "RELIANCE"),
+];
+const pm = [fill({ bar_t: 6000 }), fill({ bar_t: 6180, fill_id: 2 })];
+out.axis = chart.axisTimes(pm, 60, false);
+out.axisDaily = chart.axisTimes([fill({ bar_t: 1_762_913_100 })], 86400, true);
+out.axisEmpty = chart.axisTimes([], 60, false);
+out.axisHuge = chart.axisTimes([fill({ bar_t: 0 }), fill({ bar_t: 60 * 100_000 })], 60, false).length;
+out.tip = chart.tipModel([fill({ note: "Range broke up", side: "BUY" })], "future");
+out.tipMore = chart.tipModel([fill({ note: "one" }), fill({ fill_id: 2, note: "two" }), fill({ fill_id: 3 })], "future");
+out.tipNone = chart.tipModel([], "future");
+
 process.stdout.write(JSON.stringify(out));

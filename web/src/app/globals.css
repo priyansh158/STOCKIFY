@@ -368,7 +368,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pricechart-notice { padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-warn); border-radius: var(--radius-control); background: var(--tint-warn); font-size: var(--text-sm); }
 .stk-pricechart-empty { color: var(--color-muted); }
 .stk-pricechart-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); }
-.stk-pricechart-stage { border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); background: var(--color-paper-2); padding: var(--space-xs); min-width: 0; }
+.stk-pricechart-stage { position: relative; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); background: var(--color-paper-2); padding: var(--space-xs); min-width: 0; }
 .stk-pricechart-canvas { width: 100%; height: 30rem; min-width: 0; }
 .stk-pricechart-legend { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-lg); margin: 0; padding: 0; list-style: none; font-size: var(--text-sm); color: var(--color-ink-2); }
 .stk-pricechart-legend li { display: flex; align-items: center; gap: var(--space-xs); }
@@ -387,3 +387,4 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pricechart-trades li button[aria-pressed="true"] { border-color: var(--color-edge); background: var(--color-paper-3); }
 .stk-pricechart-trades li button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .stk-pricechart-trades li button { transition: none; } }
+.stk-pricechart-tip { position: absolute; z-index: var(--z-tooltip); display: flex; flex-direction: column; gap: var(--space-3xs); max-width: 22rem; margin: var(--space-sm) 0 0 var(--space-md); padding: var(--space-xs) var(--space-sm); border: var(--rule-hair) solid var(--color-edge); border-radius: var(--radius-control); background: var(--color-paper-3); color: var(--color-ink); font-size: var(--text-sm); line-height: 1.35; pointer-events: none; overflow-wrap: anywhere; }

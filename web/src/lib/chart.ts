@@ -65,6 +65,8 @@ export type CardModel = {
   /** `code` is true when the value is a code label (a strategy tag) the UI shows in the code style. */
   lines: { label: string; value: string; code: boolean }[];
   pnl: { label: string; value: string; tone: "up" | "down" | "flat" } | null;
+  /** One row per chunk of an earlier position this fill closed, with that chunk's profit or loss. */
+  chunks: { label: string; value: string; tone: "up" | "down" | "flat" }[];
 };
 
 /** India Standard Time is UTC+5:30. */
@@ -146,7 +148,13 @@ export function cardModel(m: ChartMarker, contract?: "option" | "future"): CardM
           ? { label: "Loss on the trade", value: signedRupees(p), tone: "down" }
           : { label: "Result of the trade", value: rupees(0), tone: "flat" };
   }
+  const chunks: CardModel["chunks"] = m.chunks.map((c) => ({
+    label: `Closed ${c.qty}, opened at ${rupees(c.open_price_paise)}`,
+    value: signedRupees(c.pnl_paise),
+    tone: c.pnl_paise > 0 ? "up" : c.pnl_paise < 0 ? "down" : "flat",
+  }));
   return {
+    chunks,
     title: `${verb} ${m.qty} at ${rupees(m.price_paise)}`,
     reason: noNote ? `${verb} ${m.qty} (no note from the strategy)` : m.note,
     lines,
@@ -289,4 +297,49 @@ export function chartQuery(o: ChartOpts): string {
   if (o.to_ns !== undefined) q.push(`to_ns=${o.to_ns}`);
   if (o.trade_date !== undefined) q.push(`trade_date=${encodeURIComponent(o.trade_date)}`);
   return q.length ? `?${q.join("&")}` : "";
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Fix round 1 (C15 review): the canvas summary, the axis of a chart with no price data, the hover tip.
+// ---------------------------------------------------------------------------------------------------------
+export function intervalWords(interval_s: number): string {
+  if (isDaily(interval_s)) return "daily";
+  if (interval_s === 60) return "one-minute";
+  return interval_s % 60 === 0 ? `${interval_s / 60}-minute` : `${interval_s}-second`;
+}
+
+/** The text alternative of the canvas: what is drawn, and where the keyboard route to the trades is. */
+export function chartSummary(model: ChartModel, symbol: string): string {
+  const head = symbol ? `Price chart of ${symbol}` : "Price chart";
+  const n = model.bars.length;
+  const m = model.markers.length;
+  const trades = m === 0 ? "" : `${m} trade${m === 1 ? "" : "s"}`;
+  if (n === 0) return `${head} with no price data${m ? "; the trades are listed below." : "."}`;
+  const bars = `${n} ${intervalWords(model.interval_s)} bar${n === 1 ? "" : "s"}`;
+  return m === 0 ? `${head}, ${bars}, no trades.` : `${head}, ${bars}, ${trades}; the trades are listed below.`;
+}
+
+const AXIS_FILL_MAX = 5000;
+
+/**
+ * Chart times for the empty axis of a chart with no price data: every marker's bar, and (intraday, when not too many)
+ * every bar slot between the first and the last, so the markers sit at their real spacing.
+ */
+export function axisTimes(markers: ChartMarker[], interval_s: number, daily: boolean): ChartTime[] {
+  const ts = [...new Set(markers.map((m) => m.bar_t))].sort((a, b) => a - b);
+  if (ts.length === 0) return [];
+  if (daily) return [...new Set(ts.map(istDate))];
+  const first = ts[0];
+  const last = ts[ts.length - 1];
+  if (interval_s <= 0 || (last - first) / interval_s > AXIS_FILL_MAX) return ts.map((t) => t + istShift);
+  const out: number[] = [];
+  for (let t = first; t <= last; t += interval_s) out.push(t + istShift);
+  return out;
+}
+
+/** What the hover tip shows for the markers on the bar under the crosshair: the card's title and reason, as text. */
+export function tipModel(ms: ChartMarker[], contract?: "option" | "future"): { title: string; reason: string; more: number } | null {
+  if (ms.length === 0) return null;
+  const c = cardModel(ms[0], contract);
+  return { title: c.title, reason: c.reason, more: ms.length - 1 };
 }

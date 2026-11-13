@@ -185,6 +185,34 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(line(self.r["cardFillWithFsp"], "Price"), ["₹2,418.40"])
         self.assertEqual(self.r["kinds"], ["option", "option", "future", "future"])
 
+    def test_card_lists_each_closed_chunk_with_its_profit_or_loss(self):
+        rows = self.r["cardChunks"]["chunks"]
+        self.assertEqual([c["label"] for c in rows], ["Closed 20, opened at ₹2,400.00",
+                                                      "Closed 30, opened at ₹2,410.00",
+                                                      "Closed 5, opened at ₹2,418.40"])
+        self.assertEqual([c["value"] for c in rows], ["+₹15.00", "−₹5.00".replace("−", "-"), "₹0.00"])
+        self.assertEqual([c["tone"] for c in rows], ["up", "down", "flat"])
+        self.assertEqual(self.r["cardNoChunks"], [])
+
+    def test_canvas_summary_names_symbol_interval_bars_and_trades(self):
+        a, b, c, d = self.r["summary"]
+        self.assertEqual(a, "Price chart of RELIANCE, 1 one-minute bar, 1 trade; the trades are listed below.")
+        self.assertEqual(b, "Price chart of RELIANCE, 2 one-minute bars, no trades.")
+        self.assertEqual(c, "Price chart, 1 daily bar, 2 trades; the trades are listed below.")
+        self.assertEqual(d, "Price chart of RELIANCE with no price data; the trades are listed below.")
+
+    def test_a_pruned_chart_still_gets_a_time_axis_holding_every_marker(self):
+        self.assertEqual(self.r["axis"], [6000 + 19800, 6060 + 19800, 6120 + 19800, 6180 + 19800])
+        self.assertEqual(self.r["axisDaily"], ["2025-11-12"])
+        self.assertEqual(self.r["axisEmpty"], [])
+        self.assertEqual(self.r["axisHuge"], 2)
+
+    def test_hover_tip_is_the_cards_title_and_reason_as_text(self):
+        self.assertEqual(self.r["tip"], {"title": "Bought 50 at ₹2,418.40", "reason": "Range broke up", "more": 0})
+        self.assertEqual(self.r["tipMore"]["more"], 2)
+        self.assertEqual(self.r["tipMore"]["reason"], "one")
+        self.assertIsNone(self.r["tipNone"])
+
 
 if __name__ == "__main__":
     unittest.main()

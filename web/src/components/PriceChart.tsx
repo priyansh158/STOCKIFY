@@ -29,9 +29,12 @@ import {
   type Time,
 } from "lightweight-charts";
 import {
+  axisTimes,
   cardModel,
+  chartSummary,
   chartViewState,
   edgeRequests,
+  intervalWords,
   isDaily,
   istShift,
   markerRows,
@@ -42,6 +45,7 @@ import {
   toCandle,
   toMarker,
   toPlotPoint,
+  tipModel,
   toVolume,
   type ChartBar,
   type ChartMarker,
@@ -51,6 +55,8 @@ import {
   type ChartWindow,
 } from "@/lib/chart";
 import { Loading, Panel, Skeleton } from "./ui";
+
+const toneClass = (t: "up" | "down" | "flat"): string => (t === "up" ? "stk-up" : t === "down" ? "stk-down" : "");
 
 export type PriceChartProps = {
   /** Fetches the chart: no range for the opening view, a range for a neighbouring page; `opts` carries the picker choices. */
@@ -66,17 +72,23 @@ export type PriceChartProps = {
 const PAGE_BARS = 2000;
 const NEAR_BARS = 300;
 const LIST_SHOWN = 50;
-/** Line colours for the strategy's series, in a fixed order, each also told apart by its dash (never colour alone). */
-const LINE_TOKENS = ["--color-info", "--color-warn", "--color-ink-2", "--color-accent", "--color-muted", "--color-edge", "--color-ink", "--color-focus"];
-const LINE_DASH = [0, 2, 1, 3] as const; // solid, dashed, dotted, large dashed (the library's LineStyle values)
+/** The validated three colours for the strategy's lines (dataviz validator, see the C15 report); a 4th line and beyond reuse them with a new dash. */
+const LINE_TOKENS = ["--color-accent", "--color-info", "--color-warn"] as const;
+const MAX_LINES = 8; // the engine records at most 8 series per run
+const LINE_DASH = [0, 2, 1, 3] as const; // the library's LineStyle: solid, dashed, dotted, large dashed
 const DASH_CSS = ["solid", "dashed", "dotted", "dashed"] as const;
+const lineToken = (i: number) => LINE_TOKENS[i % LINE_TOKENS.length];
+const lineDash = (i: number) => Math.floor(i / LINE_TOKENS.length) % LINE_DASH.length;
 const NO_TOKENS = { up: "", down: "", warn: "" };
 const PRICE = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+let scratch: CanvasRenderingContext2D | null | undefined;
 
 /** A CSS token as an rgba() string the library can parse (its parser does not know oklch): the canvas converts it. */
 function readColour(name: string, alpha = 1): string {
   const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const ctx = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  scratch ??= document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  const ctx = scratch;
   if (!ctx || !raw) return raw;
   ctx.fillStyle = raw;
   ctx.fillRect(0, 0, 1, 1);
@@ -98,11 +110,6 @@ function visibleSeconds(t: Time): number {
   return Date.UTC(t.year, t.month - 1, t.day) / 1000 - istShift;
 }
 
-function intervalWords(interval_s: number): string {
-  if (isDaily(interval_s)) return "daily bars";
-  return interval_s % 60 === 0 ? `${interval_s / 60}-minute bars` : `${interval_s}-second bars`;
-}
-
 export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick }: PriceChartProps) {
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -110,6 +117,10 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const shadeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const axisRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const axisMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const byTimeRef = useRef<Map<string, ChartMarker[]>>(new Map());
+  const alive = useRef(true);
   const linesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const cardRef = useRef<HTMLElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -127,20 +138,24 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const [showVolume, setShowVolume] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [themeTick, setThemeTick] = useState(0);
-
-  // The latest values for handlers the library holds; set after render, read only from events and timers.
-  const live = useRef({ load, bars, model, instrument, tradeDate, pollMs, onMarkerClick });
-  useEffect(() => {
-    live.current = { load, bars, model, instrument, tradeDate, pollMs, onMarkerClick };
-  });
-  const exhausted = useRef({ before: false, after: false });
-  const paging = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [lastMeta, setLastMeta] = useState<ChartModel | null>(null);
+  const [tip, setTip] = useState<{ title: string; reason: string; more: number; x: number; y: number } | null>(null);
 
   const meta = model !== null && model !== "error" ? model : null;
   const daily = meta ? isDaily(meta.interval_s) : false;
-  const state = chartViewState(model);
+  const ctrl = meta ?? lastMeta; // the pickers stay mounted while a reload is under way
+  const state = busy ? "loading" : chartViewState(model);
   const symbol = meta?.instruments.find((i) => i.id === meta.instrument_id)?.symbol ?? "";
   const contract = settlementKindOf(symbol);
+
+  // The latest values for handlers the library holds; set after render, read only from events and timers.
+  const live = useRef({ load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract: "future" as "option" | "future" });
+  useEffect(() => {
+    live.current = { load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract };
+  });
+  const exhausted = useRef({ before: false, after: false });
+  const paging = useRef(false);
 
   // --- the opening load, and a new one when the instrument or the day changes (or Try again) ---------------
   useEffect(() => {
@@ -148,6 +163,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     live.current.load(undefined, { instrument, trade_date: tradeDate }).then(
       (res) => {
         if (cancelled) return;
+        setBusy(false);
         if (res === null) {
           setProblem("This chart is not available: the run or session was not found.");
           setModel("error");
@@ -159,9 +175,11 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         setMarkers(res.markers);
         setSelected(null);
         setModel(res);
+        setLastMeta(res);
       },
       (e: unknown) => {
         if (cancelled) return;
+        setBusy(false);
         setProblem(e instanceof Error ? e.message : "The chart could not be loaded.");
         setModel("error");
       },
@@ -174,22 +192,23 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   // --- polling, paused while the tab is hidden --------------------------------------------------------------
   useEffect(() => {
     if (!pollMs) return;
-    let busy = false;
+    let inflight = false;
     const tick = () => {
-      if (document.hidden || busy) return;
-      busy = true;
+      if (document.hidden || inflight) return;
+      inflight = true;
       const { instrument: i, tradeDate: d } = live.current;
       live.current
         .load(undefined, { instrument: i, trade_date: d })
         .then((res) => {
-          if (!res || live.current.instrument !== i || live.current.tradeDate !== d) return;
+          if (!alive.current || !res || live.current.instrument !== i || live.current.tradeDate !== d) return;
           setBars((have) => mergePages(res.bars, have)); // the fresh bar wins: the last one is still forming
           setMarkers((have) => mergeMarkers(have, res.markers));
           setModel(res);
+          setLastMeta(res);
         })
         .catch(() => undefined) // keep what is shown; the next tick tries again
         .finally(() => {
-          busy = false;
+          inflight = false;
         });
     };
     const id = window.setInterval(tick, pollMs);
@@ -226,12 +245,37 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
     const candles = chart.addSeries(CandlestickSeries, { borderVisible: false });
+    // With no price data the markers still need a time axis: a flat, invisible line whose only job is to hold the times.
+    const axis = chart.addSeries(LineSeries, {
+      priceScaleId: "stk-axis",
+      color: "transparent",
+      lineVisible: false,
+      pointMarkersVisible: false,
+      crosshairMarkerVisible: false,
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    axis.priceScale().applyOptions({ visible: false });
+    axisRef.current = axis;
+    axisMarkersRef.current = createSeriesMarkers(axis, []);
     chartRef.current = chart;
     candlesRef.current = candles;
     volumeRef.current = volume;
     shadeRef.current = shade;
     markersRef.current = createSeriesMarkers(candles, []);
     const lines = linesRef.current;
+    alive.current = true;
+
+    chart.subscribeCrosshairMove((p) => {
+      const key = p.time === undefined ? "" : String(p.time);
+      const ms = byTimeRef.current.get(key);
+      if (!ms || !p.point) {
+        setTip((t) => (t === null ? t : null));
+        return;
+      }
+      const m = tipModel(ms, live.current.contract);
+      if (m) setTip({ ...m, x: p.point.x, y: p.point.y });
+    });
 
     chart.subscribeClick((p) => {
       const id = p.hoveredInfo?.objectId ?? p.hoveredObjectId;
@@ -258,7 +302,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         ),
       )
         .then((got) => {
-          if (live.current.instrument !== i || live.current.tradeDate !== d) return;
+          if (!alive.current || live.current.instrument !== i || live.current.tradeDate !== d) return;
           let merged = live.current.bars;
           for (const { r, res } of got) {
             if (!res) continue;
@@ -283,10 +327,11 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     return () => {
       watch.disconnect();
       media.removeEventListener("change", theme);
+      alive.current = false;
       lines.clear();
       chart.remove();
       chartRef.current = candlesRef.current = volumeRef.current = shadeRef.current = null;
-      markersRef.current = null;
+      markersRef.current = axisMarkersRef.current = axisRef.current = null;
     };
   }, []);
 
@@ -328,13 +373,27 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
 
     const tokens = { up: readColour("--color-up"), down: readColour("--color-down"), warn: readColour("--color-warn") };
     const points = markers.map((m, i) => toMarker(m, daily, tokens, i));
+    const byTime = new Map<string, ChartMarker[]>();
+    points.forEach((pt, i) => byTime.set(String(pt.time), [...(byTime.get(String(pt.time)) ?? []), markers[i]]));
+    byTimeRef.current = byTime;
     points.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
-    markersRef.current?.setMarkers(points as unknown as SeriesMarker<Time>[]);
+    const drawn = points as unknown as SeriesMarker<Time>[];
+    const axis = axisRef.current;
+    if (bars.length === 0 && axis) {
+      // No price data (a pruned run, a day with no recording): the markers go on an empty, flat time axis.
+      axis.setData(axisTimes(markers, meta.interval_s, daily).map((time) => ({ time, value: 0 })) as unknown as LineData[]);
+      axisMarkersRef.current?.setMarkers(drawn);
+      markersRef.current?.setMarkers([]);
+    } else {
+      axis?.setData([]);
+      axisMarkersRef.current?.setMarkers([]);
+      markersRef.current?.setMarkers(drawn);
+    }
 
     // The strategy's own lines: prices on the price scale, levels in a pane of their own under the candles.
     const shown = meta.plots
       .filter((p) => p.instrument_id === null || p.instrument_id === 0 || p.instrument_id === meta.instrument_id)
-      .slice(0, LINE_TOKENS.length);
+      .slice(0, MAX_LINES);
     const lines = linesRef.current;
     const keep = new Set(shown.map((p) => p.name));
     for (const [name, s] of lines) {
@@ -349,16 +408,18 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         s = chart.addSeries(LineSeries, { lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false }, p.kind === "level" ? 1 : 0);
         lines.set(p.name, s);
       }
-      s.applyOptions({ color: readColour(LINE_TOKENS[i]), lineWidth: 2, lineStyle: LINE_DASH[i % LINE_DASH.length] });
+      s.applyOptions({ color: readColour(lineToken(i)), lineWidth: 2, lineStyle: LINE_DASH[lineDash(i)] });
       const byTime = new Map<ChartPlot["points"][number]["t"], ChartPlot["points"][number]>();
       for (const q of p.points) byTime.set(q.t, q);
       const data = [...byTime.values()].sort((a, b) => a.t - b.t).map((q) => toPlotPoint(q, daily));
       s.setData(data as unknown as LineData[]);
     });
 
-    if (fitRef.current && bars.length > 0) {
+    if (fitRef.current && (bars.length > 0 || markers.length > 0)) {
       fitRef.current = false;
-      if (bars.length > NEAR_BARS && markers.length > 0) {
+      if (bars.length === 0) {
+        chart.timeScale().fitContent();
+      } else if (bars.length > NEAR_BARS && markers.length > 0) {
         const at = bars.findIndex((b) => b.t >= markers[0].bar_t);
         const i = at < 0 ? bars.length - 1 : at;
         chart.timeScale().setVisibleLogicalRange({ from: i - NEAR_BARS / 2, to: i + NEAR_BARS / 2 });
@@ -429,26 +490,27 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const selIndex = selected === null ? -1 : rows.findIndex((r) => r.id === selected);
   const card = selIndex >= 0 ? cardModel(markers[selIndex], contract) : null;
   const listed = showAll ? rows : rows.slice(0, LIST_SHOWN);
-  const drawable = state === "empty" || state === "full";
+  const drawable = state === "empty" || state === "full" || (state === "pruned" && markers.length > 0);
+  const summary = meta ? chartSummary({ ...meta, bars, markers }, symbol) : "Price chart";
 
   return (
     <section className="stk-pricechart" aria-label={`${title}: price chart`}>
       <header className="stk-pricechart-head">
         <h3>{title}</h3>
         {paperBadge && <span className="stk-chip" data-tone="warn">Paper trading: no real orders</span>}
-        {meta && (
+        {ctrl && (
           <div className="stk-pricechart-controls">
-            {meta.instruments.length > 1 && (
+            {ctrl.instruments.length > 1 && (
               <label className="stk-pricechart-pick">
                 <span>Instrument</span>
                 <select className="stk-field" data-fit
-                  value={meta.instrument_id ?? ""}
+                  value={instrument ?? ctrl.instrument_id ?? ""}
                   onChange={(e) => {
-                    setModel(null);
+                    setBusy(true);
                     setInstrument(Number(e.target.value));
                   }}
                 >
-                  {meta.instruments.map((i) => (
+                  {ctrl.instruments.map((i) => (
                     <option key={i.id} value={i.id}>
                       {i.symbol}
                     </option>
@@ -456,14 +518,14 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
                 </select>
               </label>
             )}
-            {meta.days && meta.days.length > 0 && (
+            {ctrl.days && ctrl.days.length > 0 && (
               <label className="stk-pricechart-pick">
                 <span>Day</span>
-                <select className="stk-field" data-fit value={meta.trade_date ?? ""} onChange={(e) => {
-                  setModel(null);
+                <select className="stk-field" data-fit value={tradeDate ?? ctrl.trade_date ?? ""} onChange={(e) => {
+                  setBusy(true);
                   setTradeDate(e.target.value);
                 }}>
-                  {meta.days.map((d) => (
+                  {ctrl.days.map((d) => (
                     <option key={d} value={d}>
                       {d}
                     </option>
@@ -480,7 +542,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       </header>
       {meta && (
         <p className="stk-label">
-          {intervalWords(meta.interval_s)}
+          {intervalWords(meta.interval_s)} bars
           {meta.basis ? `, ${meta.basis} prices` : ""}
           {meta.live ? ", live" : ""}
           {meta.plain ? `. ${meta.plain}` : ""}
@@ -503,7 +565,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
           <div className="stk-pricechart-error" role="alert">
             <p>{problem || "The chart could not be loaded. Check that the API is running, then try again."}</p>
             <button type="button" className="stk-btn" onClick={() => {
-                setModel(null);
+                setBusy(true);
                 setReloadKey((n) => n + 1);
               }}>
               Try again
@@ -518,23 +580,30 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
             : "The price data for this run is no longer on disk. The trades are listed below."}
         </p>
       )}
-      {state === "empty" && <p className="stk-pricechart-empty">This run made no trades.</p>}
+      {state === "empty" && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}
 
       <div hidden={!drawable} className="stk-pricechart-stage">
-        <div ref={boxRef} className="stk-pricechart-canvas" />
+        <div ref={boxRef} className="stk-pricechart-canvas" role="img" aria-label={summary} />
+        {tip && drawable && (
+          <div className="stk-pricechart-tip" aria-hidden style={{ left: tip.x, top: tip.y }}>
+            <strong>{tip.title}</strong>
+            <span>{tip.reason}</span>
+            {tip.more > 0 && <span className="stk-label">and {tip.more} more on this bar</span>}
+          </div>
+        )}
       </div>
 
       {meta?.plots && drawable && meta.plots.length > 0 && (
         <ul className="stk-pricechart-legend" aria-label="The strategy's lines">
-          {meta.plots.slice(0, LINE_TOKENS.length).map((p, i) => (
+          {meta.plots.slice(0, MAX_LINES).map((p, i) => (
             <li key={p.name}>
               <span
                 className="stk-pricechart-swatch"
-                style={{ borderTopColor: `var(${LINE_TOKENS[i]})`, borderTopStyle: DASH_CSS[i % DASH_CSS.length] }}
+                style={{ borderTopColor: `var(${lineToken(i)})`, borderTopStyle: DASH_CSS[lineDash(i)] }}
                 aria-hidden
               />
               {p.name}
-              {p.kind === "level" ? " (own scale, lower pane)" : ""}
+              {p.kind === "level" ? " (drawn in a pane below)" : ""}
             </li>
           ))}
         </ul>
@@ -559,10 +628,19 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
             {card.pnl && (
               <div>
                 <dt>{card.pnl.label}</dt>
-                <dd className={`num ${card.pnl.tone === "up" ? "stk-up" : card.pnl.tone === "down" ? "stk-down" : ""}`}>{card.pnl.value}</dd>
+                <dd className={`num ${toneClass(card.pnl.tone)}`}>{card.pnl.value}</dd>
               </div>
             )}
+            {card.chunks.map((c) => (
+              <div key={c.label}>
+                <dt>{c.label}</dt>
+                <dd className={`num ${toneClass(c.tone)}`}>{c.value}</dd>
+              </div>
+            ))}
           </dl>
+          {markers[selIndex].kind === "settlement" && contract === "option" && (
+            <p className="stk-label">Value at expiry is what the option was worth when it expired. The settlement price is the underlying&apos;s.</p>
+          )}
         </section>
       )}
 
