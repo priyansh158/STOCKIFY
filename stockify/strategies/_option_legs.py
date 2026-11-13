@@ -21,7 +21,7 @@ from datetime import date
 from decimal import ROUND_CEILING, Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy, encode_state
+from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 DAY_NS = 86_400 * 1_000_000_000
 
@@ -134,11 +134,18 @@ class OptionLegs(Strategy):
         if missing:
             return "a leg has no fresh two-sided quote"
         self.body, self.wings, self.entries, self.stops = [], [], {}, {}
+        names = {row["id"]: row["tradingsymbol"] for row in ctx._rows()}
         for side, r in legs:                                # wings first, so the short legs are covered
             iid = r["instrument_id"]
             qty = self.lots * ctx.spec(iid)["lot"]
+            kind = "call" if r["kind"] == "CE" else "put"
+            strike = fmt_price(r["strike_paise"])
+            note = (f"Bought {fmt_qty(qty)} {names[iid]}: protective {kind} at the {strike} strike, to cap the loss"
+                    if side == "BUY" else
+                    f"Sold {fmt_qty(qty)} {names[iid]}: short {kind} at the {strike} strike, "
+                    "the one nearest the forward price")
             oid = ctx.place(iid, side, qty, "NRML", "MARKET", protection=self.protection_bp,
-                            tag="wing" if side == "BUY" else "entry")
+                            tag="wing" if side == "BUY" else "entry", note=note)
             (self.wings if side == "BUY" else self.body).append(iid)
             if side == "SELL":
                 self.entries[oid] = iid
@@ -154,8 +161,11 @@ class OptionLegs(Strategy):
         tick = ctx.spec(iid)["tick_paise"]
         raw = Decimal(order.avg_price) * (1 + self.stop_pct)
         trigger = int((raw / tick).to_integral_value(rounding=ROUND_CEILING)) * tick
+        pct = format((self.stop_pct * 100).normalize(), "f")             # "30", not 3E+1
+        note = (f"Stop-loss for the {fmt_qty(order.filled_qty)} sold: buys back if price rises to "
+                f"{fmt_price(trigger)}, {pct}% above the sale at {fmt_price(order.avg_price)}")
         self.stops[iid] = ctx.place(iid, "BUY", order.filled_qty, "NRML", "SL-M", trigger=trigger,
-                                    protection=self.protection_bp, tag="stop")
+                                    protection=self.protection_bp, tag="stop", note=note)
 
     def _open(self, ctx, iid: int) -> int:  # noqa: ANN001
         pos = ctx.position(iid, "NRML")
@@ -164,8 +174,10 @@ class OptionLegs(Strategy):
     def _exit(self, ctx) -> None:  # noqa: ANN001
         for oid in self.stops.values():
             ctx.cancel(oid)
+        names = {row["id"]: row["tradingsymbol"] for row in ctx._rows()}
         for iid in self.body + self.wings:
             qty = self._open(ctx, iid)
             if qty:
                 ctx.place(iid, "BUY" if qty < 0 else "SELL", abs(qty), "NRML", "MARKET",
-                          protection=self.protection_bp, tag="time_exit")
+                          protection=self.protection_bp, tag="time_exit",
+                          note=f"Closed {fmt_qty(abs(qty))} {names[iid]} at the {self.exit_hhmm} time exit")

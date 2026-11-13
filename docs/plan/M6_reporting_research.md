@@ -90,6 +90,7 @@ cd web; npm run lint; npm run build
 - [x] CH 6.2 Every order carries the strategy's own `note`, written to `orders.csv` by the oracle (`Order.note`, `ctx.place(note=)`, `system_notes.json`, bundle `system_notes`, D-92; the engine half is CH 6.3).
 - [x] CH 6.3 The note in the C++ engine, the pybind bridge and the carried sod_state, byte for byte with the oracle (`Engine.place(note=)`, `sod_state` order `note`, optional on read, D-92).
 - [x] CH 6.4 `ctx.plot` and `plots.csv` on both runners (`ctx.plot(name, value, *, kind="price", instrument=0)`, 8 series and 200,000 points per run, a deterministic file; D-94).
+- [x] CH 6.6 The shipped Python strategies say why they trade and draw their own lines (`note=` on every order, `ctx.plot` in sma_cross and the opening-range breakout; the exact sentences are D-95, for the C++ twins to copy).
 
 ## Definition of done
 

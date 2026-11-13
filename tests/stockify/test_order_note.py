@@ -227,11 +227,15 @@ class OldRunsTests(NoteBase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["note"], "")
 
-    def test_a_new_run_with_no_note_imports_an_empty_string(self):
-        rid = runs.launch(self.config(BUY, "nonote"), impl="oracle", report=False)
+    def test_a_new_run_imports_the_note_the_strategy_wrote(self):
+        """buy_and_hold says why since CH 6.6, D-95: the stored note is the file's own text."""
+        rid = runs.launch(self.config(BUY, "withnote"), impl="oracle", report=False)
         from stockify import store
         runs.import_run(paths.run_path(rid))
-        self.assertEqual(store.run_rows(rid, "orders")[0]["note"], "")
+        note = store.run_rows(rid, "orders")[0]["note"]
+        self.assertRegex(note, "^Bought [0-9,]+ NSE:RELIANCE on the first bar and will hold$")
+        with (paths.run_path(rid) / "orders.csv").open(encoding="utf-8", newline="") as f:
+            self.assertEqual(note, next(csv.DictReader(f))["note"])
 
     def test_a_cell_with_a_carriage_return_is_quoted(self):
         from stockify.oracle import artifacts

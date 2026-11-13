@@ -24,7 +24,7 @@ The code is `stockify/strategies/opening_range_breakout.py` (the M2 reference st
 
 ```python
 from stockify import timeutil
-from stockify.strategy import Strategy, encode_state
+from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class OpeningRangeBreakout(Strategy):
@@ -39,7 +39,8 @@ class OpeningRangeBreakout(Strategy):
 
     def on_start(self, ctx):
         p = ctx.params                                   # the run config's strategy.params
-        self.iid = ctx.resolve(p["symbol"])              # "NSE:RELIANCE" -> instrument id
+        self.symbol = p["symbol"]                        # "NSE:RELIANCE"
+        self.iid = ctx.resolve(self.symbol)              # -> instrument id
         self.minutes = int(p.get("range_minutes", 15))
         self.qty = int(p["qty"])
         self.short = bool(p.get("short", False))
@@ -69,15 +70,25 @@ class OpeningRangeBreakout(Strategy):
             self.hi = bar.high if self.hi is None else max(self.hi, bar.high)
             self.lo = bar.low if self.lo is None else min(self.lo, bar.low)
             return
-        if self.traded or self.hi is None:
+        if self.hi is None:
+            return
+        ctx.plot("range_high", self.hi, instrument=self.iid)     # paise: the range as the bars after it see it
+        ctx.plot("range_low", self.lo, instrument=self.iid)
+        if self.traded:
             return
         tick = ctx.spec(self.iid)["tick_paise"]
         if bar.close > self.hi:
-            self.entry_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long")
+            self.entry_id = ctx.place(
+                self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long",
+                note=f"Bought {fmt_qty(self.qty)} {self.symbol}: price {fmt_price(bar.close)} broke above the "
+                     f"{self.minutes}-minute opening range high of {fmt_price(self.hi)}")
             self.stop_side, self.stop_trigger = "SELL", self.lo // tick * tick
             self.traded = True
         elif self.short and bar.close < self.lo:
-            self.entry_id = ctx.place(self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short")
+            self.entry_id = ctx.place(
+                self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short",
+                note=f"Sold short {fmt_qty(self.qty)} {self.symbol}: price {fmt_price(bar.close)} broke below the "
+                     f"{self.minutes}-minute opening range low of {fmt_price(self.lo)}")
             self.stop_side, self.stop_trigger = "BUY", -(-self.hi // tick) * tick
             self.traded = True
 
@@ -85,8 +96,12 @@ class OpeningRangeBreakout(Strategy):
         # The stop exists only for what the entry has filled: one SL-M of exactly each fill's quantity. A rejected or
         # cancelled entry fills nothing, so it never gets a stop (and cannot open a reverse position).
         if self.entry_id is not None and fill.order_id == self.entry_id:
+            qty = fmt_qty(fill.qty)
+            trigger = fmt_price(self.stop_trigger)
+            note = (f"Stop-loss for the {qty} bought: sells if price falls to {trigger}" if self.stop_side == "SELL"
+                    else f"Stop-loss for the {qty} sold short: buys back if price rises to {trigger}")
             self.stop_ids.append(ctx.place(self.iid, self.stop_side, fill.qty, "MIS", "SL-M",
-                                           trigger=self.stop_trigger, tag="orb_stop"))
+                                           trigger=self.stop_trigger, tag="orb_stop", note=note))
 
     # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
     def save_state(self) -> dict:
@@ -103,7 +118,8 @@ class OpeningRangeBreakout(Strategy):
         pos = ctx.position(self.iid, "MIS")
         if pos and pos.qty:
             side = "SELL" if pos.qty > 0 else "BUY"
-            ctx.place(self.iid, side, abs(pos.qty), "MIS", "MARKET", tag="orb_exit")
+            ctx.place(self.iid, side, abs(pos.qty), "MIS", "MARKET", tag="orb_exit",
+                      note=f"Closed {fmt_qty(abs(pos.qty))} {self.symbol} at the {self.exit_hhmm} time exit")
 ```
 
 `save_state` / `load_state` matter only in paper trading, where each trading day runs a fresh engine and `on_start`
@@ -163,6 +179,59 @@ Things to know when you write your own (the full API is A2 §4):
 - To make your own, put the file in `stockify/strategies/` and name it in the config as
   `"stockify.strategies.<module>:<Class>"`. The `PARAMS` list is only a description, for the strategy catalogue
   and the `/tests` form (labels, types, defaults, help text); the strategy itself reads `ctx.params`.
+
+### Say why: `note=` and `ctx.plot`
+
+A trade the chart shows should say why it happened, in the strategy's own words, and the lines a strategy
+decides on should be drawn on the chart too. Two calls do that, and both are written into the run folder, so a
+re-run gives the same bytes:
+
+- **`note=`** on `ctx.place` is one sentence of plain English for that order (`orders.csv`, column `note`; at
+  most 200 characters, longer is cut with `…`). Name the quantity and the number that decided it, and give a reason,
+  not just a side. Format numbers with `fmt_price(paise)` (₹ without the sign, Indian grouping: `241840` is
+  `2,418.40`) and `fmt_qty(units)` (`125000` is `1,25,000`) from `stockify.strategy`, so the text reads like the
+  rest of the lab. A note changes no fill.
+- **`ctx.plot(name, value, *, kind="price", instrument=0)`** adds a point to a named line at the current engine
+  time (`plots.csv`). `value` is a whole number: paise for `kind="price"`, and for `kind="level"` an indicator
+  times 10,000 (`to_level(54.3217)` is `543217`). Never pass a float. `instrument` is the instrument id the line
+  belongs to (0: the whole run). A run keeps at most 8 lines and 200,000 points; beyond that a call is ignored and
+  one warning is logged.
+
+```python
+from stockify.strategy import Strategy, fmt_price
+
+
+class BuyBelow(Strategy):
+    def on_start(self, ctx):
+        self.iid = ctx.resolve(ctx.params["symbol"])
+        self.limit = int(ctx.params["below"])             # paise
+        self.done = False
+        ctx.subscribe_bars(self.iid, 86400)
+
+    def on_bar(self, ctx, bar):
+        if not self.done and bar.close < self.limit:
+            ctx.place(self.iid, "BUY", 1, "CNC", "MARKET", tag="entry",
+                      note=f"Bought 1: the close {fmt_price(bar.close)} fell under {fmt_price(self.limit)}")
+            self.done = True
+```
+
+```python
+from stockify.strategy import Strategy
+
+
+class DrawAverage(Strategy):
+    def on_start(self, ctx):
+        self.iid = ctx.resolve(ctx.params["symbol"])
+        ctx.subscribe_bars(self.iid, 86400)
+
+    def on_bar(self, ctx, bar):
+        avg = ctx.sma(self.iid, 86400, 3)                 # a float; NaN until three bars exist
+        if avg == avg:
+            ctx.plot("sma3", int(avg), instrument=self.iid)   # whole paise: int() truncates
+```
+
+The shipped strategies do both; read `sma_cross.py` (two lines, `fast` and `slow`) and
+`opening_range_breakout.py` (the range high and low, and a note on the entry, the stop and the exit).
 
 ## 2. The run config
 
