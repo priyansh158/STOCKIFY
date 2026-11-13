@@ -11,6 +11,7 @@
 #include "stocksim/int128.hpp"
 #include "stocksim/notes.hpp"
 #include "stocksim/strategy.hpp"
+#include "stocksim/strategy_state.hpp"
 
 namespace stocksim::strategies {
 
@@ -33,7 +34,53 @@ class SmaCrossCpp final : public Strategy {
         if (long_short_ && product_ == "CNC") {
             throw std::invalid_argument("long_short needs a derivative traded NRML (no CNC short selling)");
         }
+        configured_ = true;
         ctx.subscribe_bars(iid_, isec_);
+    }
+
+    // A paper session's day-to-day state (A2 §4.1): the attributes of the Python original (its parameters; it keeps
+    // nothing else). "{}" is a state written before this existed, or a twin never started: the defaults.
+    std::string save_state() const override {
+        if (!configured_) {
+            return "{}";
+        }
+        Json st = Json::object();
+        st["symbol"] = symbol_;
+        st["iid"] = iid_;
+        st["isec"] = isec_;
+        st["fast"] = fast_;
+        st["slow"] = slow_;
+        st["long_short"] = long_short_;
+        st["product"] = product_;
+        return st.dump();
+    }
+
+    void load_state(std::string_view text) override {
+        constexpr std::string_view kOwner = "sma_cross_cpp";
+        Json st;
+        try {
+            st = Json::parse(text);
+        } catch (const std::exception& e) {
+            throw RunError("sma_cross_cpp state: not JSON: " + std::string(e.what()));
+        }
+        if (st.is_object() && st.empty()) {
+            *this = SmaCrossCpp{};
+            return;
+        }
+        state::as_object(kOwner, st, {"symbol", "iid", "isec", "fast", "slow", "long_short", "product"});
+        SmaCrossCpp n;  // read whole, then taken: a refused state leaves this strategy as it was
+        n.symbol_ = state::read_str(kOwner, st, "symbol");
+        n.iid_ = static_cast<InstrumentId>(state::read_int(kOwner, st, "iid", 0, UINT32_MAX));
+        n.isec_ = static_cast<std::int32_t>(state::read_int(kOwner, st, "isec", 1, INT32_MAX));
+        n.fast_ = state::read_int(kOwner, st, "fast");
+        n.slow_ = state::read_int(kOwner, st, "slow");
+        n.long_short_ = state::read_bool(kOwner, st, "long_short");
+        n.product_ = state::read_str(kOwner, st, "product");
+        if (n.long_short_ && n.product_ == "CNC") {  // on_start refuses it, so no run could have saved it
+            state::refuse(kOwner, "long_short", "needs a derivative traded NRML (no CNC short selling)");
+        }
+        n.configured_ = true;
+        *this = std::move(n);
     }
 
     void on_bar(Context& ctx, const Bar& bar) override {
@@ -106,6 +153,7 @@ class SmaCrossCpp final : public Strategy {
     std::int64_t fast_ = 0, slow_ = 0;
     bool long_short_ = false;
     std::string product_ = "CNC";
+    bool configured_ = false;  // on_start ran, or a state with the parameters was loaded
 };
 
 STOCKSIM_STRATEGY(SmaCrossCpp, "sma_cross_cpp")

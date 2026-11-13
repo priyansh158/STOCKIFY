@@ -13,6 +13,7 @@
 #include "stocksim/notes.hpp"
 #include "stocksim/session.hpp"
 #include "stocksim/strategy.hpp"
+#include "stocksim/strategy_state.hpp"
 
 namespace stocksim::strategies {
 
@@ -32,6 +33,7 @@ class OrbCpp final : public Strategy {
         short_ = param_bool(p, "short", false);
         exit_hhmm_ = param_string(p, "exit_hhmm", "15:10");
         day_.reset();
+        configured_ = true;
         ctx.subscribe_bars(iid_, 60);
     }
 
@@ -84,10 +86,10 @@ class OrbCpp final : public Strategy {
         if (entry_id_ && fill.order_id == *entry_id_) {
             const std::string qty = fmt_qty(fill.qty);
             const std::string trigger = fmt_price(stop_trigger_);
-            std::string note = stop_side_ == std::string_view("SELL")
+            std::string note = *stop_side_ == "SELL"
                                    ? "Stop-loss for the " + qty + " bought: sells if price falls to " + trigger
                                    : "Stop-loss for the " + qty + " sold short: buys back if price rises to " + trigger;
-            stop_ids_.push_back(place(ctx, stop_side_, "SL-M", stop_trigger_, "orb_stop", std::move(note), fill.qty));
+            stop_ids_.push_back(place(ctx, stop_side_->c_str(), "SL-M", stop_trigger_, "orb_stop", std::move(note), fill.qty));
         } else if (std::find(stop_ids_.begin(), stop_ids_.end(), fill.order_id) != stop_ids_.end()) {
             const std::optional<PositionView> pos = ctx.position(iid_, "MIS");  // a stop filled: the day is closed once flat
             closed_ = !(pos && pos->qty != 0);
@@ -107,6 +109,105 @@ class OrbCpp final : public Strategy {
         }
     }
 
+    // A paper session's day-to-day state (A2 §4.1): the attributes of the Python original, as it saves them. Before
+    // the first bar of a day it has no range keys; "{}" (a state written before this existed, or a twin that was
+    // never started) is the fresh-day defaults.
+    std::string save_state() const override {
+        if (!configured_) {
+            return "{}";
+        }
+        Json st = Json::object();
+        st["symbol"] = symbol_;
+        st["iid"] = iid_;
+        st["minutes"] = minutes_;
+        st["qty"] = qty_;
+        st["short"] = short_;
+        st["exit_hhmm"] = exit_hhmm_;
+        st["day"] = day_ ? Json(iso_date(*day_)) : Json(nullptr);
+        if (day_) {
+            const auto opt = [](const std::optional<std::int64_t>& v) { return v ? Json(*v) : Json(nullptr); };
+            st["open_ns"] = open_ns_;
+            st["hi"] = opt(hi_);
+            st["lo"] = opt(lo_);
+            st["traded"] = traded_;
+            st["closed"] = closed_;
+            st["entry_id"] = entry_id_ ? Json(*entry_id_) : Json(nullptr);
+            st["stop_side"] = stop_side_ ? Json(*stop_side_) : Json(nullptr);
+            st["stop_trigger"] = stop_trigger_;
+            st["stop_ids"] = Json(stop_ids_);
+        }
+        return st.dump();
+    }
+
+    void load_state(std::string_view text) override {
+        constexpr std::string_view kOwner = "orb_cpp";
+        Json st;
+        try {
+            st = Json::parse(text);
+        } catch (const std::exception& e) {
+            throw RunError("orb_cpp state: not JSON: " + std::string(e.what()));
+        }
+        if (st.is_object() && st.empty()) {
+            *this = OrbCpp{};  // the fresh-day defaults
+            return;
+        }
+        constexpr std::initializer_list<std::string_view> kHead = {"symbol", "iid", "minutes", "qty", "short",
+                                                                   "exit_hhmm", "day"};
+        constexpr std::initializer_list<std::string_view> kDay = {"open_ns", "hi", "lo", "traded", "closed",
+                                                                  "entry_id", "stop_side", "stop_trigger", "stop_ids"};
+        state::as_object(kOwner, st, {"symbol", "iid", "minutes", "qty", "short", "exit_hhmm", "day", "open_ns", "hi",
+                                      "lo", "traded", "closed", "entry_id", "stop_side", "stop_trigger", "stop_ids"});
+        OrbCpp n;  // read whole, then taken: a refused state leaves this strategy as it was
+        n.symbol_ = state::read_str(kOwner, st, "symbol");
+        n.iid_ = static_cast<InstrumentId>(state::read_int(kOwner, st, "iid", 0, UINT32_MAX));
+        n.minutes_ = state::read_int(kOwner, st, "minutes");
+        n.qty_ = state::read_int(kOwner, st, "qty");
+        n.short_ = state::read_bool(kOwner, st, "short");
+        n.exit_hhmm_ = state::read_str(kOwner, st, "exit_hhmm");
+        n.day_ = state::read_opt_date(kOwner, st, "day");
+        const std::size_t want = kHead.size() + (n.day_ ? kDay.size() : 0);
+        if (st.size() != want) {
+            state::refuse(kOwner, "(range keys)", n.day_ ? "are incomplete" : "are saved only once a day has started");
+        }
+        if (n.day_) {
+            n.open_ns_ = state::read_int(kOwner, st, "open_ns");
+            n.hi_ = state::read_opt_int(kOwner, st, "hi");
+            n.lo_ = state::read_opt_int(kOwner, st, "lo");
+            n.traded_ = state::read_bool(kOwner, st, "traded");
+            n.closed_ = state::read_bool(kOwner, st, "closed");
+            if (const auto id = state::read_opt_int(kOwner, st, "entry_id", 0)) {
+                n.entry_id_ = static_cast<OrderId>(*id);
+            }
+            n.stop_side_ = state::read_opt_str(kOwner, st, "stop_side");
+            n.stop_trigger_ = state::read_int(kOwner, st, "stop_trigger");
+            const Json& ids = state::need(kOwner, st, "stop_ids");
+            if (!ids.is_array()) {
+                state::refuse(kOwner, "stop_ids", "is not a list");
+            }
+            for (const Json& id : ids) {
+                if (id.is_boolean() || !(id.is_number_integer() || id.is_number_unsigned()) || id.is_number_float() ||
+                    (id.is_number_unsigned() ? id.get<std::uint64_t>() > static_cast<std::uint64_t>(INT64_MAX)
+                                             : id.get<std::int64_t>() < 0)) {
+                    state::refuse(kOwner, "stop_ids", "holds something that is not an order id");
+                }
+                n.stop_ids_.push_back(id.get<OrderId>());
+            }
+            // The Python original sets these together, so they are all set or all clear.
+            if (n.hi_.has_value() != n.lo_.has_value()) {
+                state::refuse(kOwner, "hi/lo", "must both be set or both be null");
+            }
+            if (n.stop_side_ && *n.stop_side_ != "SELL" && *n.stop_side_ != "BUY") {
+                state::refuse(kOwner, "stop_side", "is not SELL or BUY");
+            }
+            if (n.traded_ != n.entry_id_.has_value() || n.traded_ != n.stop_side_.has_value() ||
+                (!n.traded_ && !n.stop_ids_.empty())) {
+                state::refuse(kOwner, "traded/entry_id/stop_side/stop_ids", "disagree about whether an entry was placed");
+            }
+        }
+        n.configured_ = true;
+        *this = std::move(n);
+    }
+
  private:
     void new_day(Context& ctx) {
         day_ = ctx.today();
@@ -116,7 +217,7 @@ class OrbCpp final : public Strategy {
         traded_ = false;
         closed_ = false;
         entry_id_.reset();
-        stop_side_ = "SELL";
+        stop_side_.reset();
         stop_trigger_ = 0;
         stop_ids_.clear();
         const TimeNs exit_ns = ist_ns(*day_, exit_hhmm_);
@@ -151,9 +252,10 @@ class OrbCpp final : public Strategy {
     bool traded_ = false;
     bool closed_ = false;  // the day's position is closed: no more range lines
     std::optional<OrderId> entry_id_;
-    const char* stop_side_ = "SELL";
+    std::optional<std::string> stop_side_;  // None until an entry is placed
     Paise stop_trigger_ = 0;
     std::vector<OrderId> stop_ids_;
+    bool configured_ = false;  // on_start ran, or a state with the parameters was loaded
 };
 
 STOCKSIM_STRATEGY(OrbCpp, "orb_cpp")
