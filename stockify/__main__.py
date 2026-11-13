@@ -659,7 +659,11 @@ def _cmd_margin_scorecard(args) -> int:
     from stockify.fno import margin_check as mc
     card = mc.scorecard()
     if not card.rows and not (card.live_answers or card.live_errors):
-        print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
+        if card.notes:                       # answers are stored but none could be scored: say why
+            for note in card.notes:
+                print(f"Note: {note}", file=sys.stderr)
+        else:
+            print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
         return 1
     _print_console(mc.scorecard_text(card))
     return 0
@@ -803,6 +807,11 @@ def _cmd_bench(args) -> int:
     from stockify.tools import bench
     bench.run(args.pack, reps=args.reps)
     return 0
+
+
+def _cmd_tools_measure(args) -> int:
+    from stockify.tools import measure
+    return measure.main(as_json=args.json)
 
 
 def _cmd_golden_run(args) -> int:
@@ -1187,6 +1196,11 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--config", required=True, help="a stockify.compare/1 JSON file")
     cs.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     cs.set_defaults(func=_cmd_compare_strategies)
+    ms = tsub.add_parser("measure", help="the numbers for the write-up, each with its sample and source; \"not measured "
+                                         "yet\" where there is no sample (reads only; exit 0, 1 if the text fails the "
+                                         "privacy scan)")
+    ms.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    ms.set_defaults(func=_cmd_tools_measure)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)

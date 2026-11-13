@@ -1263,3 +1263,20 @@ Read-only on the real lab (refdata opened `mode=ro`, the tick archive read throu
 ### M6.11 PBO by CSCV (Task 23)
 
 `pbo.cscv` on a 320-day by 100-try matrix (S = 16, 12,870 combinations, numpy gathers in chunks of 1,024): 0.60 s on this machine (the first version, with a Python loop for the complements, took 1.25 s). One noise draw of 320 x 20 gives a PBO anywhere from about 0.15 to 0.75; the mean over 16 seeded draws is 0.41 and over 300 numpy draws 0.52 (standard error 0.012), as theory says (exactly one half for iid noise).
+
+### M6.12 write-up generator and draft (Task 38, OM 6.1)
+
+`python -m stockify tools measure [--json]` (`stockify/tools/measure.py`) reads the lab and prints each measured number
+with its sample size and source; where the sample is missing or short it prints "not measured yet" and `--json` has
+`value` null with a `needs` text. It runs a privacy scan on its own text (lab and home folder, user name, a path, the
+words for the broker and its credentials) and prints nothing if that fails (exit 1); Task 26's export scan is a separate
+check that the final review may unify. `docs/plan/writeup_draft.md` is the draft, pasted from the sandboxed fixture lab:
+every row reads "not measured yet". Nothing is in `README.md`.
+
+Not read from any store yet, so always "not measured yet": oracle against engine on the goldens (no stored result),
+cross-platform determinism (Windows only, D-26), full-day engine throughput (D-48; `tools bench` prints and stores nothing).
+
+Fix round 1 (D-122): parity rows count parity days, live and test together, because nothing in `parity_results` or the session tables says which days were live; they stay "not measured yet" and gate (a) is confirmed by the owner by hand. Determinism needs five re-runs. The scan now also catches addresses, hosts, emails, drive and UNC paths and credential-shaped strings, and the draft itself is tested against it and against the generator's table.
+
+🛑 Gates before M6.12 is ticked: (a) five or more live days of journal parity and recorder parity (the owner confirms which days were live), (b) a full-day
+throughput measurement, (c) the owner reads and approves every public sentence, (d) the owner's "push".
