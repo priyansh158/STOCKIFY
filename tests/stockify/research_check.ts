@@ -2,6 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
+import { pathSegment } from "../../web/src/lib/pathSeg.ts";
 import { COMPARE_MAX, COMPARE_MIN, DIVERGING, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, divergingStep, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatFormat, heatGridProps, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 import {
@@ -125,6 +126,14 @@ const out = {
   unlocks: unlockRows([{ unlock_ns: 1_700_000_000_000_000_000, run_id: "r1", reason: "<b>final</b> check" }, { reason: 5 }]),
   sessions: sessionRows([{ session_id: "s1", name: "n", status: "RUNNING", created_ns: 5 }, { name: "no id" }, { session_id: "s2" }]),
   apiPath: ["sweep/j1", "strat/ds-1m-RELIANCE/sharpe", "100%25", "a b/c?d#e", "a/./b", "x/../y"].map(familyApiPath),
+  // L1: what the real URL parser makes of each path (the fetch URL). A path that folds loses a slash; a refused id is null.
+  dotIds: ["a/./b", "x/../y", "..", ".", "%2E%2E", "a/%2e/b", "a/%2E%2E/b", "ok/id", "a..b/c.d", "100%25", "%E0%A4%A"].map((id) => {
+    const p = familyApiPath(id);
+    if (p === null) return { id, refused: true };
+    const u = new URL(p, "http://127.0.0.1:8001");
+    return { id, refused: false, path: p, slashes: [p.split("/").length, u.pathname.split("/").length], under: u.pathname.startsWith("/api/research/families/") };
+  }),
+  pathSegs: [".", "..", "%2E%2E", "%2e", "a b", "a.b", "100%25"].map((s) => { try { return pathSegment(s); } catch (e) { return `refused:${(e as Error).name}`; } }),
   ranks: scoreRanks([7.4, -2.7, 2.2, 2.2, null, Number.NaN, 2.1]),
   pboNote: [
     ["based on 5 of 6 tries; left out: zz (flat)", true], ["based on 5 of 6 tries; left out: zz (flat)", false],

@@ -4,6 +4,7 @@
  * "no chart" without treating it as a failure. Every other error is thrown as an ApiError.
  */
 import { api, ApiError } from "./api";
+import { pathSegment } from "./pathSeg";
 import { chartQuery, type ChartModel, type ChartOpts } from "./chart";
 
 async function get(path: string, opts: ChartOpts): Promise<ChartModel | null> {
@@ -17,15 +18,15 @@ async function get(path: string, opts: ChartOpts): Promise<ChartModel | null> {
 
 /** GET /api/tests/{run_id}/chart?instrument=&from_ns=&to_ns=&interval_s= (no interval_s: the strategy's own bar interval) */
 export function getRunChart(runId: string, opts: ChartOpts = {}): Promise<ChartModel | null> {
-  return get(`/api/tests/${encodeURIComponent(runId)}/chart`, { ...opts, trade_date: undefined });
+  return get(`/api/tests/${pathSegment(runId)}/chart`, { ...opts, trade_date: undefined });
 }
 
 /** GET /api/research/walkforward/{job_id}/chart?instrument=&from_ns=&to_ns= */
 export function getWalkforwardChart(jobId: string, opts: ChartOpts = {}): Promise<ChartModel | null> {
-  return get(`/api/research/walkforward/${encodeURIComponent(jobId)}/chart`, { ...opts, trade_date: undefined, interval_s: undefined });
+  return get(`/api/research/walkforward/${pathSegment(jobId)}/chart`, { ...opts, trade_date: undefined, interval_s: undefined });
 }
 
 /** GET /api/trade/sessions/{session_id}/chart?instrument=&trade_date= (a session shows one day at a time). */
 export function getSessionChart(sessionId: string, opts: ChartOpts = {}): Promise<ChartModel | null> {
-  return get(`/api/trade/sessions/${encodeURIComponent(sessionId)}/chart`, { ...opts, from_ns: undefined, to_ns: undefined, interval_s: undefined });
+  return get(`/api/trade/sessions/${pathSegment(sessionId)}/chart`, { ...opts, from_ns: undefined, to_ns: undefined, interval_s: undefined });
 }

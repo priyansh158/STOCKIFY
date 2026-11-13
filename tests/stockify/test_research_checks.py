@@ -12,13 +12,15 @@ import tests.support  # noqa: F401  — must precede project imports
 
 REPO = Path(__file__).resolve().parents[2]
 CHECK = Path(__file__).with_name("research_check.ts")
+HOOK = Path(__file__).with_name("ts_resolve_hook.mjs").as_uri()
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed: the research helper checks need it")
 class ResearchHelperChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        out = subprocess.run(["node", str(CHECK)], capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=REPO)
+        out = subprocess.run(["node", "--import", str(HOOK), str(CHECK)], capture_output=True, text=True, encoding="utf-8",
+                             timeout=60, cwd=REPO)
         assert out.returncode == 0, out.stderr
         cls.answers = json.loads(out.stdout)
 
@@ -166,7 +168,19 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["apiPath"], [
             "/api/research/families/sweep/j1", "/api/research/families/strat/ds-1m-RELIANCE/sharpe",
             "/api/research/families/100%2525", "/api/research/families/a%20b/c%3Fd%23e",
-            "/api/research/families/a/%2E/b", "/api/research/families/x/%2E%2E/y"])
+            None, None])
+
+    def test_a_dot_segment_is_refused_not_encoded_because_the_url_parser_folds_it(self):
+        by_id = {d["id"]: d for d in self.answers["dotIds"]}
+        for bad in ("a/./b", "x/../y", "..", ".", "%2E%2E", "a/%2e/b", "a/%2E%2E/b"):
+            self.assertTrue(by_id[bad]["refused"], bad)
+        for good in ("ok/id", "a..b/c.d", "100%25", "%E0%A4%A"):
+            d = by_id[good]
+            self.assertFalse(d["refused"], good)
+            self.assertTrue(d["under"], good)
+            self.assertEqual(d["slashes"][0], d["slashes"][1], f"{good}: the parser folded the path {d['path']}")
+        self.assertEqual(self.answers["pathSegs"], [
+            "refused:RangeError", "refused:RangeError", "refused:RangeError", "refused:RangeError", "a%20b", "a.b", "100%2525"])
 
     def test_scores_are_ranked_best_first_with_ties_and_missing_scores_left_unranked(self):
         self.assertEqual(self.answers["ranks"], [1, 5, 2, 2, None, None, 4])

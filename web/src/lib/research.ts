@@ -4,6 +4,7 @@
  * Server components may call these; the base URL is handled by `api`.
  */
 import { api, ApiError } from "./api";
+import { pathSegment as seg } from "./pathSeg";
 import { familyApiPath } from "./researchHelpers";
 import { sweepFailureReason, sweepMissingKind, type SweepGone } from "./researchHelpers";
 import type {
@@ -28,6 +29,7 @@ export {
 } from "./researchHelpers";
 export type { BucketTone, SessionRow, SweepGone, UnlockRow, WfCurve } from "./researchHelpers";
 
+
 const enc = encodeURIComponent;
 
 /** null when the API says 404 (nothing there yet); any other failure still throws. */
@@ -42,12 +44,12 @@ async function orNull<T>(call: Promise<T>): Promise<T | null> {
 
 /** Deflated Sharpe, bootstrap and regime breakdown of one run. */
 export function getRunResearch(id: string): Promise<RunResearchDTO> {
-  return api<RunResearchDTO>(`/api/tests/${enc(id)}/research`);
+  return api<RunResearchDTO>(`/api/tests/${seg(id)}/research`);
 }
 
 /** The stored sensitivity suite of a run, or null when it has not been run. */
 export function getSensitivity(id: string): Promise<SensitivityDTO | null> {
-  return orNull(api<SensitivityDTO>(`/api/tests/${enc(id)}/sensitivity`));
+  return orNull(api<SensitivityDTO>(`/api/tests/${seg(id)}/sensitivity`));
 }
 
 export function getFamilies(offset = 0, limit = 50): Promise<FamilySummaryDTO[]> {
@@ -70,7 +72,8 @@ export async function getJobs(limit = 50): Promise<{ sweeps: ResearchJobDTO[]; w
 
 /** One trial family, or null when there is no such family. */
 export function getFamily(id: string): Promise<FamilyDetailDTO | null> {
-  return orNull(api<FamilyDetailDTO>(familyApiPath(id)));
+  const path = familyApiPath(id);
+  return path === null ? Promise.resolve(null) : orNull(api<FamilyDetailDTO>(path));
 }
 
 /** 2 to 6 finished runs side by side. */
@@ -102,7 +105,7 @@ export type WalkforwardLoad =
 /** Never throws for a job's own state: only a failure to reach the API does. */
 export async function getWalkforward(id: string): Promise<WalkforwardLoad> {
   try {
-    return { kind: "done", report: await api<WalkforwardDTO>(`/api/research/walkforward/${enc(id)}`) };
+    return { kind: "done", report: await api<WalkforwardDTO>(`/api/research/walkforward/${seg(id)}`) };
   } catch (e) {
     if (!(e instanceof ApiError)) throw e;
     if (e.status === 404) return { kind: "unknown" };
@@ -140,7 +143,7 @@ export async function getSweep(
   if (y) q.set("y", y);
   const s = q.toString();
   try {
-    return { kind: "ready", sweep: await api<SweepDTO>(`/api/research/sweeps/${enc(id)}${s ? `?${s}` : ""}`) };
+    return { kind: "ready", sweep: await api<SweepDTO>(`/api/research/sweeps/${seg(id)}${s ? `?${s}` : ""}`) };
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { kind: sweepMissingKind(e.message), reason: sweepFailureReason(e.message) };
     if (e instanceof ApiError && e.status === 422) return { kind: "bad_axes", detail: e.message };
