@@ -44,12 +44,12 @@ def load(job_id: str) -> tuple[dict, dict]:
     try:
         folder = paths.research_path(job_id)
     except ValueError:
-        raise WfReportError(f"not a valid walk-forward job id: {job_id!r}", kind="unknown") from None
+        raise WfReportError("not a valid walk-forward job id", kind="unknown") from None
     job = store.get_research_job(job_id)
     if job is None or job["kind"] != "walkforward":
-        raise WfReportError(f"no walk-forward job {job_id!r}", kind="unknown")
+        raise WfReportError("no such walk-forward job", kind="unknown")
     if job["status"] != "done":
-        raise WfReportError(f"the walk-forward job {job_id!r} is not finished (it is {job['status']}), so it has no "
+        raise WfReportError(f"the walk-forward job is not finished (it is {job['status']}), so it has no "
                             "report", kind="not_done")
     try:
         doc = json.loads((folder / "walkforward.json").read_text(encoding="utf-8"))
@@ -59,7 +59,7 @@ def load(job_id: str) -> tuple[dict, dict]:
         for key in ("train_days", "test_days", "step_days", "objective", "dates", "index", "name"):
             doc[key]
     except (OSError, ValueError, KeyError, TypeError):
-        raise WfReportError(f"the walk-forward job {job_id!r} is finished but its walkforward.json is missing or "
+        raise WfReportError("the walk-forward job is finished but its walkforward.json is missing or "
                             "unreadable", kind="missing") from None
     return job, doc
 
@@ -348,7 +348,7 @@ def render(job_id: str, *, sensitivity_run: str | None = None) -> Path:
         try:
             paths.run_path(sensitivity_run)
         except ValueError:
-            raise WfReportError(f"not a valid run id: {sensitivity_run!r}", kind="unknown") from None
+            raise WfReportError("not a valid run id for the sensitivity table", kind="unknown") from None
     job, doc = load(job_id)
     path = report_path(job_id)
     fileio.atomic_write_text(path, build(job, doc, sensitivity_run))

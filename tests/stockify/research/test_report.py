@@ -311,7 +311,6 @@ class FamilyReportTests(ReportTest):
         make_run("sens", FAM, daily_returns=noisy(50), role="sensitivity", name="sens")
         make_run("failed", FAM, navs=[], status="failed", name="z-failed")
         store.create_session("sess1", "paper", {"family_id": FAM}, 1)
-        self.sql("UPDATE sessions SET family_id = ? WHERE session_id = 'sess1'", (FAM,))
         store.log_holdout_unlock("r00", FAM, "look", job_id="job1")
         store.log_holdout_unlock("r01", FAM, "look again", job_id="job1")
         store.name_family(FAM, "my idea")

@@ -135,6 +135,26 @@ class ResearchConfigTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.refused(changed("sweep", "max_workers", value=bad), "sweep.max_workers")
 
+    def test_regimes_close_slack_is_a_whole_number_of_minutes(self):
+        load(changed("regimes", "close_slack_min", value=0))
+        load(changed("regimes", "close_slack_min", value=30))
+        for bad in (-1, 31, 241, "5", 1.5, True, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("regimes", "close_slack_min", value=bad), "regimes.close_slack_min")
+        self.assertEqual(SHIPPED["regimes"]["close_slack_min"], 5)
+
+    def test_export_and_pool_limits_are_whole_numbers_in_range(self):
+        load(changed("export", "max_total_mib", value=1))
+        load(changed("export", "max_total_mib", value=16384))
+        load(changed("pool", "max_run_hours", value=1))
+        for path, bad in ((("export", "max_total_mib"), 0), (("export", "max_total_mib"), "2048"),
+                          (("export", "max_total_mib"), 16385),
+                          (("export", "max_total_mib"), True), (("pool", "max_run_hours"), 0),
+                          (("pool", "max_run_hours"), 1.5), (("pool", "max_run_hours"), 100_000)):
+            with self.subTest(path=path, bad=bad):
+                self.refused(changed(*path, value=bad), ".".join(path))
+        self.assertEqual((SHIPPED["export"]["max_total_mib"], SHIPPED["pool"]["max_run_hours"]), (1024, 6))
+
     def test_sweep_max_trials_is_a_positive_whole_number(self):
         load(changed("sweep", "max_trials", value=50))
         for bad in (0, -1, "50", 1.5, None):

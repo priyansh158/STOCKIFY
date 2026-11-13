@@ -137,6 +137,10 @@ def _walk_dated(node, where: str, allow_verify: bool):
     if isinstance(node, list):
         if node and all(isinstance(r, dict) and "effective_from" in r for r in node):
             return _resolve_dated_list(node, where, allow_verify)
+        if any(isinstance(r, dict) and "effective_from" in r for r in node):
+            # a dated list: every row must carry its date (a row without one would be skipped, and so never applied)
+            first_bad = next(i for i, r in enumerate(node) if not (isinstance(r, dict) and "effective_from" in r))
+            raise ConfigError(f"{where}[{first_bad}]: a row in a dated list has no effective_from")
         return [_walk_dated(v, f"{where}[{i}]", allow_verify) for i, v in enumerate(node)]
     return node
 
@@ -354,7 +358,7 @@ def _check_research(doc: dict) -> None:
     """research.json (stockify.research/1): every key present, an unknown key at any level refused naming it, rates
     and scales decimal strings, counts whole numbers within sanity bounds, edge lists strictly increasing.
     `holdout_from` is null (no holdout) or an ISO date; `sweep.max_workers` is null (cpu_count - 1) or >= 1; `sweep.max_trials` is the most trials one sweep may expand to."""
-    top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage")
+    top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage", "export", "pool")
     extra = set(doc) - set(top) - {"schema"}
     if extra:
         raise ConfigError(f"research.json: unknown keys {sorted(extra)}; known: {list(top)}")
@@ -394,12 +398,13 @@ def _check_research(doc: dict) -> None:
     _research_int(sens["fragile_extra_ticks"], "sensitivity.fragile_extra_ticks", 1, 1000)
 
     rg = _research_section(doc, "regimes", ("reference_index", "vix_symbol", "vix_edges", "gap_edges_pct",
-                                            "thin_days"))
+                                            "thin_days", "close_slack_min"))
     _research_text(rg["reference_index"], "regimes.reference_index")
     _research_text(rg["vix_symbol"], "regimes.vix_symbol")
     _research_edges(rg["vix_edges"], "regimes.vix_edges", True, low=0)
     _research_edges(rg["gap_edges_pct"], "regimes.gap_edges_pct", True)
     _research_int(rg["thin_days"], "regimes.thin_days", 1, 100_000)
+    _research_int(rg["close_slack_min"], "regimes.close_slack_min", 0, 30)   # how far before the close the last VIX print may be
 
     pbo = _research_section(doc, "pbo", ("slices", "min_trials"))
     slices = _research_int(pbo["slices"], "pbo.slices", 4, 1000)
@@ -411,6 +416,11 @@ def _check_research(doc: dict) -> None:
     if sweep["max_workers"] is not None:
         _research_int(sweep["max_workers"], "sweep.max_workers", 1, 256)
     _research_int(sweep["max_trials"], "sweep.max_trials", 1, 1_000_000)
+
+    exp = _research_section(doc, "export", ("max_total_mib",))     # the most an export zip may hold uncompressed
+    _research_int(exp["max_total_mib"], "export.max_total_mib", 1, 16_384)
+    pool = _research_section(doc, "pool", ("max_run_hours",))      # a pool child that runs longer is killed
+    _research_int(pool["max_run_hours"], "pool.max_run_hours", 1, 10_000)
 
     cov = _research_section(doc, "coverage", ("ok_pct", "default_days", "max_days"))
     if not 0 < _research_decimal(cov["ok_pct"], "coverage.ok_pct") <= 100:

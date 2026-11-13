@@ -6,14 +6,20 @@ before anything is written (`check_no_secret`); and the zip is built in memory a
 refusal leaves no file. The zip is byte-identical for the same run: members sorted, fixed timestamp, fixed level.
 
 Memory: every member is read whole into memory, scanned, then zipped in memory. Run files are small; with
-`with_packs` a pack larger than MAX_PACK_BYTES is refused (code too_large) instead of read.
+`with_packs` a pack larger than MAX_PACK_BYTES is refused (code too_large) instead of read, and the sum of all
+members is capped by research.json `export.max_total_mib` (too_large, checked before each pack is read).
+
+CSV members are exported with spreadsheet-formula cells in their free-text columns marked by a leading ' (the
+stored files stay raw).
 
 A second guard (`check_personal_data`) refuses text members that name the lab folder, the home folder, the repo
 folder or the Windows user name, so a shared zip carries no personal details.
 """
 from __future__ import annotations
 
+import csv
 import getpass
+import io
 import json
 import os
 import re
@@ -22,7 +28,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Iterable, Mapping
 
-from stockify import numerics, paths, store
+from stockify import numerics, paths, research, store
 from stockify.research import fileio
 
 ALLOWED = ("bundle.json", "run.json", "manifest.json", "metrics.json", "determinism.json", "orders.csv",
@@ -159,6 +165,41 @@ def check_personal_data(members: Mapping[str, bytes]) -> None:
         raise ExportError(f"the export would contain {hit[1]}: {hit[0]}", "personal")
 
 
+# ── spreadsheet formulas ─────────────────────────────────────────────────────────────────────────────────────────
+
+# Columns that hold text a strategy or the engine wrote. A cell there that starts with = + - @ (or a tab or a return)
+# would run as a formula when the CSV is opened in a spreadsheet, so the export copy puts a ' in front of it.
+# Numeric columns (price_paise, qty ...) are never touched, and neither is a cell that is only a number.
+_FREE_TEXT_COLUMNS = frozenset({"note", "tag", "reason", "detail", "evidence"})
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+_PLAIN_NUMBER = re.compile(r"[+-]?\d+(\.\d+)?")
+
+
+def neutralise_formulas(name: str, data: bytes) -> bytes:
+    """`data` of the CSV member `name` with spreadsheet-formula cells in the free-text columns marked with a leading
+    '. A member that is not a CSV, has no such column, or has nothing to mark comes back as the very same bytes."""
+    if not name.endswith(".csv"):
+        return data
+    try:
+        rows = list(csv.reader(io.StringIO(data.decode("utf-8"), newline="")))
+    except (UnicodeDecodeError, csv.Error):
+        return data
+    if not rows:
+        return data
+    cols = [i for i, h in enumerate(rows[0]) if h in _FREE_TEXT_COLUMNS]
+    changed = False
+    for row in rows[1:]:
+        for i in cols:
+            if i < len(row) and row[i].startswith(_FORMULA_START) and not _PLAIN_NUMBER.fullmatch(row[i]):
+                row[i] = "'" + row[i]
+                changed = True
+    if not changed:
+        return data
+    out = io.StringIO(newline="")
+    csv.writer(out, lineterminator="\n").writerows(rows)
+    return out.getvalue().encode("utf-8")
+
+
 # ── the build ────────────────────────────────────────────────────────────────────────────────────────────────
 
 def _json(text: str | None, default):  # noqa: ANN001, ANN202
@@ -198,11 +239,20 @@ def build(run_id: str, *, with_packs: bool = False, out: Path | None = None) -> 
     if row.get("status") != "done":
         raise ExportError(f"run {run_id!r} is {row.get('status')!r}; only a finished run can be exported", "not_done")
 
+    limit_mib = research.settings()["export"]["max_total_mib"]
+    limit = limit_mib * 1024 * 1024
+    too_big = ExportError(f"the export would be larger than {limit_mib} MiB uncompressed (the export.max_total_mib "
+                          "setting in research.json)" + ("; leave the packs out" if with_packs else ""), "too_large")
     members: dict[str, bytes] = {}
+    total = 0
     for name in ALLOWED:
         p = folder / name
         if p.is_file() and not p.is_symlink():
-            members[name] = p.read_bytes()
+            data = neutralise_formulas(name, p.read_bytes())
+            total += len(data)
+            if total > limit:
+                raise too_big
+            members[name] = data
 
     pack_rows = []
     for sha in dict.fromkeys(_bundle_packs(folder)):
@@ -214,6 +264,9 @@ def build(run_id: str, *, with_packs: bool = False, out: Path | None = None) -> 
                 raise ExportError(f"pack {sha} named by the run is not in the pack folder", "pack_missing")
             if size > MAX_PACK_BYTES:
                 raise ExportError(f"pack {sha} is larger than {MAX_PACK_BYTES // (1024 * 1024)} MiB", "too_large")
+            total += size
+            if total > limit:                              # before the pack is read: a huge one never enters memory
+                raise too_big
             members[f"packs/{sha}.evt"] = pack.read_bytes()
 
     summary = {"run_id": run_id, "config": _json(row.get("config_json"), {}), "metrics": _json(row.get("metrics_json"), {}),

@@ -510,6 +510,29 @@ def backfill_null_families(compute) -> int:  # noqa: ANN001
             raise
 
 
+def backfill_null_session_families(compute) -> int:  # noqa: ANN001
+    """The sessions twin of `backfill_null_families`: `compute(row) -> str | None` for each sessions row whose
+    family_id IS NULL; a string is written to that column only, while it is still NULL. Nothing else changes."""
+    rows = _all("SELECT * FROM sessions WHERE family_id IS NULL ORDER BY session_id")
+    chosen = []
+    for row in rows:
+        fam = compute(dict(row))
+        if fam is not None:
+            chosen.append((fam, row["session_id"]))
+    conn = _connect()
+    with _lock:
+        try:
+            n = 0
+            for fam, sid in chosen:
+                n += conn.execute("UPDATE sessions SET family_id = ? WHERE session_id = ? AND family_id IS NULL",
+                                  (fam, sid)).rowcount
+            conn.commit()
+            return n
+        except BaseException:
+            conn.rollback()
+            raise
+
+
 # ── sessions (M5.2; A1 §4 sessions, session_days, session_timeline, session_commands) ──
 
 SESSION_STATES = ("CREATED", "ARMED", "RUNNING", "PAUSED", "STOPPED")
@@ -555,9 +578,11 @@ def create_session(session_id: str, name: str, cfg: dict, created_ns: int) -> No
         raise ValueError(f"not a valid session id: {session_id!r}")
     conn = _connect()
     with _lock:
-        conn.execute("INSERT INTO sessions (session_id, name, status, pause_reason, pause_reasons_json, config_json, "
-                     "created_ns) VALUES (?, ?, 'CREATED', NULL, '[]', ?, ?)",
-                     (session_id, name, json.dumps(cfg, sort_keys=True, separators=(",", ":")), int(created_ns)))
+        fam = cfg.get("family_id") if isinstance(cfg, dict) else None     # the family report reads this column
+        conn.execute("INSERT INTO sessions (session_id, name, family_id, status, pause_reason, pause_reasons_json, "
+                     "config_json, created_ns) VALUES (?, ?, ?, 'CREATED', NULL, '[]', ?, ?)",
+                     (session_id, name, fam if isinstance(fam, str) and fam else None,
+                      json.dumps(cfg, sort_keys=True, separators=(",", ":")), int(created_ns)))
         conn.commit()
 
 

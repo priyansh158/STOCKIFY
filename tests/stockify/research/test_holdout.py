@@ -116,9 +116,18 @@ class EnforceTests(unittest.TestCase):
     def test_unreadable_settings_fail_closed(self):
         from stockify import research
         from stockify.config import loader
-        with mock.patch.object(research, "settings", side_effect=loader.ConfigError("research.json: broken")):
-            with self.assertRaises(holdout.HoldoutLocked):
-                holdout.enforce(cfg())
+        for err in (loader.ConfigError("research.json: broken"), OSError(2, "gone", "C:/Users/x/research.json")):
+            with mock.patch.object(research, "settings", side_effect=err):
+                with self.assertRaises(holdout.HoldoutLocked) as cm:
+                    holdout.enforce(cfg())
+                self.assertNotIn("Users", str(cm.exception))             # a fixed sentence: no path, no OS text
+                self.assertNotIn("broken", str(cm.exception))
+
+    def test_unreadable_bundle_days_say_nothing_of_the_bundle_text(self):
+        with holding(), self.assertRaises(holdout.HoldoutLocked) as cm:
+            holdout.enforce_bundle(cfg(), {"days": [{"date": "C:/Users/x/secret.txt"}]})
+        self.assertNotIn("secret", str(cm.exception))
+        self.assertNotIn("Users", str(cm.exception))
 
     def test_unlock_needs_a_real_reason(self):
         for bad in ("", "  ", "x", " xy ", "\t\n  ", None, 5, True, ["a long reason"]):

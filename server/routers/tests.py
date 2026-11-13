@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -231,6 +232,8 @@ def compare_tests(ids: list[str] = Query(default=[], max_length=24)) -> Comparis
         raise HTTPException(status_code=404, detail=f"no test run {str(e.args[0])!r}") from None
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=409, detail="the runs could not be read right now") from None
     return ComparisonDTO(**_clean(c))
 
 

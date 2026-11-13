@@ -73,6 +73,21 @@ class LoaderRuleTests(unittest.TestCase):
         with self.assertRaises(loader.ConfigError):
             self.charges([bad])
 
+    def test_a_dated_row_without_effective_from_is_refused_not_skipped(self):
+        late = row(effective_from="2025-01-01")
+        gone = row(applies={"segment": "CM"})
+        del gone["effective_from"]
+        for rows in ([row(), gone], [gone, late], [row(), "text"]):
+            with self.subTest(rows=len(rows)):
+                with self.assertRaisesRegex(loader.ConfigError, r"effective_from"):
+                    self.charges(rows)
+        self.charges([row(), late])                                   # all rows dated: still fine
+
+    def test_a_list_of_objects_with_no_dates_at_all_is_not_a_dated_list(self):
+        doc = {"schema": "stockify.sessions/1", "versions": [{"group": "CM"}, {"group": "FO_OPT"}]}
+        out = loader._walk_dated(doc, "sessions", allow_verify=False)
+        self.assertEqual(out["versions"], [{"group": "CM"}, {"group": "FO_OPT"}])
+
     def test_duplicate_date_for_one_key_is_rejected(self):
         with self.assertRaises(loader.ConfigError):
             self.charges([row(), row(pct="0.0001")])

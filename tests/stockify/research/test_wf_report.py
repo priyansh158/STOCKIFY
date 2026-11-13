@@ -322,6 +322,21 @@ class RefusalTests(ReportBase):
             wf_report.render("sw-1")
         self.assertEqual(cm.exception.kind, "unknown")
 
+    def test_no_message_echoes_the_job_or_run_id_the_caller_gave(self):
+        self.finished()
+        store.create_research_job({"job_id": "sw-1", "kind": "sweep", "name": "s", "status": "done", "created_ns": 1})
+        for bad in ("wf-nothing-here", "../escape", "sw-1"):
+            with self.assertRaises(wf_report.WfReportError) as cm:
+                wf_report.render(bad)
+            self.assertNotIn(bad.strip("."), str(cm.exception), bad)
+        (paths.research_path(JOB) / "walkforward.json").unlink()
+        with self.assertRaises(wf_report.WfReportError) as cm:
+            wf_report.render(JOB)
+        self.assertNotIn(JOB, str(cm.exception))
+        with self.assertRaises(wf_report.WfReportError) as cm:
+            wf_report.render(JOB, sensitivity_run="../bad-run-id")
+        self.assertNotIn("bad-run-id", str(cm.exception))
+
     def test_a_done_job_without_its_file_is_refused_not_guessed(self):
         self.finished()
         (paths.research_path(JOB) / "walkforward.json").unlink()

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sqlite3
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
@@ -108,5 +109,7 @@ async def data_gaps(date: str = Query(..., description="IST trade date YYYY-MM-D
         found = coverage.gaps(day)
     except coverage.NoRecording:
         raise HTTPException(status_code=404, detail=f"no recording for {day.isoformat()}")
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=409, detail="the recording for this day cannot be read right now") from None
     return GapPageDTO(total=len(found), offset=offset, limit=limit,
                       gaps=[GapDTO(**g) for g in found[offset:offset + limit]])

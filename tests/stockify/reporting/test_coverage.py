@@ -10,7 +10,7 @@ from unittest import mock
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
-from stockify import research, store, timeutil
+from stockify import paths, research, store, timeutil
 from stockify.daemon.landing import LandingDB
 from stockify.data import calendar, history, refdata
 from stockify.reporting import coverage
@@ -364,6 +364,13 @@ class CoverageApiTests(SandboxedDBTest):
         j = r.json()
         self.assertEqual((j["total"], j["offset"], j["limit"]), (1, 0, 200))
         self.assertEqual(j["gaps"][0]["reason"], "disconnect")
+
+    def test_a_damaged_day_file_is_a_plain_409_not_a_bare_500(self):
+        paths.ticks_landing_file(WED).parent.mkdir(parents=True, exist_ok=True)
+        paths.ticks_landing_file(WED).write_bytes(b"this is not a database" * 50)
+        r = self.client.get("/api/data/gaps?date=2026-10-07")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json(), {"detail": "the recording for this day cannot be read right now"})
 
     def test_gaps_pages(self):
         db = LandingDB(WED)
