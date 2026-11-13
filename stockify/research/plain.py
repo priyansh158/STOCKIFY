@@ -82,6 +82,10 @@ OBJECTIVE_LABELS: dict[str, str] = {
 }
 
 
+# Under the trial table: the scores are in-sample; only the picked try is deflated (a caveat, so not a one-line meaning).
+SCORES_CAVEAT = "Scores are measured on the days the tries were fitted to. Only the picked try is adjusted for luck, in the sentence above."
+
+
 def meaning(key: str) -> str:
     """The one-line plain meaning of a statistic. Raises KeyError for an unknown key."""
     return _MEANINGS[key]

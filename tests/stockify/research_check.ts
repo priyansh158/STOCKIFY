@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, costScale, familyHref, heatColourStep, heatMoreWord, jobHref, listCapNote, sentenceOrDash, splitSegments, wfCurve } from "../../web/src/lib/researchHelpers.ts";
+import { SERIES_TOKENS, bucketTone, costScale, familyApiPath, familyHref, familyIdParam, heatColourStep, heatMoreWord, jobHref, listCapNote, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sentenceOrDash, sessionRows, splitSegments, unlockRows, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
@@ -91,8 +91,24 @@ const out = {
     .map(([n, t, w, o]) => listCapNote(n as number, t as number | null, w as string, o as "first" | "latest")),
   // the commands the data page prints, read from its source so a corrupted backslash shows up here
   dataPageCommands: [...readFileSync(new URL("../../web/src/app/data/page.tsx", import.meta.url), "utf-8").matchAll(/<code>([^<]*)<\/code>/g)].map((m) => m[1]),
-  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/lib/researchHelpers.ts"]
+  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/app/research/family/page.tsx", "web/src/lib/researchHelpers.ts"]
     .map((f) => /\r(?!\n)/.test(readFileSync(new URL(`../../${f}`, import.meta.url), "utf-8"))),
+  // the family page's id: encoded once into the link, read once by the page (URLSearchParams decodes as Next does)
+  familyRoundTrip: ["sweep/ab12/sharpe", "a b&c=d?e#f", "100%", "100%25", "strat/ds-1m-RELIANCE/sharpe", "ü/x+y"]
+    .map((id) => familyIdParam(new URLSearchParams(familyHref(id).split("?")[1]).get("id") ?? undefined) === id),
+  familyIdParam: [undefined, "", "   ", "a/b", ["x/1", "y"], []].map((x) => familyIdParam(x as string | string[] | undefined)),
+  objective: [[250000, "net_pnl"], [0.1234, "cagr"], [1.2345, "sharpe"], [null, "sharpe"], [Number.NaN, "calmar"]]
+    .map(([v, o]) => objectiveText(v as number | null, o as string)),
+  roles: ["sensitivity", "oos", "rerun", "odd"].map(roleWords),
+  unlocks: unlockRows([{ unlock_ns: 1_700_000_000_000_000_000, run_id: "r1", reason: "<b>final</b> check" }, { reason: 5 }]),
+  sessions: sessionRows([{ session_id: "s1", name: "n", status: "RUNNING", created_ns: 5 }, { name: "no id" }, { session_id: "s2" }]),
+  apiPath: ["sweep/j1", "strat/ds-1m-RELIANCE/sharpe", "100%25", "a b/c?d#e", "a/./b", "x/../y"].map(familyApiPath),
+  ranks: scoreRanks([7.4, -2.7, 2.2, 2.2, null, Number.NaN, 2.1]),
+  pboNote: [
+    ["based on 5 of 6 tries; left out: zz (flat)", true], ["based on 5 of 6 tries; left out: zz (flat)", false],
+    ["fewer than 2 tries", false], ["fewer than 2 tries", true], [null, true], ["  ", false],
+  ].map(([n, h]) => pboNoteLine(n as string | null, h as boolean)),
+  pboHow: [pboHowText({ n_days: 40, slices: 4, combinations: 6 }), pboHowText({ n_days: 1, slices: 2, combinations: 1 })],
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));
