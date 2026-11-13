@@ -73,7 +73,7 @@ def daily_world(seed: int, future: bool = False) -> tuple[dict, dict]:
         evs.append(_bar(1, 86400, f"{d}T00:00:00+05:30", o, hi, lo, c, rng.choice([0, 500, 100_000, 10**7])))
         prev = c
         p = c
-    inst = [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": SPEC}]
+    inst = [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": copy.deepcopy(SPEC)}]
     if future:
         inst = [{"id": 1, "kind": "FUT", "tradingsymbol": "TEST", "underlying": "IDX", "underlying_id": 2,
                  "expiry": "2026-12-31", "specs": [{"from": "2026-01-01", "lot": rng.choice([15, 50]), "tick_paise": 5}]},
@@ -106,7 +106,7 @@ def minute_world(seed: int) -> tuple[dict, dict]:
             hi, lo = max(o, c) + rng.randint(0, 3) * 5, max(5, min(o, c) - rng.randint(0, 3) * 5)
             evs.append(_bar(1, 60, f"{d}T{hh:02d}:{mm:02d}:00+05:30", o, hi, lo, c, rng.choice([0, 200, 50_000])))
             p = c
-    g = _world(f"M{seed}", evs, [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": SPEC}], days, rng,
+    g = _world(f"M{seed}", evs, [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": copy.deepcopy(SPEC)}], days, rng,
                mis_cutoff={"CM": rng.choice(["15:12", "15:20"])})
     if rng.random() < 0.5:
         g["bundle"]["charges"] = _real_charges()
@@ -178,6 +178,21 @@ REFS = {
 
 def _fills(folder: Path) -> int:
     return len((folder / "fills.csv").read_text(encoding="utf-8").splitlines()) - 1
+
+
+class WorldIsolationTests(unittest.TestCase):
+    """A test that edits a world's instrument specs (e.g. a freeze quantity) must not change the next world."""
+
+    def test_a_world_does_not_share_its_specs_with_the_next(self):
+        for make in (daily_world, minute_world):
+            with self.subTest(world=make.__name__):
+                g, _ = make(5100)
+                for i in g["bundle"]["instruments"]:
+                    for s in i["specs"]:
+                        s["freeze_qty"] = 3
+                g2, _ = make(5100)
+                self.assertTrue(all("freeze_qty" not in s for i in g2["bundle"]["instruments"] for s in i["specs"]))
+        self.assertEqual(SPEC, [{"from": "2026-01-01", "lot": 1, "tick_paise": 5}])
 
 
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
