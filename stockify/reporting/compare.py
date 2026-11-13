@@ -105,6 +105,19 @@ def _manifest(row: dict) -> dict | None:
     return m if isinstance(m, dict) else None
 
 
+def _capital(v: Any) -> int | None:
+    """A usable starting capital: a whole number of paise above zero (a bool, a string or a negative is not)."""
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
+def _canonical(text: str | None) -> str:
+    """The config with sorted keys and no spaces, so key order alone never reads as a difference."""
+    try:
+        return json.dumps(json.loads(text or "null"), sort_keys=True, separators=(",", ":"))
+    except ValueError:
+        return text or ""
+
+
 def compare_runs(run_ids: list[str]) -> RunComparison:
     ids = list(run_ids)
     if not MIN_RUNS <= len(ids) <= MAX_RUNS or len(set(ids)) != len(ids):
@@ -123,12 +136,17 @@ def compare_runs(run_ids: list[str]) -> RunComparison:
     metrics = [MetricRow(k, label, vals, kind, plain.meaning(k)) for k, label, kind, vals in _metric_values(rows)]
 
     equity, drawdown = [], []
+    no_capital: list[str] = []
     for row, cfg in zip(rows, cfgs):
         series = store.run_nav_series(row["run_id"])
-        cap = cfg.get("capital_paise") or _json(row.get("metrics_json"), {}).get("nav_start_paise")
+        cap = _capital(cfg.get("capital_paise"))
+        if cap is None:
+            cap = _capital(_json(row.get("metrics_json"), {}).get("nav_start_paise"))
         dates = [d for d, _ in series]
         navs = [n for _, n in series]
-        if not navs or not cap:
+        if navs and cap is None:
+            no_capital.append(f"{row.get('name') or row['run_id']}: no starting capital recorded")
+        if not navs or cap is None:
             equity.append({"run_id": row["run_id"], "dates": [], "values": []})
             drawdown.append({"run_id": row["run_id"], "dates": [], "values": []})
             continue
@@ -141,10 +159,9 @@ def compare_runs(run_ids: list[str]) -> RunComparison:
     labels = {lab: [lab in s for s in per_run] for lab in every}
     differing = [lab for lab in every if len(set(labels[lab])) > 1]
 
-    notes: list[str] = []
+    notes: list[str] = list(no_capital)
     manifests = [_manifest(r) for r in rows]
-    if any(m is None for m in manifests):
-        notes.append(FALLBACK_NOTE)
+    notes += [f"{r['run_id']}: {FALLBACK_NOTE}" for r, m in zip(rows, manifests) if m is None]
 
     def pick(row: dict, m: dict | None, key: str) -> str | None:
         return m.get(key) if m else row.get(key)
@@ -169,7 +186,7 @@ def compare_runs(run_ids: list[str]) -> RunComparison:
         add(f"strategy.params.{k}", [_s(params(c).get(k)) for c in cfgs], always=False)
     add("fill_model", [_s(c.get("fill_model")) for c in cfgs])
     add("margin.model", [_s((c.get("margin") or {}).get("model")) for c in cfgs])
-    add("config_sha256", [hashlib.sha256((r.get("config_json") or "").encode("utf-8")).hexdigest() for r in rows])
+    add("config_sha256", [hashlib.sha256(_canonical(r.get("config_json")).encode("utf-8")).hexdigest() for r in rows])
     add("bundle_sha256", [pick(r, m, "bundle_sha256") for r, m in zip(rows, manifests)])
     add("packs_sha256", [_s(sorted(m["packs"])) if m and m.get("packs") else None for m in manifests])
     add("engine_build_id", [pick(r, m, "engine_build_id") for r, m in zip(rows, manifests)])
@@ -205,5 +222,6 @@ def format_table(c: RunComparison) -> str:
     widths = [max(len(r[i]) for r in table) for i in range(len(table[0]))]
     lines = [(r[0].ljust(widths[0]) + "  " + "  ".join(x.rjust(w) for x, w in zip(r[1:], widths[1:]))).rstrip()
              for r in table]
+    lines.append("* marks a row where the runs differ")
     lines += [f"note: {n}" for n in c.notes]
     return "\n".join(lines)

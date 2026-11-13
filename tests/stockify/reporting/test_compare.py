@@ -94,10 +94,37 @@ class CompareLogicTests(CompareBase):
         make_run("g", None, navs=[100_100_000])  # no folder
         store.update_run("g", bundle_sha256="ab" * 32, engine_build_id="build-1")
         c = rc.compare_runs(["a", "g"])
-        self.assertIn("manifest not available (folder removed)", c.notes)
+        self.assertIn("g: manifest not available (folder removed)", c.notes)
+        self.assertEqual(len(c.notes), 1)
         by = {r.field: r for r in c.manifest_diff}
         self.assertEqual(by["bundle_sha256"].values[1], "ab" * 32)
         self.assertEqual(by["engine_build_id"].values[1], "build-1")
+
+    def test_unusable_capital_gives_an_empty_series_and_a_note(self):
+        for bad in (0, -5, "100", True, None):
+            with self.subTest(capital=bad):
+                _set_config("a", capital_paise=bad)
+                store.update_run("a", metrics_json="{}")
+                c = rc.compare_runs(["a", "b"])
+                self.assertEqual(c.equity[0]["values"], [])
+                self.assertEqual(c.drawdown[0]["values"], [])
+                self.assertIn("a: no starting capital recorded", c.notes)
+                self.assertEqual(len(c.equity[1]["values"]), 5)
+
+    def test_bad_config_capital_falls_back_to_nav_start(self):
+        _set_config("a", capital_paise="x")
+        c = rc.compare_runs(["a", "b"])
+        self.assertAlmostEqual(c.equity[0]["values"][0], 1.001)
+        self.assertNotIn("a: no starting capital recorded", c.notes)
+
+    def test_config_key_order_does_not_fake_a_difference(self):
+        row = store.get_run("a")
+        cfg = json.loads(row["config_json"])
+        store.update_run("b", config_json=json.dumps(dict(reversed(list(cfg.items()))), indent=2))
+        _set_config("b", name=cfg["name"])  # canonical dump, same content
+        store.update_run("b", config_json=json.dumps(dict(reversed(list(cfg.items()))), indent=2))
+        by = {r.field: r for r in rc.compare_runs(["a", "b"]).manifest_diff}
+        self.assertFalse(by["config_sha256"].differs)
 
     def test_not_done_run_refused_naming_the_status(self):
         make_run("r", None, status="running")
@@ -129,6 +156,7 @@ class CompareCliTests(CompareBase):
         self.assertEqual(code, 0)
         self.assertRegex(out, r"(?m)^\s*run\s+a\s+b\s*$")
         self.assertRegex(out, r"net_pnl.*\*")
+        self.assertIn("* marks a row where the runs differ", out)
 
     def test_cli_refuses_one_run_and_unknown_run(self):
         self.assertEqual(self.run_cli("compare", "a")[0], 2)
@@ -187,6 +215,12 @@ class CompareApiTests(CompareBase):
         long = self.client.get("/api/tests/compare", params=[("ids", "x" * 500), ("ids", "a")])
         self.assertEqual(long.status_code, 422)
         self.assertLess(len(long.text), 300)
+
+    def test_api_hostile_ids_never_500(self):
+        for bad in ("..%2F..", "a/b", "..%5Cx", "%00"):
+            r = self.client.get(f"/api/tests/compare?ids={bad}&ids=a")
+            self.assertIn(r.status_code, (404, 422), bad)
+            self.assertNotIn("Traceback", r.text)
 
     def test_api_json_has_no_non_finite_numbers(self):
         r = self.client.get("/api/tests/compare?ids=a,b")
