@@ -78,7 +78,11 @@ def _open_append_shared(path: str, encoding: str):  # noqa: ANN202
     except BaseException:
         k32.CloseHandle(handle)
         raise
-    return os.fdopen(fd, "a", encoding=encoding)
+    try:
+        return os.fdopen(fd, "a", encoding=encoding)
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 class SharedRotatingFileHandler(logging.handlers.RotatingFileHandler):

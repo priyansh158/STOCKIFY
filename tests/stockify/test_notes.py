@@ -13,7 +13,7 @@ from stockify import engine
 from stockify.oracle.notes import NOTE_MAX, clean_note
 from stockify.strategy import StrategyCodeError, check_source, fmt_price, fmt_qty, to_level
 
-_BIDI = frozenset(map(chr, [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]))
+_BIDI = frozenset(chr(c) for c in (0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x200E, 0x200F, 0x061C))
 _SURROGATE = re.compile("[\ud800-\udfff]")
 _ENGINE = "stockify._engine is not built; run `.\\run.ps1 -BuildEngine`"
 
@@ -42,7 +42,7 @@ class CleanNoteTests(unittest.TestCase):
     def test_bidi_control_characters_are_removed_not_blanked(self):
         """CH 6.25 (D-127): U+202A-202E, U+2066-2069, U+200E, U+200F and U+061C could reorder the text a chart card
         shows, so they are dropped outright (no space left behind); a formula prefix is left alone."""
-        for cp in [*range(0x202A, 0x202F), *range(0x2066, 0x206A), 0x200E, 0x200F, 0x061C]:
+        for cp in (0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x200E, 0x200F, 0x061C):
             with self.subTest(cp=hex(cp)):
                 self.assertEqual(clean_note(f"a{chr(cp)}b"), "ab")
                 self.assertEqual(clean_note(f"{chr(cp)}  x {chr(cp)}"), "x")
@@ -124,7 +124,7 @@ class CleanNoteTests(unittest.TestCase):
 
 _ALPHABET = ["a", "Z", "7", " ", "  ", "\t", "\n", "\r", "\x00", "\x1f", "\x7f", "\x85", "\x9f", ",", '"', " ",
              " ", " ", "\u200f", "א", "ا", "\U0001F600", "\U0001F468‍\U0001F4BB", "…",
-             "\u202e", "\u202c", "\u2066", "\u2069", "\u200e", "\u061c", "<script>", "é", "\ud800", "\udfff"]
+             "\u202a", "\u202b", "\u202d", "\u2067", "\u2068", "\u202e", "\u202c", "\u2066", "\u2069", "\u200e", "\u061c", "<script>", "é", "\ud800", "\udfff"]
 
 
 @unittest.skipUnless(engine.available(), _ENGINE)

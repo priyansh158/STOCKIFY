@@ -75,7 +75,11 @@ def _open_read(path: Path):  # noqa: ANN202
     except BaseException:
         k32.CloseHandle(handle)
         raise
-    return os.fdopen(fd, "rb")
+    try:
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)                   # closes the handle too
+        raise
 
 
 _GENERIC_READ = 0x80000000
@@ -144,7 +148,7 @@ def is_finalised(path: Path) -> bool:
 def _load_crcs(path: Path, header: dict, data: bytes) -> list[int] | None:
     f = _crc_path(path)
     if f.exists():
-        raw = f.read_bytes()
+        raw = _read_bytes(f)
         return list(struct.unpack_from(f"<{len(raw) // 4}I", raw))
     if _final(header) or len(data) == HEADER_SIZE:
         return None                       # finalised (the header's count was synced after the records) or no records
@@ -372,7 +376,7 @@ def torn_entries(path: Path, *, with_partial: bool = False):
     (entries, pieces) where pieces are [(file offset, bytes)] of entries a crash cut short; they never hide a whole
     entry written after them."""
     f = _torn_path(Path(path))
-    entries, partial = _parse_torn(f.read_bytes() if f.exists() else b"")
+    entries, partial = _parse_torn(_read_bytes(f) if f.exists() else b"")
     return (entries, partial) if with_partial else entries
 
 

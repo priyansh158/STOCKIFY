@@ -778,6 +778,57 @@ class ReadFromTests(unittest.TestCase):
 
         self._mid_read(collide)
 
+    def _hold_suffix_mid_read(self, suffix, fn, reader):
+        """Run `reader()` with `fn()` called the moment the file ending `suffix` is read, while its handle is open."""
+        real, seen = journal._open_read, []
+
+        class Held:
+            def __init__(self, f):
+                self._f = f
+
+            def __enter__(self):
+                self._f.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return self._f.__exit__(*a)
+
+            def read(self, *a):
+                if not seen:
+                    seen.append(fn())
+                return self._f.read(*a)
+
+            def __getattr__(self, name):
+                return getattr(self._f, name)
+
+        def opener(path):
+            f = real(path)
+            return Held(f) if str(path).endswith(suffix) else f
+
+        with patch.object(journal, "_open_read", opener):
+            reader()
+        self.assertEqual(len(seen), 1, f"the {suffix} file was never read through _open_read")
+
+    def test_the_daemon_can_rename_and_delete_the_checksum_file_while_read_holds_it(self):
+        """LCM 6.4 (D-128): `read()` takes the checksum file through the same sharing open, and so does the torn file."""
+        self.append(5, 1_000)
+        crc = journal._crc_path(self.path)
+
+        def collide():
+            aside = Path(str(crc) + ".aside")
+            os.rename(crc, aside)
+            os.rename(aside, crc)
+
+        self._hold_suffix_mid_read(".crc", collide, lambda: journal.read(self.path))
+        torn = journal._torn_path(self.path)
+        torn.write_bytes(b"")
+
+        def collide_torn():
+            os.rename(torn, torn.with_name("t.aside"))
+            os.rename(torn.with_name("t.aside"), torn)
+
+        self._hold_suffix_mid_read(".torn", collide_torn, lambda: journal.torn_entries(self.path))
+
     def test_a_reader_never_creates_the_journal(self):
         with self.assertRaises(OSError):
             journal.read_from(Path(self.tmp.name) / "none.evt", None, lambda r: None)
