@@ -25,6 +25,7 @@ each run) and a Markdown summary to $LAB/reports/quality_YYYYMMDD.md.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from array import array
 from dataclasses import dataclass, field
 from datetime import date
@@ -269,6 +270,72 @@ def summary_markdown(result: dict) -> str:
     for cov, iid, m in ranked:
         lines.append(f"| {_name(iid)} | {cov:.1f} | {m['longest_gap_s']} | {m['packets']:,} |")
     return "\n".join(lines) + "\n"
+
+
+# What each store is called in the plain sentences of an `errors` list (no file names, paths or exception text).
+# The keys are the store keys of the coverage matrix's `error_stores`.
+STORE_NAMES = {"refdata": "recorded-day and download store", "bars": "bar store", "lab": "recorder status"}
+
+
+def unreadable_sentence(store_key: str) -> str:
+    return f"Couldn't read the {STORE_NAMES[store_key]}."
+
+
+class StoreUnreadable(RuntimeError):
+    """A store a read needs is missing or cannot be read. The text is the fixed sentence, never a path."""
+
+    def __init__(self, store_key: str):
+        super().__init__(unreadable_sentence(store_key))
+        self.store_key = store_key
+
+
+_ID_CHUNK = 500      # instrument ids per IN (...) list: far under SQLite's bound-variable limit (32766)
+
+
+def _rows_or_none(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list:
+    """The rows of a read; a missing table (an older schema) reads as no rows."""
+    try:
+        return conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError as e:
+        if str(e).startswith("no such table"):
+            return []
+        raise
+
+
+def stored_readonly(day: date) -> tuple[dict, dict[int, str | None]]:
+    """`stored(day)` plus the tradingsymbol of each instrument it names, read from refdata.sqlite on its own
+    READ-ONLY connection (`mode=ro`), closed after use.
+
+    Never through `refdata._connect()`: that opens read-write, so a missing file would be created empty and a locked
+    or corrupt one would raise. A missing file or a file that cannot be read raises `StoreUnreadable("refdata")`; a
+    readable file without the table (an older schema) reads as no rows.
+    """
+    path = paths.refdata_db()
+    if not path.exists():
+        raise StoreUnreadable("refdata")
+    try:
+        conn = sqlite3.connect(paths.readonly_uri(path), uri=True, timeout=5.0)
+    except (sqlite3.Error, OSError):
+        raise StoreUnreadable("refdata") from None
+    try:
+        conn.row_factory = sqlite3.Row
+        out: dict[int, dict] = {}
+        for r in _rows_or_none(conn, "SELECT instrument_id, metric, value FROM data_quality WHERE trade_date=?",
+                               (day.isoformat(),)):
+            out.setdefault(r["instrument_id"], {})[r["metric"]] = r["value"]
+        ids = [i for i in out if i != 0]
+        symbols: dict[int, str | None] = {}
+        for k in range(0, len(ids), _ID_CHUNK):
+            chunk = ids[k:k + _ID_CHUNK]
+            for r in _rows_or_none(
+                    conn, "SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
+                          f"({','.join('?' * len(chunk))})", tuple(chunk)):
+                symbols[r["instrument_id"]] = r["tradingsymbol"]
+        return out, symbols
+    except (sqlite3.Error, OSError):
+        raise StoreUnreadable("refdata") from None
+    finally:
+        conn.close()
 
 
 def stored(day: date) -> dict:

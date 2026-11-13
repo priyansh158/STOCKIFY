@@ -48,15 +48,46 @@ py::object to_python(const stocksim::Json& j, const OracleTypes& t) { return t.j
 // B2B 5.1 (audit M-1): `qty`, `price` and `trigger` of ctx.place are a Python int and nothing else. A float, a
 // bool, a str or a Decimal is refused, never rounded (py::int_(1.5) used to place 1). The rule and the words are
 // the oracle's (stockify/oracle/context.py, `_whole`).
-template <typename T>
-T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
+void check_whole(const char* name, const py::object& v, const char* fn) {
     if (!py::isinstance<py::int_>(v) || py::isinstance<py::bool_>(v)) {
         throw py::type_error(std::string(fn) + ": " + name + " must be an int, not " +
                              std::string(py::str(py::type::of(v).attr("__name__"))) + " (" +
                              std::string(py::repr(v)) +
                              "): money is whole paise and quantity is whole units");
     }
+}
+
+template <typename T>
+T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
+    check_whole(name, v, fn);
     return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
+}
+
+// A note as Context.place takes it (CH 6.2): text only (TypeError otherwise). A str holding a lone surrogate cannot be
+// encoded as UTF-8, so this binding replaces each one with U+FFFD itself before encoding; the oracle does not: it
+// passes the str on and stockify.oracle.notes.clean_note makes the same replacement. The engine then cleans the bytes.
+std::string note_text(const py::object& v) {
+    if (!py::isinstance<py::str>(v)) {
+        throw py::type_error("ctx.place: note must be text");
+    }
+    // The compiled pattern's sub is looked up once, at the first note, and deliberately leaked (a static py::object
+    // would be destroyed after the interpreter has gone). The replacement is U+FFFD as UTF-8: a "\u" template is a
+    // bad escape to re.sub.
+    static const py::object* const sub =
+        new py::object(py::module_::import("re").attr("compile")(R"([\ud800-\udfff])").attr("sub"));
+    return (*sub)("\xEF\xBF\xBD", v).cast<std::string>();
+}
+
+// CH 6.4: the checks of ctx.plot before the engine's own, in the oracle's order and words (context.py `_plot_args`):
+// name is text; value and instrument are whole ints; each fits int64 (a ValueError, not the cast error pybind
+// would give); kind is text. A name holding a lone surrogate cannot be UTF-8: it is handed on as "" so that the
+// engine's kind check still comes first and its name check then refuses it, as the oracle's clean_note does.
+std::int64_t plot_int64(const char* what, const py::object& v) {
+    try {
+        return v.cast<std::int64_t>();
+    } catch (const py::cast_error&) {
+        throw py::value_error(std::string("ctx.plot: ") + what + " does not fit in 64 bits");
+    }
 }
 
 // B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 10000 basis points; anything else is
@@ -331,7 +362,8 @@ void bind_engine(py::module_& m) {
         .def("place",
              [](CtxProxy& x, const py::object& instrument, const py::object& side, const py::object& qty,
                 const py::object& product, const py::object& type, const py::object& price, const py::object& trigger,
-                const py::object& validity, const py::object& protection, const py::object& tag) {
+                const py::object& validity, const py::object& protection, const py::object& tag,
+                const py::object& note) {
                  // The oracle's Context.place: int() of instrument; qty, price and trigger are whole numbers,
                  // checked in that order; the rest as given.
                  stocksim::PlaceRequest r;
@@ -345,11 +377,34 @@ void bind_engine(py::module_& m) {
                  r.validity = py::str(validity);
                  r.protection = protection_arg(protection);
                  r.tag = py::str(tag);
+                 r.note = note_text(note);
                  return x.c().place(r);
              },
              py::arg("instrument"), py::arg("side"), py::arg("qty"), py::arg("product"), py::arg("type"),
              py::arg("price") = 0, py::arg("trigger") = 0, py::arg("validity") = "DAY", py::arg("protection") = "AUTO",
-             py::arg("tag") = "")
+             py::kw_only(), py::arg("tag") = "", py::arg("note") = "")
+        .def("plot",
+             [](CtxProxy& x, const py::object& name, const py::object& value, const py::object& kind,
+                const py::object& instrument) {
+                 if (!py::isinstance<py::str>(name)) {
+                     throw py::type_error("ctx.plot: name must be text");
+                 }
+                 check_whole("value", value, "ctx.plot");
+                 check_whole("instrument", instrument, "ctx.plot");
+                 const std::int64_t v = plot_int64("value", value);
+                 const std::int64_t iid = plot_int64("instrument", instrument);
+                 if (!py::isinstance<py::str>(kind)) {
+                     throw py::type_error("ctx.plot: kind must be text");
+                 }
+                 std::string text;
+                 try {
+                     text = name.cast<std::string>();
+                 } catch (const py::cast_error&) {  // a lone surrogate
+                     text.clear();
+                 }
+                 x.c().plot(text, v, kind.cast<std::string>(), iid);
+             },
+             py::arg("name"), py::arg("value"), py::kw_only(), py::arg("kind") = "price", py::arg("instrument") = 0)
         .def("modify",
              [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
                  // B2B 5.4: the oracle's Context.modify. qty, price and trigger are whole ints, checked in that order,
@@ -575,10 +630,21 @@ void bind_engine(py::module_& m) {
             return out;
         });
 
+    // clean_note takes UTF-8 bytes (a str is encoded to UTF-8 first): a str holding a lone surrogate cannot be encoded
+    // and raises UnicodeEncodeError, where the Python twin turns it into U+FFFD. place() below replaces lone
+    // surrogates first, so a strategy's note never reaches that error.
     m.def("clean_note", &stocksim::clean_note, py::arg("text"),
-          "CH 6.1: sanitise an order note (bytes or str; invalid UTF-8 becomes U+FFFD).");
+          "CH 6.1: sanitise an order note (UTF-8 bytes, or a str without lone surrogates; invalid UTF-8 becomes U+FFFD).");
+    // A bool is an int to pybind11 (even with noconvert), so each helper has a first overload that refuses it, as
+    // the Python twins do (TypeError).
+    m.def("fmt_price", [](const py::bool_&) -> std::string { throw py::type_error("paise must be an int, not a bool"); },
+          py::arg("paise"));
     m.def("fmt_price", &stocksim::fmt_price, py::arg("paise"), "Paise as Indian-grouped rupee text.");
+    m.def("fmt_qty", [](const py::bool_&) -> std::string { throw py::type_error("units must be an int, not a bool"); },
+          py::arg("units"));
     m.def("fmt_qty", &stocksim::fmt_qty, py::arg("units"), "Units as Indian-grouped text.");
+    m.def("to_level", [](const py::bool_&) -> stocksim::Paise { throw py::type_error("x must be an int or a float, not a bool"); },
+          py::arg("x"));
     m.def("to_level", &stocksim::to_level, py::arg("x"), "x * 10,000 rounded half to even.");
 
     m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");

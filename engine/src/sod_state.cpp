@@ -42,7 +42,7 @@ constexpr std::string_view kPositionFields[] = {"instrument_id", "product", "sty
 // <block name="sod-state-order-fields-cpp" same-as="stockify/oracle/sod_state.py:sod-state-order-fields" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+)"'>
 constexpr std::string_view kOrderFields[] = {
     "order_id", "parent_id", "instrument_id", "side", "qty", "product", "type", "price", "trigger", "validity",
-    "protection", "tag", "t_submit", "t_activate", "status", "filled_qty", "fill_value", "reason", "limit",
+    "protection", "tag", "note", "t_submit", "t_activate", "status", "filled_qty", "fill_value", "reason", "limit",
     "from_market", "triggered", "protection_bp", "reserved", "first_eligible_done", "trade_date", "charged",
     "eod_after"};
 // </block>
@@ -289,6 +289,7 @@ JValue order_record(const Order& o) {  // sod_state._order
     r["validity"] = o.validity_text;
     r["protection"] = o.protection ? JValue(static_cast<std::int64_t>(*o.protection)) : JValue("AUTO");
     r["tag"] = o.tag;
+    r["note"] = o.note;
     r["t_submit"] = o.t_submit;
     r["t_activate"] = o.t_activate;
     r["status"] = std::string(to_string(o.status));
@@ -889,8 +890,16 @@ std::optional<Snapshot> snapshot_from(const Json& v) {  // sod_state._snapshot
 }
 
 // sod_state._read_order: the same checks in the same order.
-Order order_from(const Json& o, std::string_view group, const InstrumentTable& ids, std::int64_t next_order,
+Order order_from(const Json& given, std::string_view group, const InstrumentTable& ids, std::int64_t next_order,
                  std::set<OrderId>& seen) {
+    Json upgraded;  // CH 6.3: a state written before the note existed has no "note": it reads as ""
+    const Json* src = &given;
+    if (given.is_object() && !given.contains("note")) {
+        upgraded = given;
+        upgraded["note"] = "";
+        src = &upgraded;
+    }
+    const Json& o = *src;
     need(o, kOrderFields, group);
     const std::string where = std::string(group) + ".";
     Order out;
@@ -959,6 +968,7 @@ Order order_from(const Json& o, std::string_view group, const InstrumentTable& i
         out.protection = as_i32(prot, where + "protection");
     }
     out.tag = as_str(o.at("tag"), where + "tag");
+    out.note = as_str(o.at("note"), where + "note");
     out.t_submit = as_int(o.at("t_submit"), where + "t_submit");
     out.t_activate = as_int(o.at("t_activate"), where + "t_activate");
     out.filled_qty = as_nonneg(o.at("filled_qty"), where + "filled_qty");

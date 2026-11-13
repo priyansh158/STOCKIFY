@@ -161,9 +161,37 @@ def write_recorder_status(row: dict) -> None:
         conn.commit()
 
 
+def recorder_status_read() -> tuple[dict | None, bool]:
+    """(the newest recorder health row or None, whether lab.sqlite exists but could not be read).
+
+    A pure read, so it opens lab.sqlite on its own READ-ONLY connection (`mode=ro`), never `_connect()`: that opens
+    read-write, creates the file and folder when they are missing, switches on WAL and applies migrations. A missing
+    file or a missing table (an older schema) is (None, False): nothing to read. A file that exists but cannot be
+    read (locked, corrupt, not a database, unopenable) is (None, True), and never raises. It waits for the store's
+    lock like every other reader (`_all`).
+    """
+    path = _db_path()
+    try:
+        if not path.exists():
+            return None, False
+        with _lock:
+            conn = sqlite3.connect(paths.readonly_uri(path), uri=True, timeout=5.0)
+            try:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1").fetchone()
+            finally:
+                conn.close()
+    except sqlite3.OperationalError as e:
+        return None, not str(e).startswith("no such table")
+    except (sqlite3.Error, OSError):
+        return None, True
+    return (dict(row) if row else None), False
+
+
 def latest_recorder_status() -> dict | None:
-    row = _one("SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1")
-    return dict(row) if row else None
+    """The newest recorder health row, or None (no rows, no store, or a store that cannot be read: see
+    `recorder_status_read` to tell the last apart)."""
+    return recorder_status_read()[0]
 
 
 def prune_recorder_status(older_than_ns: int) -> int:

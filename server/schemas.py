@@ -112,6 +112,8 @@ class DataQualityResponse(BaseModel):
     date: str
     day: dict[str, float] = Field(default_factory=dict, description="day-level metrics (instrument_id 0)")
     instruments: list[InstrumentQualityDTO] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list, description="plain sentences naming a store that could not be read")
+    error_stores: list[str] = Field(default_factory=list, description="store keys the errors name: refdata, bars, lab")
 
 
 # ── Strategy tests (M3.14) ───────────────────────────────────────────────────
@@ -776,4 +778,80 @@ class WalkforwardDTO(BaseModel):
     stitched_dates: list[str]
     stitched_index: list[float]
     plain: dict[str, str]
+
+
+# ── Run chart (CH 6.11) ──────────────────────────────────────────────────────
+
+class ChartInstrumentDTO(BaseModel):
+    id: int
+    symbol: str
+    kind: str | None = None
+
+
+class ChartBarDTO(BaseModel):
+    t: int
+    d: str
+    open: str
+    high: str
+    low: str
+    close: str
+    volume: int
+
+
+class ChartChunkDTO(BaseModel):
+    qty: int
+    open_price_paise: int
+    pnl_paise: int
+
+
+class ChartMarkerDTO(BaseModel):
+    id: str
+    kind: Literal["fill", "settlement"]
+    t: int
+    bar_t: int
+    bar_d: str
+    side: str
+    qty: int
+    price: str
+    price_paise: int
+    fsp_paise: int | None = None
+    order_id: int | None = None
+    fill_id: int | None = None
+    note: str
+    tag: str
+    tag_is_code: bool
+    charges_paise: int | None = None
+    trade_pnl_paise: int | None = None
+    chunks: list[ChartChunkDTO]
+
+
+class ChartPointDTO(BaseModel):
+    t: int
+    value: str
+
+
+class ChartPlotDTO(BaseModel):
+    name: str
+    kind: str
+    instrument_id: int
+    points: list[ChartPointDTO]
+
+
+class RunChartDTO(BaseModel):
+    instruments: list[ChartInstrumentDTO]
+    instrument_id: int | None = None
+    basis: str | None = None
+    interval_s: int | None = None
+    bars: list[ChartBarDTO]
+    markers: list[ChartMarkerDTO]
+    plots: list[ChartPlotDTO]
+    truncated: bool
+    next_from_ns: int | None = None
+    data_state: str
+    omitted_markers: int
+    notice: str | None = None
+    pnl_complete: bool
+    skipped_settlements: int
+    idle_settlements: int
+    plain: str | None = None
 # </block>

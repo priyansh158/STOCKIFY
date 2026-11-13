@@ -90,7 +90,15 @@ cd web; npm run lint; npm run build
 ## Candlestick charts (CH)
 
 - [x] CH 6.1 Note cleaning and Indian-grouped price and quantity text, the same in Python and C++ (`stockify/oracle/notes.py`, `engine/src/notes.cpp`; `fmt_price`, `fmt_qty`, `to_level` exported from `stockify.strategy`).
+- [x] CH 6.2 Every order carries the strategy's own `note`, written to `orders.csv` by the oracle (`Order.note`, `ctx.place(note=)`, `system_notes.json`, bundle `system_notes`, D-92; the engine half is CH 6.3).
+- [x] CH 6.3 The note in the C++ engine, the pybind bridge and the carried sod_state, byte for byte with the oracle (`Engine.place(note=)`, `sod_state` order `note`, optional on read, D-92).
+- [x] CH 6.4 `ctx.plot` and `plots.csv` on both runners (`ctx.plot(name, value, *, kind="price", instrument=0)`, 8 series and 200,000 points per run, a deterministic file; D-94).
 - [x] CH 6.5 The FIFO trade loop is a public function, `stockify.oracle.metrics.fifo_trades` (returns `TradeChunk`s and the traded value), shared by `compute` and the chart's trade markers; `metrics.json` is byte-identical on every golden.
+- [x] CH 6.6 The shipped Python strategies say why they trade and draw their own lines (`note=` on every order, `ctx.plot` in sma_cross and the opening-range breakout; the exact sentences are D-95, for the C++ twins to copy).
+- [x] CH 6.7 The C++ twins `orb_cpp` and `sma_cross_cpp` write the same notes and plots as their Python originals, byte for byte (the sentences are D-95).
+- [x] CH 6.9 Display bars read back from a run's own pack or journal with the runner's bucketing (`stockify/oracle/bars.py`, `stockify/reporting/chartbars.py`; D-123); `_build_bars` changes no artifact byte.
+- [x] CH 6.10 A run's chart model: its own bars, a marker per fill and per expiry settlement with the note, costs and trade profit, and its plotted lines (`stockify/reporting/chart.py`, `stockify/reporting/settlements.py`; D-124).
+- [x] CH 6.11 `GET /api/tests/{id}/chart` and its DTOs (`RunChartDTO`, mirrored in `web/src/lib/types.ts`; D-125).
 - [x] CH 6.14 `lightweight-charts@5.2.1` is pinned (exact, with `fancy-canvas@2.1.0`; D-110), the pure chart helpers are in `web/src/lib/chart.ts` (checked by `test_chart_checks.py`), and the footer carries the TradingView notice. The chart types sit in `chart.ts` until C11's `types.ts` entries replace them.
 - [x] CH 6.15 `PriceChart` (client-only, loaded through `PriceChartLazy`) draws candles, volume, buy/sell markers with the strategy's note on a card, and the strategy's own lines; every trade is also a button in a list under the chart. `chart_api.ts` reads the run, walk-forward and session chart endpoints (a 404 gives null). The owner's look at 1024 px is still open (STOP, not a blocker).
 

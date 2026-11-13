@@ -101,6 +101,8 @@ export interface DataQualityResponse {
   date: string;
   day: Record<string, number>;
   instruments: InstrumentQuality[];
+  errors: string[];
+  error_stores: string[];
 }
 
 // ── Strategy tests (M3.14) ───────────────────────────────────────────────────
@@ -746,5 +748,82 @@ export interface WalkforwardDTO {
   stitched_dates: string[];
   stitched_index: number[];
   plain: Record<string, string>;
+}
+
+
+// ── Run chart (CH 6.11): times are UTC seconds, prices rupee decimal strings, paise fields integers ─────────
+
+export interface ChartInstrumentDTO {
+  id: number;
+  symbol: string;
+  kind: "equity" | "future" | "option" | "index" | null;
+}
+
+export interface ChartBarDTO {
+  t: number;
+  d: string;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: number;
+}
+
+export interface ChartChunkDTO {
+  qty: number;
+  open_price_paise: number;
+  pnl_paise: number;
+}
+
+export interface ChartMarkerDTO {
+  id: string;
+  kind: "fill" | "settlement";
+  t: number;
+  bar_t: number;
+  bar_d: string;
+  side: "BUY" | "SELL";
+  qty: number;
+  price: string;
+  price_paise: number;
+  fsp_paise: number | null;
+  order_id: number | null;
+  fill_id: number | null;
+  note: string;
+  tag: string;
+  tag_is_code: boolean;
+  charges_paise: number | null;
+  trade_pnl_paise: number | null;
+  chunks: ChartChunkDTO[];
+}
+
+export interface ChartPointDTO {
+  t: number;
+  value: string;
+}
+
+export interface ChartPlotDTO {
+  name: string;
+  kind: "price" | "level";
+  instrument_id: number;
+  points: ChartPointDTO[];
+}
+
+export interface RunChartDTO {
+  instruments: ChartInstrumentDTO[];
+  instrument_id: number | null;
+  basis: string | null;
+  interval_s: number | null;
+  bars: ChartBarDTO[];
+  markers: ChartMarkerDTO[];
+  plots: ChartPlotDTO[];
+  truncated: boolean;
+  next_from_ns: number | null;
+  data_state: "ok" | "pruned" | "no_pack" | "pack unreadable";
+  omitted_markers: number;
+  notice: string | null;
+  pnl_complete: boolean;
+  skipped_settlements: number;
+  idle_settlements: number;
+  plain: string | null;
 }
 // </block>

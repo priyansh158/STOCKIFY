@@ -115,7 +115,7 @@ def _rows(db_path, sql: str, args: tuple = (), *, errors: list[str] | None = Non
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=_TIMEOUT_S)
+        conn = sqlite3.connect(paths.readonly_uri(db_path), uri=True, timeout=_TIMEOUT_S)
     except sqlite3.Error:
         _unreadable(errors, store_key)
         return []

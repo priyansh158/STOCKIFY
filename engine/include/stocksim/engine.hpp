@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -128,7 +129,11 @@ struct PlaceRequest {
     std::string validity = "DAY";
     std::optional<Bp> protection;  // nullopt = AUTO
     std::string tag;
+    std::string note;  // UTF-8 bytes; the engine cleans it once (clean_note)
 };
+
+inline constexpr std::size_t kPlotMaxSeries = 8;         // CH 6.4 (D-94): per run
+inline constexpr std::size_t kPlotMaxPoints = 200'000;
 
 struct ModifyRequest {
     std::optional<Qty> qty;
@@ -171,6 +176,12 @@ class Context {
     std::uint64_t schedule_at(TimeNs t);                        // std::invalid_argument unless t > now()
     std::uint64_t schedule_every(TimeNs period, TimeNs first);  // std::invalid_argument unless first > now(), period > 0
     void cancel_timer(std::uint64_t timer_id);
+
+    // CH 6.4: one point of the named series at now() (plots.csv). kind is "price" (paise) or "level" (1/10,000
+    // units). Checked in this order, all std::invalid_argument: kind, name (1 to 32 code points that clean_note leaves
+    // alone), instrument (0 = the whole run, else in the bundle), the series' first kind. A repeat at the same now()
+    // replaces; past kPlotMaxSeries series or kPlotMaxPoints points the call is dropped, with one WARN line per cap.
+    void plot(std::string_view name, std::int64_t value, std::string_view kind = "price", std::int64_t instrument = 0);
 
     const Json& params() const;
     void log(std::string_view level, std::string_view msg);  // the level is upper-cased
@@ -309,6 +320,12 @@ class Engine {
     const std::vector<PositionEodRow>& positions_eod() const { return positions_eod_; }
     const std::vector<EquityRow>& equity() const { return equity_; }
     const std::vector<MarginDailyRow>& margin_daily() const { return margin_daily_; }
+    // CH 6.4: the plot buffer, both maps sorted (the file's order). A point is (t_ns, instrument, name) -> value; a
+    // series is (instrument, name) -> its kind.
+    using PlotSeries = std::pair<std::int64_t, std::string>;
+    using PlotKey = std::tuple<TimeNs, std::int64_t, std::string>;
+    const std::map<PlotSeries, std::string>& plot_kinds() const { return plot_kinds_; }
+    const std::map<PlotKey, std::int64_t>& plot_points() const { return plot_points_; }
     // The live margin model's view of the book now (RunError under any other model). Engine thread, between pushes.
     MarginNow margin_now() const;
     const std::vector<SettleClose>& settle_closes() const { return settle_closes_; }
@@ -427,6 +444,12 @@ class Engine {
     Json fill_cfg_;
     Json policies_;
     std::string mark_kind_;  // ltp | mid
+    std::map<std::string, std::string> system_notes_;  // bundle "system_notes" (CH 6.2): {system tag: note text}
+    // The note a system order (AUTO_SQOFF) carries; "" when the bundle has none for the tag.
+    std::string system_note(const std::string& tag) const {
+        const auto it = system_notes_.find(tag);
+        return it == system_notes_.end() ? std::string() : it->second;
+    }
     TimeNs latency_ns_ = 0;
     Costs costs_;
     const LiveWithFallbackMargin* live_margin_ = nullptr;  // margin_ when the model is live_with_fallback
@@ -487,6 +510,11 @@ class Engine {
     std::map<std::string, std::int64_t> rejects_;
     Ppm participation_used_ = 0;  // ppm of a bar's volume, the most over the run
     std::vector<std::pair<TimeNs, bool>> open_changes_;  // (t, any position open) transitions
+
+    std::map<PlotSeries, std::string> plot_kinds_;  // CH 6.4: fixed by a series' first call
+    std::map<PlotKey, std::int64_t> plot_points_;   // a repeat at the same time replaces the value
+    bool plot_series_capped_ = false;               // the cap line is logged once each
+    bool plot_points_capped_ = false;
 
     std::vector<std::string> log_lines_;
     std::size_t log_drained_ = 0;
