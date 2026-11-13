@@ -372,7 +372,7 @@ def _landing_size(landing: Path) -> int:
 
 def _landing_packets(landing: Path) -> int:
     """Packets in a landing file, counted through a read-only connection."""
-    conn = sqlite3.connect(f"file:{landing.as_posix()}?mode=ro", uri=True, timeout=30.0)
+    conn = sqlite3.connect(paths.readonly_uri(landing), uri=True, timeout=30.0)
     try:
         return int(conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0])
     finally:

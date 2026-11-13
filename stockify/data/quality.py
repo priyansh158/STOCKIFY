@@ -282,7 +282,24 @@ def unreadable_sentence(store_key: str) -> str:
 
 
 class StoreUnreadable(RuntimeError):
-    """A lab store a read needs is missing or cannot be read. The text is the fixed sentence, never a path."""
+    """A store a read needs is missing or cannot be read. The text is the fixed sentence, never a path."""
+
+    def __init__(self, store_key: str):
+        super().__init__(unreadable_sentence(store_key))
+        self.store_key = store_key
+
+
+_ID_CHUNK = 500      # instrument ids per IN (...) list: far under SQLite's bound-variable limit (32766)
+
+
+def _rows_or_none(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list:
+    """The rows of a read; a missing table (an older schema) reads as no rows."""
+    try:
+        return conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError as e:
+        if str(e).startswith("no such table"):
+            return []
+        raise
 
 
 def stored_readonly(day: date) -> tuple[dict, dict[int, str | None]]:
@@ -290,29 +307,33 @@ def stored_readonly(day: date) -> tuple[dict, dict[int, str | None]]:
     READ-ONLY connection (`mode=ro`), closed after use.
 
     Never through `refdata._connect()`: that opens read-write, so a missing file would be created empty and a locked
-    or corrupt one would raise. A missing or unreadable file raises `StoreUnreadable("Couldn't read ...")`.
+    or corrupt one would raise. A missing file or a file that cannot be read raises `StoreUnreadable("refdata")`; a
+    readable file without the table (an older schema) reads as no rows.
     """
     path = paths.refdata_db()
-    sentence = unreadable_sentence("refdata")
     if not path.exists():
-        raise StoreUnreadable(sentence)
+        raise StoreUnreadable("refdata")
     try:
-        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+        conn = sqlite3.connect(paths.readonly_uri(path), uri=True, timeout=5.0)
     except (sqlite3.Error, OSError):
-        raise StoreUnreadable(sentence) from None
+        raise StoreUnreadable("refdata") from None
     try:
         conn.row_factory = sqlite3.Row
         out: dict[int, dict] = {}
-        for r in conn.execute("SELECT instrument_id, metric, value FROM data_quality WHERE trade_date=?",
-                              (day.isoformat(),)).fetchall():
+        for r in _rows_or_none(conn, "SELECT instrument_id, metric, value FROM data_quality WHERE trade_date=?",
+                               (day.isoformat(),)):
             out.setdefault(r["instrument_id"], {})[r["metric"]] = r["value"]
         ids = [i for i in out if i != 0]
-        symbols = {r["instrument_id"]: r["tradingsymbol"] for r in conn.execute(
-            f"SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN ({','.join('?' * len(ids))})",
-            tuple(ids)).fetchall()} if ids else {}
+        symbols: dict[int, str | None] = {}
+        for k in range(0, len(ids), _ID_CHUNK):
+            chunk = ids[k:k + _ID_CHUNK]
+            for r in _rows_or_none(
+                    conn, "SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
+                          f"({','.join('?' * len(chunk))})", tuple(chunk)):
+                symbols[r["instrument_id"]] = r["tradingsymbol"]
         return out, symbols
     except (sqlite3.Error, OSError):
-        raise StoreUnreadable(sentence) from None
+        raise StoreUnreadable("refdata") from None
     finally:
         conn.close()
 

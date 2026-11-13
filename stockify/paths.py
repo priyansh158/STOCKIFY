@@ -13,6 +13,16 @@ from pathlib import Path
 import stockify_paths
 
 
+def readonly_uri(path: Path, *, immutable: bool = False) -> str:
+    """The SQLite URI that opens `path` read-only (`sqlite3.connect(uri, uri=True)`).
+
+    The one place a `mode=ro` URI is built. `Path.as_uri()` percent-escapes `#`, `%` and `?`, which a hand-built
+    `file:{path}` leaves as URI syntax (a `#` cuts the path, a `%41` reads as `A`), so a state folder named with one
+    would open another file or none. `immutable` adds `&immutable=1`: only for a file nothing is writing.
+    """
+    return f"{Path(path).resolve().as_uri()}?mode=ro" + ("&immutable=1" if immutable else "")
+
+
 def _dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
