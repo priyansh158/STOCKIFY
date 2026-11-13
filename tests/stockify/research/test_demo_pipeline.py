@@ -100,7 +100,11 @@ def oracle_pool(jobs, *, workers=None):
 
 
 class DemoPipelineTests(BundleTest):
-    """The fixture bars cover 2025-12-22 to 2025-12-31, before the shipped holdout (research.json holdout_from)."""
+    """The fixture bars cover 2025-12-22 to 2025-12-31, before the shipped holdout (research.json holdout_from).
+
+    Buy-and-hold on this fixture reports 0 trades and +490 paise at every capital, as it should: the 10 percent
+    participation cap lets 100 of the 1000 shares in a bar fill, the rest is cancelled at the close, so the position
+    stays open (a trade is a closed round trip) and the +490 is its mark-to-market gain (500) less the 10 paise STT."""
 
     def setUp(self):
         super().setUp()

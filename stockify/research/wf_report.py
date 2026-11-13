@@ -197,7 +197,7 @@ def _windows_table(doc: dict) -> list[str]:
     keys = {k for w in ws for k in (w["chosen_params"] or {})}
     short = len({k.rsplit(".", 1)[-1] for k in keys}) == len(keys)        # the last part of a dotted name, if unique
     rows = []
-    few = _not_enough(doc)
+    few = plain.NOT_ENOUGH_OOS_SHORT if _few_days(doc) else None
     for w in ws:
         train, test = w["train"], w["test"]
         rows.append([w["index"] + 1, f"{w['train_from']} to {w['train_to']}", f"{w['test_from']} to {w['test_to']}",
@@ -273,7 +273,9 @@ def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
             f"Out of sample: {lines['dsr']}.",
             f"N = windows x grid = {raw['n_trials']}: every training run of every window is a try, whichever one "
             "was picked.", "",
-            "## Settings per window", "", *_windows_table(doc), "", f"Stability: {lines['stability']}.", ""]
+            "## Settings per window", "",
+            *([f"Sharpe figures per window: {_not_enough(doc)}.", ""] if _few_days(doc) else []),
+            *_windows_table(doc), "", f"Stability: {lines['stability']}.", ""]
     out += ["## Out-of-sample equity", ""]
     if (paths.research_path(job["job_id"]) / "walkforward.png").is_file() and doc["dates"]:
         out += ["![Out-of-sample equity, each tested window drawn on its own (growth of 1)](walkforward.png)"]

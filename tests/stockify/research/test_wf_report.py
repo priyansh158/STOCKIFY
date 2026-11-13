@@ -233,7 +233,15 @@ class MinOosDaysTests(ReportBase):
         text = self.report_text()                                                       # 12 out-of-sample days
         s = wf.finish(JOB).summary
         want = plain.NOT_ENOUGH_OOS.format(n=12, m=60)
-        self.assertGreaterEqual(text.count(want), 4)                                    # row, ratio, dsr, windows
+        self.assertGreaterEqual(text.count(want), 4)                                    # row, ratio, dsr, windows note
+        rows = [ln for ln in text.splitlines() if re.match(r"\| [12] \| 2026", ln)]       # the window table's rows
+        self.assertEqual(len(rows), 2)
+        for ln in rows:                                                                  # a short word, not the sentence
+            self.assertIn(f"| {plain.NOT_ENOUGH_OOS_SHORT} |", ln)
+            self.assertNotIn("not enough", ln)
+        self.assertEqual(plain.NOT_ENOUGH_OOS_SHORT, "too few days")
+        above = text[:text.index("| Window |")]
+        self.assertIn(want, above.splitlines()[-3] + above.splitlines()[-2])             # said in full just above it
         for figure in (s.is_sharpe, s.oos_sharpe):
             self.assertNotIn(f"{figure:.2f}", text)
         self.assertNotIn("% chance the out-of-sample edge", text)

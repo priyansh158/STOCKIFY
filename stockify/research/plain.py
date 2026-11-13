@@ -26,6 +26,7 @@ RUPEE = "₹"
 TOO_FEW_DAYS = "too few days to say"
 # Shown in place of a Sharpe figure, a ratio or a deflated Sharpe when the out-of-sample days are fewer than
 # research.json walk_forward.min_oos_days (D-102): the figure would look precise and mean nothing.
+NOT_ENOUGH_OOS_SHORT = "too few days"          # the same, for a table cell, with the sentence said once above the table
 NOT_ENOUGH_OOS = "not enough out-of-sample days to judge ({n} of {m} needed)"
 _NAME_LIMIT = 40
 
