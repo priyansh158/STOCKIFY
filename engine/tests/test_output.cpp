@@ -111,11 +111,10 @@ TEST_CASE("ctx.plot: caps, kinds, names and last-wins") {
         CHECK_THROWS_AS(c.plot("", 1), std::invalid_argument);
         CHECK_THROWS_AS(c.plot(std::string(33, 'x'), 1), std::invalid_argument);
         CHECK_NOTHROW(c.plot(std::string(32, 'x'), 1));
-        CHECK_NOTHROW(c.plot("Ã©Ã©", 1));  // two code points, four bytes
+        CHECK_NOTHROW(c.plot("\xC3\xA9\xC3\xA9", 1));  // two code points, four bytes
         CHECK_THROWS_AS(c.plot(" pad", 1), std::invalid_argument);
-        CHECK_THROWS_AS(c.plot("a
-b", 1), std::invalid_argument);
-        CHECK_THROWS_AS(c.plot("aÿ", 1), std::invalid_argument);  // not UTF-8
+        CHECK_THROWS_AS(c.plot("a\nb", 1), std::invalid_argument);
+        CHECK_THROWS_AS(c.plot("a\xFF", 1), std::invalid_argument);  // not UTF-8
         CHECK_THROWS_WITH_AS(c.plot("", 1, "volume"), doctest::Contains("kind must be"), std::invalid_argument);
         CHECK_THROWS_WITH_AS(c.plot("a", 1, "price", 4'000'000'000), doctest::Contains("is not in this run's bundle"),
                              std::invalid_argument);
