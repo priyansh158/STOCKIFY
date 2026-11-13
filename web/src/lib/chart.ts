@@ -350,10 +350,10 @@ const NO_CHART_WHY: Record<string, string> = {
 /** The band's words, plain: drawn windows say "out of sample"; the others say why nothing is drawn. The server's `excluded` text is used as it came. */
 export function windowLabel(w: WalkforwardChartWindowDTO): string {
   const head = `Window ${w.index + 1} (out of sample)`;
-  if (w.excluded) return `${head}: excluded: ${w.excluded}`;
-  if (w.status === "no_trades") return `${head}: no trades in this window`;
+  if (w.excluded) return `${head}, excluded: ${w.excluded}`;
+  if (w.status === "no_trades") return `${head}, no trades in this window`;
   if (w.status === "done") return head;
-  return `${head}: no chart, ${NO_CHART_WHY[w.status] ?? "its state is not known"}`;
+  return `${head}, no chart: ${NO_CHART_WHY[w.status] ?? "its state is not known"}`;
 }
 
 /** The server's windows as bands (UTC ns bounds, the test days as the server clipped them), in the server's order. */
@@ -377,10 +377,8 @@ const OPEN_AFTER_MIDNIGHT_S = 33300; // 09:15 IST
 export function shadePoints(
   bars: ChartBar[],
   windows: ChartWindow[],
-  interval_s: number,
   daily: boolean,
 ): { time: ChartTime; index: number; gap: boolean }[] {
-  void interval_s;
   const byTime = new Map<ChartTime, { time: ChartTime; index: number; gap: boolean }>();
   for (const b of bars) {
     const ns = b.t * 1e9;
@@ -398,4 +396,17 @@ export function shadePoints(
     }
   });
   return [...byTime.values()].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+}
+
+export type FirstView = { kind: "fit" } | { kind: "range"; from: number; to: number };
+
+/**
+ * How a chart first looks: everything fitted, or, for a long chart with trades, `near` bars round the first trade (`at` is the
+ * index of the first bar at or after it, -1 when there is none, which shows the end). The chart re-applies the same view
+ * when its box gets its width late, until the person pans or zooms.
+ */
+export function initialView(barCount: number, at: number, markerCount: number, near: number): FirstView {
+  if (barCount <= near || markerCount === 0) return { kind: "fit" };
+  const i = at < 0 ? barCount - 1 : at;
+  return { kind: "range", from: i - near / 2, to: i + near / 2 };
 }

@@ -234,9 +234,15 @@ const wfs = [
   wfw(3, { run_id: null, status: "failed" }),
 ];
 out.bands = chart.windowBands(wfs);
+// The first view of a chart: fit everything, or (a long chart with trades) a range round the first trade.
+out.view = [
+  chart.initialView(0, -1, 0, 300), chart.initialView(100, 5, 2, 300), chart.initialView(300, 5, 2, 300),
+  chart.initialView(301, 5, 2, 300), chart.initialView(1000, 10, 3, 300), chart.initialView(1000, -1, 3, 300),
+  chart.initialView(1000, 10, 0, 300), chart.initialView(1000, 0, 1, 300),
+];
 out.bandsEmpty = chart.windowBands([]);
 const wb = chart.windowBands(wfs);
-out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, 60, false);
-out.shadeGapDaily = chart.shadePoints([], [wb[1]], 86400, true);
+out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, false);
+out.shadeGapDaily = chart.shadePoints([], [wb[1]], true);
 
 process.stdout.write(JSON.stringify(out));

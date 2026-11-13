@@ -43,6 +43,8 @@ import {
   contractOf,
   DEFAULT_INTERVAL_S,
   shadePoints,
+  initialView,
+  type FirstView,
   toCandle,
   toMarker,
   toPlotPoint,
@@ -125,12 +127,13 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const axisRef = useRef<ISeriesApi<"Line"> | null>(null);
   const axisMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const byTimeRef = useRef<Map<string, ChartMarker[]>>(new Map());
+  const gapRef = useRef<Map<string, string>>(new Map()); // a slot shaded for a window with nothing drawn: its name, for the hover text
   const alive = useRef(true);
   const linesRef = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   const cardRef = useRef<HTMLElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const fitRef = useRef(false);
-  const autoFit = useRef(false); // the last fit was "fit everything", so a resize may redo it
+  const viewRef = useRef<FirstView | null>(null); // the first view of the data, re-applied when the box gets its width late
   const moved = useRef(false); // the user panned or zoomed since the last fit
 
   const [model, setModel] = useState<ChartModel | null | "error">(null);
@@ -277,6 +280,11 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     chart.subscribeCrosshairMove((p) => {
       const key = p.time === undefined ? "" : String(p.time);
       const ms = byTimeRef.current.get(key);
+      const gap = gapRef.current.get(key);
+      if (!ms && gap && p.point) {
+        setTip({ title: gap, reason: "Nothing is drawn here: no price bars or trades for this window.", more: 0, x: p.point.x, y: p.point.y });
+        return;
+      }
       if (!ms || !p.point) {
         setTip((t) => (t === null ? t : null));
         return;
@@ -330,7 +338,10 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     // The box can get its width after the first fit (it is hidden until data arrives) or change later: refit,
     // but only while the user has not panned or zoomed. Created after the library's own observer, so it runs after it.
     const refit = new ResizeObserver(() => {
-      if (autoFit.current && !moved.current) chart.timeScale().fitContent();
+      const v = viewRef.current;
+      if (!v || moved.current) return;
+      if (v.kind === "fit") chart.timeScale().fitContent();
+      else chart.timeScale().setVisibleLogicalRange({ from: v.from, to: v.to });
     });
     refit.observe(box);
     const touched = () => {
@@ -391,11 +402,9 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
 
     const tint = [readColour("--color-info", 0.1), readColour("--color-info", 0.04)];
     const gapTint = readColour("--color-warn", 0.18); // a window with nothing to draw (excluded, no trades, failed)
-    shade.setData(
-      (windows
-        ? shadePoints(bars, windows, meta.interval_s ?? DEFAULT_INTERVAL_S, daily).map((p) => ({ time: p.time, value: 1, color: p.gap ? gapTint : tint[p.index % 2] }))
-        : []) as unknown as HistogramData[],
-    );
+    const shaded = windows ? shadePoints(bars, windows, daily) : [];
+    gapRef.current = new Map(shaded.filter((p) => p.gap).map((p) => [String(p.time), windows?.[p.index]?.label ?? ""]));
+    shade.setData(shaded.map((p) => ({ time: p.time, value: 1, color: p.gap ? gapTint : tint[p.index % 2] })) as unknown as HistogramData[]);
 
     const tokens = { up: readColour("--color-up"), down: readColour("--color-down"), warn: readColour("--color-warn") };
     const points = markers.map((m) => toMarker(m, daily, tokens));
@@ -444,16 +453,11 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     if (fitRef.current && (bars.length > 0 || markers.length > 0)) {
       fitRef.current = false;
       moved.current = false;
-      autoFit.current = bars.length === 0 || bars.length <= NEAR_BARS || markers.length === 0;
-      if (bars.length === 0) {
-        chart.timeScale().fitContent();
-      } else if (bars.length > NEAR_BARS && markers.length > 0) {
-        const at = bars.findIndex((b) => b.t >= markers[0].bar_t);
-        const i = at < 0 ? bars.length - 1 : at;
-        chart.timeScale().setVisibleLogicalRange({ from: i - NEAR_BARS / 2, to: i + NEAR_BARS / 2 });
-      } else {
-        chart.timeScale().fitContent();
-      }
+      const at = bars.findIndex((b) => b.t >= (markers[0]?.bar_t ?? Infinity));
+      const view = initialView(bars.length, at, markers.length, NEAR_BARS);
+      viewRef.current = view;
+      if (view.kind === "fit") chart.timeScale().fitContent();
+      else chart.timeScale().setVisibleLogicalRange({ from: view.from, to: view.to });
     }
   }, [bars, markers, meta, daily, showVolume, windows, themeTick]);
 
@@ -574,7 +578,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
           {meta.basis ? `, ${meta.basis} prices` : ""}
           {meta.live ? ", live" : ""}
           {meta.plain ? `. ${meta.plain}` : ""}
-          {windows && windows.length > 0 ? `. Shaded bands are the test windows: ${windows.map((w) => w.label).join(", ")}` : ""}
+          {windows && windows.length > 0 ? ". Shaded bands are the test windows, named below the chart" : ""}
         </p>
       )}
       {meta?.notice && (
