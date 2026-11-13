@@ -341,9 +341,6 @@ class FragileSentenceTests(unittest.TestCase):
             plain.fragile_sentence(_sens("maybe", 1), **self.K)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class WfSentenceTests(unittest.TestCase):
     """WF 6.6: the out-of-sample ratio and the stability of the chosen settings, in plain words."""
@@ -402,3 +399,20 @@ class WfSentenceTests(unittest.TestCase):
             text = plain.wf_sentence(s)
             self.assertEqual(_bad_tokens(text), [], text)
             self.assertNotIn("\n", text)
+
+    def test_wf_dsr_sentence_says_the_days_were_never_used_to_choose_and_that_it_is_cautious(self):
+        text = plain.wf_dsr_sentence(28, 0.61)
+        self.assertIn("61% chance", text)
+        self.assertIn("28 tries", text)
+        self.assertIn("never used to choose", text)
+        self.assertIn("cautious", text)
+        self.assertNotIn("best of", text)                       # the out-of-sample curve is not "the best of N"
+        self.assertEqual(_bad_tokens(text), [])
+        self.assertEqual(plain.wf_dsr_sentence(1, 0.9), "only one try, so nothing to allow for")
+        self.assertIn(plain.TOO_FEW_DAYS, plain.wf_dsr_sentence(28, None))
+        with self.assertRaises(ValueError):
+            plain.wf_dsr_sentence(0, 0.5)
+
+
+if __name__ == "__main__":
+    unittest.main()

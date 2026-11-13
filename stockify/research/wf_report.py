@@ -81,7 +81,7 @@ def plain_lines(doc: dict, family_id: str) -> dict[str, str]:
     lines = {
         "ratio": plain.wf_ratio_sentence(s),
         "stability": plain.wf_stability_sentence(s, chosen_windows=_chosen_windows(doc)),
-        "dsr": plain.dsr_sentence(n, 1, dsr, objective="sharpe") if n >= 1 else "no tries were recorded",
+        "dsr": plain.wf_dsr_sentence(n, dsr) if n >= 1 else "no tries were recorded",
     }
     out = pbo.family_pbo(family_id)
     if out.result is not None:
@@ -137,7 +137,7 @@ def _sharpe(x) -> str:  # noqa: ANN001
 
 
 def _money(paise) -> str:  # noqa: ANN001
-    return plain._signed(int(paise)) if paise is not None else "-"
+    return plain.signed_rupees(int(paise)) if paise is not None else "-"
 
 
 def _settings(params: dict | None, short: bool) -> str:
@@ -155,7 +155,7 @@ def _result_word(w: dict) -> str:
         return "tested"
     if w["chosen_params"] is None:
         return "not tested, no training run gave a usable result"
-    why = plain._plain_reason(w.get("error"))
+    why = plain.plain_reason(w.get("error"))
     return "test run did not finish" + (f" ({why})" if why else "")
 
 
@@ -227,6 +227,8 @@ def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
            "The in-sample figure is the best of the grid on the training days, so choosing flatters it. "
            "The out-of-sample figure is on days the choice never saw.", "",
            f"Out-of-sample against in-sample: {lines['ratio']}.",
+           "The in-sample figure is the average of each window's training Sharpe; the out-of-sample figure is the "
+           "Sharpe of all the tested days joined together, so the ratio is a rough guide, not like for like.",
            f"The out-of-sample figure covers {raw['oos_days']} out-of-sample days in {tested} of "
            f"{raw['windows']} windows."]
     caution = _paragraph_for_days(s)
@@ -234,7 +236,8 @@ def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
         out += ["", caution]
     out += ["", "## Deflated Sharpe", "",
             f"Out of sample: {lines['dsr']}.",
-            f"N is {raw['n_trials']}: every training run of every window is a try, whichever one was picked.", "",
+            f"N = windows x grid = {raw['n_trials']}: every training run of every window is a try, whichever one "
+            "was picked.", "",
             "## Settings per window", "", *_windows_table(doc), "", f"Stability: {lines['stability']}.", ""]
     out += ["## Out-of-sample equity", ""]
     if (paths.research_path(job["job_id"]) / "walkforward.png").is_file() and doc["dates"]:

@@ -496,6 +496,22 @@ class CliTests(SuiteBase):
         with mock.patch.object(pool, "run_all", FakePool(net_default)):
             self.assertEqual(self.run_cli("sensitivity", "--run", "lose")[0], 0)
 
+    def test_a_pool_that_returns_too_few_outcomes_exits_one_and_fails_the_job(self):
+        self.source(5_000)
+        short = lambda jobs, *, workers=None: FakePool(net_default)(jobs, workers=workers)[:-1]   # noqa: E731
+        with mock.patch.object(pool, "run_all", short):
+            code, _, err = self.run_cli("sensitivity", "--run", "src")
+        self.assertEqual(code, 1)
+        self.assertIn("outcomes", err)
+        self.assertEqual(store.list_research_jobs(kind="sensitivity")[0]["status"], "failed")
+
+    def test_a_pool_that_raises_exits_one_not_a_traceback(self):
+        self.source(5_000)
+        with mock.patch.object(pool, "run_all", side_effect=RuntimeError("the pool fell over")):
+            code, _, err = self.run_cli("sensitivity", "--run", "src")
+        self.assertEqual(code, 1)
+        self.assertIn("the pool fell over", err)
+
     def test_a_locked_holdout_exits_two(self):
         self.source(5_000)
         with mock.patch.object(holdout, "enforce", side_effect=holdout.HoldoutLocked("locked, say why")):

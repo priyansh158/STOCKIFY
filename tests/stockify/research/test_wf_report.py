@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import itertools
 import json
 import random
 import re
@@ -78,8 +79,12 @@ class RenderTests(ReportBase):
         self.assertIn(f"{s.is_sharpe:.2f}", text)
         self.assertIn(f"{s.oos_sharpe:.2f}", text)
         self.assertIn(plain.wf_ratio_sentence(s), text)                    # the same wording the page shows
-        self.assertIn(plain.dsr_sentence(s.n_trials, 1, s.dsr.dsr), text)
-        self.assertIn("best of 4 tries", text)                             # N = 2 windows x 2 grid points
+        self.assertIn(plain.wf_dsr_sentence(s.n_trials, s.dsr.dsr), text)
+        self.assertIn("over 4 tries", text)                                # N = 2 windows x 2 grid points
+        self.assertIn("N = windows x grid = 4", text)
+        self.assertIn("never used to choose", text)
+        self.assertIn("cautious", text)
+        self.assertNotIn("best of 4 tries", text)                          # the stitched days are not "best of N"
         self.assertIn(f"{s.oos_days} out-of-sample days", text)
         self.assertIn("calendar days", text)
         self.assertIn("the same settings won", text)                       # the stability line
@@ -88,6 +93,14 @@ class RenderTests(ReportBase):
         for w in doc["windows"]:
             self.assertIn(w["test_from"], text)                            # each window's dates are in the table
         self.assertIn("width = 10", text)                                  # the per-window chosen settings
+
+    def test_report_says_how_the_two_sharpes_are_measured_next_to_the_ratio(self):
+        text = self.report_text()
+        note = ("The in-sample figure is the average of each window's training Sharpe; the out-of-sample figure is "
+                "the Sharpe of all the tested days joined together, so the ratio is a rough guide, not like for like.")
+        self.assertIn(note, text)
+        ratio_at, note_at = text.index("Out-of-sample against in-sample:"), text.index(note)
+        self.assertLess(abs(note_at - ratio_at), 400)                      # in the same paragraph block
 
     def test_report_without_sensitivity_says_how_to_run_it(self):
         text = self.report_text()
@@ -247,8 +260,11 @@ def _weekday_start(iso: str) -> str:
 class StubPool:
     """A finished run per job, with seeded daily returns that depend on the grid point and the window's range."""
 
+    _instances = itertools.count()
+
     def __init__(self):
         self.n = 0
+        self.prefix = f"stub{next(self._instances)}x"                      # run ids stay unique across instances
         self.calls: list[tuple[int, int | None]] = []
 
     def __call__(self, jobs, *, workers=None):
@@ -260,7 +276,7 @@ class StubPool:
             width = j.config["strategy"]["params"]["range_minutes"]
             rng = random.Random(f"{width}-{spec['from']}")
             rets = [0.0004 * width / 5 + rng.uniform(-0.006, 0.006) for _ in range(5 if j.role == "oos" else 8)]
-            rid = f"stub{self.n:03d}"
+            rid = f"{self.prefix}{self.n:03d}"
             make_run(rid, j.config.get("family_id"), daily_returns=rets, capital_paise=10_000_000, role=j.role,
                      job_id=j.job_id, name=j.config["name"], start=_weekday_start(spec["from"]))
             out.append(PoolOutcome(rid, "done", None))
@@ -337,6 +353,29 @@ class CliTests(ReportBase):
         self.assertEqual(code, 2)
         self.assertIn("unlock", err)
         self.assertEqual(pool.calls, [])
+
+    def test_workers_reach_every_pool_call(self):
+        code, _, err, pool = self.run_cli("--sweep", str(self.sweep), "--train", "30d", "--test", "10d",
+                                          "--step", "10d", "--workers", "3")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([w for _, w in pool.calls], [3, 3])
+        code, _, err, pool = self.run_cli("--sweep", str(self.sweep), "--train", "30d", "--test", "10d",
+                                          "--step", "10d")
+        self.assertEqual([w for _, w in pool.calls], [None, None])           # the sweep file names none
+
+    def test_a_pool_that_returns_too_few_outcomes_is_a_failure_not_a_usage_error(self):
+        for phase in (0, 1):                                                   # the training call, then the test call
+            class Short(StubPool):
+                def __call__(self, jobs, *, workers=None):
+                    out = super().__call__(jobs, workers=workers)
+                    return out[:-1] if len(self.calls) == phase + 1 else out
+            code, _, err, _ = self.run_cli("--sweep", str(self.sweep), "--train", "30d", "--test", "10d",
+                                           "--step", "10d", pool=Short())
+            self.assertEqual(code, 1, (phase, err))
+            self.assertIn("outcomes", err)
+            job = store.list_research_jobs(kind="walkforward")[0]                # newest first
+            self.assertEqual(job["status"], "failed")
+            store.update_research_job(job["job_id"], created_ns=1)               # so the next loop's job sorts first
 
     def test_the_sensitivity_run_goes_into_the_report(self):
         write_sensitivity("senbase")

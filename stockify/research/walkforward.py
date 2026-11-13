@@ -30,6 +30,11 @@ class WalkforwardError(ValueError):
     pass
 
 
+class WalkforwardRunError(WalkforwardError):
+    """A failure after the job exists (the pool misbehaved): the job is marked failed. The command exits 1 for it, not
+    2 (usage or refusal)."""
+
+
 @dataclass(frozen=True)
 class Window:
     index: int
@@ -193,7 +198,7 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
                 cfg_for(p, w.test_from, w.test_to, f"{spec.name}-w{w.index:02d}-oos")
         outcomes = pool_run(train_jobs, workers=workers if workers is not None else spec.workers)
         if len(outcomes) != len(train_jobs):
-            raise WalkforwardError(f"the pool returned {len(outcomes)} outcomes for {len(train_jobs)} runs")
+            raise WalkforwardRunError(f"the pool returned {len(outcomes)} outcomes for {len(train_jobs)} runs")
         rows: dict[int, list[dict]] = {w.index: [] for w in wins}
         for (wi, p), o in zip(slots, outcomes):
             row = {"index": p.index, "params": p.params, "status": o.status, "run_id": o.run_id, "error": o.error,
@@ -218,7 +223,7 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
                                   role="oos", job_id=job_id) for r in tested]
         outs = pool_run(test_jobs, workers=workers if workers is not None else spec.workers) if test_jobs else []
         if len(outs) != len(test_jobs):
-            raise WalkforwardError(f"the pool returned {len(outs)} outcomes for {len(test_jobs)} runs")
+            raise WalkforwardRunError(f"the pool returned {len(outs)} outcomes for {len(test_jobs)} runs")
         for r, o in zip(tested, outs):
             r["test_run_id"], r["test_status"] = o.run_id, o.status
             r["error"] = None if o.status == "done" else (o.error or "the run failed")

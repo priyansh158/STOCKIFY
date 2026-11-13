@@ -294,6 +294,20 @@ def wf_stability_sentence(summary, *, chosen_windows: int | None = None) -> str:
     return f"the same settings won {_percent_text(min(1.0, max(0.0, share)))} of the windows"
 
 
+def wf_dsr_sentence(n_trials: int, dsr: float | None) -> str:
+    """The deflated Sharpe of the stitched out-of-sample days. They are not "the best of N": each window's settings
+    were picked on training days and tried on days the pick never saw. The allowance for luck still counts every
+    training try (N = windows x grid), so the figure is a cautious one, and the sentence says so."""
+    if n_trials < 1:
+        raise ValueError(f"n_trials must be at least 1, not {n_trials!r}")
+    if n_trials == 1:
+        return "only one try, so nothing to allow for"
+    p = _usable(dsr)
+    verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the out-of-sample edge beats luck"
+    return (f"after allowing for luck over {n_trials} tries (every setting run in training, in every window), "
+            f"{verdict}; the out-of-sample days were never used to choose, so this is a cautious figure")
+
+
 def wf_sentence(summary, *, chosen_windows: int | None = None) -> str:  # noqa: ANN001
     """The ratio and the stability of a walk-forward summary, in one line (a WalkforwardSummary)."""
     return f"{wf_ratio_sentence(summary)}; {wf_stability_sentence(summary, chosen_windows=chosen_windows)}"
@@ -301,7 +315,7 @@ def wf_sentence(summary, *, chosen_windows: int | None = None) -> str:  # noqa: 
 
 # ---- sensitivity (M6.7, FW 6.4) ---------------------------------------------------------------------------------
 
-def _signed(paise: int) -> str:
+def signed_rupees(paise: int) -> str:
     """Rupees with an explicit sign: +₹41,200, -₹3,100, ₹0."""
     return ("+" if paise > 0 else "") + rupees(paise / 100)
 
@@ -329,7 +343,7 @@ def _words_ticks(ticks: int, kind: str) -> str:
     return f"{n} extra tick{'' if one else 's'}" + (" of slippage" if kind in ("break", "survive") else "")
 
 
-def _plain_reason(error: str | None) -> str | None:
+def plain_reason(error: str | None) -> str | None:
     """A stored error as a short clause, or None when it is empty or looks like a raw log line (code names,
     paths, a traceback, a long text): better to say nothing than to show that."""
     text = (error or "").strip().rstrip(".")
@@ -355,8 +369,8 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
     verdict = result.verdict
     if verdict == "already_losing":
         if base == 0:
-            return f"Made no money ({_signed(base)}), so there is nothing to break; it is not called fragile."
-        return f"Already losing money ({_signed(base)}), so there is nothing to break; it is not called fragile."
+            return f"Made no money ({signed_rupees(base)}), so there is nothing to break; it is not called fragile."
+        return f"Already losing money ({signed_rupees(base)}), so there is nothing to break; it is not called fragile."
     checks = ((_s.variant_key("costs", fragile_cost_scale), "costs"),
               (_s.variant_key("slippage", fragile_extra_ticks), "ticks"))
 
@@ -380,7 +394,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
             lead = "Breaks " if n == 0 else "It also breaks "
             word = phrase(axis, "break")
             joint = f"if {word}" if axis == "costs" else f"with {word}"
-            parts.append(f"{lead}{joint}: net P&L turns from {_signed(base)} to {_signed(net)}.")
+            parts.append(f"{lead}{joint}: net P&L turns from {signed_rupees(base)} to {signed_rupees(net)}.")
         return " ".join(parts)
     if verdict == "robust":
         nets = [net for _, status, net, _e in results if status == "done" and net is not None]
@@ -389,7 +403,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
         if base < 0 or any(n < 0 for n in nets):
             raise ValueError("a robust result has a check below zero")
         return (f"Survives {phrase('costs', 'survive')} and {phrase('ticks', 'survive')}: net P&L does not turn "
-                f"negative ({_signed(nets[0])} and {_signed(nets[1])}, from {_signed(base)}).")
+                f"negative ({signed_rupees(nets[0])} and {signed_rupees(nets[1])}, from {signed_rupees(base)}).")
     if verdict == "inconclusive":
         clauses = []
         for axis, status, _net, error in results:
@@ -397,7 +411,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
                 continue
             what = phrase(axis, "survive")
             if status == "not_applicable":
-                why = _plain_reason(error)
+                why = plain_reason(error)
                 clauses.append(f"{what} couldn't be run for this strategy" + (f" ({why})" if why else ""))
             else:
                 clauses.append(f"the run with {what} didn't finish")

@@ -88,5 +88,5 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
     d["summary"] = WalkforwardSummaryDTO(**s)
-    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain._plain_reason(w.get("error"))}) for w in d["windows"]]
+    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"))}) for w in d["windows"]]
     return WalkforwardDTO(**d)

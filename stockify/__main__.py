@@ -623,16 +623,22 @@ def _cmd_sensitivity(args) -> int:
     from stockify.research import sensitivity
     try:
         res = sensitivity.run_suite(args.run, workers=args.workers, unlock_reason=args.unlock_holdout)
+    except sensitivity.SensitivityRunError as e:                  # the job exists and is marked failed
+        print(f"the sensitivity job failed: {e}", file=sys.stderr)
+        return 1
     except (sensitivity.SensitivityError, runconfig.RunConfigError, ValueError) as e:
         print(e, file=sys.stderr)
         return 2
+    except Exception as e:  # noqa: BLE001 — a run or the pool broke: the job is already marked failed
+        print(f"the sensitivity job failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
     _print_console(sensitivity.format_table(res))
     return 1 if res.verdict == "inconclusive" or any(r.status == "failed" for r in res.rows) else 0
 
 
 def _cmd_walkforward(args) -> int:
     """M6.5 (WF 6.6): walk a sweep forward, finish it and write its report. Exit 0 finished, 1 finished but a window
-    could not be tested (or the run itself broke), 2 bad arguments, an unusable sweep file, a locked holdout or no
+    could not be tested (or a run, the pool or `finish` broke after the job started), 2 bad arguments, an unusable sweep file, a locked holdout or no
     window that fits. Every argument is checked before the first run starts."""
     from datetime import date
     from pathlib import Path
@@ -656,6 +662,9 @@ def _cmd_walkforward(args) -> int:
         res = walkforward.run_windows(spec, train=train, test=test, step=step, objective=args.objective or cfg["objective"],
                                       start=start, end=end, unlock_reason=args.unlock_holdout, workers=args.workers,
                                       pool_run=pool.run_all)      # looked up here, so a test can patch it
+    except walkforward.WalkforwardRunError as e:                  # the job exists and is marked failed
+        print(f"the walk-forward job failed: {e}", file=sys.stderr)
+        return 1
     except (sweep.SweepSpecError, walkforward.WalkforwardError, runconfig.RunConfigError, ValueError) as e:
         print(e, file=sys.stderr)
         return 2
