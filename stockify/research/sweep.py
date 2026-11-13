@@ -161,6 +161,9 @@ def _axes(raw) -> dict:  # noqa: ANN001
             if isinstance(v, float):
                 raise SweepSpecError(f"axes.{path}: {v!r} is a float; write decimals as strings, like '0.05'")
             if v is not None and not isinstance(v, (int, str, bool)):
+                if isinstance(v, (list, dict)):
+                    raise SweepSpecError(f"axes.{path}: an axis value must be a single number, text, true/false or "
+                                         "null; sweep a list by naming each choice as text")
                 raise SweepSpecError(f"axes.{path}: {v!r} is a {type(v).__name__}, not a number, string, true/false "
                                      "or null; quote it, like '2026-06-01'")
         if len({json.dumps(v, sort_keys=True) for v in vals}) != len(vals):

@@ -185,6 +185,15 @@ class SweepSpecTest(unittest.TestCase):
             spec_from(text)
         self.assertIn("quote", str(cm.exception))
 
+    def test_list_or_dict_axis_value_gets_its_own_message_not_the_quote_hint(self):
+        for value in ("[[1, 2], 3]", "[{a: 1}, 3]"):
+            with self.subTest(value=value), self.assertRaises(sweep.SweepSpecError) as cm:
+                spec_from(yaml_text(f"  seed: {value}\n"))
+            msg = str(cm.exception)
+            self.assertIn("single number, text, true/false or null", msg)
+            self.assertIn("naming each choice as text", msg)
+            self.assertNotIn("quote", msg)
+
     def test_unquoted_time_stays_the_string_the_user_wrote(self):
         spec = spec_from(yaml_text("  strategy.params.exit_hhmm: [14:30, '15:00']\n"))
         self.assertEqual(spec.axes["strategy.params.exit_hhmm"], ["14:30", "15:00"])
@@ -221,7 +230,8 @@ class SweepPropertiesTest(unittest.TestCase):
     """Seeded loops over random grids (stdlib property testing)."""
 
     def random_axes(self, rng) -> tuple[str, list[int]]:
-        pool = ["strategy.params.exit_hhmm", "strategy.params.range_minutes", "strategy.params.qty", "seed", "latency_ms", "capital_paise"]
+        pool = ["strategy.params.exit_hhmm", "strategy.params.range_minutes", "strategy.params.qty", "seed",
+                "latency_ms", "capital_paise"]
         chosen = list(dict.fromkeys(pool[rng.below(len(pool))] for _ in range(1 + rng.below(3))))
         sizes, lines = [], []
         for path in chosen:
