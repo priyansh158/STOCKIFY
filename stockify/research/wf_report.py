@@ -282,7 +282,7 @@ def notes(doc: dict) -> dict[str, str]:
         "n_note": (f"N = windows x grid = {raw['n_trials']}: every training run of every window is a try, "
                    "whichever one was picked."),
         "curve": "Out-of-sample equity, each tested window drawn on its own (growth of 1)",
-        "y_label": "growth of 1 (capital = 1.0)",
+        "y_label": "growth of 1 (dashed line = starting capital)",
         "gaps": "Each tested window is its own line; the days between windows are left empty",
         "ratio_lead": "Out-of-sample against in-sample",
         "stability_lead": "Stability",

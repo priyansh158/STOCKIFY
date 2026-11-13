@@ -277,20 +277,26 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-lc-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-md); font-size: var(--text-sm); color: var(--color-ink-2); }
 .stk-lc-legend li { display: inline-flex; align-items: center; gap: var(--space-xs); }
 .stk-lc-grid { stroke: var(--color-rule); stroke-width: 1; }
+.stk-lc-end { fill: var(--color-ink-2); font-size: var(--text-xs); }
+.stk-lc-lead { stroke: var(--color-rule); stroke-width: 1; }
 .stk-lc-tick { fill: var(--color-muted); font-size: var(--text-xs); font-family: var(--font-outlier); }
 .stk-lc-base { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 4 4; }
 .stk-lc-cursor { stroke: var(--color-edge); stroke-width: 1; }
 .stk-lc-ytitle { margin-bottom: var(--space-3xs); }
 .stk-lc-mark { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 1 4; stroke-linecap: round; }
 .stk-lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
-/* Series: three colours the dataviz validator passed (accent, info, warn); the fourth reuses one and differs by dash and marker */
+/* Series: accent, info, warn. On the dark surface the set passes the dataviz validator's colour-blind (CVD), normal-vision and contrast checks and
+   fails only the lightness band, which is informational. Series 4 to 6 reuse the three colours, so every line also carries its name at its
+   right-hand end, markers along it, and a dash of its own: no series depends on colour alone. */
 .stk-lc-line[data-c="0"] { stroke: var(--color-accent); }
 .stk-lc-line[data-c="1"] { stroke: var(--color-info); }
 .stk-lc-line[data-c="2"] { stroke: var(--color-warn); }
 .stk-lc-line[data-s="1"] { stroke-dasharray: 8 4; }
 .stk-lc-line[data-s="2"] { stroke-dasharray: 1 5; stroke-linecap: round; }
 .stk-lc-line[data-s="3"] { stroke-dasharray: 10 3 2 3; }
-.stk-lc-dot { stroke: var(--color-paper-2); stroke-width: 2; }
+.stk-lc-line[data-s="4"] { stroke-dasharray: 16 4 2 4 2 4; }
+.stk-lc-line[data-s="5"] { stroke-dasharray: 3 3; }
+.stk-lc-dot { stroke: var(--color-paper-2); stroke-width: 2; stroke-linejoin: round; }
 .stk-lc-dot[data-c="0"] { fill: var(--color-accent); }
 .stk-lc-dot[data-c="1"] { fill: var(--color-info); }
 .stk-lc-dot[data-c="2"] { fill: var(--color-warn); }
@@ -360,3 +366,20 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-daydetail h3 { margin-bottom: var(--space-sm); }
 .stk-grid .stk-chip { white-space: nowrap; }
 .stk-grid tr[aria-current="true"] th[scope="row"] { box-shadow: inset 3px 0 0 var(--color-ink-2); }
+/* Compare runs (/tests/compare and the picker on /tests) */
+.stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
+.stk-pick-bar p { margin: 0; }
+.stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
+.stk-table td.stk-pick + td[data-wrap] { min-width: 16rem; }  /* the test name, after the checkbox column (was td:first-child) */
+.stk-cmp td[data-differs], .stk-cmp th[data-differs] { background: var(--tint-warn); }
+.stk-cmp td.stk-cmp-verdict { white-space: nowrap; color: var(--color-muted); }
+.stk-cmp td.stk-cmp-verdict[data-differs] { color: var(--color-warn); font-weight: 600; }
+.stk-cmp-mono { font-family: var(--font-outlier); overflow-wrap: anywhere; }
+.stk-cmp-mono[title] { white-space: nowrap; }
+.stk-cmp td.num { font-size: var(--text-sm); }
+.stk-cmp td p { max-width: 28rem; }
+.stk-cmp-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); align-items: start; }
+.stk-cmp-charts .stk-lc > svg { max-width: none; }
+.stk-cmp-matched summary { cursor: pointer; font-size: var(--text-sm); color: var(--color-ink-2); min-height: var(--hit); display: flex; align-items: center; }
+.stk-cmp-matched[open] summary { margin-bottom: var(--space-xs); }
+.stk-cmp-pick { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-lg); font-size: var(--text-sm); color: var(--color-ink-2); }

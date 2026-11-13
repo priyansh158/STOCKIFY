@@ -19,7 +19,11 @@ import type {
   WalkforwardDTO,
 } from "./types";
 
-export { bucketTone, costScale, dayNumber, familyApiPath, familyHref, familyIdParam, heatColourStep, jobHref, listCapNote, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sentenceOrDash, sessionRows, splitSegments, unlockRows, wfCurve } from "./researchHelpers";
+export {
+  COMPARE_MAX, COMPARE_MIN, bucketTone, compareHref, compareIds, costScale, dayNumber, endLabelText, familyApiPath, familyHref, familyIdParam,
+  heatColourStep, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks,
+  sentenceOrDash, sessionRows, spreadLabels, splitSegments, unlockRows, valuesDiffer, wfCurve,
+} from "./researchHelpers";
 export type { BucketTone, SessionRow, UnlockRow, WfCurve } from "./researchHelpers";
 
 const enc = encodeURIComponent;

@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, costScale, familyApiPath, familyHref, familyIdParam, heatColourStep, heatMoreWord, jobHref, listCapNote, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sentenceOrDash, sessionRows, splitSegments, unlockRows, wfCurve } from "../../web/src/lib/researchHelpers.ts";
+import { COMPARE_MAX, COMPARE_MIN, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
@@ -109,6 +109,31 @@ const out = {
     ["fewer than 2 tries", false], ["fewer than 2 tries", true], [null, true], ["  ", false],
   ].map(([n, h]) => pboNoteLine(n as string | null, h as boolean)),
   pboHow: [pboHowText({ n_days: 40, slices: 4, combinations: 6 }), pboHowText({ n_days: 1, slices: 2, combinations: 1 })],
+  compare: {
+    limits: [COMPARE_MIN, COMPARE_MAX],
+    href: [
+      compareHref(["a", "b"]),
+      compareHref(["a", "b", "c", "d", "e", "f", "g"]),
+      compareHref(["a b", "x/y&z"]),
+      compareHref([]),
+    ],
+    ids: [
+      compareIds("a"), compareIds(["a", "b"]), compareIds(undefined), compareIds(["a", " ", "a", "b "]),
+      compareIds(["a,b", "c"]),
+    ],
+    labels: [
+      runLabels(["x", "y"], ["r1", "r2"]), runLabels(["x", "x", "y"], ["r1", "r2", "r3"]), runLabels(["", "y"], ["r1", "r2"]),
+    ],
+    differ: [valuesDiffer([1, 1]), valuesDiffer([1, 2]), valuesDiffer([null, null]), valuesDiffer([1, null]), valuesDiffer(["a", "a", "b"]), valuesDiffer([])],
+  },
+  endLabels: {
+    // six series ending at nearly the same height: every one still gets its own text, kept apart by at least the gap
+    spread: spreadLabels([100, 102, 101, 300, 299, 50], 14, 0, 400),
+    pushedUp: spreadLabels([390, 395, 399], 14, 0, 400),
+    none: spreadLabels([], 14, 0, 400),
+    text: [endLabelText("orb30 (orb30b)"), endLabelText("a".repeat(20)), endLabelText("")],
+    marks: [markerIndexes(20, 0), markerIndexes(20, 1), markerIndexes(3, 0), markerIndexes(0, 0), markerIndexes(1, 2)],
+  },
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

@@ -73,7 +73,7 @@ def _metric_values(rows: list[dict]) -> list[tuple[str, str, str, list]]:
         return None if n is None or not b else n / b
 
     return [
-        ("net_pnl", "Net profit (paise)", "money", [net(m) for m in ms]),
+        ("net_pnl", "Net profit (₹)", "money", [net(m) for m in ms]),
         ("return", "Return", "pct", [ret(m) for m in ms]),
         ("cagr", "CAGR", "pct", [_num(m.get("cagr")) for m in ms]),
         ("sharpe", "Sharpe", "ratio", [_num(m.get("sharpe")) for m in ms]),
@@ -82,7 +82,7 @@ def _metric_values(rows: list[dict]) -> list[tuple[str, str, str, list]]:
         ("calmar", "Calmar", "ratio", [_num(m.get("calmar")) for m in ms]),
         ("trades", "Trades", "count", [_num(m.get("trades")) for m in ms]),
         ("win_rate", "Win rate", "pct", [_num(m.get("win_rate")) for m in ms]),
-        ("costs", "Costs (paise)", "money", [_num(m.get("costs_total_paise")) for m in ms]),
+        ("costs", "Costs (₹)", "money", [_num(m.get("costs_total_paise")) for m in ms]),
         ("cost_share", "Costs / gross profit", "pct", [_num(m.get("cost_share_of_gross")) for m in ms]),
     ]
 

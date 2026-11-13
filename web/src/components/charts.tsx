@@ -5,10 +5,10 @@
  * .stk-heat). Each carries an aria-label that summarises it and a visible table of the same numbers. Desktop sizes:
  * the SVGs keep their aspect ratio and scale with the column, so the text in them is never stretched.
  */
-import { useState } from "react";
-import { SERIES_TOKENS, heatColourStep, heatMoreWord, splitSegments } from "@/lib/researchHelpers";
+import { useEffect, useRef, useState } from "react";
+import { SERIES_TOKENS, endLabelText, heatColourStep, heatMoreWord, markerIndexes, spreadLabels, splitSegments } from "@/lib/researchHelpers";
 
-const MAX_SERIES = 4;
+const MAX_SERIES = 6;
 const HEAT_STEPS = 5;
 /** globals.css sets `color-scheme: dark` and shades heat cells from faint to strong accent (checked in research_check.ts). */
 const HEAT_SCHEME = "dark" as const;
@@ -35,11 +35,15 @@ export interface LineSeries {
   breaks?: number[];
 }
 
-const W = 720;
+/** The chart is drawn in the pixels it is shown in (the viewBox follows the real width), so its text keeps its token size. */
+const W0 = 720;
 const H = 280;
-const PAD = { l: 76, r: 16, t: 12, b: 28 };
+const PAD0 = { l: 76, r: 16, t: 12, b: 28 };
+/** Room to the right of the plot for the name at the end of each line, when there is more than one line. */
+const END_W = 132;
+const END_GAP = 14;
 
-/** Up to four series over a shared x. Series are told apart by colour and by dash, in a fixed order, and a legend always names them. */
+/** Up to six series over a shared x. Series are told apart by colour, dash and marker shape, in a fixed order (the fourth to sixth reuse the three colours), and a legend always names them. */
 export function LineChart({
   series,
   yFormat,
@@ -77,6 +81,19 @@ export function LineChart({
   const hidden = drawn.length - shown.length;
   const [cursor, setCursor] = useState<number | null>(null);
   const [keyboard, setKeyboard] = useState(false);
+  const [W, setW] = useState(W0);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect.width ?? 0);
+      if (w >= 320) setW(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [shown.length]);
+  const PAD = { ...PAD0, r: shown.length > 1 ? END_W : PAD0.r };
   if (shown.length === 0 || shown.every((s) => s.points.length < 2)) {
     return <p className="stk-label">Not enough data to draw this chart: it needs at least two points.</p>;
   }
@@ -94,8 +111,14 @@ export function LineChart({
   yHi += yPad;
   const px = (x: number) => PAD.l + (xHi === xLo ? 0 : ((x - xLo) / (xHi - xLo)) * (W - PAD.l - PAD.r));
   const py = (y: number) => PAD.t + (1 - (y - yLo) / (yHi - yLo)) * (H - PAD.t - PAD.b);
+  const lastOf = (s: LineSeries) => [...s.points].sort((a, b) => a[0] - b[0])[s.points.length - 1];
+  const endPoints = shown.length > 1 ? shown.map((s, i) => ({ i, label: s.label, x: lastOf(s)[0], y: lastOf(s)[1] })) : [];
+  const endYs = spreadLabels(endPoints.map((e) => py(e.y)), END_GAP, PAD.t + 6, H - PAD.b);
+  const ends = endPoints.map((e, k) => ({ ...e, ty: endYs[k] }));
   const yTicks = niceTicks(yLo, yHi, 5);
-  const xTicks = xs.length <= 6 ? xs : niceTicks(xLo, xHi, 6);
+  // as many date labels as fit without touching (about 90 px each), never fewer than two
+  const maxTicks = Math.max(2, Math.min(6, Math.floor((W - PAD.l - PAD.r) / 90)));
+  const xTicks = xs.length <= maxTicks ? xs : niceTicks(xLo, xHi, maxTicks);
   const path = (seg: [number, number][]) =>
     seg.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
 
@@ -142,7 +165,7 @@ export function LineChart({
       )}
       {yLabel && <p className="stk-fine stk-lc-ytitle">{yLabel}</p>}
       <svg
-        viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
+        ref={svgRef} viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
         onKeyDown={onKey} onPointerMove={onPointer} onPointerLeave={() => setCursor(null)} onBlur={() => setCursor(null)}
       >
         {yTicks.map((t) => (
@@ -165,6 +188,19 @@ export function LineChart({
             ? <Marker key={`${s.label}-${seg[0][0]}`} x={px(seg[0][0])} y={py(seg[0][1])} i={i} />
             : <path key={`${s.label}-${seg[0][0]}`} d={path(seg)} className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
         )))}
+        {shown.map((s, i) => {
+          const sorted = [...s.points].sort((a, b) => a[0] - b[0]);
+          return markerIndexes(sorted.length, i).map((k) => (
+            <Marker key={`${s.label}-m${k}`} x={px(sorted[k][0])} y={py(sorted[k][1])} i={i} />
+          ));
+        })}
+        {ends.map((e) => (
+          <g key={`end-${e.label}`}>
+            <line x1={px(e.x) + 6} x2={W - PAD.r + 6} y1={py(e.y)} y2={e.ty} className="stk-lc-lead" />
+            <Marker x={W - PAD.r + 14} y={e.ty} i={e.i} />
+            <text x={W - PAD.r + 24} y={e.ty} className="stk-lc-end" dominantBaseline="middle">{endLabelText(e.label)}</text>
+          </g>
+        ))}
         {at !== null && (
           <g>
             <line x1={px(at)} x2={px(at)} y1={PAD.t} y2={H - PAD.b} className="stk-lc-cursor" />
@@ -212,12 +248,13 @@ export function LineChart({
   );
 }
 
-/** A series marker: a circle for the three colour-distinct series, a square for the fourth, so a reused colour still differs. */
+/** A series marker: a circle for the three colour-distinct series, then a square, a diamond and a triangle, so a reused colour still differs. */
 function Marker({ x, y, i }: { x: number; y: number; i: number }) {
   const c = i % COLOURS;
-  return i < COLOURS
-    ? <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />
-    : <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
+  if (i < COLOURS) return <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />;
+  if (i === COLOURS) return <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
+  if (i === COLOURS + 1) return <polygon points={`${x},${y - 5.5} ${x + 5.5},${y} ${x},${y + 5.5} ${x - 5.5},${y}`} className="stk-lc-dot" data-c={c} />;
+  return <polygon points={`${x},${y - 5} ${x + 5},${y + 4} ${x - 5},${y + 4}`} className="stk-lc-dot" data-c={c} />;
 }
 
 const IW = 560;
