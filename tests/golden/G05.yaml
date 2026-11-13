@@ -1,0 +1,27 @@
+id: G05
+title: The participation cap splits an order across bars
+semantics: ["A4 §4.0", "A4 §4.1"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: TEST, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+run: { fill_model: { kind: bar, participation: "0.10" }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:16:00+05:30", o: 10010, h: 10020, l: 10000, c: 10010, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:17:00+05:30", o: 10015, h: 10020, l: 10005, c: 10015, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 150, product: CNC, type: MARKET } }
+expect:
+  orders: [ { order_id: 1, status: COMPLETE, filled_qty: 150, avg_price_paise: 10011 } ]
+  fills:
+    - { order_id: 1, qty: 100, price_paise: 10010, t: "2026-03-02T09:17:00+05:30", evidence: bar_open }
+    - { order_id: 1, qty: 50, price_paise: 10015, t: "2026-03-02T09:18:00+05:30", evidence: bar_open }
+  equity: [ { trade_date: "2026-03-02", cash_paise: 8498250, nav_paise: 10000500 } ]
+notes: |
+  Cap per bar = floor_to(floor_div(1000 x 100000, 10^6), 1) = 100 units. The market buy (limit 10200
+  from ref 10000) fills 100 at the 09:16 bar's open 10010; the other 50 rest as a limit at 10200 and fill
+  at the next bar's open 10015 (<= the limit). Average = floor((100 x 10010 + 50 x 10015) / 150) =
+  floor(1,501,750 / 150) = 10011. Cash 10,000,000 - 1,001,000 - 500,750 = 8,498,250;
+  NAV + 150 x 10015 = 10,000,500.

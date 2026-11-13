@@ -1,0 +1,55 @@
+id: G16
+title: Freeze slicing uses floor_to(freeze, lot) per child; each child pays its own charges
+semantics: ["A4 §3.8", "X-5"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: FUT, tradingsymbol: NIFTY26MARFUT, underlying: NIFTY, expiry: "2026-03-30",
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 10, freeze_qty: 3510 } ] }
+  charges:
+    brokerage: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", kind: min_flat_pct, flat_paise: 2000, pct: "0.0003" } ]
+    stt: [ { applies: {}, effective_from: "2015-01-01", sell: "0" } ]
+    exchange_txn: [ { applies: {}, effective_from: "2015-01-01", pct: "0" } ]
+    sebi: [ { applies: {}, effective_from: "2015-01-01", pct: "0" } ]
+    stamp: [ { applies: {}, effective_from: "2015-01-01", buy: "0" } ]
+    gst: [ { applies: {}, effective_from: "2015-01-01", rate: "0", "on": [brokerage] } ]
+run: { fill_model: { kind: bar, participation: "1" }, capital_paise: 100000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:16:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 4030, product: NRML, type: LIMIT, price: 10000 } }
+variants:
+  - name: freeze_3510
+    expect:
+      orders:
+        - { order_id: 1, parent_id: 0, qty: 4030, status: SLICED, filled_qty: 0 }
+        - { order_id: 2, parent_id: 1, qty: 3510, status: COMPLETE }
+        - { order_id: 3, parent_id: 1, qty: 520, status: COMPLETE }
+      orders_count: 3
+      charges:
+        - { kind: order, order_id: 2, brokerage: 2000, total: 2000 }
+        - { kind: order, order_id: 3, brokerage: 1560, total: 1560 }
+  - name: freeze_1800
+    bundle:
+      instruments:
+        - { id: 1, kind: FUT, tradingsymbol: NIFTY26MARFUT, underlying: NIFTY, expiry: "2026-03-30",
+            specs: [ { from: "2026-01-01", lot: 65, tick_paise: 10, freeze_qty: 1800 } ] }
+    expect:
+      orders:
+        - { order_id: 1, qty: 4030, status: SLICED }
+        - { order_id: 2, parent_id: 1, qty: 1755, status: COMPLETE }
+        - { order_id: 3, parent_id: 1, qty: 1755, status: COMPLETE }
+        - { order_id: 4, parent_id: 1, qty: 520, status: COMPLETE }
+      orders_count: 4
+      charges:
+        - { kind: order, order_id: 2, brokerage: 2000 }
+        - { kind: order, order_id: 3, brokerage: 2000 }
+        - { kind: order, order_id: 4, brokerage: 1560 }
+notes: |
+  4,030 units with freeze 3,510 and lot 65: floor_to(3510, 65) = 3510 (54 lots), so children 3,510 + 520.
+  With freeze 1,800: floor_to(1800, 65) = 1755 (27 lots), so 1,755 + 1,755 + 520. The parent takes the
+  next id and is SLICED; children take the following ids. Each child is its own order for charges:
+  brokerage min(20.00, 0.03 % of turnover): 3,510 x 100.00 -> min(2000, 10,530) = 2000; 1,755 x 100.00 ->
+  min(2000, 5,265) = 2000; 520 x 100.00 -> min(2000, 1,560) = 1560.

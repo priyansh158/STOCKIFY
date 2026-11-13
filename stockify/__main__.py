@@ -13,9 +13,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "oracle": ("M2", "run the Python oracle backtester"),
-    "golden": ("M2", "run golden scenarios"),
-    "compare-artifacts": ("M3", "compare two runs' deterministic artifacts"),
     "run": ("M3", "run a backtest or replay"),
     "margin": ("M4", "margin calibration tools"),
     "parity": ("M5", "nightly journal parity"),
@@ -24,7 +21,6 @@ _STUBS = {
     "sweep": ("M6", "parameter sweep"),
     "walkforward": ("M6", "walk-forward analysis"),
     "sensitivity": ("M6", "cost and fill sensitivity"),
-    "tools": ("M6", "maintenance tools"),
 }
 
 
@@ -288,6 +284,75 @@ def _cmd_pack_show(args) -> int:
     return 0
 
 
+def _cmd_oracle_run(args) -> int:
+    from stockify import bundle, runconfig
+    from stockify.oracle import run
+
+    try:
+        res = run(args.config, run_id=args.run_id)
+    except (runconfig.RunConfigError, bundle.BundleError) as e:
+        print(e, file=sys.stderr)
+        return 1
+    m = res.metrics
+    print(res.folder)
+    print(f"NAV {m['nav_start_paise'] / 100:,.2f} -> {m['nav_end_paise'] / 100:,.2f}; trades {m['trades']}; "
+          f"costs {m['costs_total_paise'] / 100:,.2f}; labels {', '.join(res.labels)}", file=sys.stderr)
+    return 0
+
+
+def _cmd_golden_run(args) -> int:
+    from stockify import golden
+
+    only = [x.strip() for x in args.only.split(",")] if args.only else None
+    failed = 0
+    for _, g in golden.goldens(only, include_capture=True):
+        if g.get("impl") == "kite_capture":
+            status, notes = golden.capture_status(g)
+            print(f"{g['id']:<4} {status:<4}  {g['title']}")
+            for p in notes:
+                print(f"       {p}")
+            failed += status == "FAIL"
+            continue
+        problems = golden.run_one(g, args.impl)
+        print(f"{g['id']:<4} {'PASS' if not problems else 'FAIL'}  {g['title']}")
+        for p in problems:
+            print(f"       {p}")
+        failed += bool(problems)
+    return 1 if failed else 0
+
+
+def _cmd_compare(args) -> int:
+    from pathlib import Path
+
+    from stockify import compare, paths
+
+    def folder(x: str) -> Path:
+        p = Path(x)
+        return p if p.exists() else paths.runs_dir() / x
+
+    problems = compare.compare(folder(args.run_a), folder(args.run_b), tol_paise=args.tol_paise)
+    for p in problems[:200]:
+        print(p)
+    print("identical" if not problems else f"{len(problems)} differences", file=sys.stderr)
+    return 0 if not problems else 1
+
+
+def _cmd_capture_charges(args) -> int:
+    from pathlib import Path
+
+    from stockify.tools import capture_charges
+
+    _load_env()
+    out = capture_charges.capture(Path(args.cases))
+    print(out)
+    problems = capture_charges.compare_capture(out)
+    for p in problems:
+        print(f"  {p}")
+    print("all components match" if not problems else f"{len(problems)} differences (fix charges.json)",
+          file=sys.stderr)
+    return 0
+
+
 def _cmd_engine(args) -> int:
     from stockify import engine
     try:
@@ -299,7 +364,23 @@ def _cmd_engine(args) -> int:
     return 0
 
 
+def _check_environment() -> str | None:
+    """A clear message instead of a traceback when run outside the project's .venv."""
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("Asia/Kolkata")
+    except Exception:  # noqa: BLE001 — ZoneInfoNotFoundError, or a broken tzdata
+        return ("This Python has no time-zone data (the tzdata package). STOCKIFY must run from its virtual "
+                "environment:\n    .\\.venv\\Scripts\\python.exe -m stockify " + " ".join(sys.argv[1:]) +
+                f"\n(this one is {sys.executable}). Or install the requirements: pip install -r requirements.txt")
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    problem = _check_environment()
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
     p = argparse.ArgumentParser(prog="stockify", description="STOCKIFY: NSE simulation lab")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
@@ -358,6 +439,30 @@ def main(argv: list[str] | None = None) -> int:
     bf.set_defaults(func=_cmd_bars_fetch)
     bsub.add_parser("sweep", help="corporate-action check for every cached live instrument"
                     ).set_defaults(func=_cmd_bars_sweep)
+
+    o = sub.add_parser("oracle", help="the Python oracle backtester (M2)")
+    osub = o.add_subparsers(dest="oracle_command", required=True)
+    orun = osub.add_parser("run", help="run a run.json; prints the run folder")
+    orun.add_argument("--config", required=True, help="path to run.json")
+    orun.add_argument("--run-id", help="run folder name (default: <name>-<bundle hash>)")
+    orun.set_defaults(func=_cmd_oracle_run)
+    g = sub.add_parser("golden", help="golden scenarios (A3)")
+    gsub = g.add_subparsers(dest="golden_command", required=True)
+    grun = gsub.add_parser("run", help="run every golden on an implementation")
+    grun.add_argument("--impl", default="oracle", choices=["oracle", "engine"])
+    grun.add_argument("--only", help="comma list of ids, e.g. G01,G09")
+    grun.set_defaults(func=_cmd_golden_run)
+    ca = sub.add_parser("compare-artifacts", help="diff two run folders' deterministic artifacts")
+    ca.add_argument("run_a")
+    ca.add_argument("run_b")
+    ca.add_argument("--tol-paise", type=int, default=0, help="allowed difference in money columns (default 0)")
+    ca.set_defaults(func=_cmd_compare)
+
+    tl = sub.add_parser("tools", help="maintenance tools")
+    tsub = tl.add_subparsers(dest="tools_command", required=True)
+    cc = tsub.add_parser("capture-charges", help="save Kite's contract-note charges for imaginary orders (G08)")
+    cc.add_argument("--cases", default="tests/golden/charges_cases.json")
+    cc.set_defaults(func=_cmd_capture_charges)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)

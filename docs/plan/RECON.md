@@ -195,3 +195,23 @@ A 5-minute live run of `run_recorder` (10:03–10:08 IST, laptop on battery) wit
   - Early expiry on corporate actions (D-41): IDFC 2024-10-09, ITC 2025-01-03, SIEMENS 2025-04-04, ABFRL 2025-05-21 (scheduled expiries up to 3 months later). Stored in `instruments.actual_expiry`.
 - Refused days kept their raw files; re-running the backfill re-parses them (only `parsed_ok = 1` days are skipped).
 
+## 2026-11-05 — M2.0 recon (LIB 2.1)
+
+Branch `stockify/m2-oracle` from `stockify/m1-data` (pushed through GK 1.3).
+
+- Present and usable: `stockify.numerics` (all A4 §0.2 helpers, `format_float`, `dumps_canonical`), `stockify.data.calendar.phases(group, d)` for CM, CM_CAS, FO_FUT, FO_OPT, `packs.read(path) -> (header, records)`, `instruments` lookups (`spec_at`, `expiries`, `option_chain`, `derivative`, `actual_expiry`), `fo_universe` view, `freeze_limits` (keyed by underlying symbol).
+- Config: `charges.json` rows carry `<field>_ppb`; a row is in force from `effective_from` until the next row of the same `applies` key (the loader sorts per key). `broker_policy.json` has `mis_cutoff` (CM 15:20 → 15:25 from 2025-12-26; FO 15:25 → 15:26), `mis_margin_pct` (CM 20%, FO 100%), `market_protection_auto_bp` 200 (from 2026-04-01 only: earlier dates need a row; see M2.1), `max_slices` 10. `margin_params.json` flat: index 12%, stock 20%. `pricing.json`: `stale_after_ms` 5000, EOD 19:00, FSP 16:00, risk-free 6.5% placeholder.
+- Missing (to build): `stockify/runconfig.py`, `stockify/bundle.py`, `stockify/oracle/`, `stockify/strategy.py`, `stockify/strategies/`, `tests/golden/`, `examples/runs/`.
+- The plan's "numpy reader" for packs is `packs.read` (records as dicts, M1.8 note); the oracle iterates those records directly, which is also the readable choice.
+- Libraries: Python 3.12.10, pandas 3.0.6, matplotlib 3.11.2, PyYAML 6.0.3.
+
+## 2026-11-05 — M2 build notes
+
+- Oracle package `stockify/oracle/`: rng, orders, ledger, costs, margin, matcher, runner (event loop), context, metrics, artifacts, report. Strategy API `stockify/strategy.py`; strategies in `stockify/strategies/`; goldens `stockify/golden.py` + `tests/golden/`.
+- Ledger: futures and MIS are variation-settled (`pnl(x) − vm` moves to cash at marks and when flat); a fill never moves cash at its own price, which keeps every paisa exact. CNC and options move premium at the fill.
+- Bar model: two simulated paths on copies (ledger, the instrument's live orders, slippage RNG); positions along a path are exact fractions, so fill order never depends on floating point.
+- First real runs (2026-11-05): `sma_reliance_daily` (1,197 days, Kite daily bars 2022-01-03 → 2026-09-30): ₹10.00 L → ₹10.45 L, 12 trades, costs ₹24,610 (36 % of gross; STT ₹21,963); `eod_straddle_nifty` (451 days of bhavcopy, 2025-01 → 2026-10): ₹10.00 L → ₹10.83 L, 157 trades (incl. expiry settlements, D-45), win rate 62 %. Both labelled; two runs of the same config give identical artifact hashes.
+- Found while running: D-44 (daily-bar DAY orders were cancelled before their bar arrived), an `eod_close` fill on expiry day landing after the FSP (now settled at once), Sharpe ≈ −2e15 on a flat curve (all-equal returns now give sd = 0), and pack building at 60 ms per symbol lookup once refdata held 781,118 instruments (refdata migration 0003 adds an index; 100 lookups now 1 ms).
+- Golden status: G01–G07, G09, G10, G12, G14, G16, G19, G20 pass; G08 waits for the owner's charge capture (🛑).
+- The straddle's 44 cancelled entries are real: a leg whose next close fell more than 50 % below the protection floor never filled (mostly options one or two days before expiry).
+

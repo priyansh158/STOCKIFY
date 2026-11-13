@@ -1,0 +1,54 @@
+id: G09
+title: One NIFTY futures lot bought and sold at 25,000 on 2026-03-31 and 2026-04-01 (STT change)
+semantics: ["C-11", "Z-2", "A4 §5.3"]
+bundle:
+  dates: ["2026-03-31", "2026-04-01"]
+  instruments:
+    - { id: 1, kind: FUT, tradingsymbol: NIFTY26APRFUT, underlying: NIFTY, expiry: "2026-04-28",
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 10 } ] }
+  charges:
+    brokerage: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", kind: min_flat_pct, flat_paise: 2000, pct: "0.0003" } ]
+    stt:
+      - { applies: { segment: FO, kind: [FUT] }, effective_from: "2024-10-01", sell: "0.0002" }
+      - { applies: { segment: FO, kind: [FUT] }, effective_from: "2026-04-01", sell: "0.0005" }
+    exchange_txn: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", pct: "0.0000183" } ]
+    sebi: [ { applies: {}, effective_from: "2015-01-01", pct: "0.000001" } ]
+    stamp: [ { applies: { segment: FO, kind: [FUT] }, effective_from: "2015-01-01", buy: "0.00002" } ]
+    gst: [ { applies: {}, effective_from: "2015-01-01", rate: "0.18", "on": [brokerage, exchange_txn, sebi] } ]
+run: { fill_model: { kind: bar }, capital_paise: 100000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:16:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-31T09:17:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-04-01T09:15:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-04-01T09:16:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-04-01T09:17:00+05:30", o: 2500000, h: 2500000, l: 2500000, c: 2500000, v: 10000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 2, place: { instrument: 1, side: SELL, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 4, place: { instrument: 1, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+    - { on_event: 5, place: { instrument: 1, side: SELL, qty: 65, product: NRML, type: LIMIT, price: 2500000 } }
+expect:
+  charges:
+    - { kind: order, order_id: 1, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3300, gst: 925, total: 9361 }
+    - { kind: order, order_id: 2, trade_date: "2026-03-31", turnover_paise: 162500000, brokerage: 2000, stt: 32500, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 38561 }
+    - { kind: order, order_id: 3, trade_date: "2026-04-01", brokerage: 2000, stt: 0, exchange: 2974, sebi: 163, stamp: 3300, gst: 925, total: 9361 }
+    - { kind: order, order_id: 4, trade_date: "2026-04-01", brokerage: 2000, stt: 81250, exchange: 2974, sebi: 163, stamp: 0, gst: 925, total: 87311 }
+  equity:
+    - { trade_date: "2026-03-31", cash_paise: 99952078, nav_paise: 99952078 }
+    - { trade_date: "2026-04-01", cash_paise: 99855406, nav_paise: 99855406 }
+notes: |
+  Rounding per D-46 (Kite's contract note, captured 2026-11-06, K-10): every component is exact; stamp
+  duty alone is rounded half-up to the whole rupee; GST is 18 % of the exact brokerage + exchange + SEBI;
+  the order total is the exact sum rounded half-up to the paisa (charges.csv shows each component rounded
+  for reading). Turnover per order = 65 x 2,500,000 = 162,500,000 paise.
+  Brokerage min(20.00, 0.03 %) = 2000. Exchange 0.00183 % = 2973.75. SEBI 0.0001 % = 162.5.
+  Stamp (buy) 0.002 % = 32.50 rupees -> 33.00 = 3300. GST 18 % of (2000 + 2973.75 + 162.5) = 924.525.
+  STT (sell) 0.02 % = 32,500 on 2026-03-31, 0.05 % = 81,250 from 2026-04-01 (Z-2).
+  Buy: 2000 + 2973.75 + 162.5 + 3300 + 924.525 = 9360.775 -> 9361.
+  Sell 2026-03-31: 2000 + 32500 + 2973.75 + 162.5 + 924.525 = 38560.775 -> 38561 (day 47,922).
+  Sell 2026-04-01: 2000 + 81250 + 2973.75 + 162.5 + 924.525 = 87310.775 -> 87311 (day 96,672). Kite's own
+  note for this sell on 2026-11-06 is Rs 873.10775. (A3 first listed 47,874 / 96,624, rounding each
+  component to the paisa and stamp to the paisa; the capture showed that is not what Kite does.)
+  Cash: 100,000,000 - 47,922 = 99,952,078; then - 96,672 = 99,855,406 (the position is flat each day).

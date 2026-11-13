@@ -1,0 +1,20 @@
+{
+  "schema": "stockify.run/1",
+  "name": "sma_reliance_daily",
+  "family_id": "sma_cross/RELIANCE/daily",
+  "strategy": { "kind": "python", "ref": "stockify.strategies.sma_cross:SmaCross",
+                "params": { "symbol": "NSE:RELIANCE", "fast": 20, "slow": 50 } },
+  "data": { "packs": [ { "spec": { "dataset": "bars", "interval": "day",
+            "instruments": ["NSE:RELIANCE"], "from": "2022-01-03", "to": "2026-09-30" } } ] },
+  "price_basis": "adjusted",
+  "capital_paise": 100000000,
+  "fill_model": { "kind": "bar", "limit_touch_policy": "through", "participation": "0.10",
+                  "slippage": { "kind": "bps", "x": "0.0005" } },
+  "latency_ms": 0,
+  "costs": { "broker": "zerodha", "allow_unverified": true, "auto_square_off_fee": true, "dp_charges": true },
+  "margin": { "model": "flat" },
+  "policies": { "preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": false },
+  "mark": "ltp",
+  "seed": 42,
+  "unlock_holdout": null
+}

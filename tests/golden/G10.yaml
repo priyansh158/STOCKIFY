@@ -1,0 +1,58 @@
+id: G10
+title: Index option expiry at the FSP; fallback label when no SETTLE arrives
+semantics: ["A4 §7.2"]
+bundle:
+  dates: ["2026-03-03"]
+  instruments:
+    - { id: 1, kind: INDEX, tradingsymbol: NIFTY 50 }
+    - { id: 2, kind: CE, tradingsymbol: NIFTY2630324000CE, underlying: NIFTY, underlying_id: 1, expiry: "2026-03-03", strike_paise: 2400000,
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 5 } ] }
+    - { id: 3, kind: CE, tradingsymbol: NIFTY2630325000CE, underlying: NIFTY, underlying_id: 1, expiry: "2026-03-03", strike_paise: 2500000,
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 5 } ] }
+    - { id: 4, kind: PE, tradingsymbol: NIFTY2630325000PE, underlying: NIFTY, underlying_id: 1, expiry: "2026-03-03", strike_paise: 2500000,
+        specs: [ { from: "2026-01-01", lot: 65, tick_paise: 5 } ] }
+  exercise_stt: "0.00125"
+  exercise_brokerage_paise: 2000
+  gst_rate: "0.18"
+run: { fill_model: { kind: bar }, capital_paise: 100000000, price_basis: raw }
+events:
+  - { kind: INDEX, instrument: 1, t: "2026-03-03T09:15:30+05:30", value: 2450000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-03-03T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 3, interval_s: 60, start: "2026-03-03T09:15:00+05:30", o: 500, h: 500, l: 500, c: 500, v: 1000 }
+  - { kind: BAR, instrument: 4, interval_s: 60, start: "2026-03-03T09:15:00+05:30", o: 50000, h: 50000, l: 50000, c: 50000, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-03-03T09:16:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 3, interval_s: 60, start: "2026-03-03T09:16:00+05:30", o: 500, h: 500, l: 500, c: 500, v: 1000 }
+  - { kind: BAR, instrument: 4, interval_s: 60, start: "2026-03-03T09:16:00+05:30", o: 50000, h: 50000, l: 50000, c: 50000, v: 1000 }
+  - { kind: SETTLE, instrument: 1, t: "2026-03-03T16:00:00+05:30", date: "2026-03-03", price: 2450000, subtype: final }
+strategy:
+  actions:
+    - { on_event: 4, place: { instrument: 2, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 10000 } }
+    - { on_event: 4, place: { instrument: 3, side: BUY, qty: 65, product: NRML, type: LIMIT, price: 500 } }
+    - { on_event: 4, place: { instrument: 4, side: SELL, qty: 65, product: NRML, type: LIMIT, price: 50000 } }
+variants:
+  - name: fsp
+    expect:
+      orders:
+        - { order_id: 1, status: COMPLETE, avg_price_paise: 10000 }
+        - { order_id: 2, status: COMPLETE, avg_price_paise: 500 }
+        - { order_id: 3, status: COMPLETE, avg_price_paise: 50000 }
+      charges:
+        - { kind: order, order_id: 1, total: 0 }
+        - { kind: order, order_id: 2, total: 0 }
+        - { kind: order, order_id: 3, total: 0 }
+        - { kind: settlement, order_id: 0, instrument_id: 2, turnover_paise: 3250000, stt: 4063, brokerage: 2000, gst: 360, total: 6423 }
+      charges_count: 4
+      equity: [ { trade_date: "2026-03-03", cash_paise: 102561077, nav_paise: 102561077 } ]
+  - name: fallback
+    drop_events: [8]
+    expect:
+      equity: [ { trade_date: "2026-03-03", cash_paise: 102561077, nav_paise: 102561077 } ]
+      labels: [ settlement_fallback ]
+notes: |
+  FSP 24,500.00. Long 65 x 24000 CE: intrinsic 500.00 per unit -> receives 65 x 50,000 = 3,250,000;
+  exercise STT 0.125 % of 3,250,000 = 4062.5 -> 4063, exercise brokerage 20.00 plus 18 % GST 3.60:
+  6,423. Long 65 x 25000 CE: out of the money, settles at 0. Short 65 x 25000 PE: intrinsic 500.00 ->
+  pays 3,250,000. Premiums: -650,000 (CE 24000), -32,500 (CE 25000), +3,250,000 (PE sold).
+  Cash 100,000,000 - 650,000 - 32,500 + 3,250,000 + 3,250,000 - 3,250,000 - 6,423 = 102,561,077; every
+  position is settled, so NAV = cash. Without the SETTLE record the engine settles at DAY_END at the last
+  index value seen (24,500.00, the 09:15:30 tick), with the same cash, and labels the run.

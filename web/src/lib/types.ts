@@ -4,8 +4,10 @@
  *
  * Single source of truth: the FastAPI OpenAPI doc at /api/docs and
  * /openapi.json. Future: codegen these from openapi.json instead of hand-typing.
+ * blockwatch checks that both files list the same field names in the same order.
  */
 
+// <block name="dto-fields" same-as="server/schemas.py:dto-fields" same-as-mode="sequence" same-as-pattern='^\s*(?P<value>[a-z_0-9]+)\??: '>
 // ── Search ───────────────────────────────────────────────────────────────────
 
 export interface SearchHit {
@@ -40,6 +42,14 @@ export interface PortfolioSnapshot {
   error?: string | null;
 }
 
+// ── Kite ─────────────────────────────────────────────────────────────────────
+
+export interface KiteStatus {
+  configured: boolean;
+  authenticated: boolean;
+  error?: string | null;
+}
+
 // ── Geo alerts ───────────────────────────────────────────────────────────────
 
 export interface GeoAlert {
@@ -59,14 +69,6 @@ export interface GeoAlert {
   affected_tickers: string[];
   emailed_at?: number | null;
   acknowledged_at?: number | null;
-}
-
-// ── Kite ─────────────────────────────────────────────────────────────────────
-
-export interface KiteStatus {
-  configured: boolean;
-  authenticated: boolean;
-  error?: string | null;
 }
 
 // ── Data layer (M1) ──────────────────────────────────────────────────────────
@@ -109,3 +111,4 @@ export interface TickEvent {
   change_pct?: number;
   ts: number;
 }
+// </block>

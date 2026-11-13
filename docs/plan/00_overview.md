@@ -89,8 +89,8 @@ It does that with four capabilities that share one engine:
 | ID | Name | Delivers | Demo | Size | Status |
 |---|---|---|---|---|---|
 | M0 | Cleanup + toolchain | LLM pipeline removed; C++20/pybind11 builds on Windows (MSVC) | `python -c "import stockify._engine as e; print(e.build_info())"` | M | done 2026-11-04 |
-| M1 | Data layer + recorder | refdata with history, NSE EOD ingestion, Kite bar cache, recorder, replay ticker, compaction, event packs, data-quality report | Record a live day (or replay a fixture), compact it, build a pack, print the quality report | L | not started |
-| M2 | Python oracle | Readable Python backtester, golden scenarios, EOD option research from bhavcopy | SMA crossover on daily bars; short straddle on EOD bhavcopy | M | not started |
+| M1 | Data layer + recorder | refdata with history, NSE EOD ingestion, Kite bar cache, recorder, replay ticker, compaction, event packs, data-quality report | Record a live day (or replay a fixture), compact it, build a pack, print the quality report | L | built 2026-11-05; open: three unattended live days and the live-day 🛑 |
+| M2 | Python oracle | Readable Python backtester, golden scenarios, EOD option research from bhavcopy | SMA crossover on daily bars; short straddle on EOD bhavcopy | M | done 2026-11-06 (owner read the demo reports); "strategies run unchanged on the engine" is checked in M3 |
 | M3 | C++ engine core (equity) | Clock, orders, three fill models, costs, ledger, metrics, C++ and Python strategies, runners, `/tests` UI | Same SMA run via C++ matches the oracle to the paisa | L | not started |
 | M4 | F&O | Dated contract specs in the engine, Black-76 + IV, chains, settlement, margin T0/T1 (+T2 stretch), calibration vs Kite | Short straddle replayed on recorded chains with SPAN-lite margin | L | not started |
 | M5 | Paper daemon | Sessions, journals, crash recovery, live margins, token-expiry handling, nightly parity, `/trade` UI | A session runs through a replayed day, survives a forced kill (`taskkill /F`), passes parity | L | not started |
@@ -144,6 +144,11 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | D-39 | **Final settlement prices come from the F&O bhavcopy itself**: on expiry day every expiring contract of an underlying (future, calls, puts) carries one settlement price, NSE's FSP. Index → cross-checked against `ind_close_all`; stock → cross-checked against the CM official close. A difference above one tick goes to `data_quality` (`fsp_vs_close_paise`); contracts that disagree with each other go there too (`fsp_settle_spread_paise`) and no FSP is stored. | Yes (M1.3 said stock FSP = official close) | Evidence 2026-10-27: all 219 expiring futures had `SttlmPric = UndrlygPric`; expiring PAGEIND options settled at 34,559.76 while the CM close was 34,610.00. 18 of 213 stocks differed by more than a tick (closing auction, D-13). Indices all matched. |
 | D-40 | **UDiFF bhavcopies are used from 2024-01-01**, legacy files before. | Yes (S-1/S-3 said 2024-07-08) | NSE back-published UDiFF to 2024-01-01 with lot sizes; legacy F&O has no lot size, so the M1.3 🛑 applies only before 2024 (backfill starts 2024-01-01). |
 | D-41 | **Early expiry is data, not an error**: `instruments.actual_expiry` (refdata migration 0002) holds the day NSE really expired a contract when it differs from the scheduled `expiry` (UDiFF `FininstrmActlXpryDt`). `expiry` stays the contract's identity (Kite's symbol). Settlement, `expiries()` and `option_chain()` use the actual date; packs carry it in `instrument_add`. | Yes (new) | Found by the 2024–2026 backfill: IDFC (merger, 2024-10-09), ITC (hotels demerger, 2025-01-03), Siemens (demerger, 2025-04-04), ABFRL (demerger, 2025-05-21): every contract of the stock expired early at one settlement price. Legacy files do not carry the field. |
+| D-42 | **Market protection for runs before 2026-04-01**: `broker_policy.json` → `market_protection_auto_bp` gets a 2015-01-01 row with the same 200 bp (unverified, labelled). | Yes (new) | A4 §3.3 converts every MARKET order to a protected limit using the policy row in force; the only row started 2026-04-01, so any backtest of earlier years (the plan's own 2022–2026 SMA demo) had no band and could not run. |
+| D-43 | **Equities without a recorded spec**: before an equity's first `contract_specs` row the bundle uses lot 1 and a 1-paisa tick (`assumed: true`), labelled `specs:equity_tick_assumed`; derivatives without a spec still fail. | Yes (M2.1 said every traded instrument needs specs) | Equity specs start with the first Kite dump (2026-11-05). NSE equity ticks are price-based and reviewed periodically (bhavcopy: RELIANCE ₹0.05 until mid-2025, ₹0.10 after; INFY back to ₹0.05 in 2026), so copying today's tick back would invent rejections. A dated tick schedule needs NSE's circulars (M4.1). Historical equity runs should use `bps` slippage. |
+| D-44 | **DAY orders on daily-bar instruments survive SEG_CLOSE until that session's daily bar has been matched**, then are cancelled `EOD`. | Clarified (A4 §1.10 vs §4.0) | A daily Kite candle is knowable only at start + 1 day (A4 §1.1) and a bhavcopy bar at 19:00, both after the 15:30 SEG_CLOSE, so cancelling at the close made A4 §4.0's "an order queued overnight fills on that day's bar" impossible: the first SMA demo filled nothing. Minute bars are unaffected (the bar ending at the close is known at the close, rank 4 before SEG_CLOSE). An `eod_close` fill in a contract expiring that day is settled at the already-published FSP right away. |
+| D-45 | **Expiry settlements close trades in the trade metrics** (A4 §8), matched FIFO like a closing fill at the settlement price (futures: FSP; options: intrinsic value). | Yes (A4 §8 counted closing fills only) | Option strategies that hold to expiry otherwise report almost no trades and a meaningless win rate. Turnover still counts fills only. |
+| D-46 | **Charges are exact; only stamp duty (to the rupee) and the order total (to the paisa) are rounded** (A4 §5.3 amended). | Yes (A4 §5.3 rounded every component to the paisa) | Owner's capture of Kite's virtual contract note, 2026-11-06 (K-10a, G08): components come back unrounded, GST is computed on the unrounded parts, stamp duty is a whole rupee. With per-component rounding G09 was off by 48 paise per day; with D-46 all 11 captured cases match to the millionth of a rupee and every total to the paisa. G09's expected totals changed accordingly (A3). |
 
 ### 5a. Roster (D-31)
 
@@ -165,10 +170,17 @@ Each entry: what was decided, what changed from the original plan (if anything),
 | CAM | M1.8 event packs | the playmaker delivering the final ball to the striker |
 | LW | M1.9 data-quality report | takes the ball to the touchline and exposes bad data |
 | SS | M1.10 tracked defect close-out | taps in the rebound |
-| RW | free (M2) | |
+| LIB | M2.0 recon | the libero reads the play from behind the defence |
+| REG | M2.1 run config and bundle resolver | the regista: deep playmaker who sets up everything the attack needs |
+| F9 | M2.2 Python oracle engine | the false nine: plays the striker's part but drops deep where everyone can watch it; the readable reference ST must match |
+| B2B | M2.3 strategy API | box-to-box: connects strategies with either engine |
+| IF | M2.4 reference strategies | inside forwards: the ones who attack |
+| ANC | M2.5 golden scenarios | the anchor: the fixed reference point everything is checked against |
+| RW | M2.6 metrics and run report | the mirror of LW: takes results to the touchline |
+| TM | M2.7 CLI, notebook entry, compare-artifacts | the target man: everything is played into him |
 | XI | team-wide (renames, plan bookkeeping) | the whole team |
 
-Positions for M2 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
+M2 positions chosen by the owner on 2026-11-05. Positions for M3 onwards are chosen when each milestone starts; a stage that keeps the same role across milestones keeps its position.
 
 ## 6. Corrections to earlier chat advice
 

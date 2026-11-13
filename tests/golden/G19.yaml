@@ -1,0 +1,35 @@
+id: G19
+title: Closing auction from 2026-08-03 (cas_policy none)
+semantics: ["A4 §3.2", "A4 §4.8", "X-7"]
+bundle:
+  dates: ["2026-08-03"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: CASSTOCK, session_group: CM_CAS, cas_dates: ["2026-08-03"],
+        specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+    - { id: 2, kind: EQ, tradingsymbol: OTHER, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+  sessions_by_date:
+    "2026-08-03":
+      CM_CAS: [ [PREOPEN, "09:00", "09:15"], [CONTINUOUS, "09:15", "15:15"], [CAS, "15:15", "15:35"], [POSTCLOSE, "15:50", "16:00"] ]
+      CM: [ [PREOPEN, "09:00", "09:15"], [CONTINUOUS, "09:15", "15:30"], [POSTCLOSE, "15:50", "16:00"] ]
+run: { fill_model: { kind: bar }, capital_paise: 10000000, price_basis: raw, policies: { cas: none } }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-08-03T09:15:00+05:30", o: 10000, h: 10000, l: 10000, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-08-03T09:15:00+05:30", o: 20000, h: 20000, l: 20000, c: 20000, v: 1000 }
+  - { kind: BAR, instrument: 2, interval_s: 60, start: "2026-08-03T15:16:00+05:30", o: 20100, h: 20100, l: 20100, c: 20100, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 2, place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: LIMIT, price: 9000 } }
+    - { at_ns: "2026-08-03T15:16:00+05:30", place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: LIMIT, price: 10000 } }
+    - { at_ns: "2026-08-03T15:16:00+05:30", place: { instrument: 2, side: BUY, qty: 10, product: CNC, type: MARKET } }
+expect:
+  orders:
+    - { order_id: 1, status: CANCELLED, reason: R_CAS }
+    - { order_id: 2, status: REJECTED, reason: R_CAS }
+    - { order_id: 3, status: COMPLETE, avg_price_paise: 20100 }
+  order_events:
+    - { order_id: 1, event: CANCEL, detail: R_CAS, t: "2026-08-03T15:15:00+05:30" }
+  fills: [ { order_id: 3, price_paise: 20100, t: "2026-08-03T15:17:00+05:30", evidence: bar_open } ]
+notes: |
+  CASSTOCK is closing-auction eligible on 2026-08-03: its CAS phase runs 15:15-15:35. With cas_policy
+  none, its open DAY order is cancelled at 15:15 (R_CAS) and a new order at 15:16 is rejected R_CAS.
+  OTHER is not CAS-eligible and trades until 15:30: a market buy at 15:16 fills at the 15:16 bar's open.

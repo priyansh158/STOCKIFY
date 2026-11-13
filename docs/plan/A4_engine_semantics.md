@@ -47,19 +47,23 @@ Records appended to a live journal get `t_event = max(intended time, last journa
 
 **1.3 One ordering for everything.** Every event, input or internal, has a key `(t, rank, src, seq)`:
 
+<!-- <block name="event-ranks" same-as-pattern='^\| \d+ \| \x60(?P<value>[A-Z_]+)\x60'> -->
+
 | rank | event | origin |
 |---|---|---|
 | 0 | `PHASE` | internal |
 | 1 | `GAP` | input |
 | 2 | `REFDATA` | input |
 | 3 | `SETTLE` | input |
-| 4 | market data: `TICK_FULL`, `TICK_QUOTE`, `INDEX`, `BAR` | input |
+| 4 | `MARKET` (market data): `TICK_FULL`, `TICK_QUOTE`, `INDEX`, `BAR` | input |
 | 5 | `CLOCK` | input |
 | 6 | `BAR_BUILT` | internal |
 | 7 | `MIS_SQOFF` | internal |
 | 8 | `TIMER` | internal |
 | 9 | `SEG_CLOSE` | internal |
 | 10 | `DAY_END` | internal |
+
+<!-- </block> -->
 
 `src` = the pack's index in the bundle's pack list (0 for journals and for internal events); `seq` = the record's sequence number (input) or a creation counter (internal). The engine always processes the smallest key next. Internal events are only ever created with keys greater than the key being processed.
 
@@ -102,6 +106,8 @@ Orders placed during steps 4–5 get `t_submit = t_event(E)`.
 
 **3.2 Validation at submit.** Checks run in this order; the first failure rejects with that code:
 
+<!-- <block name="reject-codes" same-as-pattern='^\| \x60(?P<value>R_[A-Z_]+)\x60'> -->
+
 | Code | Rule |
 |---|---|
 | `R_INSTRUMENT` | Unknown instrument, or past its last trading moment |
@@ -115,6 +121,8 @@ Orders placed during steps 4–5 get `t_submit = t_event(E)`.
 | `R_HOLDINGS` | CNC sell above holdings (no CNC short selling) |
 | `R_NO_REFERENCE` | MARKET or SL-M with no LTP known for protection or for the funds check |
 | `R_MARGIN` | Required funds (§6.5) exceed available funds |
+
+<!-- </block> -->
 
 System orders tagged `AUTO_SQOFF` or `RMS_SQOFF` skip `R_SESSION`, `R_CAS`, `R_FREEZE` (they are sliced) and `R_MARGIN`.
 
@@ -190,9 +198,12 @@ It keeps DAY validity, so an unfilled remainder rests as a limit. Every fill of 
 **5.2 Row matching.** For each component, a charge row matches when every key in its `applies` object matches the order (list values by membership) and its date range covers the trade date. Exactly one row per component may match; zero or several is a loader error.
 
 **5.3 Components** (ppb rates, §0):
-- Brokerage: `zero`; `flat` = `flat_paise`; `min_flat_pct` = `min(flat_paise, round_half_up_div(turnover·pct_ppb, 10⁹))`.
-- STT (side-specific), exchange transaction (includes IPFT), SEBI fee, stamp duty (buy side): each `round_half_up_div(turnover·rate_ppb, 10⁹)`.
-- GST: `round_half_up_div((brokerage + exchange + sebi)·gst_ppb, 10⁹)`.
+Amended by D-46 (Kite's contract note, captured 2026-11-06): components are **exact**, not rounded each. Work in units `E` = 10⁻¹⁸ paisa:
+- Brokerage: `zero`; `flat` = `flat_paise·E`; `min_flat_pct` = `min(flat_paise·10⁹, turnover·pct_ppb)·10⁹`.
+- STT (side-specific), exchange transaction (includes IPFT), SEBI fee: each `turnover·rate_ppb·10⁹` (exact).
+- Stamp duty (buy side): rounded half-up to the whole rupee: `round_half_up_div(turnover·rate_ppb, 100·10⁹)·100·E`.
+- GST: `(brokerage + exchange + sebi in paise·10⁹)·gst_ppb` (exact, on the unrounded parts).
+- The order's total = `round_half_up_div(Σ components, E)` paise: the only rounding. `charges.csv` shows each component rounded half-up to the paisa for reading, so its columns can differ from `total` by a paisa or two; the ledger debits `total`.
 - Non-order charges, each its own row in `charges.csv`: DP charge (per scrip per trade date with CNC sells; kind `dp`), the square-off fee plus GST on it (per `AUTO_SQOFF`/`RMS_SQOFF` order; kind `sqoff_fee`), exercise STT, exercise brokerage and physical-delivery charges (kind `settlement`, §7).
 
 **5.4 Debit time.** When the order completes, or at `SEG_CLOSE` for orders cancelled with a partial fill; non-order charges when they arise.

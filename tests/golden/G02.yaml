@@ -1,0 +1,33 @@
+id: G02
+title: "A limit exactly at the bar low: through = no fill, touch = fill"
+semantics: ["A4 §4.1"]
+bundle:
+  dates: ["2026-03-02"]
+  instruments:
+    - { id: 1, kind: EQ, tradingsymbol: TEST, specs: [ { from: "2026-01-01", lot: 1, tick_paise: 5 } ] }
+run: { fill_model: { kind: bar, limit_touch_policy: through }, capital_paise: 10000000, price_basis: raw }
+events:
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:15:00+05:30", o: 10000, h: 10050, l: 9980, c: 10000, v: 1000 }
+  - { kind: BAR, instrument: 1, interval_s: 60, start: "2026-03-02T09:16:00+05:30", o: 10000, h: 10020, l: 9950, c: 9990, v: 1000 }
+strategy:
+  actions:
+    - { on_event: 1, place: { instrument: 1, side: BUY, qty: 10, product: CNC, type: LIMIT, price: 9950 } }
+variants:
+  - name: through
+    run: { fill_model: { limit_touch_policy: through } }
+    expect:
+      orders: [ { order_id: 1, status: CANCELLED, reason: EOD, filled_qty: 0 } ]
+      fills_count: 0
+      order_events: [ { order_id: 1, event: CANCEL, detail: EOD, t: "2026-03-02T15:30:00+05:30" } ]
+  - name: touch
+    run: { fill_model: { limit_touch_policy: touch } }
+    expect:
+      orders: [ { order_id: 1, status: COMPLETE, filled_qty: 10, avg_price_paise: 9950 } ]
+      fills: [ { order_id: 1, qty: 10, price_paise: 9950, t: "2026-03-02T09:17:00+05:30", evidence: bar_path } ]
+      equity: [ { trade_date: "2026-03-02", cash_paise: 9900500, nav_paise: 10000400 } ]
+notes: |
+  The buy limit 99.50 is placed when the 09:15 bar is known (09:16) and is eligible on the 09:16 bar.
+  That bar's low is exactly 99.50. `through` needs L < p: 9950 < 9950 is false, so no fill; the DAY
+  order is cancelled (EOD) at the CM close 15:30. `touch` needs L <= p: it fills at the limit, 9950,
+  where the path first reaches it (bar_path), at the bar's knowable time 09:17.
+  touch: cash 10,000,000 - 10 x 9,950 = 9,900,500; NAV = cash + 10 x close 9,990 = 10,000,400.
