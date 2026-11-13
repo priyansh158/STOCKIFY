@@ -195,6 +195,38 @@ class SensitivityApiTests(SandboxedDBTest):
         self.assertIsNone(j["rows"][0]["sharpe"])
         self.assertEqual(j["plain"], "Breaks if all costs rise by half: net P&L turns from +₹41,200 to -₹3,100.")
 
+    def test_no_raw_error_text_reaches_the_response_but_a_not_applicable_row_says_why(self):
+        # what the stored file can hold: a path, an exception class name, a validator message with values, a resolver text
+        raw = {"costs_x1.5": ("failed", "ValueError: bad window in C:" + chr(92) + "Users" + chr(92) + "x" + chr(92) + "run.py"),
+               "slip_plus1": ("not_applicable", "fill_model.slippage.extra_ticks: must be at most 1000, got 1001"),
+               "fill_eod_close": ("not_applicable", "price_basis: eod_close runs use NSE files, basis raw"),
+               "fill_bar": ("not_applicable", "data.packs[0]: pack 9f2c not found in D:/lab/packs"),
+               "fill_snapshot_ltp": ("failed", "the run failed")}
+        d = json.loads(self._doc())
+        d["rows"] = [d["rows"][0]] + [
+            {"key": k, "axis": "x", "label": k, "run_id": None, "status": st, "net_pnl_paise": None, "sharpe": None,
+             "delta_net_paise": None, "error": e} for k, (st, e) in raw.items()]
+        d["verdict"], d["fragile"] = "inconclusive", False
+        # an older file: the reasons sentence has the raw text inside it
+        d["reasons"] = ["The 1.5 times all costs case could not be checked (ValueError: bad window in C:" + chr(92) + "x).",
+                        "The 1 extra slippage tick case could not be checked (fill_model.slippage.extra_ticks: got 1001).",
+                        "The other case could not be checked (it did not run).", "Not called robust: x."]
+        self._write(json.dumps(d))
+        r = self.client.get("/api/tests/s0/sensitivity")
+        self.assertEqual(r.status_code, 200)
+        from stockify.research import plain
+        rows = {x["key"]: x["error"] for x in r.json()["rows"]}
+        self.assertEqual(rows, {"baseline": None, "costs_x1.5": plain.GENERIC_FAILURE,
+                                "slip_plus1": plain.NOT_RUN_EXTRA_TICKS, "fill_eod_close": plain.NOT_RUN_RAW_PRICES,
+                                "fill_bar": plain.NOT_RUN_DATA, "fill_snapshot_ltp": "the run failed"})
+        for leak in ("bad window", "ValueError", "run.py", "Users", "1001", "must be at most", "9f2c", "D:/lab", "extra_ticks",
+                     "price_basis"):
+            self.assertNotIn(leak, r.text, leak)
+        self.assertEqual(r.json()["reasons"], [
+            f"The 1.5 times all costs case could not be checked ({plain.GENERIC_FAILURE}).",
+            f"The 1 extra slippage tick case could not be checked ({plain.NOT_RUN_EXTRA_TICKS}).",
+            "The other case could not be checked (it did not run).", "Not called robust: x."])
+
     def test_api_refuses_an_unsafe_run_id(self):
         for rid in ("..", "%2e%2e", "a%5cb", "C%3A", "x" * 200, "..%2f..%2fetc"):
             r = self.client.get(f"/api/tests/{rid}/sensitivity")
@@ -246,6 +278,28 @@ class SweepApiTests(SandboxedDBTest):
         from server.main import app
         self.client = TestClient(app, base_url=support.API_BASE_URL)
 
+    def test_the_jobs_list_carries_a_plain_reason_never_the_raw_error(self):
+        b = chr(92)
+        raw = {"sweep-v": "ValueError: bad window", "sens-p": "boom at C:" + b + "secret" + b + "path",
+               "wf-h": "HoldoutLocked: the span C:/x/y crosses the holdout", "wf-r": "WalkforwardRunError: 1 for 2",
+               "wf-k": "KeyError: 'secret-key'"}
+        for i, (jid, err) in enumerate(raw.items()):
+            kind = "walkforward" if jid.startswith("wf") else "sweep"
+            add_sweep_job(None, jid, kind=kind, status="failed", created_ns=i + 1)
+            store.update_research_job(jid, error=err)
+        add_sweep_job(None, "wf-new", kind="walkforward", status="failed", created_ns=9)
+        store.update_research_job("wf-new", error="ValueError: bad window",
+                                  state_json=json.dumps({"windows": [], "failure_reason": "the holdout is locked"}))
+        add_sweep_job(None, "wf-ok", kind="walkforward", status="running", created_ns=10)
+        r = self.client.get("/api/research/jobs")
+        for needle in ("bad window", "ValueError", "secret", "KeyError", "crosses the holdout", "1 for 2"):
+            self.assertNotIn(needle, r.text, needle)
+        got = {j["job_id"]: j["error"] for j in r.json()}
+        self.assertEqual(got, {
+            "sweep-v": "Failed", "sens-p": "Failed", "wf-h": "the holdout is locked",
+            "wf-r": "the run pool returned the wrong number of results", "wf-k": "Failed",
+            "wf-new": "the holdout is locked", "wf-ok": None})
+
     def test_counts_give_the_totals_behind_the_capped_overview_lists(self):
         self.assertEqual(self.client.get("/api/research/counts").json(),
                          {"families": 0, "sweeps": 0, "walkforwards": 0})
@@ -279,8 +333,8 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/sweeps/sweep-t-1")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "axes", "rows", "best_run_id",
-                                   "cells", "plain"])
+        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "objective_label", "axes", "rows",
+                                   "best_run_id", "cells", "plain"])
         self.assertEqual((j["objective"], j["best_run_id"]), ("sharpe", "run2"))
         self.assertEqual([a["path"] for a in j["axes"]], [self.X, self.Y])
         self.assertEqual(j["axes"][1]["labels"], ["20", "30", "40"])
@@ -314,6 +368,8 @@ class SweepApiTests(SandboxedDBTest):
         self.assertEqual(c["run_ids"], [["r1", "r5"], ["r2", "r7"]])
         self.assertIn("best", j["plain"])
         self.assertIn("c", j["plain"])
+        self.assertIn("Each square is the best steadiness of returns (Sharpe) over every setting of c", j["plain"])
+        self.assertNotIn("sharpe ", j["plain"])                 # the objective's code never reaches the sentence
         picked = self.client.get("/api/research/sweeps/sweep-t-1", params={"x": "c", "y": "a"}).json()["cells"]
         self.assertEqual(picked["xs"], ["true", "false"])
         self.assertEqual(picked["hidden_axes"], ["b"])
@@ -357,22 +413,64 @@ class SweepApiTests(SandboxedDBTest):
         add_sweep_job(None, "wf-1", kind="walkforward", status="running")
         add_sweep_job(None, "sweep-run", status="running")
         add_sweep_job(None, "sweep-fail", status="failed")
+        add_sweep_job(None, "sweep-lock", status="failed")
+        store.update_research_job("sweep-lock", error="HoldoutLocked: the holdout starts 2026-08-01 C:" + chr(92) + "x")
+        add_sweep_job(None, "sweep-boom", status="failed")
+        store.update_research_job("sweep-boom", error="RuntimeError: the pool fell over")
         add_sweep_job(sweep_doc("sweep-j"), "sweep-j")
         store.update_research_job("sweep-j", state_json="{not json")
         for jid, text in (("nope", "no such sweep"), ("wf-1", "no such sweep"),
                           ("sweep-run", "sweep not finished yet (status: running)"),
                           ("sweep-fail", "sweep not finished yet (status: failed)"),
+                          ("sweep-lock", "sweep not finished yet (status: failed): the holdout is locked"),
+                          ("sweep-boom", "sweep not finished yet (status: failed): the run failed; see the log"),
                           ("sweep-j", "the sweep has no readable stored result")):
             r = self.client.get(f"/api/research/sweeps/{jid}")
             self.assertEqual((r.status_code, r.json()["detail"]), (404, text), jid)
+
+    def test_a_failed_trials_error_is_a_plain_reason_never_exception_text(self):
+        from stockify.research import plain
+        axes = {self.X: [5, 10, 15, 20, 25]}
+        rows = [_row(i, {self.X: v}, None) for i, v in enumerate(axes[self.X])]
+        errs = ("the run did not report its folder", "ValueError: bad window", "KeyError: fast_period in x/y.py",
+                "HoldoutLocked: the holdout starts 2026-08-01", None)
+        for r, err in zip(rows, errs):
+            r.update(status="failed", error=err)
+        rows[4]["failure_reason"] = "the settings were not accepted"        # stored at write time: read as it is
+        add_sweep_job(sweep_doc(axes=axes, rows=rows))
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual([r["error"] for r in j["rows"]],
+                         ["the run did not report its folder", plain.GENERIC_FAILURE, plain.GENERIC_FAILURE,
+                          "the holdout is locked", "the settings were not accepted"])
+        self.assertNotIn("bad window", json.dumps(j))
+        self.assertNotIn("fast_period", json.dumps(j))
+
+    def test_axes_carry_a_plain_label_from_the_strategy_and_the_objective_a_name(self):
+        axes = {"strategy.params.interval_s": [60, 300], self.X: [5, 10]}
+        rows = [_row(i, {"strategy.params.interval_s": a, self.X: b}, float(i))
+                for i, (a, b) in enumerate((a, b) for a in axes["strategy.params.interval_s"] for b in axes[self.X])]
+        add_sweep_job(sweep_doc(axes=axes, rows=rows))
+        store.update_research_job("sweep-t-1", spec_json=json.dumps(
+            {"base": {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold"}}}))
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual([(a["path"], a["label"]) for a in j["axes"]],
+                         [("strategy.params.interval_s", "Bar length (seconds)"), (self.X, self.X)])   # no label known: the path
+        self.assertEqual(j["objective_label"], "steadiness of returns (Sharpe)")
+        self.assertIn("Bar length (seconds) = ", j["plain"])                  # the sentence names the settings as the page does
+        self.assertNotIn("interval_s", j["plain"])
+
+    def test_a_sweep_without_a_stored_spec_labels_every_axis_by_its_path(self):
+        add_sweep_job(sweep_doc())
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertEqual([a["label"] for a in j["axes"]], [a["path"] for a in j["axes"]])
 
     def test_net_pnl_plain_sentence_is_in_rupees(self):
         axes = {self.X: [5, 10]}
         add_sweep_job(sweep_doc(objective="net_pnl", axes=axes,
                                 rows=[_row(0, {self.X: 5}, 412_000.0), _row(1, {self.X: 10}, -31_000.0)]))
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
-        self.assertEqual(j["plain"], f"Each square is the net_pnl of one trial. The best of all 2 trials has "
-                                     f"{self.X} = 5, with net_pnl ₹4,120.")
+        self.assertEqual(j["plain"], f"Each square is the profit after costs of one trial. The best of all 2 trials "
+                                     f"has {self.X} = 5, with profit after costs ₹4,120.")
         self.assertNotIn("412000", j["plain"])
 
     def test_sweep_response_has_no_nan(self):
@@ -421,6 +519,10 @@ class WalkforwardApiTests(SandboxedDBTest):
         p = mock.patch.object(stats, "risk_free_rows", return_value=[])
         p.start()
         self.addCleanup(p.stop)
+        from stockify.research import wf_report
+        q = mock.patch.object(wf_report, "min_oos_days", return_value=2)     # the fixtures have 12 days; 60 is below
+        q.start()
+        self.addCleanup(q.stop)
         self.client = TestClient(app, base_url=support.API_BASE_URL)
         self.build_job, self.two_windows, self.wf = build_job, two_windows, wf
 
@@ -438,18 +540,21 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertEqual((j["job_id"], j["train"], j["test"], j["step"], j["objective"]),
                          (self.job, 120, 30, 30, "sharpe"))
         self.assertEqual(j["family_id"], f"walkforward/{self.job}")
-        self.assertEqual(list(j["summary"]), ["windows", "is_windows", "oos_days", "is_sharpe", "oos_sharpe", "ratio",
-                                              "chosen_modal_share", "n_trials", "var_sharpe", "dsr"])
+        self.assertEqual(list(j["summary"]), ["windows", "is_windows", "oos_days", "oos_days_needed", "is_sharpe",
+                                              "oos_sharpe", "ratio", "chosen_modal_share", "n_trials", "var_sharpe",
+                                              "dsr"])
         self.assertEqual((j["summary"]["windows"], j["summary"]["oos_days"], j["summary"]["n_trials"]), (2, 12, 4))
+        self.assertEqual(j["summary"]["oos_days_needed"], 2)
         self.assertEqual(list(j["summary"]["dsr"]), ["sr", "t", "skew", "kurt", "n_trials", "var_sharpe", "sr0",
                                                      "dsr", "psr"])
         self.assertEqual(len(j["windows"]), 2)
         self.assertEqual(list(j["windows"][0]), ["index", "train_from", "train_to", "test_from", "test_to",
-                                                 "chosen_params", "chosen_run_id", "test_run_id", "test_status",
+                                                 "chosen_params", "chosen_run_id", "test_run_id", "test_status", "result", "no_sharpe",
                                                  "error", "train", "test"])
         self.assertIsInstance(j["windows"][0]["test"]["net_pnl_paise"], int)
         self.assertEqual((len(j["stitched_dates"]), len(j["stitched_index"])), (12, 12))
-        self.assertEqual(sorted(j["plain"]), ["dsr", "holdout", "pbo", "ratio", "stability"])
+        self.assertEqual(sorted(j["plain"]), sorted([
+            "coverage", "curve", "dsr", "few_days", "flatter", "gaps", "holdout", "n_note", "objective", "pbo", "pbo_lead", "ratio", "ratio_caveat", "ratio_lead", "sensitivity", "setup", "stability", "stability_lead", "y_label"]))
         self.assertIn("of the in-sample Sharpe out of sample", j["plain"]["ratio"])
         self.assertIn("the windows cover different days", j["plain"]["pbo"])
         # unknown, unsafe and other-kind jobs are 404
@@ -458,6 +563,41 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertEqual(self.client.get("/api/research/walkforward/").status_code, 404)
         store.create_research_job({"job_id": "sw-9", "kind": "sweep", "name": "s", "status": "done", "created_ns": 1})
         self.assertEqual(self.client.get("/api/research/walkforward/sw-9").status_code, 404)
+
+    def test_the_report_notes_and_each_window_result_come_from_the_server(self):
+        from stockify.research import wf_report
+        self.finished()
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        for key in ("objective", "setup", "flatter", "ratio_caveat", "coverage", "n_note", "curve", "ratio", "dsr"):
+            self.assertTrue(j["plain"][key], key)
+        self.assertIn("calendar days", j["plain"]["setup"])
+        report = wf_report.render(self.job).read_text(encoding="utf-8")       # the same lines are in report.md
+        for key in ("setup", "flatter", "ratio_caveat", "coverage", "n_note"):
+            self.assertIn(j["plain"][key], report, key)
+        self.assertEqual([w["result"] for w in j["windows"]], ["tested"] * len(j["windows"]))
+        self.assertIn(f"--walkforward {self.job} --sensitivity-run", j["plain"]["sensitivity"])
+        self.assertIn("isn't stored", j["plain"]["sensitivity"])
+        self.assertEqual(j["plain"]["y_label"], "growth of 1 (dashed line = starting capital)")
+        self.assertIn("left empty", j["plain"]["gaps"])
+        for key in ("ratio_lead", "stability_lead", "pbo_lead"):
+            self.assertTrue(j["plain"][key], key)
+
+    def test_a_window_whose_run_has_no_sharpe_carries_the_server_word_for_it(self):
+        self.finished()
+        f = paths.research_path(self.job) / "walkforward.json"
+        doc = json.loads(f.read_text(encoding="utf-8"))
+        doc["windows"][0]["test"]["sharpe"] = None
+        doc["windows"][1]["train"]["sharpe"] = None
+        f.write_text(json.dumps(doc), encoding="utf-8")
+        ws = self.client.get(f"/api/research/walkforward/{self.job}").json()["windows"]
+        self.assertEqual([w["no_sharpe"] for w in ws], ["too few days to work one out"] * 2)
+        self.assertIn("too few days", ws[0]["result"])
+        self.assertIn("too few days", ws[1]["result"])
+
+    def test_a_window_with_both_sharpes_has_no_word_for_a_missing_one(self):
+        self.finished()
+        ws = self.client.get(f"/api/research/walkforward/{self.job}").json()["windows"]
+        self.assertEqual([w["no_sharpe"] for w in ws], ["", ""])
 
     def test_a_job_that_is_not_finished_is_409_and_says_nothing_of_its_error(self):
         self.build_job(self.two_windows())                       # still running
@@ -468,6 +608,34 @@ class WalkforwardApiTests(SandboxedDBTest):
         r = self.client.get(f"/api/research/walkforward/{self.job}")
         self.assertEqual(r.status_code, 409)
         self.assertNotIn("secret", r.text)
+
+    def test_a_job_that_is_not_finished_says_its_status_and_a_plain_reason_only(self):
+        self.build_job(self.two_windows())
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertEqual((j["status"], j["reason"]), ("running", None))
+        state = json.loads(store.get_research_job(self.job)["state_json"])
+        state["failure_reason"] = "the holdout is locked"
+        store.update_research_job(self.job, status="failed", error="HoldoutLocked: x", state_json=json.dumps(state))
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertEqual((j["status"], j["reason"]), ("failed", "the holdout is locked"))
+        state.pop("failure_reason")
+        store.update_research_job(self.job, status="failed", error="boom at C:\\secret\\path", state_json=json.dumps(state))
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertEqual((j["status"], j["reason"]), ("failed", None))
+
+    def test_an_exception_message_never_reaches_the_409(self):
+        self.build_job(self.two_windows())
+        store.update_research_job(self.job, status="failed", error="ValueError: bad window")
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual((r.json()["status"], r.json()["reason"]), ("failed", None))   # no stored plain reason
+        self.assertNotIn("bad window", r.text)
+        self.assertNotIn("ValueError", r.text)
+        state = json.loads(store.get_research_job(self.job)["state_json"])
+        state["failure_reason"] = self.wf.plain_failure(ValueError("bad window"))
+        store.update_research_job(self.job, state_json=json.dumps(state))
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual(r.json()["reason"], "an internal error; see the log")
+        self.assertNotIn("bad window", r.text)
 
     def test_a_done_job_whose_file_is_gone_is_409_not_500(self):
         self.finished()
@@ -486,6 +654,22 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertIsNone(j["windows"][1]["error"])
         self.assertEqual(j["windows"][1]["test_status"], "failed")
         self.assertNotIn("Users", json.dumps(j))
+
+    def test_walkforward_detail_has_no_sharpe_below_the_minimum_days(self):
+        from stockify.research import wf_report
+        self.finished()
+        with mock.patch.object(wf_report, "min_oos_days", return_value=60):
+            j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        s = j["summary"]
+        self.assertEqual((s["oos_days"], s["oos_days_needed"]), (12, 60))
+        for key in ("is_sharpe", "oos_sharpe", "ratio", "dsr"):
+            self.assertIsNone(s[key], key)
+        for w in j["windows"]:
+            self.assertIsNone(w["train"]["sharpe"])
+            self.assertIsNone(w["test"]["sharpe"])
+            self.assertIsInstance(w["test"]["net_pnl_paise"], int)
+        self.assertEqual(len(j["stitched_index"]), 12)                                # the curve stays
+        self.assertIn("not enough out-of-sample days to judge (12 of 60 needed)", j["plain"]["ratio"])
 
     def test_walkforward_route_is_not_shadowed_by_the_family_route(self):
         self.finished()

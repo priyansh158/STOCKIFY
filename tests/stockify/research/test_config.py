@@ -79,6 +79,17 @@ class ResearchConfigTests(unittest.TestCase):
         self.refused(changed("bootstrap", "ci", value=0.9), "bootstrap.ci")
         self.refused(changed("regimes", "vix_edges", value=[13, "16"]), "regimes.vix_edges")
 
+    def test_min_oos_days_is_a_whole_number_of_at_least_two(self):
+        self.assertEqual(SHIPPED["walk_forward"]["min_oos_days"], 60)                # D-102, an owner-review choice
+        self.assertEqual(research.settings()["walk_forward"]["min_oos_days"], 60)
+        self.assertEqual(load(changed("walk_forward", "min_oos_days", value=2))["walk_forward"]["min_oos_days"], 2)
+        for bad in (1, 0, -5, "60", 60.0, True, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("walk_forward", "min_oos_days", value=bad), "walk_forward.min_oos_days")
+        doc = copy.deepcopy(SHIPPED)
+        del doc["walk_forward"]["min_oos_days"]
+        self.refused(doc, "min_oos_days")
+
     def test_edges_must_be_strictly_increasing(self):
         self.refused(changed("regimes", "vix_edges", value=["13", "13", "20"]), "regimes.vix_edges")
         self.refused(changed("regimes", "gap_edges_pct", value=["0.5", "0.1"]), "regimes.gap_edges_pct")

@@ -5,6 +5,7 @@
  */
 import { api, ApiError } from "./api";
 import { familyApiPath } from "./researchHelpers";
+import { sweepFailureReason, sweepMissingKind, type SweepGone } from "./researchHelpers";
 import type {
   ComparisonDTO,
   CoverageMatrixDTO,
@@ -16,10 +17,16 @@ import type {
   ResearchJobDTO,
   RunResearchDTO,
   SensitivityDTO,
+  SweepDTO,
+  WalkforwardDTO,
 } from "./types";
 
-export { bucketTone, costScale, familyHref, familyApiPath, familyIdParam, heatColourStep, jobHref, listCapNote, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sentenceOrDash, sessionRows, unlockRows } from "./researchHelpers";
-export type { BucketTone, SessionRow, UnlockRow } from "./researchHelpers";
+export {
+  COMPARE_MAX, COMPARE_MIN, bucketTone, compareHref, compareIds, costScale, dayNumber, endLabelText, familyApiPath, familyHref, familyIdParam,
+  heatColourStep, heatFormat, heatGridProps, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels,
+  scoreRanks, sentenceOrDash, sessionRows, spreadLabels, splitSegments, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve,
+} from "./researchHelpers";
+export type { BucketTone, SessionRow, SweepGone, UnlockRow, WfCurve } from "./researchHelpers";
 
 const enc = encodeURIComponent;
 
@@ -85,12 +92,58 @@ export function getGaps(date: string, offset = 0, limit = 200): Promise<GapPageD
   return orNull(api<GapPageDTO>(`/api/data/gaps?date=${enc(date)}&offset=${offset}&limit=${limit}`));
 }
 
+/** A walk-forward job: finished with its report, not finished (still going or failed, with a plain reason when there is one), or gone. */
+export type WalkforwardLoad =
+  | { kind: "done"; report: WalkforwardDTO }
+  | { kind: "not_done"; status: string; reason: string | null }
+  | { kind: "unreadable" }
+  | { kind: "unknown" };
+
+/** Never throws for a job's own state: only a failure to reach the API does. */
+export async function getWalkforward(id: string): Promise<WalkforwardLoad> {
+  try {
+    return { kind: "done", report: await api<WalkforwardDTO>(`/api/research/walkforward/${enc(id)}`) };
+  } catch (e) {
+    if (!(e instanceof ApiError)) throw e;
+    if (e.status === 404) return { kind: "unknown" };
+    if (e.status === 409) {
+      const b = e.body as { status?: unknown; reason?: unknown } | null;
+      if (b && typeof b === "object" && typeof b.status === "string" && b.status !== "") {
+        return { kind: "not_done", status: b.status, reason: typeof b.reason === "string" ? b.reason : null };
+      }
+      return { kind: "unreadable" };
+    }
+    throw e;
+  }
+}
+
 /** A day's stored quality report, or the API's own sentence about why there is none (404: it has not been run). */
 export async function getQuality(date: string): Promise<{ report: DataQualityResponse | null; reason: string | null }> {
   try {
     return { report: await api<DataQualityResponse>(`/api/data/quality?date=${enc(date)}`), reason: null };
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { report: null, reason: e.message };
+    throw e;
+  }
+}
+
+/** One sweep with its heatmap for the chosen axes (the server picks the first two when none are given). A 404 comes back as
+ * a plain state (still running, failed, unreadable, or no such sweep) rather than an error; a 422 (an axis it does not have)
+ * is `bad_axes` with the server's sentence; any other failure throws. */
+export async function getSweep(
+  id: string,
+  x?: string,
+  y?: string,
+): Promise<{ kind: "ready"; sweep: SweepDTO } | { kind: SweepGone; reason: string | null } | { kind: "bad_axes"; detail: string }> {
+  const q = new URLSearchParams();
+  if (x) q.set("x", x);
+  if (y) q.set("y", y);
+  const s = q.toString();
+  try {
+    return { kind: "ready", sweep: await api<SweepDTO>(`/api/research/sweeps/${enc(id)}${s ? `?${s}` : ""}`) };
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { kind: sweepMissingKind(e.message), reason: sweepFailureReason(e.message) };
+    if (e instanceof ApiError && e.status === 422) return { kind: "bad_axes", detail: e.message };
     throw e;
   }
 }

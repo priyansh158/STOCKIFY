@@ -131,6 +131,13 @@ class CompareLogicTests(CompareBase):
         with self.assertRaisesRegex(ValueError, "running"):
             rc.compare_runs(["a", "r"])
 
+    def test_money_rows_are_labelled_in_rupees_not_paise(self):
+        # the page shows these rows in rupees, so the server's label must not say paise
+        labels = {m.key: m.label for m in rc.compare_runs(["a", "b"]).metrics}
+        self.assertEqual(labels["net_pnl"], "Net profit (₹)")
+        self.assertEqual(labels["costs"], "Costs (₹)")
+        self.assertFalse([k for k, v in labels.items() if "paise" in v])
+
     def test_every_metric_row_has_its_plain_meaning(self):
         c = rc.compare_runs(["a", "b"])
         keys = [m.key for m in c.metrics]

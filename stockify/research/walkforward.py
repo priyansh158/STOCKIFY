@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -19,7 +20,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from stockify import paths, runconfig, store, timeutil
+from stockify import paths, research, runconfig, store, timeutil
 from stockify.research import fileio, holdout, pool, registry, stats, sweep
 
 _SPAN = re.compile(r"[0-9]+d", re.ASCII)
@@ -33,6 +34,71 @@ class WalkforwardError(ValueError):
 class WalkforwardRunError(WalkforwardError):
     """A failure after the job exists (the pool misbehaved): the job is marked failed. The command exits 1 for it, not
     2 (usage or refusal)."""
+
+
+_log = logging.getLogger(__name__)
+
+# What a failed job says about itself to the page and the API: a fixed table keyed by the error class, so no
+# exception text (a path, a value, a message) ever leaves the machine. The raw text stays in the job's `error`
+# column (the command's retry message reads it) and in the log.
+_PLAIN_FAILURES: tuple[tuple[type, str], ...] = (
+    (WalkforwardRunError, "the run pool returned the wrong number of results"),
+    (holdout.HoldoutLocked, "the holdout is locked"),
+)
+_PLAIN_FAILURE_OTHER = "an internal error; see the log"
+
+
+def plain_failure(e: BaseException) -> str:
+    """The plain reason for a failure: the first table entry the error is an instance of, else the generic line."""
+    for cls, text in _PLAIN_FAILURES:
+        if isinstance(e, cls):
+            return text
+    return _PLAIN_FAILURE_OTHER
+
+
+def failure_reason(job: dict) -> str | None:
+    """The plain reason stored beside a failed job's state, or None (older job, no reason stored)."""
+    try:
+        reason = json.loads(job.get("state_json") or "")["failure_reason"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return reason if isinstance(reason, str) and reason else None
+
+
+def plain_error(job: dict) -> str | None:
+    """What a job list may say about a job's failure, for any kind of research job (sweep, sensitivity, walk-forward):
+    the stored plain reason; else, for an older row, the table's line for the error class its raw text starts with
+    (`ClassName: ...`); else "Failed" when there is an error at all; None when there is none. The raw text is never
+    returned."""
+    stored = failure_reason(job)
+    if stored:
+        return stored
+    raw = job.get("error")
+    if not raw:
+        return None
+    m = re.match(r"([A-Za-z_][A-Za-z0-9_]*):", str(raw))
+    if m:
+        for cls, text in _PLAIN_FAILURES:
+            if cls.__name__ == m.group(1):
+                return text
+    return "Failed"
+
+
+def _mark_failed(job_id: str, e: BaseException) -> None:
+    """Mark a job failed: raw text in the `error` column and the log, the plain reason in the state beside the windows."""
+    raw = f"{type(e).__name__}: {e}"
+    _log.error("walk-forward job %s failed: %s", job_id, raw)
+    try:
+        try:
+            state = json.loads((store.get_research_job(job_id) or {}).get("state_json") or "")
+        except ValueError:
+            state = None
+        state = state if isinstance(state, dict) else {}
+        state["failure_reason"] = plain_failure(e)
+        store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(), error=raw[:500],
+                                  state_json=json.dumps(state, sort_keys=True))
+    except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
+        pass
 
 
 @dataclass(frozen=True)
@@ -217,11 +283,7 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
         state = _dump(results)
         store.update_research_job(job_id, state_json=_state(state))   # `running` until Task 21's finish
     except BaseException as e:
-        try:
-            store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
-                                      error=f"{type(e).__name__}: {e}"[:500])
-        except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
-            pass
+        _mark_failed(job_id, e)
         raise
     return WalkforwardResult(
         job_id=job_id, name=spec.name, family_id=family, objective=objective, train=train, test=test, step=step,
@@ -245,6 +307,11 @@ def _dump(results: list[dict]) -> list[dict]:
 # ── M6.5 (WF 6.5): stitching, in-sample vs out-of-sample, finish ──────────────────────────────────────────────────
 
 SCHEMA = "stockify.walkforward/1"
+
+
+def min_oos_days() -> int:
+    """research.json walk_forward.min_oos_days (D-102): below this many out-of-sample days no Sharpe figure is shown."""
+    return int(research.settings()["walk_forward"]["min_oos_days"])
 
 
 @dataclass(frozen=True)
@@ -369,11 +436,7 @@ def finish(job_id: str) -> WalkforwardFinished:
             store.update_research_job(job_id, status="done", finished_ns=timeutil.now_ns(), error=None)
     except BaseException as e:
         if was_running:
-            try:
-                store.update_research_job(job_id, status="failed", finished_ns=timeutil.now_ns(),
-                                          error=f"{type(e).__name__}: {e}"[:500])
-            except Exception:  # noqa: BLE001 — a failed bookkeeping write must not hide the error that caused it
-                pass
+            _mark_failed(job_id, e)
         raise
     return finished
 
@@ -446,9 +509,11 @@ def _segments(finished: WalkforwardFinished) -> tuple[list[tuple[list[str], list
     return segs, starts
 
 
-def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str]):  # noqa: ANN202
+def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str], note: str | None = None):  # noqa: ANN202
     """One line per out-of-sample piece (so a gap between windows is a gap, not a bridge), a light vertical line at
-    each test start, and a marker on every point so a one-day piece shows."""
+    each test start, and a marker on every point so a one-day piece shows. With a `note` (too few days to judge) it
+    is written on the figure and the vertical range keeps 1.0 inside at least +/-5 %, so noise does not fill the
+    panel."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -459,6 +524,10 @@ def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str]):  
         ax.plot([date.fromisoformat(d) for d in ds], idx, linewidth=1.2, color="#0072B2", marker="o", markersize=2.5,
                 label="out-of-sample")
     ax.axhline(1.0, linewidth=0.8, color="#999999")
+    if note:
+        lo, hi = ax.get_ylim()
+        ax.set_ylim(min(lo, 0.95), max(hi, 1.05))
+        ax.text(0.02, 0.96, note, transform=ax.transAxes, va="top", fontsize=9, color="#444444")
     ax.set_ylabel("growth of 1 (capital = 1.0)")
     ax.grid(alpha=0.3)
     ax.spines[["top", "right"]].set_visible(False)
@@ -473,7 +542,8 @@ def _equity_png(path, finished: WalkforwardFinished) -> None:  # noqa: ANN001
         return
     import matplotlib.pyplot as plt
     segs, starts = _segments(finished)
-    fig = _figure(segs, starts)
+    days = finished.summary.oos_days
+    fig = _figure(segs, starts, f"{days} out-of-sample days only" if days < min_oos_days() else None)
     tmp = path.with_name(path.name + ".tmp.png")
     try:
         fig.savefig(tmp)

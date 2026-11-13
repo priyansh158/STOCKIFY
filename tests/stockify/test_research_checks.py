@@ -44,6 +44,18 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["seriesTokens"], ["accent", "info", "warn"])
         self.assertEqual(self.answers["seriesCss"], [["0", "accent"], ["1", "info"], ["2", "warn"]])
 
+    def test_a_line_is_cut_at_each_break_so_no_segment_bridges_a_gap(self):
+        # unsorted points sort first; a break x starts a new segment; no breaks is one segment; nothing is none.
+        self.assertEqual(self.answers["segments"], [[[1, 2, 3], [5], [9]], [2], 0])
+
+    def test_the_walkforward_curve_is_one_segment_per_tested_window_with_a_boundary_at_each_test_start(self):
+        c = self.answers["curve"]
+        day = 19723                                                    # 2024-01-01 as days since 1970
+        self.assertEqual([p[0] - day for p in c["points"]], [0, 1, 9, 10, 11])
+        self.assertEqual([p[1] for p in c["points"]], [1.01, 1.02, 1.0, 0.99, 1.03])
+        self.assertEqual([b - day for b in c["breaks"]], [9])           # the untested window adds no break
+        self.assertEqual([s - day for s in c["starts"]], [0, 8])        # and no boundary
+
     def test_heat_caption_follows_the_scale_direction(self):
         # Larger values get a stronger accent mix, on a dark surface: so the caption must say brighter.
         mixes = self.answers["heatMixes"]
@@ -168,6 +180,96 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertIn(".\\run.ps1 -DaemonOnly", self.answers["dataPageCommands"])
         self.assertIn("python -m stockify nse fetch --date YYYY-MM-DD", self.answers["dataPageCommands"])
         self.assertEqual(self.answers["webSourceHasStrayCR"], [False, False, False, False])
+
+    def test_compare_link_keeps_two_to_six_encoded_ids(self):
+        c = self.answers["compare"]
+        self.assertEqual(c["limits"], [2, 6])
+        self.assertEqual(c["href"], [
+            "/tests/compare?ids=a&ids=b",
+            "/tests/compare?ids=a&ids=b&ids=c&ids=d&ids=e&ids=f",     # a seventh id is cut
+            "/tests/compare?ids=a%20b&ids=x%2Fy%26z",                 # encoded, so & and / cannot split a value
+            "/tests/compare",
+        ])
+
+    def test_compare_ids_from_the_query_are_trimmed_unique_and_never_split_on_commas(self):
+        self.assertEqual(self.answers["compare"]["ids"], [["a"], ["a", "b"], [], ["a", "b"], ["a,b", "c"]])
+
+    def test_compare_labels_are_unique_and_never_empty(self):
+        # a repeated or missing name falls back to the run id, so each chart series has its own name
+        self.assertEqual(self.answers["compare"]["labels"], [["x", "y"], ["x (r1)", "x (r2)", "y"], ["r1", "y"]])
+
+    def test_a_metric_or_setting_differs_only_when_the_runs_do_not_all_agree(self):
+        self.assertEqual(self.answers["compare"]["differ"], [False, True, False, True, True, False])
+
+    def test_every_series_gets_an_end_label_and_no_two_labels_overlap(self):
+        e = self.answers["endLabels"]
+        # sorted by height the six are pushed apart by at least 14, in the order of their own heights, and keep their index
+        self.assertEqual(e["spread"], [100, 128, 114, 313, 299, 50])
+        self.assertEqual(len(e["spread"]), 6)
+        # near the top edge they move down together, the last one stopping at the edge
+        self.assertEqual(e["pushedUp"], [372, 386, 400])
+        self.assertEqual(e["none"], [])
+        # a long name is cut to 16 characters ending in an ellipsis; a short one is kept; no name is no text
+        self.assertEqual(e["text"], ["orb30 (orb30b)", "a" * 15 + "…", ""])
+
+    def test_markers_sit_along_the_line_every_few_points_offset_per_series_and_always_at_the_end(self):
+        self.assertEqual(self.answers["endLabels"]["marks"], [
+            [0, 4, 8, 12, 16, 19], [1, 5, 9, 13, 17, 19], [0, 1, 2], [], [0],
+        ])
+
+    def test_diverging_step_is_centred_on_zero_with_three_levels_each_side(self):
+        # (value, max |value|): a tenth is the first level, a half the second, the full range the third, and the
+        # sign is kept; zero, NaN and a zero range are the neutral 0; beyond the range clamps.
+        self.assertEqual(self.answers["div"], [1, -1, 0, 3, -3, 2, -2, 2, 3, 0, 0])
+
+    def test_heat_formats_carry_the_sign_when_signed_and_use_rupees_for_paise(self):
+        self.assertEqual(self.answers["fmt"], ["+1.23", "−0.20", "0.00", "−0.20", "+12.34 %", "−5.00 %",
+                                               "+₹4,120", "−₹31,000", "₹1,23,456", "—", "+1.5"])
+
+    def test_heat_grid_props_adapt_the_sweep_cells(self):
+        g = self.answers["grid"]
+        self.assertEqual(g["x"], {"x": 0, "y": 1})                      # best {xi, yi} becomes {x, y}
+        self.assertTrue(g["signed"])
+        self.assertEqual((g["xs"], g["ys"]), (["5", "10"], ["20", "30"]))
+        self.assertEqual(g["cells"], [[0.5, -0.2], [1.0, None]])         # cells[yi][xi] pass as they are, null stays null
+        self.assertEqual((g["xLabel"], g["yLabel"]), ("fast", "slow"))
+        self.assertEqual(g["f"], "+1.00")
+        m = self.answers["money"]
+        self.assertEqual((m["signed"], m["f"]), (False, "₹4,120"))
+
+    def test_one_axis_sweep_is_one_row_named_by_the_objective(self):
+        o = self.answers["one"]
+        # the real one-axis DTO has a best {xi: k, yi: 0}: it becomes {x: k, y: 0}
+        self.assertEqual((o["best"], o["cells"]), ({"x": 2, "y": 0}, [[0.5, -0.2, 1.2]]))
+        self.assertEqual(o["links"], [["/tests/a", "/tests/b", "/tests/c"]])
+        self.assertEqual(o["yLabel"], "Objective")
+        self.assertEqual(self.answers["one"]["ys"], ["Steadiness of returns"])      # the row is named by what is scored
+
+    def test_axis_labels_replace_the_paths_and_a_percent_grid_is_signed(self):
+        self.assertEqual(self.answers["grid2"]["xLabel"], "Fast average")
+        self.assertEqual(self.answers["grid2"]["yLabel"], "Slow average")
+        self.assertEqual(self.answers["grid2"]["links"], [["/tests/a", "/tests/b"], ["/tests/c", None]])   # a cell links to its run
+        self.assertEqual(self.answers["pc"], {"signed": True, "f": ["+12.34 %", "−5.00 %"]})
+
+    def test_diverging_palette_words_and_css_agree(self):
+        # info above zero, warn below: the validated colour-blind-safe pair (dataviz validator, deutan/protan/tritan
+        # separation 22 to 25). The caption's colour words come from DIVERGING; the stylesheet must use the same tokens.
+        self.assertEqual(self.answers["diverging"], {"positive": {"token": "info", "word": "blue"},
+                                                     "negative": {"token": "warn", "word": "orange"}})
+        css = self.answers["divCss"]
+        self.assertEqual(len(css), 6)
+        for sign, token in (("pos", "info"), ("neg", "warn")):
+            arm = [c for c in css if c[0] == sign]
+            self.assertEqual([c[1] for c in arm], [1, 2, 3])
+            self.assertEqual({c[2] for c in arm}, {token})
+            self.assertEqual([c[3] for c in arm], sorted(c[3] for c in arm))
+
+    def test_missing_sweep_detail_maps_to_running_failed_missing_or_unreadable(self):
+        self.assertEqual(self.answers["missing"],
+                         ["missing", "running", "failed", "running", "unreadable", "missing", "missing", "failed", "running"])
+
+    def test_a_failed_sweeps_reason_is_the_text_after_its_status(self):
+        self.assertEqual(self.answers["failure"], ["the holdout is locked", None, None, None, None])
 
 
 if __name__ == "__main__":

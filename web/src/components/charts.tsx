@@ -5,10 +5,13 @@
  * .stk-heat). Each carries an aria-label that summarises it and a visible table of the same numbers. Desktop sizes:
  * the SVGs keep their aspect ratio and scale with the column, so the text in them is never stretched.
  */
-import { useState } from "react";
-import { SERIES_TOKENS, heatColourStep, heatMoreWord } from "@/lib/researchHelpers";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import {
+  DIVERGING, SERIES_TOKENS, divergingStep, endLabelText, heatColourStep, heatMoreWord, markerIndexes, spreadLabels, splitSegments,
+} from "@/lib/researchHelpers";
 
-const MAX_SERIES = 4;
+const MAX_SERIES = 6;
 const HEAT_STEPS = 5;
 /** globals.css sets `color-scheme: dark` and shades heat cells from faint to strong accent (checked in research_check.ts). */
 const HEAT_SCHEME = "dark" as const;
@@ -16,6 +19,8 @@ const HEAT_MORE = heatMoreWord(HEAT_SCHEME);
 const COLOURS = SERIES_TOKENS.length;
 
 type Fmt = (n: number) => string;
+
+const upperFirst = (w: string) => w[0].toUpperCase() + w.slice(1);
 
 /** Round tick values spanning [lo, hi]: about `count` of them on a 1, 2 or 5 step. */
 function niceTicks(lo: number, hi: number, count = 5): number[] {
@@ -31,13 +36,19 @@ function niceTicks(lo: number, hi: number, count = 5): number[] {
 export interface LineSeries {
   label: string;
   points: [number, number][];
+  /** x values where a new segment starts: no line is drawn from the point before to that one (a gap in time stays a gap). */
+  breaks?: number[];
 }
 
-const W = 720;
+/** The chart is drawn in the pixels it is shown in (the viewBox follows the real width), so its text keeps its token size. */
+const W0 = 720;
 const H = 280;
-const PAD = { l: 76, r: 16, t: 12, b: 28 };
+const PAD0 = { l: 76, r: 16, t: 12, b: 28 };
+/** Room to the right of the plot for the name at the end of each line, when there is more than one line. */
+const END_W = 132;
+const END_GAP = 14;
 
-/** Up to four series over a shared x. Series are told apart by colour and by dash, in a fixed order, and a legend always names them. */
+/** Up to six series over a shared x. Series are told apart by colour, dash and marker shape, in a fixed order (the fourth to sixth reuse the three colours), and a legend always names them. */
 export function LineChart({
   series,
   yFormat,
@@ -46,6 +57,10 @@ export function LineChart({
   baselineLabel,
   xLabel = "Point",
   label,
+  marks,
+  marksLabel,
+  yLabel,
+  describe,
 }: {
   series: LineSeries[];
   yFormat: Fmt;
@@ -58,12 +73,32 @@ export function LineChart({
   xLabel?: string;
   /** What the chart shows, for its accessible name and table caption. */
   label?: string;
+  /** x values for dotted vertical boundary lines (such as where each test window starts); `marksLabel` says what they are. */
+  marks?: number[];
+  marksLabel?: string;
+  /** What y measures, shown above the plot (the axis title), such as "growth of 1 (capital = 1.0)". */
+  yLabel?: string;
+  /** One more sentence for the chart's accessible name, such as that the gaps between windows are not drawn. */
+  describe?: string;
 }) {
   const drawn = series.filter((s) => s.points.length > 0);
   const shown = drawn.slice(0, MAX_SERIES);
   const hidden = drawn.length - shown.length;
   const [cursor, setCursor] = useState<number | null>(null);
   const [keyboard, setKeyboard] = useState(false);
+  const [W, setW] = useState(W0);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0]?.contentRect.width ?? 0);
+      if (w >= 320) setW(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [shown.length]);
+  const PAD = { ...PAD0, r: shown.length > 1 ? END_W : PAD0.r };
   if (shown.length === 0 || shown.every((s) => s.points.length < 2)) {
     return <p className="stk-label">Not enough data to draw this chart: it needs at least two points.</p>;
   }
@@ -71,8 +106,8 @@ export function LineChart({
   const xs = [...new Set(drawn.flatMap((s) => s.points.map((p) => p[0])))].sort((a, b) => a - b);
   const ys = shown.flatMap((s) => s.points.map((p) => p[1]));
   if (baseline !== undefined) ys.push(baseline);
-  const xLo = xs[0];
-  const xHi = xs[xs.length - 1];
+  const xLo = Math.min(xs[0], ...(marks ?? []));
+  const xHi = Math.max(xs[xs.length - 1], ...(marks ?? []));
   let yLo = Math.min(...ys);
   let yHi = Math.max(...ys);
   if (yHi === yLo) { yLo -= 1; yHi += 1; }
@@ -81,17 +116,23 @@ export function LineChart({
   yHi += yPad;
   const px = (x: number) => PAD.l + (xHi === xLo ? 0 : ((x - xLo) / (xHi - xLo)) * (W - PAD.l - PAD.r));
   const py = (y: number) => PAD.t + (1 - (y - yLo) / (yHi - yLo)) * (H - PAD.t - PAD.b);
+  const lastOf = (s: LineSeries) => [...s.points].sort((a, b) => a[0] - b[0])[s.points.length - 1];
+  const endPoints = shown.length > 1 ? shown.map((s, i) => ({ i, label: s.label, x: lastOf(s)[0], y: lastOf(s)[1] })) : [];
+  const endYs = spreadLabels(endPoints.map((e) => py(e.y)), END_GAP, PAD.t + 6, H - PAD.b);
+  const ends = endPoints.map((e, k) => ({ ...e, ty: endYs[k] }));
   const yTicks = niceTicks(yLo, yHi, 5);
-  const xTicks = xs.length <= 6 ? xs : niceTicks(xLo, xHi, 6);
-  const path = (s: LineSeries) =>
-    [...s.points].sort((a, b) => a[0] - b[0]).map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
+  // as many date labels as fit without touching (about 90 px each), never fewer than two
+  const maxTicks = Math.max(2, Math.min(6, Math.floor((W - PAD.l - PAD.r) / 90)));
+  const xTicks = xs.length <= maxTicks ? xs : niceTicks(xLo, xHi, maxTicks);
+  const path = (seg: [number, number][]) =>
+    seg.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
 
   const at = cursor === null ? null : (xs[Math.min(cursor, xs.length - 1)] ?? null);
   const valueAt = (s: LineSeries, x: number) => s.points.find((p) => p[0] === x)?.[1];
   const summary = `${label ?? "Line chart"}: ${shown.map((s) => {
     const sorted = [...s.points].sort((a, b) => a[0] - b[0]);
     return `${s.label} from ${yFormat(sorted[0][1])} to ${yFormat(sorted[sorted.length - 1][1])}`;
-  }).join("; ")}. Left and right arrow keys read the values.`;
+  }).join("; ")}.${describe ? ` ${describe}.` : ""} Left and right arrow keys read the values.`;
 
   const move = (to: number) => setCursor(Math.max(0, Math.min(xs.length - 1, to)));
   const onKey = (e: React.KeyboardEvent) => {
@@ -127,8 +168,9 @@ export function LineChart({
           ))}
         </ul>
       )}
+      {yLabel && <p className="stk-fine stk-lc-ytitle">{yLabel}</p>}
       <svg
-        viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
+        ref={svgRef} viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
         onKeyDown={onKey} onPointerMove={onPointer} onPointerLeave={() => setCursor(null)} onBlur={() => setCursor(null)}
       >
         {yTicks.map((t) => (
@@ -143,10 +185,26 @@ export function LineChart({
         {baseline !== undefined && (
           <line x1={PAD.l} x2={W - PAD.r} y1={py(baseline)} y2={py(baseline)} className="stk-lc-base" />
         )}
-        {shown.map((s, i) => (
-          s.points.length === 1
-            ? <Marker key={s.label} x={px(s.points[0][0])} y={py(s.points[0][1])} i={i} />
-            : <path key={s.label} d={path(s)} className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
+        {(marks ?? []).map((m) => (
+          <line key={m} x1={px(m)} x2={px(m)} y1={PAD.t} y2={H - PAD.b} className="stk-lc-mark" />
+        ))}
+        {shown.map((s, i) => splitSegments(s.points, s.breaks).map((seg) => (
+          seg.length === 1
+            ? <Marker key={`${s.label}-${seg[0][0]}`} x={px(seg[0][0])} y={py(seg[0][1])} i={i} />
+            : <path key={`${s.label}-${seg[0][0]}`} d={path(seg)} className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
+        )))}
+        {shown.map((s, i) => {
+          const sorted = [...s.points].sort((a, b) => a[0] - b[0]);
+          return markerIndexes(sorted.length, i).map((k) => (
+            <Marker key={`${s.label}-m${k}`} x={px(sorted[k][0])} y={py(sorted[k][1])} i={i} />
+          ));
+        })}
+        {ends.map((e) => (
+          <g key={`end-${e.label}`}>
+            <line x1={px(e.x) + 6} x2={W - PAD.r + 6} y1={py(e.y)} y2={e.ty} className="stk-lc-lead" />
+            <Marker x={W - PAD.r + 14} y={e.ty} i={e.i} />
+            <text x={W - PAD.r + 24} y={e.ty} className="stk-lc-end" dominantBaseline="middle">{endLabelText(e.label)}</text>
+          </g>
         ))}
         {at !== null && (
           <g>
@@ -164,6 +222,7 @@ export function LineChart({
           : `${xFormat(at)}: ${shown.map((s) => { const v = valueAt(s, at); return `${s.label} ${v === undefined ? "—" : yFormat(v)}`; }).join(", ")}`}
       </p>
       {baseline !== undefined && <p className="stk-fine">Dashed line: {baselineLabel ? `${baselineLabel} ` : ""}{yFormat(baseline)}.</p>}
+      {marks !== undefined && marks.length > 0 && marksLabel && <p className="stk-fine">Dotted lines: {marksLabel}.</p>}
       {hidden > 0 && <p className="stk-fine">Showing the first {MAX_SERIES} series; all {drawn.length} are in the table.</p>}
       <details className="stk-lc-table">
         <summary>Show the values as a table</summary>
@@ -194,12 +253,13 @@ export function LineChart({
   );
 }
 
-/** A series marker: a circle for the three colour-distinct series, a square for the fourth, so a reused colour still differs. */
+/** A series marker: a circle for the three colour-distinct series, then a square, a diamond and a triangle, so a reused colour still differs. */
 function Marker({ x, y, i }: { x: number; y: number; i: number }) {
   const c = i % COLOURS;
-  return i < COLOURS
-    ? <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />
-    : <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
+  if (i < COLOURS) return <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />;
+  if (i === COLOURS) return <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
+  if (i === COLOURS + 1) return <polygon points={`${x},${y - 5.5} ${x + 5.5},${y} ${x},${y + 5.5} ${x - 5.5},${y}`} className="stk-lc-dot" data-c={c} />;
+  return <polygon points={`${x},${y - 5} ${x + 5},${y + 4} ${x - 5},${y + 4}`} className="stk-lc-dot" data-c={c} />;
 }
 
 const IW = 560;
@@ -275,6 +335,8 @@ function IntervalSvg({ point, lo, hi, format }: { point: number; lo: number; hi:
 /**
  * A grid of numbers shaded by size, rows `ys` by columns `xs`; `cells[row][column]`, null for a run that did not finish.
  * Every cell prints its value, so shade is never the only signal, and `best` (column x, row y) is outlined and named.
+ * `signed` switches to a scale centred on zero: blue above, orange below, stronger further from zero; the values print
+ * their sign and the cells below zero are striped, so a negative reads differently by more than colour.
  */
 export function HeatGrid({
   xs,
@@ -282,6 +344,8 @@ export function HeatGrid({
   cells,
   format,
   best,
+  signed,
+  links,
   label,
   xLabel,
   yLabel,
@@ -291,6 +355,9 @@ export function HeatGrid({
   cells: (number | null)[][];
   format: Fmt;
   best?: { x: number; y: number } | null;
+  signed?: boolean;
+  /** `links[row][column]`: where a cell's value leads (its run), or null for none. */
+  links?: (string | null)[][];
   label?: string;
   xLabel?: string;
   yLabel?: string;
@@ -299,12 +366,13 @@ export function HeatGrid({
   if (flat.length === 0) return <p className="stk-label">No finished runs to show.</p>;
   const lo = Math.min(...flat);
   const hi = Math.max(...flat);
+  const maxAbs = Math.max(Math.abs(lo), Math.abs(hi));
   const bestVal = best ? cells[best.y]?.[best.x] : null;
   const summary = `${label ?? "Grid"}: ${ys.length} rows by ${xs.length} columns, from ${format(lo)} to ${format(hi)}` +
     (best && bestVal != null ? `. Best: ${ys[best.y]}, ${xs[best.x]}, ${format(bestVal)}` : "");
   return (
     <figure className="stk-heat">
-      <div className="stk-table-wrap">
+      <div className="stk-table-wrap" tabIndex={0} role="region" aria-label={`${label ?? "Grid"}, scrolls sideways when it is wider than the page`}>
         <table className="stk-table" aria-label={summary}>
           <caption>
             {label}{yLabel || xLabel ? ` (rows: ${yLabel ?? "row"}; columns: ${xLabel ?? "column"})` : ""}
@@ -322,13 +390,21 @@ export function HeatGrid({
                 {xs.map((x, xi) => {
                   const v = cells[yi]?.[xi] ?? null;
                   const isBest = best?.x === xi && best?.y === yi;
+                  const ok = v !== null && Number.isFinite(v);
+                  const d = signed && ok ? divergingStep(v, maxAbs) : 0;
                   return (
                     <td
                       key={x} className="num stk-heat-cell"
-                      data-step={v === null || !Number.isFinite(v) ? undefined : heatColourStep(v, lo, hi, HEAT_STEPS)}
+                      data-sign={signed && ok ? (d > 0 ? "pos" : d < 0 ? "neg" : "zero") : undefined}
+                      data-step={!ok ? undefined : signed ? Math.abs(d) : heatColourStep(v, lo, hi, HEAT_STEPS)}
                       data-best={isBest ? "true" : undefined}
                     >
-                      {v === null ? "—" : format(v)}
+                      {v !== null && links?.[yi]?.[xi] ? (
+                        <Link href={links[yi][xi] as string}>
+                          {format(v)}
+                          <span className="sr-only"> (open the run for {y}, {x})</span>
+                        </Link>
+                      ) : v === null ? "—" : format(v)}
                       {isBest && <span className="sr-only"> (best)</span>}
                     </td>
                   );
@@ -339,7 +415,13 @@ export function HeatGrid({
         </table>
       </div>
       <figcaption className="stk-fine">
-        {HEAT_MORE[0].toUpperCase() + HEAT_MORE.slice(1)} cells are larger values, from {format(lo)} to {format(hi)}.{best ? " The outlined cell is the best." : ""}
+        {signed
+          ? `${[
+              hi > 0 && `${upperFirst(DIVERGING.positive.word)} cells are above zero`,
+              lo < 0 && `${hi > 0 ? "" : "Cells are below zero: "}${DIVERGING.negative.word} striped cells${hi > 0 ? " are below zero" : ""}`,
+            ].filter(Boolean).join(" and ")}. ${lo < 0 ? "A minus sign marks every value below zero, so you do not need the colours to tell them apart. " : ""}The stronger the shade, the further from zero. Values run from ${format(lo)} to ${format(hi)}.`
+          : `${upperFirst(HEAT_MORE)} cells are larger values, from ${format(lo)} to ${format(hi)}.`}
+        {best ? " The outlined cell is the best." : ""}
       </figcaption>
     </figure>
   );

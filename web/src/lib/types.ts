@@ -555,6 +555,7 @@ export interface ResearchCountsDTO {
 
 export interface SweepAxisDTO {
   path: string;
+  label: string;
   labels: string[];
   values: (string | number | boolean | null)[];
 }
@@ -601,6 +602,7 @@ export interface SweepDTO {
   name: string;
   family_id: string;
   objective: string;
+  objective_label: string;
   axes: SweepAxisDTO[];
   rows: SweepRowDTO[];
   best_run_id: string | null;
@@ -711,6 +713,7 @@ export interface WalkforwardSummaryDTO {
   windows: number;
   is_windows: number;
   oos_days: number;
+  oos_days_needed: number;
   is_sharpe?: number | null;
   oos_sharpe?: number | null;
   ratio?: number | null;
@@ -730,6 +733,8 @@ export interface WalkforwardWindowDTO {
   chosen_run_id?: string | null;
   test_run_id?: string | null;
   test_status: string;
+  result: string;
+  no_sharpe: string;
   error?: string | null;
   train?: Record<string, unknown> | null;
   test?: Record<string, unknown> | null;

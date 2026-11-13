@@ -72,7 +72,7 @@ export function Table({
   children,
 }: {
   caption: string;
-  head: { label: string; num?: boolean }[];
+  head: { label: string; sub?: string; num?: boolean }[];
   children: ReactNode;
 }) {
   return (
@@ -81,9 +81,10 @@ export function Table({
         <caption className="sr-only">{caption}</caption>
         <thead>
           <tr>
-            {head.map((h) => (
-              <th key={h.label} scope="col" className={h.num ? "num" : undefined}>
+            {head.map((h, i) => (
+              <th key={`${i}-${h.label}`} scope="col" className={h.num ? "num" : undefined}>
                 {h.label}
+                {h.sub && <div className="stk-label stk-mono stk-break">{h.sub}</div>}
               </th>
             ))}
           </tr>

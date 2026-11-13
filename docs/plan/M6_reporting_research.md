@@ -43,7 +43,8 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 ## M6.5 Walk-forward analysis (M)
 
 - [ ] (windows, training grids, selection, out-of-sample runs and the persisted state done, `stockify/research/walkforward.py`, D-132; `walkforward.finish` stitches the test pieces, compares in-sample with out-of-sample and writes `walkforward.json`, D-133; `wf_report.render` is the only writer of `report.md`, the command and `GET /api/research/walkforward/{job_id}` are done, D-134) `python -m stockify walkforward --sweep sweep.yaml --train 120d --test 30d --step 30d --objective sharpe`: for each window, run the parameter grid on the training range (parallel subprocesses), pick the best by the objective, run it on the following test range; stitch the test pieces into one out-of-sample equity curve.
-- [ ] Report: in-sample vs out-of-sample metrics and their ratio, the chosen parameters per window (stability), and the stitched curve. Every run joins the family (M6.4).
+- [x] (done: `wf_report.render`, D-134; `python -m stockify research report --walkforward JOB_ID [--sensitivity-run RUN_ID]` writes it again and prints the path, and `tests/stockify/research/test_demo_pipeline.py` runs sweep, walk-forward, sensitivity and report through the real pool on the oracle fixture, WF 6.7, Task 24) Report: in-sample vs out-of-sample metrics and their ratio, the chosen parameters per window (stability), and the stitched curve. Every run joins the family (M6.4).
+- [x] (the report page `/research/walkforward/[id]` is done, RCM 6.8, Task 36, beside `report.md`; both read their notes from `wf_report.notes`) Report: in-sample vs out-of-sample metrics and their ratio, the chosen parameters per window (stability), and the stitched curve. Every run joins the family (M6.4).
 
 ## M6.6 Locked holdout (S)
 
@@ -65,7 +66,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.10 Parameter sweeps (M)
 
-- [ ] `sweep.yaml` (grid or seeded random search) → parallel runs (≤ `cpu_count − 1`), results table, and a two-parameter heatmap in the UI. A sweep is a family by default. (`sweep.yaml` load, validate and expand: done, `stockify/research/sweep.py`, A1 §6.6, Task 17; running it, `python -m stockify sweep`, the job, family and results files: done, D-101, Task 18; the sweep API and its heatmap cells, `GET /api/research/jobs` and `/api/research/sweeps/{job_id}`, are done, WF 6.3, Task 19; the heatmap page is later.)
+- [ ] `sweep.yaml` (grid or seeded random search) → parallel runs (≤ `cpu_count − 1`), results table, and a two-parameter heatmap in the UI. A sweep is a family by default. (`sweep.yaml` load, validate and expand: done, `stockify/research/sweep.py`, A1 §6.6, Task 17; running it, `python -m stockify sweep`, the job, family and results files: done, D-101, Task 18; the sweep API and its heatmap cells, `GET /api/research/jobs` and `/api/research/sweeps/{job_id}`, are done, WF 6.3, Task 19; the heatmap page, `/research/sweeps/[id]`, is done: a diverging scale centred on zero for signed objectives, axis pickers in the URL, the plain states for a sweep still running, failed or missing, RCM 6.7, Task 35.)
 
 ## M6.11 Probability of backtest overfitting (stretch, M)
 
@@ -96,6 +97,7 @@ cd web; npm run lint; npm run build
 - [x] CH 6.5 The FIFO trade loop is a public function, `stockify.oracle.metrics.fifo_trades` (returns `TradeChunk`s and the traded value), shared by `compute` and the chart's trade markers; `metrics.json` is byte-identical on every golden.
 - [x] CH 6.6 The shipped Python strategies say why they trade and draw their own lines (`note=` on every order, `ctx.plot` in sma_cross and the opening-range breakout; the exact sentences are D-95, for the C++ twins to copy).
 - [x] CH 6.7 The C++ twins `orb_cpp` and `sma_cross_cpp` write the same notes and plots as their Python originals, byte for byte (the sentences are D-95).
+- [x] CH 6.8 The engine side of the charts is reviewed and recorded (differential review, sharp-edges, insecure-defaults; one slippage `k` fix; `RECON.md`; c-review runs at the final review).
 - [x] CH 6.9 Display bars read back from a run's own pack or journal with the runner's bucketing (`stockify/oracle/bars.py`, `stockify/reporting/chartbars.py`; D-123); `_build_bars` changes no artifact byte.
 - [x] CH 6.10 A run's chart model: its own bars, a marker per fill and per expiry settlement with the note, costs and trade profit, and its plotted lines (`stockify/reporting/chart.py`, `stockify/reporting/settlements.py`; D-124).
 - [x] CH 6.11 `GET /api/tests/{id}/chart` and its DTOs (`RunChartDTO`, mirrored in `web/src/lib/types.ts`; D-125).

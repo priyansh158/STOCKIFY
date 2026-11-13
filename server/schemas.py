@@ -584,6 +584,7 @@ class ResearchCountsDTO(BaseModel):
 
 class SweepAxisDTO(BaseModel):
     path: str
+    label: str                      # a plain name from the strategy's params schema, or the path when none is known
     labels: list[str]
     values: list[Any]
 
@@ -598,7 +599,7 @@ class SweepRowDTO(BaseModel):
     net_pnl_paise: int | None = None
     trades: int | None = None
     max_drawdown: float | None = None
-    error: str | None = None
+    error: str | None = None        # a short plain clause, or None when the stored error looks like a raw log line
 
 
 class SweepBestCellDTO(BaseModel):
@@ -629,6 +630,7 @@ class SweepDTO(BaseModel):
     name: str
     family_id: str
     objective: str
+    objective_label: str            # the one name for the objective, as the plain sentence uses it
     axes: list[SweepAxisDTO]
     rows: list[SweepRowDTO]
     best_run_id: str | None = None
@@ -735,10 +737,13 @@ class GapPageDTO(BaseModel):
 # ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
 
 class WalkforwardSummaryDTO(BaseModel):
-    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive."""
+    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive.
+    With fewer than `oos_days_needed` out-of-sample days (research.json walk_forward.min_oos_days) the Sharpe figures,
+    the ratio and `dsr` are None, here and in every window."""
     windows: int
     is_windows: int
     oos_days: int
+    oos_days_needed: int
     is_sharpe: float | None = None
     oos_sharpe: float | None = None
     ratio: float | None = None
@@ -760,6 +765,8 @@ class WalkforwardWindowDTO(BaseModel):
     chosen_run_id: str | None = None
     test_run_id: str | None = None
     test_status: str
+    result: str = ""
+    no_sharpe: str = ""
     error: str | None = None
     train: dict[str, Any] | None = None
     test: dict[str, Any] | None = None
