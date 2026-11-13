@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Response
 
 from server.routers.research import run_research_dto
 from server.schemas import (ComparisonDTO, RunResearchDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
@@ -243,6 +243,19 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
                             metrics=_json(row.get("metrics_json"), {}), manifest=manifest,
                             fill_count=fill_count, cost_totals=cost_totals)
+
+
+@router.get("/api/tests/{run_id}/export")
+def export_test(run_id: str, with_packs: bool = Query(False)) -> Response:
+    """The run as a reproducible zip (DMF 6.2). Loopback only like the whole API. NOTE: this GET writes the derived zip
+    into exports/ (a deterministic overwrite). The file name is the checked run id; the refusal text never echoes a match."""
+    from stockify.reporting import export
+    try:
+        path = export.build(run_id, with_packs=with_packs)
+    except export.ExportError as e:
+        raise HTTPException(status_code=404 if e.code in ("bad_id", "not_found") else 409, detail=str(e)) from None
+    return Response(content=path.read_bytes(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
 
 
 @router.get("/api/tests/{run_id}/research", response_model=RunResearchDTO)

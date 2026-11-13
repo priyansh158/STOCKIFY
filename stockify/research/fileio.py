@@ -21,3 +21,20 @@ def atomic_write_text(path: Path, text: str) -> None:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
         raise
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """The bytes twin of `atomic_write_text`: a temporary file beside `path`, then os.replace; the temporary file
+    is removed on any error and the old file stays."""
+    path = Path(path)
+    tmp: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=path.name + ".", suffix=".tmp",
+                                         delete=False) as f:
+            tmp = Path(f.name)
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        raise

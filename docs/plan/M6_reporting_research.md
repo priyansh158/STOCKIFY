@@ -17,7 +17,7 @@ Concepts: C-4, C-14, C-16, C-17.
 
 ## M6.2 Export (S)
 
-- [ ] `GET /api/tests/{id}/export` and `python -m stockify export <run_id>`: a zip with bundle, manifest, the CSV artifacts, the JSON files (`metrics.json`, `manifest.json`, plus a single `summary.json` with the run's config, metrics and labels) and `report.md` (packs excluded by default, their hashes listed; `--with-packs` includes them). Secrets can never be inside (I-10); a test asserts it by scanning the zip for token-like strings.
+- [x] `GET /api/tests/{id}/export` and `python -m stockify export <run_id>`: a zip with bundle, manifest, the CSV artifacts, the JSON files (`metrics.json`, `manifest.json`, plus a single `summary.json` with the run's config, metrics and labels) and `report.md` (packs excluded by default, their hashes listed; `--with-packs` includes them). Secrets can never be inside (I-10); a test asserts it by scanning the zip for token-like strings.
 
 ## M6.3 Data coverage page (M)
 
