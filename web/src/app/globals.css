@@ -419,7 +419,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
 .stk-pick-bar p { margin: 0; }
 .stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
-.stk-table td.stk-pick + td[data-wrap] { min-width: 24rem; }  /* the test name, after the checkbox column (was td:first-child) */
+.stk-table td.stk-pick + td[data-wrap] { min-width: 20rem; }  /* the test name, after the checkbox column (was td:first-child) */
 .stk-cmp td[data-differs], .stk-cmp th[data-differs] { background: var(--tint-warn); }
 .stk-cmp td.stk-cmp-verdict { white-space: nowrap; color: var(--color-muted); }
 .stk-cmp td.stk-cmp-verdict[data-differs] { color: var(--color-warn); font-weight: 600; }

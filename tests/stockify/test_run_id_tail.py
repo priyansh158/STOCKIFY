@@ -26,6 +26,7 @@ class RunIdTailTests(unittest.TestCase):
     def test_the_list_page_shows_the_tail_and_wraps_chips_inline(self):
         page = (REPO / "web" / "src" / "app" / "tests" / "page.tsx").read_text(encoding="utf-8")
         self.assertIn("runIdTail(run.run_id, run.name)", page)
+        self.assertIn("{run.name && <div", page)          # no name: the link already shows the whole id, so no second line
         css = (REPO / "web" / "src" / "app" / "globals.css").read_text(encoding="utf-8")
         self.assertIn(".stk-run-chips", css)
 

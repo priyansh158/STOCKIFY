@@ -31,7 +31,7 @@ function RunRow({ run }: { run: TestRun }) {
       </td>
       <td data-wrap>
         <Link href={`/tests/${encodeURIComponent(run.run_id)}`}>{run.name ?? run.run_id}</Link>
-        <div className="stk-label stk-mono" title={run.run_id}>run {runIdTail(run.run_id, run.name)}</div>
+        {run.name && <div className="stk-label stk-mono" title={run.run_id}>run {runIdTail(run.run_id, run.name)}</div>}
         {runSummary(run) && <div className="stk-label">{runSummary(run)}</div>}
         {run.status === "failed" && run.error && <div className="stk-mono stk-down stk-label">{run.error}</div>}
         <div className="stk-gap-xs stk-run-chips">

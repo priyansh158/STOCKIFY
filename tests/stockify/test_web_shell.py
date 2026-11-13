@@ -35,7 +35,15 @@ class WebShellTests(unittest.TestCase):
     def test_notice_file_carries_the_tradingview_copyright(self):
         notice = _text("NOTICE")
         self.assertIn("TradingView, Inc.", notice)
+        self.assertIn("Apache", notice)
         self.assertIn("https://www.tradingview.com/", notice)
+
+    def test_chart_options_that_keep_the_scale_labels_clear(self):
+        chart = _text("web", "src", "components", "PriceChart.tsx")
+        self.assertIn("entireTextOnly: true", chart)
+        # The last-price label and line follow live polling: off for a finished run.
+        self.assertIn("lastValueVisible: false, priceLineVisible: false", chart)       # at creation
+        self.assertRegex(chart, r"const on = !!pollMs;\s*candlesRef\.current\?\.applyOptions\(\{ lastValueVisible: on, priceLineVisible: on \}\)")
 
     def test_next_dev_indicator_is_hidden(self):
         self.assertRegex(_text("web", "next.config.ts"), r"devIndicators:\s*false")
