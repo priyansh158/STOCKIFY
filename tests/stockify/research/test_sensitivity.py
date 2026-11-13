@@ -21,7 +21,7 @@ import stockify.store as store
 from stockify import __main__ as cli
 from stockify import bundle, numerics, paths, research, runconfig
 from stockify.config import loader
-from stockify.research import fileio, holdout, pool, sensitivity
+from stockify.research import fileio, holdout, plain, pool, sensitivity
 from stockify.research.pool import PoolOutcome
 from tests.stockify.research.fixtures import make_run
 from tests.stockify.test_bundle import BundleTest, run as run_config
@@ -332,6 +332,7 @@ class FragileTests(SuiteBase):
         row = {r.key: r for r in res.rows}["fill_eod_close"]
         self.assertEqual(row.status, "not_applicable")
         self.assertIn("price_basis", row.error)
+        self.assertEqual(plain.not_run_reason(row.error), plain.NOT_RUN_RAW_PRICES)     # the reason a person sees
         self.assertIsNone(row.run_id)
         self.assertFalse(any(j.config["fill_model"]["kind"] == "eod_close" for j in fake.jobs))
 
@@ -343,6 +344,7 @@ class FragileTests(SuiteBase):
         self.assertEqual(rows["slip_plus1"].status, "done")                     # 1000 is the limit
         self.assertEqual(rows["slip_plus2"].status, "not_applicable")           # 1001 is not
         self.assertIn("extra_ticks", rows["slip_plus2"].error)
+        self.assertEqual(plain.not_run_reason(rows["slip_plus2"].error), plain.NOT_RUN_EXTRA_TICKS)
 
     def test_sensitivity_runs_do_not_change_n(self):
         from stockify.research import registry

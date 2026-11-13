@@ -308,6 +308,37 @@ class PlainReasonTests(unittest.TestCase):
         self.assertEqual(plain.plain_reason("HoldoutLocked: x", fallback=None), "the holdout is locked")
 
 
+class NotRunReasonTests(unittest.TestCase):
+    """Why a sensitivity check could not run: the refusal is named by what it is about, a raw exception is generic."""
+
+    def test_the_real_refusals_get_their_own_line(self):
+        from stockify import runconfig
+        # the validator's actual texts (not copies): the price basis one and the extra ticks one
+        self.assertEqual(plain.not_run_reason("price_basis: eod_close runs use NSE files, basis raw"), plain.NOT_RUN_RAW_PRICES)
+        self.assertEqual(plain.not_run_reason(f"fill_model.slippage.extra_ticks: must be at most {runconfig.MAX_EXTRA_TICKS}"),
+                         plain.NOT_RUN_EXTRA_TICKS)
+        self.assertEqual(plain.not_run_reason("no quotes in these packs"), plain.NOT_RUN_NO_QUOTES)
+        self.assertEqual(plain.not_run_reason("data.packs[0]: pack abc not found in D:/x"), plain.NOT_RUN_DATA)
+
+    def test_every_not_run_line_is_on_the_allow_list_and_passes_plain_reason(self):
+        self.assertEqual(len(set(plain.NOT_RUN_REASONS)), len(plain.NOT_RUN_REASONS))
+        for line in plain.NOT_RUN_REASONS:
+            self.assertEqual(plain.plain_reason(line), line)
+            self.assertEqual(plain.not_run_reason(line), line)
+
+    def test_a_raw_exception_or_unknown_text_is_generic_and_nothing_is_nothing(self):
+        for raw in ("ValueError: bad window", "KeyError: 'fast'", "C:" + chr(92) + "x" + chr(92) + "y.py failed", "x" * 200,
+                    "line1" + chr(10) + "line2", "RuntimeError: no quotes in these packs"):
+            self.assertEqual(plain.not_run_reason(raw), plain.GENERIC_FAILURE, raw)
+        for raw in (None, "", "  ", 3):
+            self.assertIsNone(plain.not_run_reason(raw))
+
+    def test_no_not_run_line_carries_a_path_a_value_or_a_code_name(self):
+        for line in plain.NOT_RUN_REASONS:
+            self.assertEqual([c for c in line if c in "_/" + chr(92) + chr(10)], [], line)
+            self.assertFalse(any(ch.isdigit() for ch in line), line)
+
+
 class FragileSentenceTests(unittest.TestCase):
     K = dict(fragile_cost_scale="1.5", fragile_extra_ticks=1)
 
@@ -336,12 +367,15 @@ class FragileSentenceTests(unittest.TestCase):
                                             ticks=("not_applicable", None)), **k)
         self.assertEqual(both, "Can't say yet: the run with 1.5 times all costs didn't finish; and one extra tick "
                                "of slippage couldn't be run for this strategy (the run failed), so it isn't called robust.")
-        for raw in (None, "", "bad_key in C:" + chr(92) + "x", "x" * 200, "line1" + chr(10) + "line2"):
+        for raw, why in ((None, None), ("", None), ("bad_key in C:" + chr(92) + "x", plain.GENERIC_FAILURE),
+                         ("x" * 200, plain.GENERIC_FAILURE), ("line1" + chr(10) + "line2", plain.GENERIC_FAILURE),
+                         ("ValueError: bad window", plain.GENERIC_FAILURE),
+                         ("price_basis: eod_close runs use NSE files, basis raw", plain.NOT_RUN_RAW_PRICES)):
             s = _sens("inconclusive", 4_120_000, costs=("done", 3_000_000), ticks=("not_applicable", None))
             s.rows[2] = type(s.rows[2])(**{**s.rows[2].__dict__, "error": raw})
             text = plain.fragile_sentence(s, **k)
-            self.assertEqual(text, "Can't say yet: one extra tick of slippage couldn't be run for this strategy, "
-                                   "so it isn't called robust.", raw)
+            self.assertEqual(text, "Can't say yet: one extra tick of slippage couldn't be run for this strategy"
+                                   + (f" ({why})" if why else "") + ", so it isn't called robust.", raw)
             self.assertEqual(_bad_tokens(text), [], text)
         self.assertNotIn("1.5-times", na)
 

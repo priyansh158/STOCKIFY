@@ -363,6 +363,19 @@ PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
     ("WalkforwardRunError", "the run pool returned the wrong number of results"),
     ("SensitivityRunError", "the run pool returned the wrong number of results"),
 )
+# Why a sensitivity check could not be run for a strategy: the validator's or the resolver's refusal, put into one of these
+# lines by what it is about (NOT_RUN_NEEDLES). The refusal's own text carries values and paths, so it is never shown.
+NOT_RUN_RAW_PRICES = "this fill model only works with raw prices, and this run uses adjusted prices"
+NOT_RUN_EXTRA_TICKS = "the extra slippage is above the most a run allows"
+NOT_RUN_NO_QUOTES = "the recorded data has no quotes for this fill model"
+NOT_RUN_DATA = "the recorded data this run needs could not be found or does not match"
+NOT_RUN_REASONS: tuple[str, ...] = (NOT_RUN_RAW_PRICES, NOT_RUN_EXTRA_TICKS, NOT_RUN_NO_QUOTES, NOT_RUN_DATA)
+NOT_RUN_NEEDLES: tuple[tuple[str, str], ...] = (
+    ("price_basis", NOT_RUN_RAW_PRICES),
+    ("extra_ticks", NOT_RUN_EXTRA_TICKS),
+    ("quote", NOT_RUN_NO_QUOTES),
+    ("pack", NOT_RUN_DATA),
+)
 # The sentences the code itself writes into a stored error (pool.py, sweep.py, sensitivity.py) and the table's lines.
 PLAIN_SENTENCES: frozenset[str] = frozenset({
     "the run did not report its folder",
@@ -371,6 +384,7 @@ PLAIN_SENTENCES: frozenset[str] = frozenset({
     "the settings were not accepted",
     GENERIC_FAILURE,
     *(text for _cls, text in PLAIN_FAILURES),
+    *NOT_RUN_REASONS,
 })
 _CLASS_PREFIX = re.compile(r"([A-Za-z_][A-Za-z0-9_]*):")
 
@@ -392,6 +406,22 @@ def plain_reason(error: object, *, fallback: str | None = GENERIC_FAILURE) -> st
             if cls == m.group(1):
                 return line
     return fallback
+
+
+def not_run_reason(error: object) -> str | None:
+    """Why a check could not be run, from the refusal text the validator or resolver gave: one of NOT_RUN_REASONS when the
+    text is about one of those things, the code's own sentence or a class-table line as plain_reason gives them, else the
+    generic line (a raw exception, a path, anything else); None for nothing."""
+    known = plain_reason(error, fallback=None)
+    if known is not None or not isinstance(error, str) or not error.strip():
+        return known
+    low = error.lower()
+    if re.match(r"[A-Z][A-Za-z0-9]*:", error.strip()):          # "ClassName: text" is an exception's repr, not a refusal
+        return GENERIC_FAILURE
+    for needle, line in NOT_RUN_NEEDLES:
+        if needle in low:
+            return line
+    return GENERIC_FAILURE
 
 
 def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001
@@ -453,7 +483,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
                 continue
             what = phrase(axis, "survive")
             if status == "not_applicable":
-                why = plain_reason(error, fallback=None)
+                why = not_run_reason(error)
                 clauses.append(f"{what} couldn't be run for this strategy" + (f" ({why})" if why else ""))
             else:
                 clauses.append(f"the run with {what} didn't finish")
