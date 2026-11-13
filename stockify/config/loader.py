@@ -137,6 +137,10 @@ def _walk_dated(node, where: str, allow_verify: bool):
     if isinstance(node, list):
         if node and all(isinstance(r, dict) and "effective_from" in r for r in node):
             return _resolve_dated_list(node, where, allow_verify)
+        if any(isinstance(r, dict) and "effective_from" in r for r in node):
+            # a dated list: every row must carry its date (a row without one would be skipped, and so never applied)
+            first_bad = next(i for i, r in enumerate(node) if not (isinstance(r, dict) and "effective_from" in r))
+            raise ConfigError(f"{where}[{first_bad}]: a row in a dated list has no effective_from")
         return [_walk_dated(v, f"{where}[{i}]", allow_verify) for i, v in enumerate(node)]
     return node
 
