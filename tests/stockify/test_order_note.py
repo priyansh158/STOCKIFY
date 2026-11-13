@@ -267,8 +267,7 @@ class OldRunsTests(NoteBase):
         hashes = json.loads(det.read_text(encoding="utf-8"))
         self.assertIn("plots.csv", hashes)
         hashes.pop("plots.csv")                                        # a folder saved between CH 6.2 and CH 6.4
-        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "
-", encoding="utf-8")
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (paths.run_path(rid) / "plots.csv").unlink()
         code, _, err = _cli("run", "--rerun", rid)
         new = f"{rid}-rerun"
@@ -279,8 +278,7 @@ class OldRunsTests(NoteBase):
         self.assertFalse(runs.note_column_only(rid, new))              # no note column was added here
         # a plots.csv the old folder lists is never excused: a changed hash is a real difference
         hashes["plots.csv"] = "0" * 64
-        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "
-", encoding="utf-8")
+        det.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         self.assertEqual(runs.column_changes(rid, new), [])
 
     def test_any_other_difference_is_not_tolerated(self):

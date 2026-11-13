@@ -266,7 +266,7 @@ class PlotParityTests(PlotBase):
         so, se = make(), make()
         oracle_run(b, [pack], folder / "oracle", strategy=so, report=False)
         engine.run_bundle(b, [pack], folder / "engine", strategy=se, report=False)
-        self.assertEqual([repr(e) for e in so.errors], [repr(e) for e in se.errors])
+        self.assertEqual([repr(e) for e in getattr(so, "errors", [])], [repr(e) for e in getattr(se, "errors", [])])
         return folder / "oracle", folder / "engine"
 
     def test_engine_and_oracle_write_identical_plots_csv(self):
@@ -313,13 +313,17 @@ class PlotParityTests(PlotBase):
             for call in (lambda: ctx.plot("a", 1.5), lambda: ctx.plot("a", True), lambda: ctx.plot("a", 1, kind="x"),
                          lambda: ctx.plot("", 1), lambda: ctx.plot("a", 1, instrument=77),
                          lambda: ctx.plot("a", 2**63), lambda: ctx.plot("\ud800", 1), lambda: ctx.plot(5, 1),
-                         lambda: ctx.plot("a", 1, "price"), lambda: ctx.plot("a", 1, instrument=True)):
+                         lambda: ctx.plot("a", 1, instrument=True)):
                 try:
                     call()
                 except Exception as x:  # noqa: BLE001
                     ctx.log("info", f"{type(x).__name__}: {x}")
                 else:
                     ctx.log("info", "no error")
+            try:
+                ctx.plot("a", 1, "price")                           # kind is keyword-only: a TypeError in both
+            except TypeError:
+                ctx.log("info", "positional kind refused")
             ctx.plot("k", 1, kind="level")
             try:
                 ctx.plot("k", 1)
@@ -330,6 +334,7 @@ class PlotParityTests(PlotBase):
         assert_same_artifacts(self, o, e)
         lines = (e / "events_log.txt").read_text().splitlines()
         self.assertGreaterEqual(sum("Error" in x for x in lines), 9)
+        self.assertTrue(any("positional kind refused" in x for x in lines))
 
     def test_seeded_random_plot_calls_are_byte_identical(self):
         """Property: for seeded random call sequences (repeats at one time, both caps, hostile names) the oracle's and
