@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { sensitivityCommand } from "@/lib/commands";
 import { pct, rupees } from "@/lib/format";
 import { bucketTone, getRunResearch, getSensitivity, sentenceOrDash } from "@/lib/research";
 import type { RegimeBucketDTO, RunResearchDTO, SensitivityDTO } from "@/lib/types";
@@ -235,7 +236,7 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
         <p className="stk-fine">
           To run it, use this command in a terminal in the STOCKIFY folder. It re-runs the test with higher costs and worse fills.
         </p>
-        <code className="stk-mono stk-break">.\.venv\Scripts\python.exe -m stockify sensitivity --run {runId}</code>
+        <code className="stk-mono stk-break">{sensitivityCommand(runId)}</code>
       </div>
     );
   } else {

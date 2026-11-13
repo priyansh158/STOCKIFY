@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
+import { stockifyCommand } from "@/lib/commands";
 import { pct } from "@/lib/format";
 import { getSweep, heatFormat, heatGridProps } from "@/lib/research";
 import type { SweepDTO, SweepRowDTO } from "@/lib/types";
@@ -249,7 +250,7 @@ export default async function SweepPage({
         <Page title="This sweep failed">
           <Notice tone="red" title="It stopped before it finished, so there is no grid to show.">
             {res.reason ? `Why: ${res.reason}. ` : ""}Run it again with{" "}
-            <code className="stk-mono">python -m stockify sweep --config &lt;your sweep.yaml&gt;</code>, or open All research to see
+            <code className="stk-mono">{stockifyCommand("sweep --config <your sweep.yaml>")}</code>, or open All research to see
             your other sweeps.
           </Notice>
         </Page>
