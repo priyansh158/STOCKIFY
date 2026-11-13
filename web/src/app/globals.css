@@ -321,6 +321,16 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-heat-cell[data-step="2"] { background: color-mix(in oklab, var(--color-accent) 32%, var(--color-paper-2)); }
 .stk-heat-cell[data-step="3"] { background: color-mix(in oklab, var(--color-accent) 48%, var(--color-paper-2)); }
 .stk-heat-cell[data-step="4"] { background: color-mix(in oklab, var(--color-accent) 72%, var(--color-paper-2)); color: var(--color-accent-ink); }
+/* Signed grids (a scale centred on zero): above zero blue (info), below zero orange (warn) and striped. Ink stays the text colour
+   (5:1 or better on every step); the stripe is the same tint fading to the card colour, so the text only gains contrast. */
+.stk-heat-cell[data-sign="zero"] { background: var(--color-paper-3); }
+.stk-heat-cell[data-sign="pos"][data-step="1"] { background: color-mix(in oklab, var(--color-info) 14%, var(--color-paper-2)); }
+.stk-heat-cell[data-sign="pos"][data-step="2"] { background: color-mix(in oklab, var(--color-info) 30%, var(--color-paper-2)); }
+.stk-heat-cell[data-sign="pos"][data-step="3"] { background: color-mix(in oklab, var(--color-info) 50%, var(--color-paper-2)); }
+.stk-heat-cell[data-sign="neg"][data-step="1"] { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--color-warn) 14%, var(--color-paper-2)) 0 7px, var(--color-paper) 7px 9px); }
+.stk-heat-cell[data-sign="neg"][data-step="2"] { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--color-warn) 30%, var(--color-paper-2)) 0 7px, var(--color-paper) 7px 9px); }
+.stk-heat-cell[data-sign="neg"][data-step="3"] { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--color-warn) 50%, var(--color-paper-2)) 0 7px, var(--color-paper) 7px 9px); }
+.stk-heat-cell[data-sign][data-step][data-best="true"] { outline-color: var(--color-ink); }
 .stk-heat-cell[data-best="true"][data-step="4"] { outline-color: var(--color-paper); }  /* ink on step 4 is 2.8:1, paper is above 3:1 */
 .stk-heat-cell[data-best="true"] { outline: 2px solid var(--color-ink); outline-offset: -2px; font-weight: 700; }
 
@@ -383,3 +393,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-cmp-matched summary { cursor: pointer; font-size: var(--text-sm); color: var(--color-ink-2); min-height: var(--hit); display: flex; align-items: center; }
 .stk-cmp-matched[open] summary { margin-bottom: var(--space-xs); }
 .stk-cmp-pick { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-lg); font-size: var(--text-sm); color: var(--color-ink-2); }
+
+/* The sweep page axis pickers (app/research/sweeps/[id]): two selects and one button on a row */
+.stk-sweep-pick { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-md); }
+.stk-table tr[data-best="true"] th, .stk-table tr[data-best="true"] td { background: var(--tint-up); }

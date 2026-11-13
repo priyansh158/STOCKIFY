@@ -217,6 +217,60 @@ class ResearchHelperChecks(unittest.TestCase):
             [0, 4, 8, 12, 16, 19], [1, 5, 9, 13, 17, 19], [0, 1, 2], [], [0],
         ])
 
+    def test_diverging_step_is_centred_on_zero_with_three_levels_each_side(self):
+        # (value, max |value|): a tenth is the first level, a half the second, the full range the third, and the
+        # sign is kept; zero, NaN and a zero range are the neutral 0; beyond the range clamps.
+        self.assertEqual(self.answers["div"], [1, -1, 0, 3, -3, 2, -2, 2, 3, 0, 0])
+
+    def test_heat_formats_carry_the_sign_when_signed_and_use_rupees_for_paise(self):
+        self.assertEqual(self.answers["fmt"], ["+1.23", "−0.20", "0.00", "−0.20", "+12.34 %", "−5.00 %",
+                                               "+₹4,120", "−₹31,000", "₹1,23,456", "—", "+1.5"])
+
+    def test_heat_grid_props_adapt_the_sweep_cells(self):
+        g = self.answers["grid"]
+        self.assertEqual(g["x"], {"x": 0, "y": 1})                      # best {xi, yi} becomes {x, y}
+        self.assertTrue(g["signed"])
+        self.assertEqual((g["xs"], g["ys"]), (["5", "10"], ["20", "30"]))
+        self.assertEqual(g["cells"], [[0.5, -0.2], [1.0, None]])         # cells[yi][xi] pass as they are, null stays null
+        self.assertEqual((g["xLabel"], g["yLabel"]), ("fast", "slow"))
+        self.assertEqual(g["f"], "+1.00")
+        m = self.answers["money"]
+        self.assertEqual((m["signed"], m["f"]), (False, "₹4,120"))
+
+    def test_one_axis_sweep_is_one_row_named_by_the_objective(self):
+        o = self.answers["one"]
+        # the real one-axis DTO has a best {xi: k, yi: 0}: it becomes {x: k, y: 0}
+        self.assertEqual((o["best"], o["cells"]), ({"x": 2, "y": 0}, [[0.5, -0.2, 1.2]]))
+        self.assertEqual(o["links"], [["/tests/a", "/tests/b", "/tests/c"]])
+        self.assertEqual(o["yLabel"], "Objective")
+        self.assertEqual(self.answers["one"]["ys"], ["Steadiness of returns"])      # the row is named by what is scored
+
+    def test_axis_labels_replace_the_paths_and_a_percent_grid_is_signed(self):
+        self.assertEqual(self.answers["grid2"]["xLabel"], "Fast average")
+        self.assertEqual(self.answers["grid2"]["yLabel"], "Slow average")
+        self.assertEqual(self.answers["grid2"]["links"], [["/tests/a", "/tests/b"], ["/tests/c", None]])   # a cell links to its run
+        self.assertEqual(self.answers["pc"], {"signed": True, "f": ["+12.34 %", "−5.00 %"]})
+
+    def test_diverging_palette_words_and_css_agree(self):
+        # info above zero, warn below: the validated colour-blind-safe pair (dataviz validator, deutan/protan/tritan
+        # separation 22 to 25). The caption's colour words come from DIVERGING; the stylesheet must use the same tokens.
+        self.assertEqual(self.answers["diverging"], {"positive": {"token": "info", "word": "blue"},
+                                                     "negative": {"token": "warn", "word": "orange"}})
+        css = self.answers["divCss"]
+        self.assertEqual(len(css), 6)
+        for sign, token in (("pos", "info"), ("neg", "warn")):
+            arm = [c for c in css if c[0] == sign]
+            self.assertEqual([c[1] for c in arm], [1, 2, 3])
+            self.assertEqual({c[2] for c in arm}, {token})
+            self.assertEqual([c[3] for c in arm], sorted(c[3] for c in arm))
+
+    def test_missing_sweep_detail_maps_to_running_failed_missing_or_unreadable(self):
+        self.assertEqual(self.answers["missing"],
+                         ["missing", "running", "failed", "running", "unreadable", "missing", "missing", "failed", "running"])
+
+    def test_a_failed_sweeps_reason_is_the_text_after_its_status(self):
+        self.assertEqual(self.answers["failure"], ["the holdout is locked", None, None, None, None])
+
 
 if __name__ == "__main__":
     unittest.main()

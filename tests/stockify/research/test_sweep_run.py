@@ -18,7 +18,7 @@ from tests.support import SandboxedDBTest
 import stockify.store as store
 from stockify import __main__ as cli
 from stockify import paths, research
-from stockify.research import holdout, pool, registry, sweep
+from stockify.research import holdout, plain, pool, registry, sweep
 from tests.stockify.research.fixtures import make_run
 from tests.stockify.research.test_walkforward import AXIS, FakePool, base_cfg
 from tests.stockify.test_bundle import BundleTest, run as run_config
@@ -48,6 +48,11 @@ class RunSweepTests(SandboxedDBTest):
         bad = res.rows[1]
         self.assertEqual((bad["run_id"], bad["objective_value"], bad["error"]), (None, None, "the run broke on purpose"))
         self.assertEqual(store.get_research_job(res.job_id)["status"], "done")
+        # the plain reason is stored on the row at write time; the raw text stays beside it (sweep.json, results.csv)
+        self.assertEqual(bad["failure_reason"], plain.GENERIC_FAILURE)
+        self.assertIsNone(res.rows[0]["failure_reason"])
+        stored = json.loads(store.get_research_job(res.job_id)["state_json"])["rows"]
+        self.assertEqual([r["failure_reason"] for r in stored], [None, plain.GENERIC_FAILURE, None])
 
     def test_ineligible_best_and_tie_break_by_grid_index(self):
         res, _ = self.go(fake=FakePool(net_of=lambda c: 700))          # every trial ties: the lowest index wins

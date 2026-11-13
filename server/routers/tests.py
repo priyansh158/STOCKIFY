@@ -290,9 +290,16 @@ def test_sensitivity(run_id: str) -> SensitivityDTO:
                                                bool(d["fragile"]), d["verdict"], list(d["reasons"]))
         text = plain.fragile_sentence(result, fragile_cost_scale=d["fragile_cost_scale"],
                                       fragile_extra_ticks=d["fragile_extra_ticks"])
-        return SensitivityDTO(run_id=run_id, job_id=d["job_id"], rows=[SensitivityRowDTO(**r) for r in d["rows"]],
+        # Raw refusal or exception text stays in storage: a row shows a plain reason, and so does an older file's
+        # reasons sentence, which holds the raw text inside its brackets.
+        rows_out = [SensitivityRowDTO(**{**r, "error": plain.not_run_reason(r.get("error"))}) for r in d["rows"]]
+        reasons = [re.sub(r"(could not be checked \()(.*)(\)\.)$",
+                          lambda m: m.group(1) + (m.group(2) if m.group(2) == "it did not run"
+                                                  else plain.not_run_reason(m.group(2)) or "it did not run") + m.group(3), x)
+                   for x in result.reasons]
+        return SensitivityDTO(run_id=run_id, job_id=d["job_id"], rows=rows_out,
                               baseline_net_paise=d["baseline_net_paise"], fragile=result.fragile,
-                              verdict=d["verdict"], reasons=result.reasons, plain=text)
+                              verdict=d["verdict"], reasons=reasons, plain=text)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
         raise not_run
 

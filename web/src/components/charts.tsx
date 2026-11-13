@@ -6,7 +6,10 @@
  * the SVGs keep their aspect ratio and scale with the column, so the text in them is never stretched.
  */
 import { useEffect, useRef, useState } from "react";
-import { SERIES_TOKENS, endLabelText, heatColourStep, heatMoreWord, markerIndexes, spreadLabels, splitSegments } from "@/lib/researchHelpers";
+import Link from "next/link";
+import {
+  DIVERGING, SERIES_TOKENS, divergingStep, endLabelText, heatColourStep, heatMoreWord, markerIndexes, spreadLabels, splitSegments,
+} from "@/lib/researchHelpers";
 
 const MAX_SERIES = 6;
 const HEAT_STEPS = 5;
@@ -16,6 +19,8 @@ const HEAT_MORE = heatMoreWord(HEAT_SCHEME);
 const COLOURS = SERIES_TOKENS.length;
 
 type Fmt = (n: number) => string;
+
+const upperFirst = (w: string) => w[0].toUpperCase() + w.slice(1);
 
 /** Round tick values spanning [lo, hi]: about `count` of them on a 1, 2 or 5 step. */
 function niceTicks(lo: number, hi: number, count = 5): number[] {
@@ -330,6 +335,8 @@ function IntervalSvg({ point, lo, hi, format }: { point: number; lo: number; hi:
 /**
  * A grid of numbers shaded by size, rows `ys` by columns `xs`; `cells[row][column]`, null for a run that did not finish.
  * Every cell prints its value, so shade is never the only signal, and `best` (column x, row y) is outlined and named.
+ * `signed` switches to a scale centred on zero: blue above, orange below, stronger further from zero; the values print
+ * their sign and the cells below zero are striped, so a negative reads differently by more than colour.
  */
 export function HeatGrid({
   xs,
@@ -337,6 +344,8 @@ export function HeatGrid({
   cells,
   format,
   best,
+  signed,
+  links,
   label,
   xLabel,
   yLabel,
@@ -346,6 +355,9 @@ export function HeatGrid({
   cells: (number | null)[][];
   format: Fmt;
   best?: { x: number; y: number } | null;
+  signed?: boolean;
+  /** `links[row][column]`: where a cell's value leads (its run), or null for none. */
+  links?: (string | null)[][];
   label?: string;
   xLabel?: string;
   yLabel?: string;
@@ -354,12 +366,13 @@ export function HeatGrid({
   if (flat.length === 0) return <p className="stk-label">No finished runs to show.</p>;
   const lo = Math.min(...flat);
   const hi = Math.max(...flat);
+  const maxAbs = Math.max(Math.abs(lo), Math.abs(hi));
   const bestVal = best ? cells[best.y]?.[best.x] : null;
   const summary = `${label ?? "Grid"}: ${ys.length} rows by ${xs.length} columns, from ${format(lo)} to ${format(hi)}` +
     (best && bestVal != null ? `. Best: ${ys[best.y]}, ${xs[best.x]}, ${format(bestVal)}` : "");
   return (
     <figure className="stk-heat">
-      <div className="stk-table-wrap">
+      <div className="stk-table-wrap" tabIndex={0} role="region" aria-label={`${label ?? "Grid"}, scrolls sideways when it is wider than the page`}>
         <table className="stk-table" aria-label={summary}>
           <caption>
             {label}{yLabel || xLabel ? ` (rows: ${yLabel ?? "row"}; columns: ${xLabel ?? "column"})` : ""}
@@ -377,13 +390,21 @@ export function HeatGrid({
                 {xs.map((x, xi) => {
                   const v = cells[yi]?.[xi] ?? null;
                   const isBest = best?.x === xi && best?.y === yi;
+                  const ok = v !== null && Number.isFinite(v);
+                  const d = signed && ok ? divergingStep(v, maxAbs) : 0;
                   return (
                     <td
                       key={x} className="num stk-heat-cell"
-                      data-step={v === null || !Number.isFinite(v) ? undefined : heatColourStep(v, lo, hi, HEAT_STEPS)}
+                      data-sign={signed && ok ? (d > 0 ? "pos" : d < 0 ? "neg" : "zero") : undefined}
+                      data-step={!ok ? undefined : signed ? Math.abs(d) : heatColourStep(v, lo, hi, HEAT_STEPS)}
                       data-best={isBest ? "true" : undefined}
                     >
-                      {v === null ? "—" : format(v)}
+                      {v !== null && links?.[yi]?.[xi] ? (
+                        <Link href={links[yi][xi] as string}>
+                          {format(v)}
+                          <span className="sr-only"> (open the run for {y}, {x})</span>
+                        </Link>
+                      ) : v === null ? "—" : format(v)}
                       {isBest && <span className="sr-only"> (best)</span>}
                     </td>
                   );
@@ -394,7 +415,13 @@ export function HeatGrid({
         </table>
       </div>
       <figcaption className="stk-fine">
-        {HEAT_MORE[0].toUpperCase() + HEAT_MORE.slice(1)} cells are larger values, from {format(lo)} to {format(hi)}.{best ? " The outlined cell is the best." : ""}
+        {signed
+          ? `${[
+              hi > 0 && `${upperFirst(DIVERGING.positive.word)} cells are above zero`,
+              lo < 0 && `${hi > 0 ? "" : "Cells are below zero: "}${DIVERGING.negative.word} striped cells${hi > 0 ? " are below zero" : ""}`,
+            ].filter(Boolean).join(" and ")}. ${lo < 0 ? "A minus sign marks every value below zero, so you do not need the colours to tell them apart. " : ""}The stronger the shade, the further from zero. Values run from ${format(lo)} to ${format(hi)}.`
+          : `${upperFirst(HEAT_MORE)} cells are larger values, from ${format(lo)} to ${format(hi)}.`}
+        {best ? " The outlined cell is the best." : ""}
       </figcaption>
     </figure>
   );

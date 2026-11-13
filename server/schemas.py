@@ -584,6 +584,7 @@ class ResearchCountsDTO(BaseModel):
 
 class SweepAxisDTO(BaseModel):
     path: str
+    label: str                      # a plain name from the strategy's params schema, or the path when none is known
     labels: list[str]
     values: list[Any]
 
@@ -598,7 +599,7 @@ class SweepRowDTO(BaseModel):
     net_pnl_paise: int | None = None
     trades: int | None = None
     max_drawdown: float | None = None
-    error: str | None = None
+    error: str | None = None        # a short plain clause, or None when the stored error looks like a raw log line
 
 
 class SweepBestCellDTO(BaseModel):
@@ -629,6 +630,7 @@ class SweepDTO(BaseModel):
     name: str
     family_id: str
     objective: str
+    objective_label: str            # the one name for the objective, as the plain sentence uses it
     axes: list[SweepAxisDTO]
     rows: list[SweepRowDTO]
     best_run_id: str | None = None

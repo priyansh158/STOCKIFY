@@ -1,5 +1,5 @@
 /** Pure helpers for the research pages. No imports of the fetch wrapper, so Node can run them directly in the checks. */
-import type { RegimeBucketDTO } from "./types";
+import type { RegimeBucketDTO, SweepHeatmapDTO } from "./types";
 
 /** Which of `steps` equal bands of [min, max] a value falls in (0 to steps-1). Out of range clamps; a flat range or NaN is 0. */
 export function heatColourStep(value: number, min: number, max: number, steps: number): number {
@@ -289,4 +289,83 @@ export function markerIndexes(n: number, seriesIndex: number, target = 6): numbe
   for (let i = seriesIndex % step; i < n; i += step) out.push(i);
   if (out[out.length - 1] !== n - 1) out.push(n - 1);
   return out;
+}
+
+/**
+ * The two arms of a scale centred on zero: a value above zero is `info` (blue), below zero is `warn` (orange). The pair passed
+ * the dataviz validator on the dark surface for colour-blind separation (deutan and protan 22, tritan 25). The caption's colour
+ * words come from here; globals.css (.stk-heat-cell[data-sign]) must use the same tokens, which research_check.ts checks.
+ */
+export const DIVERGING = {
+  positive: { token: "info", word: "blue" },
+  negative: { token: "warn", word: "orange" },
+} as const;
+
+/** Levels of strength on each side of zero. */
+export const DIVERGING_LEVELS = 3;
+
+/**
+ * Where a value sits on a scale centred on zero: -levels to levels, 0 for zero, NaN or a zero range. The size is how far
+ * from zero it is as a share of `maxAbs` (the largest absolute value in the grid); the sign is kept. Beyond the range clamps.
+ */
+export function divergingStep(value: number, maxAbs: number, levels: number = DIVERGING_LEVELS): number {
+  if (!Number.isFinite(value) || !(maxAbs > 0) || value === 0) return 0;
+  const level = 1 + Math.min(levels - 1, Math.floor((Math.abs(value) / maxAbs) * levels));
+  return value < 0 ? -level : level;
+}
+
+const MINUS = "−";
+const INR_WHOLE = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
+
+/**
+ * A number formatter for a sweep objective's format kind (ratio, percent as a fraction, paise as rupees). When `signed`, a
+ * positive value carries "+" and a negative one a true minus sign, so the sign is read in the text as well as the colour.
+ * An unknown kind is a plain number; NaN is a dash.
+ */
+export function heatFormat(kind: string, signed: boolean): (n: number) => string {
+  return (n) => {
+    if (!Number.isFinite(n)) return "—";
+    const sign = n < 0 ? MINUS : signed && n > 0 ? "+" : "";
+    const a = Math.abs(n);
+    if (kind === "ratio") return `${sign}${a.toFixed(2)}`;
+    if (kind === "percent") return `${sign}${(a * 100).toFixed(2)} %`;
+    if (kind === "paise") return `${sign}₹${INR_WHOLE.format(Math.round(a) / 100)}`;
+    return `${sign}${Number(a.toPrecision(6))}`;
+  };
+}
+
+/**
+ * What the page hands HeatGrid: the sweep's cells as they are, `format` as a function, `best` {xi, yi} as {x, y}, and a link
+ * to the run behind each cell. `labels` (path to plain name) names the axes; `scored` names the single row of a one-axis sweep.
+ */
+export function heatGridProps(d: SweepHeatmapDTO, opts: { labels?: Record<string, string>; scored?: string } = {}) {
+  return {
+    xs: d.xs,
+    ys: d.y === null && opts.scored ? [opts.scored] : d.ys,
+    cells: d.cells,
+    format: heatFormat(d.format, d.signed),
+    best: d.best ? { x: d.best.xi, y: d.best.yi } : null,
+    signed: d.signed,
+    xLabel: opts.labels?.[d.x] ?? d.x,
+    yLabel: d.y === null ? "Objective" : opts.labels?.[d.y] ?? d.y,
+    links: d.run_ids.map((row) => row.map((id) => (id ? `/tests/${encodeURIComponent(id)}` : null))),
+  };
+}
+
+export type SweepGone = "running" | "failed" | "missing" | "unreadable";
+
+const NOT_FINISHED = /^sweep not finished yet \(status: ([a-z_]+)\)(?:: ([\s\S]*))?$/;
+
+/** Which plain state a sweep's 404 detail from the server stands for (see sweep_detail in server/routers/research.py). */
+export function sweepMissingKind(detail: string): SweepGone {
+  const m = NOT_FINISHED.exec(detail.trim());
+  if (m) return m[1] === "failed" ? "failed" : "running";
+  if (detail.trim() === "the sweep has no readable stored result") return "unreadable";
+  return "missing";
+}
+
+/** The plain reason a failed sweep carries in its 404 detail (a sentence from the server's fixed table), or null. */
+export function sweepFailureReason(detail: string): string | null {
+  const m = NOT_FINISHED.exec(detail.trim());
+  return m && m[1] === "failed" && m[2]?.trim() ? m[2].trim() : null;
 }
