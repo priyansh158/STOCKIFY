@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from server.routers.research import run_research_dto
-from server.schemas import (RunResearchDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
+from server.schemas import (ComparisonDTO, RunResearchDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 
 router = APIRouter(tags=["tests"])
@@ -207,10 +207,27 @@ def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     return TestCreatedDTO(run_id=run_id)
 
 
-@router.get("/api/tests/compare")
-def compare_tests() -> None:
-    """Reserved for M6 (A2 §6): declared here so `compare` is never read as a run id."""
-    raise HTTPException(status_code=501, detail="comparing tests arrives in M6")
+_MAX_ID = 128  # paths.run_path's own bound
+
+
+@router.get("/api/tests/compare", response_model=ComparisonDTO)
+def compare_tests(ids: list[str] = Query(default=[], max_length=24)) -> ComparisonDTO:
+    """2 to 6 finished runs side by side (DMF 6.1). `ids` repeats (`?ids=a&ids=b`); a comma list is split too.
+    Declared before `/api/tests/{run_id}` so `compare` is never read as a run id."""
+    from stockify.reporting import compare as rc
+    from server.routers.research import _clean
+    wanted = [p.strip() for v in ids for p in v.split(",") if p.strip()]
+    if not rc.MIN_RUNS <= len(wanted) <= rc.MAX_RUNS or len(set(wanted)) != len(wanted):
+        raise HTTPException(status_code=422, detail="compare 2 to 6 runs")
+    if any(len(w) > _MAX_ID for w in wanted):
+        raise HTTPException(status_code=422, detail=f"a run id is at most {_MAX_ID} characters")
+    try:
+        c = rc.compare_runs(wanted)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"no test run {str(e.args[0])!r}") from None
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    return ComparisonDTO(**_clean(c))
 
 
 # ── one run ──────────────────────────────────────────────────────────────────

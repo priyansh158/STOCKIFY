@@ -517,4 +517,36 @@ class FamilyDetailDTO(BaseModel):
     sessions: list[dict[str, Any]]
     holdout_unlocks: list[dict[str, Any]]
     plain: dict[str, str]
+
+
+class CompareMetricDTO(BaseModel):
+    key: str
+    label: str
+    values: list[float | int | None]
+    kind: str
+    plain: str
+
+
+class CompareDiffDTO(BaseModel):
+    field: str
+    values: list[str | None]
+    differs: bool
+
+
+class CompareSeriesDTO(BaseModel):
+    run_id: str
+    dates: list[str]
+    values: list[float | None]
+
+
+class ComparisonDTO(BaseModel):
+    run_ids: list[str]
+    names: list[str]
+    metrics: list[CompareMetricDTO]
+    equity: list[CompareSeriesDTO]
+    drawdown: list[CompareSeriesDTO]
+    labels: dict[str, list[bool]]
+    differing_labels: list[str]
+    manifest_diff: list[CompareDiffDTO]
+    notes: list[str]
 # </block>

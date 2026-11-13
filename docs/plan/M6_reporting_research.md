@@ -12,8 +12,8 @@ Concepts: C-4, C-14, C-16, C-17.
 
 ## M6.1 Compare runs (S)
 
-- [ ] `/tests/compare?ids=…` (2–6 runs): metrics side by side, equity curves normalised to 1.0, drawdowns, labels with differences highlighted, and a manifest diff (parameters, fill model, margin model, config hashes, engine build).
-- [ ] CLI: `python -m stockify compare <run_id> <run_id> …` prints the same table.
+- [x] `/tests/compare?ids=…` (2–6 runs): metrics side by side, equity curves normalised to 1.0, drawdowns, labels with differences highlighted, and a manifest diff (parameters, fill model, margin model, config hashes, engine build).
+- [x] CLI: `python -m stockify compare <run_id> <run_id> …` prints the same table.
 
 ## M6.2 Export (S)
 
