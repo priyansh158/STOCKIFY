@@ -84,6 +84,10 @@ python -m stockify sensitivity --run <best_run_id>
 cd web; npm run lint; npm run build
 ```
 
+## Candlestick charts (CH)
+
+- [x] CH 6.1 Note cleaning and Indian-grouped price and quantity text, the same in Python and C++ (`stockify/oracle/notes.py`, `engine/src/notes.cpp`; `fmt_price`, `fmt_qty`, `to_level` exported from `stockify.strategy`).
+
 ## Definition of done
 
 The demo report exists and the owner has read it; `/data` shows the full coverage history; DSR and bootstrap intervals appear on every run page; all boxes ticked.

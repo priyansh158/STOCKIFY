@@ -18,6 +18,7 @@
 #include "stocksim/artifacts.hpp"
 #include "stocksim/engine.hpp"
 #include "stocksim/errors.hpp"
+#include "stocksim/notes.hpp"
 #include "stocksim/pack_reader.hpp"
 #include "stocksim/sod_state.hpp"
 
@@ -573,6 +574,12 @@ void bind_engine(py::module_& m) {
             }
             return out;
         });
+
+    m.def("clean_note", &stocksim::clean_note, py::arg("text"),
+          "CH 6.1: sanitise an order note (bytes or str; invalid UTF-8 becomes U+FFFD).");
+    m.def("fmt_price", &stocksim::fmt_price, py::arg("paise"), "Paise as Indian-grouped rupee text.");
+    m.def("fmt_qty", &stocksim::fmt_qty, py::arg("units"), "Units as Indian-grouped text.");
+    m.def("to_level", &stocksim::to_level, py::arg("x"), "x * 10,000 rounded half to even.");
 
     m.def("strategies", &stocksim::strategy_names, "The registered C++ strategies' names, sorted.");
 

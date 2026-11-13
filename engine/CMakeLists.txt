@@ -92,6 +92,7 @@ add_library(stocksim_core STATIC
   src/matcher.cpp
   src/metrics.cpp
   src/artifacts.cpp
+  src/notes.cpp
   src/pricing/black76.cpp
   src/margin/spanlite.cpp
   src/margin/span_exact.cpp
@@ -136,7 +137,8 @@ add_executable(stocksim_tests
   tests/test_black76.cpp
   tests/test_span_exact.cpp
   tests/test_margin_live.cpp
-  tests/test_matcher_extra_ticks.cpp)
+  tests/test_matcher_extra_ticks.cpp
+  tests/test_notes.cpp)
 target_link_libraries(stocksim_tests PRIVATE stocksim_strategies stocksim_core)
 target_compile_definitions(stocksim_tests PRIVATE STOCKSIM_FIXTURES_DIR="${REPO_ROOT}/tests/fixtures")
 target_compile_options(stocksim_tests PRIVATE ${STOCKSIM_CXX_FLAGS})
