@@ -113,6 +113,7 @@ function Results({ sweep, scored, pickedRunId }: { sweep: SweepDTO; scored: stri
                 <td className="num">{r.trades === null ? "—" : r.trades.toLocaleString("en-IN")}</td>
                 <td className="num">{r.max_drawdown === null ? "—" : pct(r.max_drawdown)}</td>
                 <td data-wrap>
+                  {r.run_id !== null && r.run_id === pickedRunId && <Chip tone="info">Chosen</Chip>}
                   {best && <Chip tone="up">Best</Chip>}
                   {!done && <Chip tone="warn">Did not finish</Chip>}
                   {!done && r.error && <div className="stk-label">{r.error}</div>}
@@ -158,8 +159,11 @@ function TrialSection({ sweep, trial }: { sweep: SweepDTO; trial: ReturnType<typ
             <Link href={`/tests/${encodeURIComponent(row.run_id)}`}>Open its run page</Link>
           </p>
           <Panel>
-            <TrialChart key={row.run_id} runId={row.run_id} title={`Trial: ${trialWords(sweep.axes, row.params)}`} />
+            <TrialChart key={row.run_id} runId={row.run_id} pick={trial.kind === "picked"} title={`Trial: ${trialWords(sweep.axes, row.params)}`} />
           </Panel>
+          <p>
+            <Link href="#grid-h">Back to the grid</Link>
+          </p>
         </div>
       )}
     </section>
