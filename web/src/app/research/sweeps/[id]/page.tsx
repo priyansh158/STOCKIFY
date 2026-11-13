@@ -5,9 +5,11 @@ import { ApiError } from "@/lib/api";
 import { pct } from "@/lib/format";
 import { getSweep, heatFormat, heatGridProps } from "@/lib/research";
 import type { SweepDTO, SweepRowDTO } from "@/lib/types";
+import { resolveTrial, trialHref, trialWords } from "@/lib/chart";
 import { Chip, Empty, PageHead, Panel, Table } from "@/components/ui";
 import AxisPicker from "./AxisPicker";
 import SweepGrid from "./SweepGrid";
+import TrialChart from "./TrialChart";
 
 export const metadata: Metadata = { title: "Sweep - STOCKIFY" };
 export const dynamic = "force-dynamic";
@@ -72,7 +74,7 @@ function Pick({ sweep, x, y }: { sweep: SweepDTO; x: string; y: string | null })
   return <AxisPicker axes={sweep.axes.map((a) => ({ path: a.path, label: a.label }))} x={x} y={y ?? sweep.axes.find((a) => a.path !== x)?.path ?? x} />;
 }
 
-function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
+function Results({ sweep, scored, pickedRunId }: { sweep: SweepDTO; scored: string; pickedRunId: string | null }) {
   const axes = sweep.axes;
   const fmt = heatGridProps(sweep.cells).format;
   const money = heatFormat("paise", true);
@@ -101,7 +103,7 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
             const best = r.run_id !== null && r.run_id === sweep.best_run_id;
             const done = r.status === "done";
             return (
-              <tr key={r.index} data-best={best ? "true" : undefined}>
+              <tr key={r.index} data-best={best ? "true" : undefined} data-picked={r.run_id !== null && r.run_id === pickedRunId ? "true" : undefined}>
                 {axes.map((a) => (
                   <td key={a.path}>{valueLabel(r.params[a.path])}</td>
                 ))}
@@ -115,10 +117,14 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
                   {!done && <Chip tone="warn">Did not finish</Chip>}
                   {!done && r.error && <div className="stk-label">{r.error}</div>}
                   {done && r.run_id && (
-                    <div>
+                    <div className="stk-row">
+                      <Link href={trialHref(sweep.job_id, sweep.cells.x, sweep.cells.y, r.run_id)} aria-current={r.run_id === pickedRunId ? "true" : undefined}>
+                        Show chart
+                        <span className="sr-only"> for {trialWords(axes, r.params)}</span>
+                      </Link>
                       <Link href={`/tests/${encodeURIComponent(r.run_id)}`}>
                         Open run
-                        <span className="sr-only"> for {axes.map((a) => `${a.label} ${valueLabel(r.params[a.path])}`).join(", ")}</span>
+                        <span className="sr-only"> for {trialWords(axes, r.params)}</span>
                       </Link>
                     </div>
                   )}
@@ -132,7 +138,37 @@ function Results({ sweep, scored }: { sweep: SweepDTO; scored: string }) {
   );
 }
 
-function Full({ sweep, warning }: { sweep: SweepDTO; warning: boolean }) {
+function TrialSection({ sweep, trial }: { sweep: SweepDTO; trial: ReturnType<typeof resolveTrial<SweepRowDTO>> }) {
+  const row = trial.row;
+  return (
+    <section id="trial-chart" className="stk-section stk-trial" aria-label="Chart of the chosen trial">
+      {row === null || row.run_id === null ? (
+        <>
+          <h2>Trial chart</h2>
+          <Empty>
+            {trial.kind === "none"
+              ? "No trial finished with a usable result, so there is no chart to show."
+              : "There is no finished trial with this id, so there is no chart to show. Choose a square in the grid or a row in the table."}
+          </Empty>
+        </>
+      ) : (
+        <div className="stk-stack-s">
+          <p className="stk-fine">
+            {trial.kind === "best" ? "This is the best trial. Choose another square or row to see its chart." : "This is the trial you chose."}{" "}
+            <Link href={`/tests/${encodeURIComponent(row.run_id)}`}>Open its run page</Link>
+          </p>
+          <Panel>
+            <TrialChart key={row.run_id} runId={row.run_id} title={`Trial: ${trialWords(sweep.axes, row.params)}`} />
+          </Panel>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Full({ sweep, warning, trialParam }: { sweep: SweepDTO; warning: boolean; trialParam: string | undefined }) {
+  const trial = resolveTrial(trialParam, sweep.rows, sweep.best_run_id);
+  const pickedRunId = trial.row?.run_id ?? null;
   const c = sweep.cells;
   const scored = sweep.objective_label;
   const none = c.cells.flat().every((v) => v === null);
@@ -155,11 +191,12 @@ function Full({ sweep, warning }: { sweep: SweepDTO; warning: boolean }) {
           {none ? (
             <Empty>No trial finished with a usable result, so there is nothing to shade. The table below says what happened to each one.</Empty>
           ) : (
-            <SweepGrid cells={c} labels={Object.fromEntries(sweep.axes.map((a) => [a.path, a.label]))} scored={upperFirst(scored)} caption={caption} />
+            <SweepGrid sweepId={sweep.job_id} pickedRunId={pickedRunId} cells={c} labels={Object.fromEntries(sweep.axes.map((a) => [a.path, a.label]))} scored={upperFirst(scored)} caption={caption} />
           )}
         </div>
       </section>
-      <Results sweep={sweep} scored={scored} />
+      <TrialSection sweep={sweep} trial={trial} />
+      <Results sweep={sweep} scored={scored} pickedRunId={pickedRunId} />
     </Page>
   );
 }
@@ -169,7 +206,7 @@ export default async function SweepPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ x?: string | string[]; y?: string | string[] }>;
+  searchParams: Promise<{ x?: string | string[]; y?: string | string[]; trial?: string | string[] }>;
 }) {
   const { id } = await params;
   const sp = await searchParams;
@@ -194,7 +231,7 @@ export default async function SweepPage({
   }
   switch (res.kind) {
     case "ready":
-      return <Full sweep={res.sweep} warning={warning} />;
+      return <Full sweep={res.sweep} warning={warning} trialParam={first(sp.trial)} />;
     case "running":
       return (
         <Page title="This sweep is still running">

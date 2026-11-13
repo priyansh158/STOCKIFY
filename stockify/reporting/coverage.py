@@ -33,6 +33,9 @@ NO_INSTRUMENTS = "no instruments recorded in this mode"
 _DAY_METRICS = ("coverage_full_n", "coverage_quote_n", "coverage_unlogged_n", "coverage_full_pct",
                 "coverage_quote_pct")
 _BAR_LIMIT = 100
+_TIMEOUT_S = 5.0
+# What each store is called in the plain sentences of `CoverageMatrix.errors` (no file names or paths).
+_STORE_NAMES = {"refdata": "recorded-day and download store", "bars": "bar store", "lab": "recorder status"}
 _DAY_NS = 86_400 * timeutil.NS_PER_S
 
 
@@ -63,6 +66,8 @@ class CoverageMatrix:
     bars: list[dict]
     storage: dict
     recorder: dict | None = field(default=None)
+    errors: list[str] = field(default_factory=list)
+    error_stores: list[str] = field(default_factory=list)   # the `_STORE_NAMES` keys of the stores `errors` names
 
 
 def _num(x) -> float | None:  # noqa: ANN001
@@ -87,23 +92,39 @@ def datasets() -> list[dict[str, str]]:
     return out
 
 
-def _rows(db_path, sql: str, args: tuple = ()) -> list:  # noqa: ANN001
+def _sentence(store_key: str) -> str:
+    return f"Couldn't read the {_STORE_NAMES[store_key]}."
+
+
+def _unreadable(errors: list[str] | None, store_key: str) -> None:
+    """Record, once per store, that it could not be read (the sentence is `_sentence(store_key)`)."""
+    sentence = _sentence(store_key)
+    if errors is not None and sentence not in errors:
+        errors.append(sentence)
+
+
+def _rows(db_path, sql: str, args: tuple = (), *, errors: list[str] | None = None, store_key: str = "refdata") -> list:  # noqa: ANN001
     """A read of refdata.sqlite or bars.sqlite on its own READ-ONLY connection (`mode=ro`), closed after use.
 
     Never through `refdata._connect()` / `history._connect()`: those open read-write, switch on WAL, create the
     folder and apply migrations, and this runs while the daemon is writing the same files. A missing file or a
-    missing table or column (an older schema) reads as no rows.
+    missing table or column (an older schema) reads as no rows. A file that exists but cannot be read (locked,
+    corrupt, not a database, unopenable) reads as no rows too, and adds one plain sentence to `errors` so the page can
+    say so instead of showing an empty lab.
     """
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(paths.readonly_uri(db_path), uri=True, timeout=5.0)
+        conn = sqlite3.connect(paths.readonly_uri(db_path), uri=True, timeout=_TIMEOUT_S)
     except sqlite3.Error:
+        _unreadable(errors, store_key)
         return []
     try:
         conn.row_factory = sqlite3.Row
         return conn.execute(sql, args).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.DatabaseError as e:
+        if not str(e).startswith(("no such table", "no such column")):
+            _unreadable(errors, store_key)
         return []
     finally:
         conn.close()
@@ -152,16 +173,16 @@ def _nse_cell(row) -> Cell:  # noqa: ANN001
                 else "download failed")
 
 
-def _bars(limit: int) -> list[dict]:
+def _bars(limit: int, errors: list[str]) -> list[dict]:
     rows = _rows(paths.bars_db(),
                  "SELECT instrument_id, interval, MIN(from_ns) AS a, MAX(to_ns) AS b, SUM(rows) AS n "
                  "FROM bar_fetch_log WHERE outcome='ok' GROUP BY instrument_id, interval "
-                 "ORDER BY b DESC, instrument_id, interval LIMIT ?", (int(limit),))
+                 "ORDER BY b DESC, instrument_id, interval LIMIT ?", (int(limit),), errors=errors, store_key="bars")
     out = []
     ids = sorted({int(r["instrument_id"]) for r in rows})
     names = {r["instrument_id"]: r["tradingsymbol"] for r in _rows(
         paths.refdata_db(), f"SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
-        f"({','.join('?' * len(ids))})", tuple(ids))} if ids else {}
+        f"({','.join('?' * len(ids))})", tuple(ids), errors=errors)} if ids else {}
     for r in rows:
         a, b = int(r["a"]), int(r["b"])
         first, last = timeutil.ns_to_ist(a).date(), timeutil.ns_to_ist(b).date()
@@ -183,13 +204,13 @@ def _size(path) -> int:  # noqa: ANN001
     return total
 
 
-def _storage() -> dict:
+def _storage(errors: list[str]) -> dict:
     """`lab_bytes` is lab.sqlite plus bars.sqlite (with their -wal/-shm); the tick landing files, the archive and
     the NSE folder are not in it (the first two are `landing_bytes` / `archive_bytes`, from `tick_days`)."""
     sums = _rows(paths.refdata_db(),
                  "SELECT COALESCE(SUM(CASE WHEN status != 'landing_deleted' THEN landing_bytes END), 0) AS l, "
-                 "COALESCE(SUM(archive_bytes), 0) AS a FROM tick_days")
-    nse = _rows(paths.refdata_db(), "SELECT COALESCE(SUM(bytes), 0) AS n FROM nse_fetch_log")
+                 "COALESCE(SUM(archive_bytes), 0) AS a FROM tick_days", errors=errors)
+    nse = _rows(paths.refdata_db(), "SELECT COALESCE(SUM(bytes), 0) AS n FROM nse_fetch_log", errors=errors)
     usage = shutil.disk_usage(paths.lab_dir())
     return {"landing_bytes": int(sums[0]["l"]) if sums else 0, "archive_bytes": int(sums[0]["a"]) if sums else 0,
             "refdata_bytes": _size(paths.refdata_db()),
@@ -203,16 +224,17 @@ def matrix(from_: date, to: date, *, bar_limit: int = _BAR_LIMIT) -> CoverageMat
     if to < from_:
         raise ValueError("to is before from")
     refdb = paths.refdata_db()
+    errors: list[str] = []
     lo, hi = from_.isoformat(), to.isoformat()
     tick_days = {r["trade_date"]: r for r in _rows(
-        refdb, "SELECT trade_date, status FROM tick_days WHERE trade_date BETWEEN ? AND ?", (lo, hi))}
+        refdb, "SELECT trade_date, status FROM tick_days WHERE trade_date BETWEEN ? AND ?", (lo, hi), errors=errors)}
     quality: dict[str, dict] = {}
     for r in _rows(refdb, "SELECT trade_date, metric, value FROM data_quality WHERE instrument_id=0 AND metric IN "
-                   f"({','.join('?' * len(_DAY_METRICS))}) AND trade_date BETWEEN ? AND ?", (*_DAY_METRICS, lo, hi)):
+                   f"({','.join('?' * len(_DAY_METRICS))}) AND trade_date BETWEEN ? AND ?", (*_DAY_METRICS, lo, hi), errors=errors):
         quality.setdefault(r["trade_date"], {})[r["metric"]] = r["value"]
     fetches = {(r["dataset"], r["trade_date"]): r for r in _rows(
         refdb, "SELECT dataset, trade_date, outcome, http_status, parsed_ok FROM nse_fetch_log "
-        "WHERE trade_date BETWEEN ? AND ?", (lo, hi))}
+        "WHERE trade_date BETWEEN ? AND ?", (lo, hi), errors=errors)}
     listed = datasets()
     ok_pct = _ok_pct()
     today = timeutil.ist_today()
@@ -240,7 +262,14 @@ def matrix(from_: date, to: date, *, bar_limit: int = _BAR_LIMIT) -> CoverageMat
                 cells[key] = _nse_cell(fetches.get((name, iso)))
         days.append(CoverageDay(d, trading, cells))
         d += timedelta(days=1)
-    return CoverageMatrix(from_, to, listed, days, _bars(bar_limit), _storage(), store.latest_recorder_status())
+    bars, storage = _bars(bar_limit, errors), _storage(errors)
+    try:
+        recorder = store.latest_recorder_status()
+    except (sqlite3.Error, OSError):
+        recorder = None
+        _unreadable(errors, "lab")
+    error_stores = [key for key in _STORE_NAMES if _sentence(key) in errors]
+    return CoverageMatrix(from_, to, listed, days, bars, storage, recorder, errors, error_stores)
 
 
 def gaps(day: date) -> list[dict]:
@@ -267,4 +296,5 @@ def to_dict(m: CoverageMatrix) -> dict:
     return {"from_date": m.from_.isoformat(), "to_date": m.to.isoformat(), "datasets": m.datasets,
             "days": [{"date": d.date.isoformat(), "trading": d.trading,
                       "cells": {k: _cell_dict(c) for k, c in d.cells.items()}} for d in m.days],
-            "bars": m.bars, "storage": m.storage, "recorder": m.recorder}
+            "bars": m.bars, "storage": m.storage, "recorder": m.recorder, "errors": m.errors,
+            "error_stores": m.error_stores}

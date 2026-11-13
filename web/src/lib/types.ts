@@ -423,6 +423,7 @@ export interface RegimeBucketDTO {
   up_days: number;
   up_share: number | null;
   thin: boolean;
+  plain?: string | null;
 }
 
 export interface RegimeReportDTO {
@@ -509,6 +510,7 @@ export interface FamilySummaryDTO {
   best_run_id: string | null;
   best_dsr: number | null;
   unlocks: number;
+  best_plain: string;
 }
 
 export interface FamilyDetailDTO {
@@ -542,6 +544,13 @@ export interface ResearchJobDTO {
   created_ns: number;
   finished_ns: number | null;
   error: string | null;
+  plain: string;
+}
+
+export interface ResearchCountsDTO {
+  families: number;
+  sweeps: number;
+  walkforwards: number;
 }
 
 export interface SweepAxisDTO {
@@ -677,6 +686,8 @@ export interface CoverageMatrixDTO {
   bars: BarRangeDTO[];
   storage: StorageDTO;
   recorder?: RecorderStatus | null;
+  errors: string[];
+  error_stores: string[];
 }
 
 export interface GapDTO {
@@ -722,6 +733,8 @@ export interface WalkforwardWindowDTO {
   chosen_run_id?: string | null;
   test_run_id?: string | null;
   test_status: string;
+  result: string;
+  no_sharpe: string;
   error?: string | null;
   train?: Record<string, unknown> | null;
   test?: Record<string, unknown> | null;

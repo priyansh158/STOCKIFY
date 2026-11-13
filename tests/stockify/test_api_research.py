@@ -56,12 +56,24 @@ class ResearchApiTests(SandboxedDBTest):
         reg = j["regimes"]
         self.assertEqual(list(reg), ["month", "weekday", "expiry", "vix", "gap", "vix_source", "notes"])
         self.assertEqual(list(reg["month"][0]), ["label", "days", "pnl_paise", "mean_pnl_paise", "up_days",
-                                                 "up_share", "thin"])
+                                                 "up_share", "thin", "plain"])
         for dim in ("month", "weekday", "expiry", "vix", "gap"):
             self.assertEqual(sum(b["days"] for b in reg[dim]), 30, dim)
         self.assertEqual([b["label"] for b in reg["vix"]], ["no data"])
         self.assertIn("regimes_caveat", j["plain"])
         self.assertIn("dsr", j["plain"])
+
+    def test_run_research_carries_the_server_meanings_and_bucket_sentences(self):
+        from stockify.research import plain
+        j = self.client.get("/api/tests/r0/research").json()
+        for key in ("trials", "holdout_unlocks", "regime_month", "regime_weekday", "regime_expiry", "regime_vix",
+                    "regime_gap"):
+            self.assertEqual(j["plain"][key], plain.meaning(key), key)
+        self.assertEqual(j["plain"]["dsr_meaning"], plain.meaning("dsr"))
+        rep = report.run_research("r0")
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            want = [plain.regime_sentence(b) for b in getattr(rep.regimes, dim)]
+            self.assertEqual([b["plain"] for b in j["regimes"][dim]], want, dim)
 
     def test_run_research_404(self):
         r = self.client.get("/api/tests/nope/research")
@@ -76,6 +88,8 @@ class ResearchApiTests(SandboxedDBTest):
         self.assertIsNone(j["dsr"])
         self.assertIsNone(j["bootstrap"])
         self.assertTrue(j["plain"]["dsr"])
+        self.assertIsNone(j["regimes"])
+        self.assertFalse([k for k in j["plain"] if k.startswith("regime_")])
 
     def test_families_list_and_detail(self):
         r = self.client.get("/api/research/families")
@@ -83,6 +97,8 @@ class ResearchApiTests(SandboxedDBTest):
         rows = r.json()
         self.assertEqual([f["family_id"] for f in rows], [FAM, OTHER])
         self.assertEqual(rows[0]["n_trials"], 3)
+        self.assertIn("best of 3 tries", rows[0]["best_plain"])
+        self.assertEqual(rows[1]["best_plain"], "the only try, so nothing to allow for")
         self.assertEqual(len(self.client.get("/api/research/families", params={"limit": 1}).json()), 1)
         self.assertEqual(self.client.get("/api/research/families", params={"offset": 1}).json()[0]["family_id"],
                          OTHER)
@@ -262,6 +278,39 @@ class SweepApiTests(SandboxedDBTest):
         from server.main import app
         self.client = TestClient(app, base_url=support.API_BASE_URL)
 
+    def test_the_jobs_list_carries_a_plain_reason_never_the_raw_error(self):
+        b = chr(92)
+        raw = {"sweep-v": "ValueError: bad window", "sens-p": "boom at C:" + b + "secret" + b + "path",
+               "wf-h": "HoldoutLocked: the span C:/x/y crosses the holdout", "wf-r": "WalkforwardRunError: 1 for 2",
+               "wf-k": "KeyError: 'secret-key'"}
+        for i, (jid, err) in enumerate(raw.items()):
+            kind = "walkforward" if jid.startswith("wf") else "sweep"
+            add_sweep_job(None, jid, kind=kind, status="failed", created_ns=i + 1)
+            store.update_research_job(jid, error=err)
+        add_sweep_job(None, "wf-new", kind="walkforward", status="failed", created_ns=9)
+        store.update_research_job("wf-new", error="ValueError: bad window",
+                                  state_json=json.dumps({"windows": [], "failure_reason": "the holdout is locked"}))
+        add_sweep_job(None, "wf-ok", kind="walkforward", status="running", created_ns=10)
+        r = self.client.get("/api/research/jobs")
+        for needle in ("bad window", "ValueError", "secret", "KeyError", "crosses the holdout", "1 for 2"):
+            self.assertNotIn(needle, r.text, needle)
+        got = {j["job_id"]: j["error"] for j in r.json()}
+        self.assertEqual(got, {
+            "sweep-v": "Failed", "sens-p": "Failed", "wf-h": "the holdout is locked",
+            "wf-r": "the run pool returned the wrong number of results", "wf-k": "Failed",
+            "wf-new": "the holdout is locked", "wf-ok": None})
+
+    def test_counts_give_the_totals_behind_the_capped_overview_lists(self):
+        self.assertEqual(self.client.get("/api/research/counts").json(),
+                         {"families": 0, "sweeps": 0, "walkforwards": 0})
+        store.add_family("strat/x/sharpe", objective="sharpe", description=None)
+        add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
+        add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)
+        add_sweep_job(None, "wf-1", kind="walkforward", status="running", created_ns=3)
+        add_sweep_job(None, "s-1", kind="sensitivity", created_ns=4)
+        self.assertEqual(self.client.get("/api/research/counts").json(),
+                         {"families": 1, "sweeps": 2, "walkforwards": 1})
+
     def test_jobs_list_filters_by_kind(self):
         add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
         add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)
@@ -269,7 +318,8 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/jobs")
         self.assertEqual([j["job_id"] for j in r.json()], ["wf-1", "sweep-b", "sweep-a"])
         self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "family_id", "status", "created_ns",
-                                             "finished_ns", "error"])
+                                             "finished_ns", "error", "plain"])
+        self.assertEqual([j["plain"] for j in r.json()], ["still running", "finished", "finished"])
         r = self.client.get("/api/research/jobs", params={"kind": "sweep"})
         self.assertEqual([j["job_id"] for j in r.json()], ["sweep-b", "sweep-a"])
         self.assertEqual(self.client.get("/api/research/jobs", params={"kind": "sweep", "limit": 1,
@@ -499,11 +549,12 @@ class WalkforwardApiTests(SandboxedDBTest):
                                                      "dsr", "psr"])
         self.assertEqual(len(j["windows"]), 2)
         self.assertEqual(list(j["windows"][0]), ["index", "train_from", "train_to", "test_from", "test_to",
-                                                 "chosen_params", "chosen_run_id", "test_run_id", "test_status",
+                                                 "chosen_params", "chosen_run_id", "test_run_id", "test_status", "result", "no_sharpe",
                                                  "error", "train", "test"])
         self.assertIsInstance(j["windows"][0]["test"]["net_pnl_paise"], int)
         self.assertEqual((len(j["stitched_dates"]), len(j["stitched_index"])), (12, 12))
-        self.assertEqual(sorted(j["plain"]), ["dsr", "holdout", "pbo", "ratio", "stability"])
+        self.assertEqual(sorted(j["plain"]), sorted([
+            "coverage", "curve", "dsr", "few_days", "flatter", "gaps", "holdout", "n_note", "objective", "pbo", "pbo_lead", "ratio", "ratio_caveat", "ratio_lead", "sensitivity", "setup", "stability", "stability_lead", "y_label"]))
         self.assertIn("of the in-sample Sharpe out of sample", j["plain"]["ratio"])
         self.assertIn("the windows cover different days", j["plain"]["pbo"])
         # unknown, unsafe and other-kind jobs are 404
@@ -512,6 +563,41 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertEqual(self.client.get("/api/research/walkforward/").status_code, 404)
         store.create_research_job({"job_id": "sw-9", "kind": "sweep", "name": "s", "status": "done", "created_ns": 1})
         self.assertEqual(self.client.get("/api/research/walkforward/sw-9").status_code, 404)
+
+    def test_the_report_notes_and_each_window_result_come_from_the_server(self):
+        from stockify.research import wf_report
+        self.finished()
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        for key in ("objective", "setup", "flatter", "ratio_caveat", "coverage", "n_note", "curve", "ratio", "dsr"):
+            self.assertTrue(j["plain"][key], key)
+        self.assertIn("calendar days", j["plain"]["setup"])
+        report = wf_report.render(self.job).read_text(encoding="utf-8")       # the same lines are in report.md
+        for key in ("setup", "flatter", "ratio_caveat", "coverage", "n_note"):
+            self.assertIn(j["plain"][key], report, key)
+        self.assertEqual([w["result"] for w in j["windows"]], ["tested"] * len(j["windows"]))
+        self.assertIn(f"--walkforward {self.job} --sensitivity-run", j["plain"]["sensitivity"])
+        self.assertIn("isn't stored", j["plain"]["sensitivity"])
+        self.assertEqual(j["plain"]["y_label"], "growth of 1 (dashed line = starting capital)")
+        self.assertIn("left empty", j["plain"]["gaps"])
+        for key in ("ratio_lead", "stability_lead", "pbo_lead"):
+            self.assertTrue(j["plain"][key], key)
+
+    def test_a_window_whose_run_has_no_sharpe_carries_the_server_word_for_it(self):
+        self.finished()
+        f = paths.research_path(self.job) / "walkforward.json"
+        doc = json.loads(f.read_text(encoding="utf-8"))
+        doc["windows"][0]["test"]["sharpe"] = None
+        doc["windows"][1]["train"]["sharpe"] = None
+        f.write_text(json.dumps(doc), encoding="utf-8")
+        ws = self.client.get(f"/api/research/walkforward/{self.job}").json()["windows"]
+        self.assertEqual([w["no_sharpe"] for w in ws], ["too few days to work one out"] * 2)
+        self.assertIn("too few days", ws[0]["result"])
+        self.assertIn("too few days", ws[1]["result"])
+
+    def test_a_window_with_both_sharpes_has_no_word_for_a_missing_one(self):
+        self.finished()
+        ws = self.client.get(f"/api/research/walkforward/{self.job}").json()["windows"]
+        self.assertEqual([w["no_sharpe"] for w in ws], ["", ""])
 
     def test_a_job_that_is_not_finished_is_409_and_says_nothing_of_its_error(self):
         self.build_job(self.two_windows())                       # still running
@@ -522,6 +608,34 @@ class WalkforwardApiTests(SandboxedDBTest):
         r = self.client.get(f"/api/research/walkforward/{self.job}")
         self.assertEqual(r.status_code, 409)
         self.assertNotIn("secret", r.text)
+
+    def test_a_job_that_is_not_finished_says_its_status_and_a_plain_reason_only(self):
+        self.build_job(self.two_windows())
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertEqual((j["status"], j["reason"]), ("running", None))
+        state = json.loads(store.get_research_job(self.job)["state_json"])
+        state["failure_reason"] = "the holdout is locked"
+        store.update_research_job(self.job, status="failed", error="HoldoutLocked: x", state_json=json.dumps(state))
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertEqual((j["status"], j["reason"]), ("failed", "the holdout is locked"))
+        state.pop("failure_reason")
+        store.update_research_job(self.job, status="failed", error="boom at C:\\secret\\path", state_json=json.dumps(state))
+        j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        self.assertEqual((j["status"], j["reason"]), ("failed", None))
+
+    def test_an_exception_message_never_reaches_the_409(self):
+        self.build_job(self.two_windows())
+        store.update_research_job(self.job, status="failed", error="ValueError: bad window")
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual((r.json()["status"], r.json()["reason"]), ("failed", None))   # no stored plain reason
+        self.assertNotIn("bad window", r.text)
+        self.assertNotIn("ValueError", r.text)
+        state = json.loads(store.get_research_job(self.job)["state_json"])
+        state["failure_reason"] = self.wf.plain_failure(ValueError("bad window"))
+        store.update_research_job(self.job, state_json=json.dumps(state))
+        r = self.client.get(f"/api/research/walkforward/{self.job}")
+        self.assertEqual(r.json()["reason"], "an internal error; see the log")
+        self.assertNotIn("bad window", r.text)
 
     def test_a_done_job_whose_file_is_gone_is_409_not_500(self):
         self.finished()

@@ -358,6 +358,8 @@ class FinishTests(SandboxedDBTest):
         self.assertEqual(job["status"], "failed")
         self.assertIn("disk full", job["error"])
         self.assertTrue(job["finished_ns"])
+        self.assertEqual(wf.failure_reason(job), "an internal error; see the log")
+        self.assertEqual(len(json.loads(job["state_json"])["windows"]), 2)       # the windows are kept beside it
 
     def test_a_failure_does_not_demote_a_job_that_is_already_done(self):
         build_job(two_windows())

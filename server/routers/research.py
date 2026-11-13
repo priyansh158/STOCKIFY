@@ -13,9 +13,10 @@ import math
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from server.schemas import (BootstrapDTO, DsrDTO, FamilyDetailDTO, FamilySummaryDTO, IntervalDTO, PboDTO,
-                            ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
+                            ResearchCountsDTO, ResearchJobDTO, RunResearchDTO, SweepAxisDTO, SweepBestCellDTO, SweepDTO,
                             SweepHeatmapDTO, SweepRowDTO, TrialRowDTO, WalkforwardDTO, WalkforwardSummaryDTO,
                             WalkforwardWindowDTO)
 
@@ -39,14 +40,19 @@ def _clean(v: Any) -> Any:
 
 def run_research_dto(run_id: str) -> RunResearchDTO:
     """The caller has checked that the run exists (404 there)."""
-    from stockify.research import report
-    d = _clean(report.run_research(run_id))
+    from stockify.research import plain, report
+    rr = report.run_research(run_id)
+    d = _clean(rr)
     b = d["bootstrap"]
     if b is not None:
         b.pop("seed", None)
         for k in _INTERVALS:
             b[k] = IntervalDTO(**b[k])
         d["bootstrap"] = BootstrapDTO(**b)
+    if rr.regimes is not None:       # one plain sentence per bucket, written by the server (IL 6.2)
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            for row, bucket in zip(d["regimes"][dim], getattr(rr.regimes, dim)):
+                row["plain"] = plain.regime_sentence(bucket)
     if d["dsr"] is not None:
         d["dsr"] = DsrDTO(**d["dsr"])
     return RunResearchDTO(**d)
@@ -54,8 +60,10 @@ def run_research_dto(run_id: str) -> RunResearchDTO:
 
 @router.get("/api/research/families", response_model=list[FamilySummaryDTO])
 def list_families(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500)) -> list[FamilySummaryDTO]:
-    from stockify.research import report
-    return [FamilySummaryDTO(**_clean(f)) for f in report.list_families()[offset:offset + limit]]
+    from stockify.research import plain, report
+    rows = [_clean(f) for f in report.list_families()[offset:offset + limit]]
+    return [FamilySummaryDTO(**r, best_plain=plain.family_best_sentence(r["n_trials"], r["best_dsr"], r["objective"]))
+            for r in rows]
 
 
 @router.get("/api/research/families/{family_id:path}", response_model=FamilyDetailDTO)
@@ -88,8 +96,22 @@ _KIND = r"^[a-z0-9_]{1,32}$"
 def list_jobs(kind: str | None = Query(None, pattern=_KIND), offset: int = Query(0, ge=0, le=1_000_000),
               limit: int = Query(50, ge=1, le=500)) -> list[ResearchJobDTO]:
     from stockify import store
-    return [ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields})
+    from stockify.research import plain, walkforward
+
+    def _row(j: dict) -> ResearchJobDTO:
+        shown = walkforward.plain_error(j)                      # a plain reason, never the raw error
+        return ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"} | {"error": shown},
+                              plain=plain.job_status_sentence(j["status"], None if shown == "Failed" else shown))
+
+    return [_row(j)
             for j in store.list_research_jobs(kind, offset, limit)]
+
+
+@router.get("/api/research/counts", response_model=ResearchCountsDTO)
+def research_counts() -> ResearchCountsDTO:
+    from stockify import store
+    return ResearchCountsDTO(families=len(store.list_families()), sweeps=store.count_research_jobs("sweep"),
+                             walkforwards=store.count_research_jobs("walkforward"))
 
 
 def _label(v: Any) -> str:
@@ -260,7 +282,21 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
 # The prefix `/api/research/walkforward/` is its own: no `{job_id}` route of another kind can shadow it, and the
 # family route above (`/api/research/families/{family_id:path}`) lives under a different prefix.
 
-@router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO)
+def _not_done(job_id: str, message: str) -> JSONResponse:
+    """The 409 for a job that is not finished: the plain message, its status and, for a failed job, the stored
+    reason only as the job's stored plain reason (`walkforward.failure_reason`, from a fixed table keyed by the error
+    class), never the raw error, so the page can say "still running" or "failed: <reason>" without echoing text."""
+    from stockify import store
+    from stockify.research import walkforward
+    job = store.get_research_job(job_id) or {}
+    status = str(job.get("status", ""))
+    reason = walkforward.failure_reason(job) if status == "failed" else None
+    return JSONResponse(status_code=409, content={"detail": message, "status": status, "reason": reason})
+
+
+@router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO,
+            responses={409: {"description": "Not finished (the body has `status` and, for a failed job, a plain "
+                                            "`reason`), or finished with its result file gone (`detail` only)."}})
 def walkforward_detail(job_id: str) -> WalkforwardDTO:
     """A finished walk-forward job, read from its walkforward.json: 404 for an unknown job (or one of another
     kind), 409 for a job that is not finished or whose file is gone. Read-only; a stored error text is never
@@ -269,6 +305,8 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     try:
         d = _clean(wf_report.detail(job_id))
     except wf_report.WfReportError as e:
+        if e.kind == "not_done":
+            return _not_done(job_id, str(e))
         raise HTTPException(status_code=404 if e.kind == "unknown" else 409, detail=str(e))
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None

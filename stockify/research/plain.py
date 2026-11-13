@@ -83,6 +83,10 @@ OBJECTIVE_LABELS: dict[str, str] = {
 }
 
 
+# Under the trial table: the scores are in-sample; only the picked try is deflated (a caveat, so not a one-line meaning).
+SCORES_CAVEAT = "Scores are measured on the days the tries were fitted to. Only the picked try is adjusted for luck, in the sentence above."
+
+
 def meaning(key: str) -> str:
     """The one-line plain meaning of a statistic. Raises KeyError for an unknown key."""
     return _MEANINGS[key]
@@ -422,6 +426,25 @@ def not_run_reason(error: object) -> str | None:
         if needle in low:
             return line
     return GENERIC_FAILURE
+
+
+def family_best_sentence(n_trials: int, dsr: float | None, objective: str) -> str:
+    """The /research overview's line for a family: its best try and how likely its edge is more than luck."""
+    if n_trials < 1:
+        return "no finished tries yet"
+    return dsr_sentence(n_trials, 1, dsr, objective=objective)
+
+
+def job_status_sentence(status: str, error: str | None) -> str:
+    """A research job's state in words: running, finished, or failed with its readable reason."""
+    if status == "running":
+        return "still running"
+    if status == "done":
+        return "finished"
+    if status == "failed":
+        why = plain_reason(error)
+        return f"failed: {why}" if why else "failed, and no readable reason was saved"
+    return f"in an unrecognised state ({status})" if status.isalpha() else "in an unrecognised state"
 
 
 def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001
