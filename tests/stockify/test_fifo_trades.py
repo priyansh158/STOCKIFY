@@ -1,6 +1,7 @@
 """metrics.fifo_trades, the one FIFO loop the metrics and the chart's trade markers share (CH 6.5)."""
 from __future__ import annotations
 
+import collections
 import hashlib
 import random
 import tempfile
@@ -80,7 +81,7 @@ PRODUCTS = {1: "MIS", 2: "NRML"}
 
 
 class StoredMetricsTests(unittest.TestCase):
-    def test_compute_is_byte_identical_to_the_stored_metrics(self):
+    def test_golden_metrics_json_is_byte_identical_to_the_pre_change_hashes(self):
         self.assertEqual(metrics_hashes(), PRE_CHANGE_HASHES)
 
 
@@ -122,12 +123,35 @@ class FifoTradesTests(unittest.TestCase):
         self.assertEqual([(c.close_fill_id, c.pnl) for c in chunks], [(2, 1)])
 
 
+def deque_oracle(fills, closes, products):
+    """Plain FIFO with a deque per (instrument, product), written apart from fifo_trades: for each closing flow, the
+    (close fill id, open side, qty, open price, close price) of every lot slice it consumes, in order."""
+    flow = sorted([(f.t_ns, 0, n, f.instrument_id, products[f.order_id], f.side, f.qty, f.price, f.fill_id)
+                   for n, f in enumerate(fills)] +
+                  [(t, 1, n, i, pr, sd, u, px, None) for n, (t, i, pr, sd, u, px) in enumerate(closes)])
+    books, out = {}, []
+    for t, _, _, iid, prod, side, qty, price, fid in flow:
+        dq = books.setdefault((iid, prod), collections.deque())
+        while qty and dq and dq[0][0] != side:
+            o_side, o_qty, o_price = dq[0]
+            k = min(qty, o_qty)
+            out.append((t, fid, o_side, k, o_price, price))
+            qty -= k
+            if k == o_qty:
+                dq.popleft()
+            else:
+                dq[0] = (o_side, o_qty - k, o_price)
+        if qty:
+            dq.append((side, qty, price))
+    return out
+
+
 class FifoPropertyTests(unittest.TestCase):
-    def test_chunks_sum_to_metrics_total_pnl(self):
+    def test_chunk_pnl_equals_cash_flow_and_chunks_match_a_deque_oracle(self):
         """Per sequence, a final flattening settlement leaves no open lot, so the chunks' P&L must equal the plain
-        cash flow (sells minus buys): an oracle that never matches lots. Seeded; flips, partial exits and
-        settlements all occur."""
-        saw = {"flip": 0, "partial": 0, "settle": 0, "chunks": 0}
+        cash flow (sells minus buys), and the chunks must equal, in order, what an independent deque FIFO consumes.
+        Seeded; flips, partial closes and settlements all occur."""
+        saw = {"flip": 0, "partial": 0, "settle": 0}
         for seed in range(1000):
             rng = random.Random(seed)
             fills, closes, cash, net = [], [], 0, {}
@@ -155,13 +179,42 @@ class FifoPropertyTests(unittest.TestCase):
             self.assertTrue(all(c.qty > 0 for c in chunks), seed)
             self.assertEqual(tv, sum(f.qty * f.price for f in fills), seed)
             self.assertTrue(all(c.close_fill_id is None for c in chunks if c.close_order_id is None), seed)
-            saw["chunks"] += len(chunks)
+            self.assertEqual([(c.close_t_ns, c.close_fill_id, c.open_side, c.qty, c.open_price, c.close_price)
+                              for c in chunks], deque_oracle(fills, closes, PRODUCTS), seed)
             saw["settle"] += any(c.close_fill_id is None for c in chunks)
-            saw["partial"] += any(c.qty < f.qty for c in chunks for f in fills if f.fill_id == c.close_fill_id)
-            saw["flip"] += any(c.close_fill_id is not None and
-                               sum(k.qty for k in chunks if k.close_fill_id == c.close_fill_id) <
-                               next(f.qty for f in fills if f.fill_id == c.close_fill_id) for c in chunks)
+            # a close smaller than the oldest lot it meets leaves that lot partly open; a flip closes the whole
+            # position and opens the rest as a new lot (the closing flow's quantity exceeds what it consumed)
+            fq = {f.fill_id: f.qty for f in fills}
+            for fid in {c.close_fill_id for c in chunks if c.close_fill_id is not None}:
+                mine = [c for c in chunks if c.close_fill_id == fid]
+                used = sum(c.qty for c in mine)
+                saw["flip"] += used < fq[fid]
+            dq = deque_oracle_partials(fills, closes, PRODUCTS)
+            saw["partial"] += dq
         self.assertTrue(all(saw.values()), saw)       # the generator really reaches each case
+
+
+def deque_oracle_partials(fills, closes, products) -> bool:
+    """True when some closing flow is smaller than the oldest open lot it meets (a real partial close)."""
+    flow = sorted([(f.t_ns, 0, n, f.instrument_id, products[f.order_id], f.side, f.qty, f.price)
+                   for n, f in enumerate(fills)] +
+                  [(t, 1, n, i, pr, sd, u, px) for n, (t, i, pr, sd, u, px) in enumerate(closes)])
+    books, partial = {}, False
+    for _, _, _, iid, prod, side, qty, price in flow:
+        dq = books.setdefault((iid, prod), collections.deque())
+        if qty and dq and dq[0][0] != side and qty < dq[0][1]:
+            partial = True
+        while qty and dq and dq[0][0] != side:
+            o_side, o_qty, o_price = dq[0]
+            k = min(qty, o_qty)
+            qty -= k
+            if k == o_qty:
+                dq.popleft()
+            else:
+                dq[0] = (o_side, o_qty - k, o_price)
+        if qty:
+            dq.append((side, qty, price))
+    return partial
 
 
 if __name__ == "__main__":
