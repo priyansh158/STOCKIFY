@@ -606,6 +606,7 @@ export interface CoverageMatrixDTO {
   bars: BarRangeDTO[];
   storage: StorageDTO;
   recorder?: RecorderStatus | null;
+  errors: string[];
 }
 
 export interface GapDTO {

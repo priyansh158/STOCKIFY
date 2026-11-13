@@ -633,6 +633,7 @@ class CoverageMatrixDTO(BaseModel):
     bars: list[BarRangeDTO]
     storage: StorageDTO
     recorder: RecorderStatusDTO | None = None
+    errors: list[str] = []
 
 
 class GapDTO(BaseModel):

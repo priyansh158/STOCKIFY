@@ -7,6 +7,7 @@ import { api, ApiError } from "./api";
 import type {
   ComparisonDTO,
   CoverageMatrixDTO,
+  DataQualityResponse,
   FamilyDetailDTO,
   FamilySummaryDTO,
   GapPageDTO,
@@ -65,4 +66,14 @@ export function getCoverage(from?: string, to?: string): Promise<CoverageMatrixD
 /** One page of a recorded day's gaps, or null when nothing was recorded that day. */
 export function getGaps(date: string, offset = 0, limit = 200): Promise<GapPageDTO | null> {
   return orNull(api<GapPageDTO>(`/api/data/gaps?date=${enc(date)}&offset=${offset}&limit=${limit}`));
+}
+
+/** A day's stored quality report, or the API's own sentence about why there is none (404: it has not been run). */
+export async function getQuality(date: string): Promise<{ report: DataQualityResponse | null; reason: string | null }> {
+  try {
+    return { report: await api<DataQualityResponse>(`/api/data/quality?date=${enc(date)}`), reason: null };
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { report: null, reason: e.message };
+    throw e;
+  }
 }

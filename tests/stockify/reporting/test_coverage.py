@@ -225,6 +225,52 @@ class CoverageTest(SandboxedDBTest):
             for suffix in ("-wal", "-shm", "-journal"):
                 self.assertFalse(p.with_name(p.name + suffix).exists(), p.name + suffix)
 
+    def test_an_unreadable_store_is_an_error_not_an_empty_lab(self):
+        import sqlite3
+        from stockify import paths
+        for make_bad, name in ((lambda p: p.mkdir(parents=True), "unopenable"),
+                               (lambda p: (p.parent.mkdir(parents=True, exist_ok=True), p.write_bytes(b"not a database " * 50)),
+                                "corrupt")):
+            with self.subTest(name):
+                for p in (paths.refdata_db(), paths.bars_db()):
+                    if p.is_dir():
+                        p.rmdir()
+                    elif p.exists():
+                        p.unlink()
+                make_bad(paths.refdata_db())
+                m = coverage.matrix(FROM, TO)
+                self.assertEqual(len(m.errors), 1, m.errors)
+                self.assertIn("Couldn't read the", m.errors[0])
+                self.assertIn("recorded-day and download store", m.errors[0])
+                for bad in ("\\", "/", ".sqlite", "sqlite3", "Error"):
+                    self.assertNotIn(bad, m.errors[0])
+        self.assertEqual(coverage.to_dict(m)["errors"], m.errors)
+
+    def test_a_locked_bars_store_names_the_bars_store(self):
+        import sqlite3
+        from stockify import paths
+        history._connect().close()
+        holder = sqlite3.connect(str(paths.bars_db()), isolation_level=None)
+        holder.execute("PRAGMA journal_mode=DELETE")
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            with mock.patch.object(coverage, "_TIMEOUT_S", 0.05):
+                m = coverage.matrix(FROM, TO)
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+        self.assertEqual(len(m.errors), 1, m.errors)
+        self.assertIn("bar store", m.errors[0])
+        self.assertEqual(m.bars, [])
+
+    def test_a_missing_store_or_an_old_schema_is_not_an_error(self):
+        self.assertEqual(coverage.matrix(FROM, TO).errors, [])
+
+    def test_two_reads_of_one_bad_store_say_it_once(self):
+        from stockify import paths
+        paths.refdata_db().mkdir(parents=True)
+        self.assertEqual(len(coverage.matrix(FROM, TO).errors), 1)
+
     def test_reads_do_not_create_stores(self):
         from stockify import paths
         coverage.matrix(FROM, TO)
@@ -248,7 +294,8 @@ class CoverageApiTests(SandboxedDBTest):
         r = self.client.get("/api/data/coverage?from=2026-10-01&to=2026-10-07")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["from_date", "to_date", "datasets", "days", "bars", "storage", "recorder"])
+        self.assertEqual(list(j), ["from_date", "to_date", "datasets", "days", "bars", "storage", "recorder", "errors"])
+        self.assertEqual(j["errors"], [])
         self.assertEqual(len(j["days"]), 7)
         self.assertEqual(list(j["days"][0]), ["date", "trading", "cells"])
         self.assertEqual(j["days"][6]["cells"]["recorder_full"], {"state": "ok", "value": 99.9, "detail": None})
