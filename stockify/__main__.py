@@ -660,7 +660,11 @@ def _cmd_margin_scorecard(args) -> int:
     from stockify.fno import margin_check as mc
     card = mc.scorecard()
     if not card.rows and not (card.live_answers or card.live_errors):
-        print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
+        if card.notes:                       # answers are stored but none could be scored: say why
+            for note in card.notes:
+                print(f"Note: {note}", file=sys.stderr)
+        else:
+            print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
         return 1
     _print_console(mc.scorecard_text(card))
     return 0

@@ -125,7 +125,18 @@ class MeasureTests(tests.support.SandboxedDBTest):
 
     def test_draft_table_is_the_generators_output_and_the_draft_is_clean(self):
         draft = DRAFT.read_text(encoding="utf-8")
-        table = "".join(line + "\n" for line in draft.splitlines() if line.startswith("|"))
+        lines = draft.splitlines()
+        self.assertEqual(draft.count("```") % 2, 0, "a code fence is left open")
+        self.assertIn("## Measured numbers", lines)
+        self.assertIn("## Architecture", lines)
+        start = lines.index("## Measured numbers")
+        self.assertNotIn("```", "\n".join(lines[start:]))                # the table is outside every fence
+        first = next(i for i in range(start, len(lines)) if lines[i].startswith("| Measure |"))
+        self.assertFalse(any(x.startswith("#") for x in lines[start + 1:first]))   # right under the heading
+        last = first
+        while last + 1 < len(lines) and lines[last + 1].startswith("|"):
+            last += 1
+        table = "".join(line + "\n" for line in lines[first:last + 1])
         self.assertEqual(table, measure.render(measure.collect()))      # the empty sandbox lab
         self.assertEqual(measure.privacy_problems(draft), [])
         self.assertIsNone(PLAN_ID.search(draft), PLAN_ID.search(draft))

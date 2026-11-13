@@ -122,13 +122,13 @@ def collect() -> dict:
 
 
 LABELS = {
-    "determinism_rerun": "Re-runs reproducing determinism.json byte for byte (re-runs)",
+    "determinism_rerun": "Re-runs reproducing determinism.json byte for byte",
     "determinism_goldens": "Oracle against engine on the goldens",
     "determinism_cross_platform": "Determinism across platforms",
     "journal_parity": "Journal parity, days passed of days (parity days, live and test)",
     "recorder_parity_nav": "Recorder against live, median absolute NAV difference in paise (parity days, live and test)",
     "recorder_parity_fills": "Recorder against live, fills matched (parity days, live and test)",
-    "margin_error": "Margin staircase error against Kite's answers, median in paise (answers)",
+    "margin_error": "Margin staircase error against Kite's answers, median in paise",
     "throughput_full_day": "Engine throughput on a full recorded day",
 }
 

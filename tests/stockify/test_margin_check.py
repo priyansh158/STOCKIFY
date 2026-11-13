@@ -324,3 +324,13 @@ class FreshLabScorecardTests(SandboxedDBTest):
             self.assertFalse(path.exists(), path.name)
         self.assertIsNone(store._conn)           # the singletons are put back, not left on the empty twin
         self.assertIsNone(refdata._conn)
+
+    def test_scorecard_command_names_the_real_reason_when_answers_exist_but_nothing_can_be_priced(self):
+        store.add_margin_calibration({
+            "wall_ns": WALL, "underlying": "NIFTY", "portfolio_json": json.dumps({"kind": "x", "legs": []}),
+            "market_json": "{}", "kite_json": json.dumps(answer("1", "1")), "t0_paise": 0, "t1_paise": 0,
+            "t1_breakdown_json": "[]"})
+        code, out, err = run_cli(["margin", "scorecard"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("no stored Kite margin answers", err)
+        self.assertIn("NIFTY", err)                       # the card's own note says what was skipped and why
