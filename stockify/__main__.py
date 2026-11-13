@@ -578,7 +578,7 @@ def _print_console(text: str) -> None:
 
 
 def _cmd_research_families(args) -> int:
-    """M6.4: the trial families (a table), with `--name` to name one and `--backfill` to give old runs a family."""
+    """M6.4: the trial families (a table), with `--name` to name one and `--backfill` to give old runs and sessions a family."""
     from stockify import store
     from stockify.research import registry, report
     if args.dry_run and not args.backfill:
@@ -592,8 +592,9 @@ def _cmd_research_families(args) -> int:
         store.name_family(family_id, description)
     if args.backfill:
         n = registry.backfill(dry_run=args.dry_run)
-        print(f"would give {n} run(s) a family (dry run, nothing written)" if args.dry_run
-              else f"gave {n} run(s) a family")
+        ns = registry.backfill_sessions(dry_run=args.dry_run)
+        print(f"would give {n} run(s) and {ns} session(s) a family (dry run, nothing written)" if args.dry_run
+              else f"gave {n} run(s) and {ns} session(s) a family")
     fams = report.list_families()
     if not fams:
         print("no families yet")
@@ -1257,7 +1258,7 @@ def main(argv: list[str] | None = None) -> int:
     rf_ = rssub.add_parser("families", help="list the trial families (exit 0; 1 unknown family for --name; 2 bad arguments)")
     rf_.add_argument("--name", nargs=2, metavar=("FAMILY_ID", "DESCRIPTION"), help="name a family")
     rf_.add_argument("--backfill", action="store_true",
-                     help="give every run without a family its default one (writes to the lab database)")
+                     help="give every run and paper session without a family its default one (writes to the lab database)")
     rf_.add_argument("--dry-run", action="store_true", help="with --backfill: count what would change, write nothing")
     rf_.set_defaults(func=_cmd_research_families)
     rw = rssub.add_parser("show", help="print the research lines of a run or a family, in plain words")

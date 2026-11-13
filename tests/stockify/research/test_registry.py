@@ -177,6 +177,33 @@ class RegistryTests(SandboxedDBTest):
         self.assertIsNone(store.get_family("mine/x/y"))                              # a kept one is not touched
         self.assertEqual(registry.backfill(), 0)
 
+    def test_a_new_session_row_carries_its_family(self):
+        store.create_session("s1", "paper", {"family_id": "paper/live/x"}, 1)
+        store.create_session("s2", "paper", {"capital_paise": 1}, 2)
+        self.assertEqual(store.get_session("s1")["family_id"], "paper/live/x")
+        self.assertIsNone(store.get_session("s2")["family_id"])          # a config without one stays NULL here
+
+    def test_backfill_gives_old_sessions_a_family_and_dry_run_writes_nothing(self):
+        store.create_session("old", "p", {"universe": ["RELIANCE"], "strategy": {}}, 1)
+        store.create_session("named", "p", {"family_id": "kept/x/y"}, 2)
+        with store._lock:
+            store._connect().execute("UPDATE sessions SET family_id = NULL WHERE session_id = 'named'")
+            store._connect().commit()
+        store.create_session("kept", "p", {"universe": ["TCS"]}, 3)
+        with store._lock:
+            store._connect().execute("UPDATE sessions SET family_id = 'mine/a/b' WHERE session_id = 'kept'")
+            store._connect().commit()
+        self.assertEqual(registry.backfill_sessions(dry_run=True), 2)
+        self.assertIsNone(store.get_session("old")["family_id"])
+        self.assertEqual(store.list_families(), [])
+        self.assertEqual(registry.backfill_sessions(), 2)
+        self.assertEqual(store.get_session("old")["family_id"],
+                         registry.family_for_session({"universe": ["RELIANCE"], "strategy": {}}))
+        self.assertEqual(store.get_session("named")["family_id"], "kept/x/y")      # the config's own family wins
+        self.assertEqual(store.get_session("kept")["family_id"], "mine/a/b")       # never overwritten
+        self.assertIsNotNone(store.get_family("kept/x/y"))
+        self.assertEqual(registry.backfill_sessions(), 0)
+
 
 class RunIntegrationTests(RunsTestBase):
     def test_new_run_gets_the_default_family_and_a_family_row(self):

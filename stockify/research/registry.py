@@ -263,3 +263,33 @@ def backfill(dry_run: bool = False) -> int:
         return fam
 
     return store.backfill_null_families(compute)
+
+
+def _family_of_session_row(row: dict) -> str | None:
+    """The family a stored session config names, else the default one for its universe; `None` when the config
+    cannot be read."""
+    try:
+        cfg = json.loads(row["config_json"])
+        if not isinstance(cfg, dict):
+            return None
+        fam = cfg.get("family_id")
+        return fam if isinstance(fam, str) and fam else family_for_session(cfg)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
+def backfill_sessions(dry_run: bool = False) -> int:
+    """Give every paper session whose `family_id` is NULL the family its config names, or the default session
+    family; the number set (a dry run: that would be set, and nothing is written). Only that column changes,
+    and a session that has a family is never touched."""
+    if dry_run:
+        return sum(1 for s in store.list_sessions() if s.get("family_id") is None
+                   and _family_of_session_row(s) is not None)
+
+    def compute(row: dict) -> str | None:
+        fam = _family_of_session_row(row)
+        if fam is not None:
+            ensure_family(fam)
+        return fam
+
+    return store.backfill_null_session_families(compute)
