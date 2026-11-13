@@ -393,6 +393,10 @@ class WalkforwardApiTests(SandboxedDBTest):
         p = mock.patch.object(stats, "risk_free_rows", return_value=[])
         p.start()
         self.addCleanup(p.stop)
+        from stockify.research import wf_report
+        q = mock.patch.object(wf_report, "min_oos_days", return_value=2)     # the fixtures have 12 days; 60 is below
+        q.start()
+        self.addCleanup(q.stop)
         self.client = TestClient(app, base_url=support.API_BASE_URL)
         self.build_job, self.two_windows, self.wf = build_job, two_windows, wf
 
@@ -410,9 +414,11 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertEqual((j["job_id"], j["train"], j["test"], j["step"], j["objective"]),
                          (self.job, 120, 30, 30, "sharpe"))
         self.assertEqual(j["family_id"], f"walkforward/{self.job}")
-        self.assertEqual(list(j["summary"]), ["windows", "is_windows", "oos_days", "is_sharpe", "oos_sharpe", "ratio",
-                                              "chosen_modal_share", "n_trials", "var_sharpe", "dsr"])
+        self.assertEqual(list(j["summary"]), ["windows", "is_windows", "oos_days", "oos_days_needed", "is_sharpe",
+                                              "oos_sharpe", "ratio", "chosen_modal_share", "n_trials", "var_sharpe",
+                                              "dsr"])
         self.assertEqual((j["summary"]["windows"], j["summary"]["oos_days"], j["summary"]["n_trials"]), (2, 12, 4))
+        self.assertEqual(j["summary"]["oos_days_needed"], 2)
         self.assertEqual(list(j["summary"]["dsr"]), ["sr", "t", "skew", "kurt", "n_trials", "var_sharpe", "sr0",
                                                      "dsr", "psr"])
         self.assertEqual(len(j["windows"]), 2)
@@ -458,6 +464,22 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertIsNone(j["windows"][1]["error"])
         self.assertEqual(j["windows"][1]["test_status"], "failed")
         self.assertNotIn("Users", json.dumps(j))
+
+    def test_walkforward_detail_has_no_sharpe_below_the_minimum_days(self):
+        from stockify.research import wf_report
+        self.finished()
+        with mock.patch.object(wf_report, "min_oos_days", return_value=60):
+            j = self.client.get(f"/api/research/walkforward/{self.job}").json()
+        s = j["summary"]
+        self.assertEqual((s["oos_days"], s["oos_days_needed"]), (12, 60))
+        for key in ("is_sharpe", "oos_sharpe", "ratio", "dsr"):
+            self.assertIsNone(s[key], key)
+        for w in j["windows"]:
+            self.assertIsNone(w["train"]["sharpe"])
+            self.assertIsNone(w["test"]["sharpe"])
+            self.assertIsInstance(w["test"]["net_pnl_paise"], int)
+        self.assertEqual(len(j["stitched_index"]), 12)                                # the curve stays
+        self.assertIn("not enough out-of-sample days to judge (12 of 60 needed)", j["plain"]["ratio"])
 
     def test_walkforward_route_is_not_shadowed_by_the_family_route(self):
         self.finished()
