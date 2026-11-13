@@ -1276,5 +1276,7 @@ every row reads "not measured yet". Nothing is in `README.md`.
 Not read from any store yet, so always "not measured yet": oracle against engine on the goldens (no stored result),
 cross-platform determinism (Windows only, D-26), full-day engine throughput (D-48; `tools bench` prints and stores nothing).
 
-🛑 Gates before M6.12 is ticked: (a) five or more live days of journal parity and recorder parity, (b) a full-day
+Fix round 1 (D-122): parity rows count parity days, live and test together, because nothing in `parity_results` or the session tables says which days were live; they stay "not measured yet" and gate (a) is confirmed by the owner by hand. Determinism needs five re-runs. The scan now also catches addresses, hosts, emails, drive and UNC paths and credential-shaped strings, and the draft itself is tested against it and against the generator's table.
+
+🛑 Gates before M6.12 is ticked: (a) five or more live days of journal parity and recorder parity (the owner confirms which days were live), (b) a full-day
 throughput measurement, (c) the owner reads and approves every public sentence, (d) the owner's "push".

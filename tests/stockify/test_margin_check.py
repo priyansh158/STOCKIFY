@@ -308,3 +308,19 @@ class ScorecardTests(ArchiveTest):
         self.assertEqual(MC.quantile([30, 0, 20, 10], Fraction(1, 2)), Fraction(15))
         self.assertEqual(MC.quantile([30, 0, 20, 10], Fraction(9, 10)), Fraction(27))
         self.assertIsNone(MC.quantile([], Fraction(1, 2)))
+
+
+class FreshLabScorecardTests(SandboxedDBTest):
+    """A lab that has never been written has no database files: the scorecard is empty, and reading never makes them."""
+    db_modules = (store, refdata)
+
+    def test_fresh_lab_gives_an_empty_scorecard_and_creates_no_file(self):
+        for path in (store._db_path(), refdata._db_path()):
+            self.assertFalse(path.exists())
+        card = MC.scorecard()
+        self.assertEqual(card.rows, [])
+        self.assertEqual((card.live_answers, card.live_errors), (0, 0))
+        for path in (store._db_path(), refdata._db_path()):
+            self.assertFalse(path.exists(), path.name)
+        self.assertIsNone(store._conn)           # the singletons are put back, not left on the empty twin
+        self.assertIsNone(refdata._conn)

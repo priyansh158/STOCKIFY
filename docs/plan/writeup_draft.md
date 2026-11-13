@@ -1,7 +1,7 @@
 # STOCKIFY: draft of the public README section
 
 Draft only. Not in `README.md`, not published, not pushed. The owner reads and approves every sentence below after
-the live days exist (gates in `RECON.md`, M6.12). The table is pasted from `python -m stockify tools measure` run on
+five live days exist and the throughput on a full recorded day has been measured. The table is pasted from `python -m stockify tools measure` run on
 the sandboxed fixture lab, so every row reads "not measured yet".
 
 ## What STOCKIFY does
@@ -25,34 +25,15 @@ It runs on Windows only. Whether results are identical on another operating syst
               charges, session)                                  |
                  |                                               |
 +----------------+-----------------+   +----------------+   +----+-------------------------------+
-| API server                       |   | exchange public|   | market daemon                      |
-| search, portfolio, tests, trades,|   | end-of-day     |   |  ticker supervisor (raw frames)    |
-| data, alerts                     |   | files          |   |   +- recorder -> tick landing       |
-+------+---------------------------+   +-------+--------+   |   +- paper sessions                 |
-       | starts a subprocess                   |            |   |   journal (.evt) -> engine      |
-       v                                       v            |   +- scheduler: sync, compaction,   |
- python -m stockify run  <--  reference data, bars, exchange files, ticks (Python data layer)
-       |                                                    |      bhavcopy, parity, reports      |
-       |  run bundle (JSON) + event packs (.evt)            +------------------------------------+
-       v
- deterministic C++20 engine -- artifacts --> run folder --> imported --> lab database --> UI
-```
-
-## Measured numbers
-
-Every number is read from the lab's stores and run folders, with its sample size and source. Where the sample is
-missing or too short (fewer than five live days for the parity rows), the table says "not measured yet" instead of
-a number.
-
 | Measure | Result | Sample | Source |
 |---|---|---|---|
-| Re-runs reproducing determinism.json byte for byte | not measured yet (no re-run with both determinism.json files: 0 so far) | 0 | runs (role rerun) and determinism.json |
+| Re-runs reproducing determinism.json byte for byte (re-runs) | not measured yet (5 re-runs: 0 so far) | 0 | runs (role rerun) and determinism.json |
 | Oracle against engine on the goldens | not measured yet (no stored oracle-against-engine result on the goldens: 0 so far) | 0 | golden scenarios (oracle against engine) |
-| Determinism across platforms | not measured yet (Windows only, cross-platform not measured (D-26)) | 0 | none |
-| Journal parity (days passed of days) | not measured yet (5 live days: 0 so far) | 0 | parity_results (kind journal) |
-| Recorder against live, median absolute NAV difference (paise) | not measured yet (5 live days: 0 so far) | 0 | parity_results (kind recorder) |
-| Recorder against live, fills matched | not measured yet (5 live days: 0 so far) | 0 | parity_results (kind recorder) |
-| Margin staircase error against the broker's answers (median, paise) | not measured yet (the scorecard could not be read (OperationalError)) | 0 | margin scorecard (staircase against the broker's answers) |
-| Engine throughput on a full recorded day | not measured yet (no full recorded day benchmarked: 0 so far (D-48)) | 0 | engine benchmark (M3.13) |
+| Determinism across platforms | not measured yet (Windows only, cross-platform not measured) | 0 | none |
+| Journal parity, days passed of days (parity days, live and test) | not measured yet (5 live days needed; 0 parity days (live and test) so far, none confirmed as live) | 0 | parity_results (kind journal) |
+| Recorder against live, median absolute NAV difference in paise (parity days, live and test) | not measured yet (5 live days needed; 0 parity days (live and test) so far, none confirmed as live) | 0 | parity_results (kind recorder) |
+| Recorder against live, fills matched (parity days, live and test) | not measured yet (5 live days needed; 0 parity days (live and test) so far, none confirmed as live) | 0 | parity_results (kind recorder) |
+| Margin staircase error against Kite's answers, median in paise (answers) | not measured yet (no stored answers: 0 so far) | 0 | margin scorecard (staircase against Kite's answers) |
+| Engine throughput on a full recorded day | not measured yet (no full recorded day benchmarked: 0 so far) | 0 | engine benchmark |
 
 Determinism was checked on Windows only. Cross-platform determinism is not measured.
