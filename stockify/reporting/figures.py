@@ -4,9 +4,12 @@
 place that SHOWS a run's figures (the run page, the compare table, `report.md`) goes through `present`, so a figure
 that is meaningless for a run is withheld the same way, with the same words, everywhere:
 
-* the yearly figures (CAGR, Calmar, the yearly Sharpe, Sortino, volatility and turnover) are scaled by 252/days or
-  sqrt(252), so a run shorter than `research.json` `reporting.min_days_yearly` trading days gives numbers like
-  "-4.38 % a year" from one bad day: they read "too short to say";
+* the figures that EXTRAPOLATE a short sample to a year (CAGR compounds it, Calmar is built on CAGR, turnover is a
+  per-year rate scaled by 252/days) are withheld for a run shorter than `research.json`
+  `reporting.min_days_yearly` trading days: one bad day reads "-4.38 % a year". They show "too short to say";
+* Sharpe, Sortino and volatility scale a daily dispersion by sqrt(252), a standard convention, so they stay shown
+  whenever they exist. When they do not, the reason is the real one (no trades, too few days, no day-to-day swing),
+  the same words the research panel uses;
 * costs as a share of the profit before costs has no meaning when there was no profit before costs.
 """
 from __future__ import annotations
@@ -15,9 +18,10 @@ from typing import Any
 
 from stockify import research
 
-# The metrics.json keys that are scaled to a year.
-YEARLY_KEYS = ("cagr", "volatility", "sharpe", "sortino", "calmar", "turnover")
+# The metrics.json keys that extrapolate a short sample to a year (withheld on a short run).
+YEARLY_KEYS = ("cagr", "calmar", "turnover")
 TOO_SHORT = "too short to say"
+NO_TRADES, FEW_DAYS, NO_SWING = "no trades", "too few days", "no day-to-day swing"
 NO_GROSS = "no gross profit"
 
 
@@ -41,8 +45,8 @@ def cost_share(m: dict) -> float | None:
 
 def present(m: dict, *, min_days: int | None = None) -> tuple[dict, dict[str, str]]:
     """(figures, withheld): a copy of one run's metrics with every figure that may not be shown set to None, and
-    `withheld` mapping each such key (a yearly key, or `cost_share_of_gross`) to its plain reason. A figure that was
-    already None for another reason is not listed (there is nothing to explain by length or sign)."""
+    `withheld` mapping each such key to its plain reason (an extrapolated key, a Sharpe-family key that is missing, or
+    `cost_share_of_gross`)."""
     limit = min_days_yearly() if min_days is None else min_days
     out, why = dict(m), {}
     days = m.get("days")
@@ -51,6 +55,15 @@ def present(m: dict, *, min_days: int | None = None) -> tuple[dict, dict[str, st
         for k in YEARLY_KEYS:
             if out.get(k) is not None:
                 out[k], why[k] = None, TOO_SHORT
+    traded = m.get("trades")
+    for k in ("sharpe", "sortino", "volatility"):
+        if out.get(k) is None and k in m:
+            if k != "volatility" and _is_num(traded) and traded == 0:
+                why[k] = NO_TRADES
+            elif not _is_num(days) or days < 2:
+                why[k] = FEW_DAYS
+            elif k == "sharpe":
+                why[k] = NO_SWING
     share = cost_share(m)
     if m.get("cost_share_of_gross") is not None or share is not None:
         if share is None:

@@ -31,13 +31,26 @@ class PresentTests(unittest.TestCase):
         self.assertEqual(figures.min_days_yearly(), research.settings()["reporting"]["min_days_yearly"])
         self.assertEqual(figures.min_days_yearly(), LIMIT)
 
-    def test_a_short_run_loses_every_yearly_figure_with_one_reason(self):
-        shown, why = figures.present(metrics(1))
-        for k in figures.YEARLY_KEYS:
+    def test_a_short_run_loses_only_the_extrapolated_figures(self):
+        shown, why = figures.present(metrics(30))
+        for k in ("cagr", "calmar", "turnover"):
             self.assertIsNone(shown[k], k)
             self.assertEqual(why[k], figures.TOO_SHORT)
-        self.assertEqual(shown["max_drawdown"], 0.01)          # not a yearly figure
-        self.assertEqual(shown["trades"], 1)
+        for k in ("sharpe", "sortino", "volatility", "max_drawdown", "trades"):
+            self.assertEqual(shown[k], metrics(30)[k], k)
+            self.assertNotIn(k, why)
+
+    def test_a_one_day_run_has_no_sharpe_and_says_too_few_days(self):
+        shown, why = figures.present(metrics(1, sharpe=None, sortino=None, volatility=None))
+        for k in ("sharpe", "sortino", "volatility"):
+            self.assertIsNone(shown[k], k)
+            self.assertEqual(why[k], figures.FEW_DAYS, k)
+
+    def test_no_sharpe_reasons_match_the_real_cause(self):
+        idle = figures.present(metrics(10, sharpe=None, sortino=None, trades=0))[1]
+        self.assertEqual((idle["sharpe"], idle["sortino"]), (figures.NO_TRADES, figures.NO_TRADES))
+        flat = figures.present(metrics(10, sharpe=None, trades=3))[1]
+        self.assertEqual(flat["sharpe"], figures.NO_SWING)
 
     def test_the_boundary_is_the_configured_day_count(self):
         self.assertIsNone(figures.present(metrics(LIMIT - 1))[0]["cagr"])
@@ -46,11 +59,6 @@ class PresentTests(unittest.TestCase):
         self.assertEqual(why, {})
         self.assertIsNone(figures.present(metrics(5), min_days=6)[0]["cagr"])
         self.assertEqual(figures.present(metrics(5), min_days=5)[0]["cagr"], -0.0438)
-
-    def test_a_figure_already_missing_is_not_explained_by_length(self):
-        shown, why = figures.present(metrics(1, sharpe=None))
-        self.assertNotIn("sharpe", why)
-        self.assertIsNone(shown["sharpe"])
 
     def test_missing_or_bad_days_counts_as_too_short(self):
         for days in (None, "x", True):
@@ -145,7 +153,8 @@ class CompareTests(SandboxedDBTest):
 
     def test_yearly_rows_of_a_short_run_are_null_with_the_reason_and_a_long_run_keeps_them(self):
         rows = self.rows("short", "long")
-        for key in ("cagr", "sharpe", "sortino", "calmar"):
+        self.assertIsNotNone(rows["sharpe"].values[0])       # a 3-day run still has a Sharpe: only extrapolations go
+        for key in ("cagr", "calmar"):
             self.assertIsNone(rows[key].values[0], key)
             self.assertEqual(rows[key].reasons[0], figures.TOO_SHORT, key)
             self.assertIsNone(rows[key].reasons[1], key)
@@ -163,6 +172,16 @@ class CompareTests(SandboxedDBTest):
         text = rc.format_table(rc.compare_runs(["short", "long"]))
         cagr_line = next(line for line in text.splitlines() if line.startswith("cagr"))
         self.assertIn(figures.TOO_SHORT, cagr_line)
+
+    def test_a_one_day_run_is_n_a_with_the_real_reason_and_a_30_day_run_keeps_its_sharpe(self):
+        make_run("one", None, navs=[99_800_000])
+        self.set_metrics("one", trades=1)                 # it traded; it just has one day
+        make_run("thirty", None, daily_returns=[0.001, -0.0007, 0.0004] * 10)
+        rows = self.rows("one", "thirty")
+        self.assertEqual((rows["sharpe"].values[0], rows["sharpe"].reasons[0]), (None, figures.FEW_DAYS))
+        self.assertIsNotNone(rows["sharpe"].values[1])
+        self.assertIsNone(rows["sharpe"].reasons[1])
+        self.assertEqual((rows["cagr"].values[1], rows["cagr"].reasons[1]), (None, figures.TOO_SHORT))
 
     def test_two_short_runs_agree_on_a_withheld_row(self):
         make_run("short2", None, navs=[100_000_000, 100_900_000, 100_100_000])
