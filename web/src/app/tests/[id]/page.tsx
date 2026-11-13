@@ -5,7 +5,8 @@ import { Fragment, use, useCallback, useEffect, useMemo, useRef, useState } from
 import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { getRunChart } from "@/lib/chart_api";
-import { joinFillsAndMarkers, type ChartMarker } from "@/lib/chart";
+import { chartViewState, joinFillsAndMarkers, type ChartMarker } from "@/lib/chart";
+import { chartHint, fillWhen } from "@/lib/runView";
 import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
 import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
 import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
@@ -59,13 +60,14 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
   const [chartMarkers, setChartMarkers] = useState<ChartMarker[]>([]);
   const [focusId, setFocusId] = useState<string | undefined>(undefined);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [chartLoaded, setChartLoaded] = useState(false); // the chart's first answer has come (the Why column can say more)
+  const [chartDrawn, setChartDrawn] = useState(false); // the chart has price data and is on screen (else "Show on chart" has nothing to show)
   const chartRef = useRef<HTMLDivElement>(null);
 
   const loadChart = useCallback<NonNullable<React.ComponentProps<typeof PriceChartLazy>["load"]>>(
     async (range, opts) => {
-      const model = await getRunChart(id, { ...opts, ...range }).finally(() => setChartLoaded(true));
+      const model = await getRunChart(id, { ...opts, ...range });
       if (model) {
+        setChartDrawn(chartViewState(model) === "full" || chartViewState(model) === "empty");
         setChartMarkers((have) => {
           const seen = new Set(have.map((m) => m.id));
           const add = model.markers.filter((m) => !seen.has(m.id));
@@ -307,32 +309,32 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                     >
                       {joined.map(({ fill: f, markerId, why }) => (
                         <tr key={f.fill_id} data-marker-id={markerId ?? undefined} data-active={markerId !== null && markerId === activeId ? "" : undefined}>
-                          <td className="stk-label">{f.t_ist.slice(0, 16).replace("T", " ")}</td>
+                          <td className="stk-label" title={fillWhen(f).hint ?? undefined}>{fillWhen(f).text}</td>
                           <td className={f.side === "BUY" ? "stk-up" : "stk-down"} data-wrap>
                             {f.side === "BUY" ? "Bought" : "Sold"} {f.qty.toLocaleString("en-IN")} {f.tradingsymbol ?? `instrument ${f.instrument_id}`}
-                            {markerId !== null && (
+                            {chartDrawn && markerId !== null && (
                               <button type="button" className="stk-btn" data-tone="quiet" aria-pressed={markerId === activeId}
                                 aria-label={`Show on chart: ${f.side === "BUY" ? "bought" : "sold"} ${f.qty.toLocaleString("en-IN")} at ${f.t_ist.slice(11, 16)}`}
                                 onClick={() => showOnChart(markerId)}>
                                 Show on chart
                               </button>
                             )}
+                            {chartHint(chartDrawn, markerId) && (
+                              <span className="stk-muted stk-label"> {chartHint(chartDrawn, markerId)}</span>
+                            )}
                           </td>
                           <td data-wrap>
-                            {why === null ? (
-                              <span className="stk-muted">{chartLoaded ? "Not on the loaded chart; pan to load it" : "Loading…"}</span>
-                            ) : (
-                              <>
-                                {why.text}
-                                {why.tag !== null && <> <code>{why.tag}</code></>}
-                              </>
-                            )}
+                            {why.text}
+                            {why.tag !== null && <> <code>{why.tag}</code></>}
                           </td>
                           <td className="num">{rupees(f.price_paise)}</td>
                           <td className="num">{f.order_id}</td>
                         </tr>
                       ))}
                     </Table>
+                  )}
+                  {extra.fills.some((f) => f.at_close) && (
+                    <p className="stk-label stk-gap-s">{fillWhen(extra.fills.find((f) => f.at_close)!).hint}</p>
                   )}
                   {extra.fills.length < fillCount && (
                     <div className="stk-gap-s">

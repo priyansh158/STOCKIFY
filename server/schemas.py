@@ -181,6 +181,11 @@ class TestFillDTO(BaseModel):
     side: str
     qty: int
     price_paise: int
+    note: str = Field("", description="the strategy's own note on the order this fill belongs to ('' when it gave none)")
+    tag: str = Field("", description="the strategy's tag on that order (a code label)")
+    evidence: str = Field("", description="how the engine priced the fill (A1 fills.csv: eod_close, bar_open, ltp, ...)")
+    at_close: bool = Field(False, description="True when the fill is the day's close (evidence eod_close): its time is "
+                                              "when the close is published, not when anything traded")
 
 
 class TestEquityDTO(BaseModel):

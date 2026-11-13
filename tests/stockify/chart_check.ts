@@ -207,14 +207,14 @@ out.tipMore = chart.tipModel([fill({ note: "one" }), fill({ fill_id: 2, note: "t
 out.tipNone = chart.tipModel([], "future");
 
 // The run page's Why column: one row per fill, in the fills' order, the note from the chart marker with the same fill_id.
-const fl = (fill_id: number) => ({ fill_id, order_id: fill_id, t_ns: 1, t_ist: "x", instrument_id: 1, side: "BUY", qty: 1, price_paise: 100 });
+const fl = (fill_id: number, note = "", tag = "") => ({ fill_id, order_id: fill_id, t_ns: 1, t_ist: "x", instrument_id: 1, side: "BUY", qty: 1, price_paise: 100, note, tag, evidence: "", at_close: false });
 const mk = (fill_id: number | null, note: string, tag = "", tag_is_code = false, id = `f${fill_id}`) =>
   fill({ id, fill_id, note, tag, tag_is_code });
 out.join = chart.joinFillsAndMarkers(
-  [fl(1), fl(2), fl(3), fl(4)],
+  [fl(1), fl(2, "Range broke up"), fl(3, "", "orb_exit"), fl(4)],
   [mk(2, "Range broke up"), mk(3, "", "orb_exit", true), mk(null, "Settled", "", false, "x9-1-0")],
 );
-out.joinStrategyTag = chart.joinFillsAndMarkers([fl(5), fl(6)], [mk(5, "", "sma_exit", false), mk(6, "", "", false)]);
+out.joinStrategyTag = chart.joinFillsAndMarkers([fl(5, "", "sma_exit"), fl(6)], [mk(5, "", "sma_exit", false), mk(6, "", "", false)]);
 out.cardStrategyTag = chart.cardModel(fill({ side: "SELL", note: "", tag: "sma_exit", tag_is_code: false })).lines;
 out.cardNoteTag = chart.cardModel(fill({ note: "Range broke up", tag: "orb_entry", tag_is_code: false })).lines;
 out.joinNone = chart.joinFillsAndMarkers([fl(5)], []);

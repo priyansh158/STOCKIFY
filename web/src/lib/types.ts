@@ -172,6 +172,10 @@ export interface TestFill {
   side: string;
   qty: number;
   price_paise: number;
+  note: string;
+  tag: string;
+  evidence: string;
+  at_close: boolean;
 }
 
 export interface TestEquity {

@@ -1,5 +1,6 @@
 /** Small presentational pieces shared by /tests and /tests/[id]. */
 import { Chip } from "@/components/ui";
+import { strategyName } from "@/lib/runView";
 import type { TestRun, TestStatus } from "@/lib/types";
 
 const STATUS: Record<TestStatus, { text: string; tone?: "up" | "down" | "warn" | "info" }> = {
@@ -158,11 +159,4 @@ export function runSummary(run: Pick<TestRun, "strategy_ref" | "start_date" | "e
   const b = run.end_date ?? to;
   const parts = [run.strategy_ref ? strategyName(run.strategy_ref) : null, a && b ? `${a} to ${b}` : null];
   return parts.filter(Boolean).join(", ");
-}
-
-/** The strategy's short name from its ref ("pkg.sma_cross:SmaCross" → "sma_cross"). */
-export function strategyName(ref?: string | null): string {
-  if (!ref) return "—";
-  const mod = ref.split(":")[0];
-  return mod.includes(".") ? mod.split(".").pop() ?? ref : ref;
 }

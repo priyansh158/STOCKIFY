@@ -109,13 +109,49 @@ def _folder_totals(folder: Path | None) -> tuple[int | None, dict[str, int]]:
 
 
 def _symbols(row: dict) -> dict[int, str]:
-    """instrument id → tradingsymbol, from the run's archived bundle.json (empty when it is not there)."""
+    """instrument id → display name (the tradingsymbol, or `NIFTY 24500 CE (9 Nov 2026)` for a bhavcopy-only
+    contract that has none), from the run's archived bundle.json (empty when it is not there)."""
+    from stockify.data.instruments import display_name
     folder = _folder(row)
     bundle = folder / "bundle.json" if folder else None
     if bundle is None or not bundle.exists():
         return {}
     rows = _json(bundle.read_text(encoding="utf-8"), {}).get("instruments", [])
-    return {r["id"]: r["tradingsymbol"] for r in rows if isinstance(r, dict) and "id" in r and r.get("tradingsymbol")}
+    return {r["id"]: n for r in rows if isinstance(r, dict) and "id" in r and (n := display_name(r))}
+
+
+_EVIDENCE_CACHE: dict[tuple, dict[int, str]] = {}      # (path, mtime, size) -> fill id -> evidence; a finished run's file never changes
+_EVIDENCE_LOCK = __import__("threading").Lock()
+
+
+def _fill_evidence(row: dict, fill_ids: set[int]) -> dict[int, str]:
+    """fill id → how the engine priced it (the `evidence` column of the run folder's fills.csv, A1), for `fill_ids`.
+    The stored fills table does not carry it. Read once per (path, mtime, size) and cached; empty when the
+    folder or the column is not there."""
+    import csv
+    folder = _folder(row)
+    path = folder / "fills.csv" if folder else None
+    if path is None or not path.exists() or not fill_ids:
+        return {}
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    with _EVIDENCE_LOCK:
+        table = _EVIDENCE_CACHE.get(key)
+    if table is None:
+        table = {}
+        with path.open(encoding="utf-8", newline="") as f:
+            rd = csv.DictReader(f)
+            if "evidence" in (rd.fieldnames or ()):     # an older run has no such column: nothing to read
+                for r in rd:
+                    try:
+                        table[int(r["fill_id"])] = r.get("evidence") or ""
+                    except (KeyError, ValueError):
+                        continue
+        with _EVIDENCE_LOCK:
+            if len(_EVIDENCE_CACHE) >= 4:
+                _EVIDENCE_CACHE.clear()
+            _EVIDENCE_CACHE[key] = table
+    return {i: table[i] for i in fill_ids if i in table}
 
 
 _CHUNK = 1 << 20
@@ -322,11 +358,17 @@ def test_orders(run_id: str, offset: int = Query(0, ge=0), limit: int = Query(50
 def test_fills(run_id: str, offset: int = Query(0, ge=0),
                      limit: int = Query(500, ge=1, le=5000)) -> list[TestFillDTO]:
     from stockify import store
-    symbols = _symbols(_row_or_404(run_id))
+    row = _row_or_404(run_id)
+    symbols = _symbols(row)
+    fills = store.run_rows(run_id, "fills", offset=offset, limit=limit)
+    why = store.order_reasons(run_id, {r["order_id"] for r in fills})
+    evidence = _fill_evidence(row, {r["fill_id"] for r in fills})
     return [TestFillDTO(fill_id=r["fill_id"], order_id=r["order_id"], t_ns=r["t_ns"], t_ist=_ist(r["t_ns"]) or "",
                         instrument_id=r["instrument_id"], tradingsymbol=symbols.get(r["instrument_id"]),
-                        side=r["side"], qty=r["qty"], price_paise=r["price_paise"])
-            for r in store.run_rows(run_id, "fills", offset=offset, limit=limit)]
+                        side=r["side"], qty=r["qty"], price_paise=r["price_paise"],
+                        note=why.get(r["order_id"], ("", ""))[0], tag=why.get(r["order_id"], ("", ""))[1],
+                        evidence=evidence.get(r["fill_id"], ""), at_close=evidence.get(r["fill_id"]) == "eod_close")
+            for r in fills]
 
 
 @router.get("/api/tests/{run_id}/equity", response_model=list[TestEquityDTO])

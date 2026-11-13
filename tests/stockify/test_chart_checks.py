@@ -243,15 +243,16 @@ class ChartHelperChecks(unittest.TestCase):
         rows = self.r["join"]
         self.assertEqual([r["fill"]["fill_id"] for r in rows], [1, 2, 3, 4])
         self.assertEqual([r["markerId"] for r in rows], [None, "f2", "f3", None])
-        self.assertIsNone(rows[0]["why"])
+        # the reason comes from the fill's own order, whether or not the chart has a marker for it
+        self.assertEqual(rows[0]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None})
         self.assertEqual(rows[1]["why"], {"text": "Range broke up", "tag": None})
         # no note: the same sentence as the chart card, with the tag beside it
-        self.assertEqual(rows[2]["why"], {"text": "Bought 50 (no note from the strategy)", "tag": "orb_exit"})
+        self.assertEqual(rows[2]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "orb_exit"})
         self.assertEqual(self.r["joinNone"][0]["markerId"], None)
         # any tag on a note-less fill is a code label, whether or not the API calls it a system tag
         strat, bare = self.r["joinStrategyTag"]
-        self.assertEqual(strat["why"], {"text": "Bought 50 (no note from the strategy)", "tag": "sma_exit"})
-        self.assertEqual(bare["why"], {"text": "Bought 50 (no note from the strategy)", "tag": None})
+        self.assertEqual(strat["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "sma_exit"})
+        self.assertEqual(bare["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None})
         tag = lambda lines: [x for x in lines if x["label"] == "Tag"]
         self.assertEqual(tag(self.r["cardStrategyTag"]), [{"label": "Tag", "value": "sma_exit", "code": True}])
         self.assertEqual(tag(self.r["cardNoteTag"]), [{"label": "Tag", "value": "orb_entry", "code": False}])

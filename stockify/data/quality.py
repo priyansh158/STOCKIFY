@@ -236,8 +236,7 @@ def write_summary(result: dict):
 
 
 def _name(iid: int) -> str:
-    info = instruments.get(iid) or {}
-    return info.get("tradingsymbol") or f"{info.get('underlying')} {info.get('kind')}" or str(iid)
+    return instruments.display_name(instruments.get(iid)) or f"instrument {iid}"
 
 
 def summary_markdown(result: dict) -> str:
@@ -328,9 +327,10 @@ def stored_readonly(day: date) -> tuple[dict, dict[int, str | None]]:
         for k in range(0, len(ids), _ID_CHUNK):
             chunk = ids[k:k + _ID_CHUNK]
             for r in _rows_or_none(
-                    conn, "SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
+                    conn, "SELECT instrument_id, tradingsymbol, underlying, kind, expiry, strike_paise FROM instruments "
+                          "WHERE instrument_id IN "
                           f"({','.join('?' * len(chunk))})", tuple(chunk)):
-                symbols[r["instrument_id"]] = r["tradingsymbol"]
+                symbols[r["instrument_id"]] = instruments.display_name(dict(r))
         return out, symbols
     except (sqlite3.Error, OSError):
         raise StoreUnreadable("refdata") from None
