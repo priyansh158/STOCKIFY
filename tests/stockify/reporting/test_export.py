@@ -9,6 +9,7 @@ import random
 import re
 import unittest
 import zipfile
+from unittest import mock
 from pathlib import Path
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -163,6 +164,16 @@ class ExportCliTests(ExportBase):
         self.assertEqual((code, out.strip()), (0, str(paths.export_path("r1", False))))
         code, out, _ = self.run_cli("r1", "--with-packs")
         self.assertEqual((code, out.strip()), (0, str(paths.export_path("r1", True))))
+
+    def test_a_secret_known_only_from_the_env_file_is_refused_and_never_printed(self):
+        env_file = paths.lab_dir() / "fake.env"
+        env_file.write_text("KITE_API_SECRET=zq7plainvalue81\n", encoding="utf-8")
+        add_files("r1", note="zq7plainvalue81")                 # matches no secret-shaped pattern, only the literal
+        with support.isolated_env({}, clear=False), mock.patch.object(stockify_paths, "env_file", return_value=env_file):
+            code, out, err = self.run_cli("r1")
+        self.assertEqual(code, 1)
+        self.assertNotIn("zq7plainvalue81", out + err)
+        self.assertFalse(paths.export_path("r1", False).exists())
 
     def test_refusals_exit_1(self):
         code, _, err = self.run_cli("nope")

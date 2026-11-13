@@ -986,6 +986,7 @@ def _cmd_export(args) -> int:
     from pathlib import Path
 
     from stockify.reporting import export
+    _load_env()      # the secret scan compares against KITE_API_KEY / KITE_API_SECRET, as the API process has them
     try:
         out = export.build(args.run_id, with_packs=args.with_packs, out=Path(args.out) if args.out else None)
     except export.ExportError as e:
