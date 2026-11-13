@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { growth, istWhen, pct, rupees, rupeesWhole } from "@/lib/format";
 import { listStrategies, listTests } from "@/lib/tests";
+import { runIdTail } from "@/lib/runid";
 import type { Strategy, TestRun } from "@/lib/types";
 import { Empty, PageHead, Panel, Table, toneClass } from "@/components/ui";
 import CompareSelect from "./CompareSelect";
@@ -30,9 +31,10 @@ function RunRow({ run }: { run: TestRun }) {
       </td>
       <td data-wrap>
         <Link href={`/tests/${encodeURIComponent(run.run_id)}`}>{run.name ?? run.run_id}</Link>
+        <div className="stk-label stk-mono" title={run.run_id}>run {runIdTail(run.run_id, run.name)}</div>
         {runSummary(run) && <div className="stk-label">{runSummary(run)}</div>}
         {run.status === "failed" && run.error && <div className="stk-mono stk-down stk-label">{run.error}</div>}
-        <div className="stk-gap-xs">
+        <div className="stk-gap-xs stk-run-chips">
           <LabelChips run={run} />
         </div>
       </td>
