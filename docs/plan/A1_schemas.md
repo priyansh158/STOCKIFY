@@ -202,6 +202,20 @@ CREATE TABLE run_charges (run_id TEXT, row_no INTEGER, kind TEXT, order_id INTEG
 -- research (M6)
 CREATE TABLE trial_families (family_id TEXT PRIMARY KEY, description TEXT, objective TEXT, created_ns INTEGER);
 CREATE TABLE holdout_unlocks (unlock_ns INTEGER, run_id TEXT, family_id TEXT, reason TEXT);
+-- migration 0005 (AM 6.2), additive: runs gain role (trial | sensitivity | oos | rerun, default trial) and job_id;
+-- trial_families gains named (1 once the owner named it); holdout_unlocks gains job_id.
+--   ALTER TABLE runs ADD COLUMN role TEXT NOT NULL DEFAULT 'trial';  ALTER TABLE runs ADD COLUMN job_id TEXT;
+--   ALTER TABLE trial_families ADD COLUMN named INTEGER NOT NULL DEFAULT 0;
+--   ALTER TABLE holdout_unlocks ADD COLUMN job_id TEXT;
+--   CREATE INDEX ix_runs_family ON runs (family_id, role, status);
+--   CREATE UNIQUE INDEX ux_unlock_job ON holdout_unlocks (job_id, reason) WHERE job_id IS NOT NULL;  -- a job unlocks once per reason
+CREATE TABLE research_jobs (job_id TEXT PRIMARY KEY, kind TEXT NOT NULL,   -- sweep | walkforward | sensitivity
+  name TEXT, family_id TEXT, status TEXT NOT NULL, created_ns INTEGER NOT NULL, finished_ns INTEGER,
+  folder TEXT, spec_json TEXT,     -- the job's input (sweep spec, windows parameters)
+  state_json TEXT,                 -- what the job decided: windows, chosen params, train and test run ids
+  error TEXT);
+-- triggers: runs_are_never_deleted (BEFORE DELETE ON runs aborts, M6.4); holdout_unlocks_no_update and
+-- holdout_unlocks_no_delete abort (the unlock log is append-only, M6.6).
 
 -- sessions (M5)
 CREATE TABLE sessions (session_id TEXT PRIMARY KEY, name TEXT, family_id TEXT, status TEXT, pause_reason TEXT,
@@ -307,7 +321,7 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
   "fill_model": { "kind": "bar", "limit_touch_policy": "through", "participation": "0.10",
                   "slippage": { "kind": "fixed_ticks", "k": 1 } },
   "latency_ms": 0,
-  "costs": { "broker": "zerodha", "allow_unverified": true, "auto_square_off_fee": true, "dp_charges": true },
+  "costs": { "broker": "zerodha", "allow_unverified": true, "auto_square_off_fee": true, "dp_charges": true, "scale": "1" },
   "margin": { "model": "flat" },
   "policies": { "preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": false },
   "mark": "ltp",
@@ -317,7 +331,13 @@ Little-endian, no padding between records, readers use `memcpy` (no alignment as
 }
 ```
 
+`unlock_holdout` (M6.6, D-88): `null`, or a written reason of at least 3 non-space characters that lets this run use data on or after `research.json` `holdout_from`. It is checked only when the run's last day reaches the holdout (or has no end date); `--unlock-holdout "<reason>"` sets it on `run` and `oracle run`. Leave it `null` in saved and example configs: a reason left in a file unlocks every run made from it.
+
 `seed_mode` (VOL 5.1): `run` (the default) seeds both PCG32 streams once from `seed`; `per_day` re-creates them each trading day from that day's seed (A4 §4.5), as paper sessions do. The validated form leaves `run` out, so configs and bundles without it are unchanged byte for byte.
+
+`fill_model.slippage.extra_ticks` (FW 6.2, D-91): an integer from 0 to 1000, allowed for every slippage kind, default 0; it adds that many ticks of adverse slippage on top of the kind's own move (A4 §4.4), the same on the engine and the oracle. The validated form leaves out a 0, so configs and bundles without it are unchanged byte for byte.
+
+`costs.scale` (FW 6.1, D-90): a decimal string from `"0"` to `"10"` with at most 4 decimal places, default `"1"`; every brokerage, tax and fee of the bundle's `charges` section is multiplied by it, for what-if tests (`"0"` is cost-free, `"2"` doubles every charge). Rates on turnover or value are multiplied exactly and a result that parts per billion cannot hold is refused (GST, a rate on other charges, is left alone: its base is scaled, so the total is exactly N times); paper sessions refuse the key; each whole-paise amount is rounded once, half-up. The validated form leaves out a scale of 1 (in any spelling), so configs and bundles without it are unchanged byte for byte; any other value labels the bundle `costs:scaled`. Leave it `"1"` (or out) in saved and example configs: a scale left in a file changes every run made from it.
 
 `strategy.kind`: `python` (`module:Class`) or `cpp` (registered name). `data.packs[]` items are either `{"spec": …}` (built on demand) or `{"sha256": …}`. `allow_unverified: true` lets the run use charge rows not yet verified (Z-3) and labels it (I-14).
 
@@ -348,6 +368,7 @@ The last two read NSE's SPAN files from the bundle (§6.2); both engines run the
   "broker_policy": { "...": "rows effective in range (§7.5)" },
   "margin_params": { "...": "§7.6" },
   "pricing": { "...": "§7.7" },
+  "system_notes": { "AUTO_SQOFF": "…", "RMS_SQOFF": "…", "SETTLEMENT": "… {price}" },
   "packs": [ { "sha256": "…", "path": "packs/….evt", "price_basis": "adjusted" } ],
   "strategy": { "kind": "python", "ref": "…", "source_sha256": "…", "params": {} },
   "labels": [ "fill:bar", "margin:flat(approx)", "charges:unverified_rows" ],
@@ -438,17 +459,20 @@ yet"), never a fallback to flat.
 | File | Deterministic (A4 §9) | Content |
 |---|---|---|
 | `run.json`, `bundle.json` | input | as above |
-| `orders.csv` | ✔ | `order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason` |
+| `orders.csv` | ✔ | `order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason,note` (`note`: the strategy's own cleaned text, `""` when none; a folder saved before CH 6.2, D-92, has no such column and reads as `""`) |
 | `order_events.csv` | ✔ | `t_ns,order_id,event,detail` |
 | `fills.csv` | ✔ | `fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence` (evidence: `bar_open`, `bar_path`, `vwap_int`, `ltp`, `book_lvl_<k>`, `book_cross`, `trade_through`, `eod_close`) |
 | `charges.csv` | ✔ | `row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,other,total` (paise; `kind` ∈ `order, dp, sqoff_fee, settlement`; `order_id` 0 when not an order) |
 | `positions_eod.csv` | ✔ | `trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,underlying_mark_paise` (the last: a derivative's underlying mark at DAY_END, empty otherwise; D-55) |
 | `equity.csv` | ✔ | `trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise` |
 | `margin_daily.csv` | ✔ (±100 paise across platforms) | `trade_date,underlying_id,model,step,scan,somc,elm,addons,total` (M4; one row per day and underlying with F&O legs at DAY_END (NRML ones, and any MIS future or option still open then: one book, A4 §6.5, D-80), none under `flat`. `model` is the run's `margin.model`; `step` the staircase step that priced the row: `B1_span_nse_elm`, `B2_span_rule_elm`, `B3_spanlite_calibrated`, `B4_spanlite_placeholder`, `B5_flat` (MEZ 4.9). For B1/B2 `scan` is the whole exact SPAN requirement and `somc` its short option minimum; for B5 `scan` is the flat requirement and the rest 0; `total` = max(scan, somc) + elm + addons. Under `live_with_fallback` (MEZ 5.1, D-69) a journaled Kite margin answer (REFDATA `margin_requirement`, §5) for exactly the book at DAY_END that is at most `margin.live_fresh_s` old at that moment replaces the rows with one: `underlying_id` 0, `step` `L1_kite`, `scan` = `span_paise`, `somc` 0, `elm` = `exposure_paise`, `addons` = `additional_paise`; the premium is not margin (D-62). Otherwise the staircase rows with their B-step. DAY_END is normally hours after the session, so the staircase rows are the usual case) |
+| `plots.csv` | ✔ | `t_ns,instrument_id,name,kind,value` (CH 6.4, D-94: the points a strategy plotted with `ctx.plot(name, value, *, kind="price", instrument=0)`, one per series and event time (the last call wins), sorted by `(t_ns, instrument_id, name)`; `instrument_id` 0 is the whole run; `kind` is `price` (value in paise) or `level` (value in 1/10,000 units); `value` an int64; at most 8 series and 200,000 points per run, the call beyond each ignored with one `events_log.txt` line; header only when nothing was plotted; a folder saved before CH 6.4 has no such file) |
 | `metrics.json` | ✔ (floats; A4 §9.3) | A4 §8 |
 | `events_log.txt` | ✔ | strategy and engine log lines stamped with engine time |
 | `determinism.json` | — | SHA-256 of each deterministic file |
 | `manifest.json` | ✗ | engine build info, Python version, OS, wall-clock start/duration, input hashes, labels |
+| `sensitivity.json` | ✗ | the cost, slippage, latency and fill-model variants of a finished run and the verdict (`fragile`, `robust`, `inconclusive`, `already_losing`; D-100); written by `stockify sensitivity`, read by `GET /api/tests/{id}/sensitivity` |
+| `research.json` | ✗ | the run's cached research figures (deflated Sharpe inputs, bootstrap intervals, regime tables) written by `report.run_research`; a cache, safe to delete. Not the config file of §7.10 |
 | `report.md` (+ `equity.png`) | ✗ | human summary (M2.6) |
 
 <!-- </block> -->
@@ -507,6 +531,7 @@ An **order record** has exactly these fields (A4 §3; the enum spellings are the
 | `validity` | `"DAY"` \| `"IOC"` |
 | `protection` | `"AUTO"` or int bp |
 | `tag`, `reason` | string, `""` when none (never null) |
+| `note` | string, `""` when none (never null): the strategy's words for why, cleaned by `clean_note` (CH 6.2/6.3: carried in `sod_state` like the tag; the one key a reader treats as optional: a state written before CH 6.3 has none and loads with `""`, and both runners always write it) |
 | `status` | `"PENDING"` \| `"OPEN"` \| `"TRIGGER_PENDING"` \| `"COMPLETE"` \| `"CANCELLED"` \| `"REJECTED"` \| `"SLICED"` |
 | `limit`, `protection_bp` | int or null |
 | `from_market`, `triggered`, `first_eligible_done`, `charged` | boolean |
@@ -545,6 +570,32 @@ A run config (§6.1) without `data`, plus `universe`; `stockify.sessionconfig.lo
 | `price_basis` | `raw` (the only value) |
 
 `data` is refused. The normalised form is the run config's normalised form with `schema`, `universe` and `margin.live_fresh_s`; it is validated again to itself. `bundle.resolve_session_day(session_id, cfg, day, sod_state, refdata_stale=False)` makes one day's bundle (§6.2) from it: `packs: []`, `days` `[day]` with its seed, `sod_state` as given, `prev_days` / `next_days`, labels as a run's plus `session:<session_id>` (and `refdata_stale`); SPAN files only those archived by the refdata job's time, the later intraday files being left out and labelled `margin_span:sod_files_only`, and the day's ELM file left out (`margin_elm:sod_files_only`, the day's margin steps from B1 to B2). Instruments the previous `sod_state` names stay in the bundle (a build with an unknown one fails).
+
+### 6.6 `sweep.yaml`: a parameter sweep (WF 6.1, M6.10)
+
+YAML (`yaml.safe_load` rules; anchors, aliases and repeated keys are refused). `stockify.research.sweep.load_spec` validates it and `expand` makes the trial run configs. Schema `"stockify.sweep/1"`; an unknown key is refused naming it and the closest known one (D-76). There is no `family_id` key: a sweep is its own family, `sweep/<job_id>` (`registry.job_family_id`), and the base config's `family_id` is ignored.
+
+| Key | Value |
+|---|---|
+| `schema` | `"stockify.sweep/1"` |
+| `name` | a safe path segment of at most 40 characters; trial `i` is the run named `<name>-t<i:03d>` |
+| `base` | a path to a run.json (relative to this file) or an inline run config; normalised by `runconfig.validate` before the axes are applied |
+| `objective` | one of `registry.OBJECTIVES` (default `sharpe`) |
+| `search` | `{kind: grid}` (default) or `{kind: random, trials: N, seed: S}`: N distinct grid points drawn without replacement on stream 13 (`seeding.stream(S, "random_search")`), returned in grid order; N at or above the grid size gives the whole grid |
+| `workers` | null or a whole number >= 1; the pool caps it at cpu_count - 1 and at `research.json` `sweep.max_workers` |
+| `axes` | non-empty map of dotted path in the run config to a non-empty list of distinct values (decimals as strings, no floats). The path must exist in the base, except a new key directly under `strategy.params` |
+
+The grid is the Cartesian product in file order, the last axis varying fastest. A grid above `research.json` `sweep.max_trials` (and a random search asking for more trials than that) is refused before any config is built. Every expanded config is checked by `runconfig.validate`; one it refuses fails the load, naming the trial and its axis values. The example is `examples/sweeps/orb_grid.yaml` (5 x 3 = 15 trials, dates before the holdout).
+
+### 6.7 `research/<job_id>/`: a research job's folder (M6)
+
+`paths.research_path(job_id)` (one safe segment). Written by the sweep, walk-forward and report code; none of it is deterministic output of the engine.
+
+| File | Job | Content |
+|---|---|---|
+| `sweep.json`, `results.csv` | sweep | the expanded trials with their run ids and objective values; the table the sweep page reads (`GET /api/research/sweeps/{job_id}`) |
+| `walkforward.json` | walk-forward | windows, the stitched out-of-sample index, summary, holdout notes; the only input of `report.md` and `GET /api/research/walkforward/{job_id}` (D-133) |
+| `report.md`, `walkforward.png` | walk-forward | the plain-words report (`wf_report.render`, D-134) and its stitched-curve picture |
 
 ## §7 Config files (`stockify/config/`)
 

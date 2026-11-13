@@ -11,10 +11,12 @@ Params: `symbol`, `range_minutes` (15), `qty` (units), `short` (false), `exit_hh
 from __future__ import annotations
 
 from stockify import timeutil
-from stockify.strategy import Strategy, encode_state
+from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class OpeningRangeBreakout(Strategy):
+    BAR_INTERVAL_S = 60              # the one bar interval it subscribes to (the chart reads it; the C++ twin orb_cpp uses 60 too)
+    closed = False                      # the day's position is closed (or the time exit passed): no more range lines
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
         {'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to trade intraday, e.g. NSE:RELIANCE'},
@@ -26,19 +28,21 @@ class OpeningRangeBreakout(Strategy):
 
     def on_start(self, ctx):  # noqa: ANN001
         p = ctx.params
-        self.iid = ctx.resolve(p["symbol"])
+        self.symbol = p["symbol"]
+        self.iid = ctx.resolve(self.symbol)
         self.minutes = int(p.get("range_minutes", 15))
         self.qty = int(p["qty"])
         self.short = bool(p.get("short", False))
         self.exit_hhmm = p.get("exit_hhmm", "15:10")
         self.day = None
-        ctx.subscribe_bars(self.iid, 60)
+        ctx.subscribe_bars(self.iid, self.BAR_INTERVAL_S)
 
     def _new_day(self, ctx, bar) -> None:  # noqa: ANN001
         self.day = ctx.today()
         self.open_ns = timeutil.ist_ns(self.day, "09:15")
         self.hi = self.lo = None
         self.traded = False
+        self.closed = False
         self.entry_id = None
         self.stop_side = None
         self.stop_trigger = 0
@@ -56,15 +60,25 @@ class OpeningRangeBreakout(Strategy):
             self.hi = bar.high if self.hi is None else max(self.hi, bar.high)
             self.lo = bar.low if self.lo is None else min(self.lo, bar.low)
             return
-        if self.traded or self.hi is None:
+        if self.hi is None or self.closed:
+            return
+        ctx.plot("range_high", self.hi, instrument=self.iid)     # paise: the range as the bars after it see it
+        ctx.plot("range_low", self.lo, instrument=self.iid)
+        if self.traded:
             return
         tick = ctx.spec(self.iid)["tick_paise"]
         if bar.close > self.hi:
-            self.entry_id = ctx.place(self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long")
+            self.entry_id = ctx.place(
+                self.iid, "BUY", self.qty, "MIS", "MARKET", tag="orb_long",
+                note=f"Bought {fmt_qty(self.qty)} {self.symbol}: price {fmt_price(bar.close)} broke above the "
+                     f"{self.minutes}-minute opening range high of {fmt_price(self.hi)}")
             self.stop_side, self.stop_trigger = "SELL", self.lo // tick * tick
             self.traded = True
         elif self.short and bar.close < self.lo:
-            self.entry_id = ctx.place(self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short")
+            self.entry_id = ctx.place(
+                self.iid, "SELL", self.qty, "MIS", "MARKET", tag="orb_short",
+                note=f"Sold short {fmt_qty(self.qty)} {self.symbol}: price {fmt_price(bar.close)} broke below the "
+                     f"{self.minutes}-minute opening range low of {fmt_price(self.lo)}")
             self.stop_side, self.stop_trigger = "BUY", -(-self.hi // tick) * tick
             self.traded = True
 
@@ -72,8 +86,15 @@ class OpeningRangeBreakout(Strategy):
         # The stop exists only for what the entry has filled: one SL-M of exactly each fill's quantity. A rejected or
         # cancelled entry fills nothing, so it never gets a stop (and cannot open a reverse position).
         if self.entry_id is not None and fill.order_id == self.entry_id:
+            qty = fmt_qty(fill.qty)
+            trigger = fmt_price(self.stop_trigger)
+            note = (f"Stop-loss for the {qty} bought: sells if price falls to {trigger}" if self.stop_side == "SELL"
+                    else f"Stop-loss for the {qty} sold short: buys back if price rises to {trigger}")
             self.stop_ids.append(ctx.place(self.iid, self.stop_side, fill.qty, "MIS", "SL-M",
-                                           trigger=self.stop_trigger, tag="orb_stop"))
+                                           trigger=self.stop_trigger, tag="orb_stop", note=note))
+        elif fill.order_id in self.stop_ids:
+            pos = ctx.position(self.iid, "MIS")                  # a stop filled: the day is closed once flat
+            self.closed = not (pos and pos.qty)
 
     # A paper session's day-to-day state (A2 §4.1): the default, with the date `day` as ISO text.
     def save_state(self) -> dict:
@@ -85,9 +106,11 @@ class OpeningRangeBreakout(Strategy):
         self.day = date.fromisoformat(self.day) if self.day else None
 
     def on_timer(self, ctx, timer_id):  # noqa: ANN001
+        self.closed = True                                      # the time exit ends the day's lines
         for stop_id in self.stop_ids:
             ctx.cancel(stop_id)
         pos = ctx.position(self.iid, "MIS")
         if pos and pos.qty:
             side = "SELL" if pos.qty > 0 else "BUY"
-            ctx.place(self.iid, side, abs(pos.qty), "MIS", "MARKET", tag="orb_exit")
+            ctx.place(self.iid, side, abs(pos.qty), "MIS", "MARKET", tag="orb_exit",
+                      note=f"Closed {fmt_qty(abs(pos.qty))} {self.symbol} at the {self.exit_hhmm} time exit")

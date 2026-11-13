@@ -26,9 +26,11 @@ from datetime import date as _date
 
 from stockify import numerics, timeutil
 from stockify.oracle import costs as costs_mod
+from stockify.oracle import notes
+from stockify.oracle.bars import bucket_start, volume_delta
 from stockify.oracle.ledger import Ledger
 from stockify.oracle.margin import DERIVATIVES, FlatMargin
-from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, participation_cap, path_points, protection_limit,
+from stockify.oracle.matcher import (OPEN_POS, bar_opportunity, extra_ticks_of, participation_cap, path_points, protection_limit,
                                      slipped)
 from stockify.oracle.orders import ACTIVE, FINAL, SYSTEM_TAGS, Fill, FillView, Order, OrderView
 from stockify.oracle.rng import SLIPPAGE_STREAM, STRATEGY_STREAM, Pcg32
@@ -123,11 +125,15 @@ def _cutoff_key(group: str) -> str:
         return "FO"
     return "CM_CAS" if group == "CM_CAS" else "CM"
 
+PLOT_MAX_SERIES, PLOT_MAX_POINTS = 8, 200_000      # CH 6.4: per run (D-94)
+
+
 class Engine:
     def __init__(self, bundle: dict, records: list[tuple], strategy, *, log_lines: list | None = None):  # noqa: ANN001
         self.bundle = bundle
         self.run_cfg = bundle["run"]
         self.fill_cfg = self.run_cfg["fill_model"]
+        extra_ticks_of(self.fill_cfg.get("slippage", {}))               # FW 6.2: a hand-edited bundle fails here
         self.policies = self.run_cfg["policies"]
         self.latency_ns = self.run_cfg["latency_ms"] * 1_000_000
         self.inst = {i["id"]: i for i in bundle["instruments"]}
@@ -145,7 +151,8 @@ class Engine:
         self.cal_days = list(prev or []) + self.days + list(nxt or [])
         self.cal_day_ends = [d["day_end_ns"] for d in self.cal_days]
         self.cal_by_date = {d["date"]: d for d in self.cal_days}
-        self.records = records                         # [(key, record)] sorted
+        self.system_notes = bundle.get("system_notes") or {}   # CH 6.2: {tag: text}; absent in an older bundle
+        self.records = records                       # [(key, record)] sorted
         self.strategy = strategy
         self.costs = costs_mod.Costs(bundle["charges"], self.run_cfg["costs"])
         self._check_mis_rows(bundle["broker_policy"].get("mis_margin_pct"))
@@ -193,6 +200,9 @@ class Engine:
         self.equity: list = []
         self.log_lines = log_lines if log_lines is not None else []
         self.labels: set[str] = set(bundle.get("labels", []))
+        self.plot_kinds: dict[tuple, str] = {}         # CH 6.4: (instrument, name) -> kind, fixed by the first call
+        self.plot_points: dict[tuple, int] = {}        # (t_ns, instrument, name) -> value; a repeat replaces
+        self.plot_capped: set[str] = set()             # the caps already logged ("series", "points")
         self.settle_closes: list = []                  # (t, iid, product, side, units, price): expiry closes (D-45)
         self.fsp_seen: dict = {}                       # (underlying_id, date) -> fsp
         self.underlying_last: dict[int, int] = {}
@@ -420,6 +430,33 @@ class Engine:
     def log(self, level: str, msg: str) -> None:
         self.log_lines.append(f"{self.now} {level} {msg}")
 
+    def plot(self, name: str, value: int, kind: str, instrument: int) -> None:
+        """CH 6.4 (Context.plot, args already checked): an unknown instrument or a changed kind is a ValueError; past
+        PLOT_MAX_SERIES series or PLOT_MAX_POINTS points the call is dropped and one WARN line says so per cap."""
+        if instrument != 0 and instrument not in self.inst:
+            raise ValueError(f"ctx.plot: instrument {instrument} is not in this run's bundle")
+        series = (instrument, name)
+        have = self.plot_kinds.get(series)
+        if have is not None and have != kind:
+            raise ValueError(f'ctx.plot: series "{name}" of instrument {instrument} is kind "{have}", not "{kind}"')
+        key = (self.now, instrument, name)
+        if have is None and len(self.plot_kinds) >= PLOT_MAX_SERIES:
+            self._plot_cap("series", PLOT_MAX_SERIES)
+        elif key not in self.plot_points and len(self.plot_points) >= PLOT_MAX_POINTS:
+            self._plot_cap("points", PLOT_MAX_POINTS)
+        else:
+            self.plot_kinds[series] = kind
+            self.plot_points[key] = value
+
+    def _plot_cap(self, which: str, limit: int) -> None:
+        if which not in self.plot_capped:
+            self.plot_capped.add(which)
+            self.log("WARN", f"plot limit reached: more than {limit} {which}")
+
+    def plot_rows(self) -> list[tuple]:
+        """plots.csv's rows, sorted by (t_ns, instrument_id, name)."""
+        return [(t, i, n, self.plot_kinds[(i, n)], v) for (t, i, n), v in sorted(self.plot_points.items())]
+
     def _event(self, book: Book, o: Order, event: str, detail: str = "") -> None:
         book.order_events.append((self.now, o.order_id, event, detail))
         if event in ("SUBMIT", "ACTIVATE", "TRIGGER", "FILL", "COMPLETE", "CANCEL", "REJECT", "MODIFY", "SLICE"):
@@ -577,9 +614,11 @@ class Engine:
         return o
 
     def place(self, iid: int, side: str, qty: int, product: str, type_: str, price: int = 0, trigger: int = 0,
-              validity: str = "DAY", protection="AUTO", tag: str = "", parent: int = 0, system: bool = False) -> Order:  # noqa: ANN001
+              validity: str = "DAY", protection="AUTO", tag: str = "", parent: int = 0, system: bool = False,
+              note: str = "") -> Order:  # noqa: ANN001
+        note = notes.clean_note(note)                      # CH 6.2: cleaned once; a slice's children get the clean text
         o = Order(self.next_order, parent, iid, side, qty, product, type_, price, trigger, validity, protection, tag,
-                  self.now, 0)
+                  note, self.now, 0)
         self.next_order += 1
         self.book.orders[o.order_id] = o
         self.live_ids.append(o.order_id)
@@ -603,7 +642,7 @@ class Engine:
                 q = min(child, left)
                 left -= q
                 self.place(iid, side, q, product, type_, price, trigger, validity, protection, tag, parent=o.order_id,
-                           system=system)
+                           system=system, note=note)
             return o
         code = self._validate(o, system, start="R_HOLDINGS")
         if code:
@@ -987,7 +1026,7 @@ class Engine:
         s0, s1 = m.s0, m.s1
         if s0 is None or s1 is None:
             return None
-        dv = s1["volume"] - s0["volume"]
+        dv = numerics.check_int64(s1["volume"] - s0["volume"])
         if dv < 0:
             self.log("WARN", "day volume decreased; treated as 0")
             dv = 0
@@ -1182,16 +1221,16 @@ class Engine:
             if cs is None or t < cs:
                 continue
             step = isec * 1_000_000_000
-            start = cs + (t - cs) // step * step
+            start = bucket_start(cs, t, isec)
             acc = self.built.setdefault((iid, isec), {})
-            dv = vol if prev_vol is None else max(0, vol - prev_vol) if vol is not None else 0
+            dv = volume_delta(vol, prev_vol)
             if start not in acc:
-                acc[start] = [price, price, price, price, dv or 0, 0]
-                self.push(start + step, BAR_BUILT, "BAR_BUILT", (iid, isec, start))
+                acc[start] = [price, price, price, price, dv, 0]
+                self.push(numerics.check_int64(start + step), BAR_BUILT, "BAR_BUILT", (iid, isec, start))
             else:
                 b = acc[start]
                 b[1], b[2], b[3] = max(b[1], price), min(b[2], price), price
-                b[4] += dv or 0
+                b[4] = numerics.check_int64(b[4] + dv)
 
     def _on_gap(self, rec: dict) -> None:
         targets = [rec["instrument_id"]] if rec["scope"] == 1 else list(self.market)
@@ -1262,10 +1301,10 @@ class Engine:
                 p.q, p.c = 0, 0
             else:
                 k = row["strike_paise"]
-                intrinsic = max(0, fsp - k) if row["kind"] == "CE" else max(0, k - fsp)
+                intrinsic = max(0, numerics.check_int64(fsp - k)) if row["kind"] == "CE" else max(0, numerics.check_int64(k - fsp))
                 self.settle_closes.append((self.now, p.instrument_id, p.product, closing_side, units, intrinsic))
                 led.cash += p.qty * intrinsic
-                p.realised += p.d * (p.q * intrinsic - p.c)
+                p.realised = numerics.traded_pnl(p.realised, p.d, p.q * intrinsic, p.c)
                 # D-59: brokerage on every option open at expiry (exercised, assigned or expired);
                 # exercise STT only on the intrinsic value of a long ITM one
                 exercised = p.q * intrinsic if p.d > 0 else 0
@@ -1363,7 +1402,8 @@ class Engine:
             if _cutoff_key(self.group_of(iid, d)) != seg:
                 continue
             side = "SELL" if p.d > 0 else "BUY"
-            self.place(iid, side, p.q, "MIS", "MARKET", tag="AUTO_SQOFF", system=True)
+            self.place(iid, side, p.q, "MIS", "MARKET", tag="AUTO_SQOFF", system=True,
+                       note=self.system_notes.get("AUTO_SQOFF", ""))
         self._deliver()
 
     def _day_end(self, d: str) -> None:
@@ -1421,8 +1461,9 @@ class Engine:
             return
         t, period = spec
         if period:
-            self.timers[timer_id] = (t + period, period)
-            self.push(t + period, TIMER, "TIMER", timer_id)
+            t_next = numerics.check_int64(t + period)
+            self.timers[timer_id] = (t_next, period)
+            self.push(t_next, TIMER, "TIMER", timer_id)
         else:
             del self.timers[timer_id]
         if self._hook_on("on_timer"):
@@ -1518,7 +1559,7 @@ class Engine:
                 else:
                     merged.append([a, b])
             for a, b in merged:
-                total += b - a
+                total = numerics.check_int64(total + numerics.check_int64(b - a))
                 state = False
                 cursor = a
                 for t, flag in self.open_changes:
@@ -1528,10 +1569,10 @@ class Engine:
                     if t >= b:
                         break
                     if state:
-                        held += t - cursor
+                        held = numerics.check_int64(held + numerics.check_int64(t - cursor))
                     cursor, state = t, flag
                 if state:
-                    held += b - cursor
+                    held = numerics.check_int64(held + numerics.check_int64(b - cursor))
         return held / total if total else None
 
     def _dispatch_internal(self, kind: str, payload) -> None:  # noqa: ANN001

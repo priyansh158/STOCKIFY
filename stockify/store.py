@@ -18,7 +18,7 @@ from typing import Optional
 from stockify import paths
 from stockify.data import migrate
 
-SCHEMA_VERSION = 4   # = the number of files in stockify/data/migrations/lab
+SCHEMA_VERSION = 5  # = the number of files in stockify/data/migrations/lab
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -161,9 +161,37 @@ def write_recorder_status(row: dict) -> None:
         conn.commit()
 
 
+def recorder_status_read() -> tuple[dict | None, bool]:
+    """(the newest recorder health row or None, whether lab.sqlite exists but could not be read).
+
+    A pure read, so it opens lab.sqlite on its own READ-ONLY connection (`mode=ro`), never `_connect()`: that opens
+    read-write, creates the file and folder when they are missing, switches on WAL and applies migrations. A missing
+    file or a missing table (an older schema) is (None, False): nothing to read. A file that exists but cannot be
+    read (locked, corrupt, not a database, unopenable) is (None, True), and never raises. It waits for the store's
+    lock like every other reader (`_all`).
+    """
+    path = _db_path()
+    try:
+        if not path.exists():
+            return None, False
+        with _lock:
+            conn = sqlite3.connect(paths.readonly_uri(path), uri=True, timeout=5.0)
+            try:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1").fetchone()
+            finally:
+                conn.close()
+    except sqlite3.OperationalError as e:
+        return None, not str(e).startswith("no such table")
+    except (sqlite3.Error, OSError):
+        return None, True
+    return (dict(row) if row else None), False
+
+
 def latest_recorder_status() -> dict | None:
-    row = _one("SELECT * FROM recorder_status ORDER BY wall_ns DESC LIMIT 1")
-    return dict(row) if row else None
+    """The newest recorder health row, or None (no rows, no store, or a store that cannot be read: see
+    `recorder_status_read` to tell the last apart)."""
+    return recorder_status_read()[0]
 
 
 def prune_recorder_status(older_than_ns: int) -> int:
@@ -178,7 +206,8 @@ def prune_recorder_status(older_than_ns: int) -> int:
 # ── runs (M3.11; A1 §4 runs, run_orders, run_fills, run_equity, run_charges) ─
 
 RUN_FIELDS = ("run_id", "name", "family_id", "status", "created_ns", "started_ns", "finished_ns", "folder",
-              "bundle_sha256", "engine_build_id", "impl", "config_json", "metrics_json", "labels_json", "error")
+              "bundle_sha256", "engine_build_id", "impl", "config_json", "metrics_json", "labels_json", "error",
+              "role", "job_id")
 
 _RUN_TABLES = {  # table name in run_rows → (SQL table, primary-key order, columns after run_id)
     "orders": ("run_orders", "order_id", ("order_id", "row_json")),
@@ -198,7 +227,7 @@ def create_run(row: dict) -> None:
         raise ValueError(f"not runs columns: {sorted(unknown)}")
     now, started = timeutil.now_ns(), row.get("started_ns")
     # A row is never created after it started (the launcher reads its start time first; the clock may tick between).
-    full = {"status": "queued", "created_ns": now if started is None else min(now, started), **row}
+    full = {"status": "queued", "role": "trial", "created_ns": now if started is None else min(now, started), **row}
     conn = _connect()
     with _lock:
         conn.execute(f"INSERT INTO runs ({', '.join(RUN_FIELDS)}) VALUES ({', '.join('?' * len(RUN_FIELDS))})",
@@ -314,6 +343,196 @@ def run_rows(run_id: str, table: str, *, offset: int = 0, limit: int = 500) -> l
     return [dict(r) for r in rows]
 
 
+# ── research: families, unlock log, jobs (M6.2; A1 §4 trial_families, holdout_unlocks, research_jobs) ──
+
+RESEARCH_JOB_FIELDS = ("job_id", "kind", "name", "family_id", "status", "created_ns", "finished_ns", "folder",
+                       "spec_json", "state_json", "error")
+_MAX_PAGE = 1000   # list_research_jobs never returns more than this many rows
+
+
+def add_family(family_id: str, *, objective: str, description: str | None = None, named: bool = False,
+               now_ns: int | None = None) -> bool:
+    """Insert a trial family if absent; returns whether it inserted. An existing family is never touched, so a
+    name the owner gave survives."""
+    from stockify import timeutil
+    conn = _connect()
+    with _lock:
+        cur = conn.execute("INSERT OR IGNORE INTO trial_families (family_id, description, objective, created_ns, named) "
+                           "VALUES (?, ?, ?, ?, ?)",
+                           (family_id, description, objective, timeutil.now_ns() if now_ns is None else now_ns,
+                            1 if named else 0))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def name_family(family_id: str, description: str) -> None:
+    """The owner's name for a family: sets the description and `named = 1`."""
+    conn = _connect()
+    with _lock:
+        conn.execute("UPDATE trial_families SET description = ?, named = 1 WHERE family_id = ?",
+                     (description, family_id))
+        conn.commit()
+
+
+def get_family(family_id: str) -> dict | None:
+    row = _one("SELECT * FROM trial_families WHERE family_id = ?", (family_id,))
+    return dict(row) if row else None
+
+
+def list_families() -> list[dict]:
+    """Ordered by family_id (never by time)."""
+    return [dict(r) for r in _all("SELECT * FROM trial_families ORDER BY family_id")]
+
+
+def family_runs(family_id: str, *, roles: tuple[str, ...] | None = ("trial",),
+                status: str | None = "done") -> list[dict]:
+    """A family's runs, ordered by name then run_id (never by time). roles=None or status=None means no filter;
+    an empty roles tuple matches nothing."""
+    sql, args = "SELECT * FROM runs WHERE family_id = ?", [family_id]
+    if roles is not None:
+        roles = tuple(roles)
+        if not roles:
+            return []
+        sql += f" AND role IN ({', '.join('?' * len(roles))})"
+        args += roles
+    if status is not None:
+        sql += " AND status = ?"
+        args.append(status)
+    return [dict(r) for r in _all(sql + " ORDER BY name, run_id", args)]
+
+
+def run_nav_series(run_id: str) -> list[tuple[str, int]]:
+    """`(trade_date, nav_paise)` of a run from run_equity, dates ascending."""
+    return [(r["trade_date"], r["nav_paise"]) for r in
+            _all("SELECT trade_date, nav_paise FROM run_equity WHERE run_id = ? ORDER BY trade_date", (run_id,))]
+
+
+def log_holdout_unlock(run_id: str, family_id: str | None, reason: str, *, job_id: str | None = None,
+                       now_ns: int | None = None) -> bool:
+    """Append one line to the unlock log. A second call with the same (job_id, reason) adds nothing (a job counts
+    once); job_id None is a standalone run and always adds. Returns whether a row was added."""
+    from stockify import timeutil
+    conn = _connect()
+    with _lock:
+        cur = conn.execute("INSERT OR IGNORE INTO holdout_unlocks (unlock_ns, run_id, family_id, reason, job_id) "
+                           "VALUES (?, ?, ?, ?, ?)",
+                           (timeutil.now_ns() if now_ns is None else now_ns, run_id, family_id, reason, job_id))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def holdout_unlock_rows(family_id: str | None = None) -> list[dict]:
+    """The log in insertion order (rowid), optionally of one family."""
+    if family_id is None:
+        rows = _all("SELECT * FROM holdout_unlocks ORDER BY rowid")
+    else:
+        rows = _all("SELECT * FROM holdout_unlocks WHERE family_id = ? ORDER BY rowid", (family_id,))
+    return [dict(r) for r in rows]
+
+
+def create_research_job(row: dict) -> None:
+    """Insert a research_jobs row; keys are column names (job_id, kind, status and created_ns are required by the
+    table). An unknown key is a ValueError."""
+    unknown = set(row) - set(RESEARCH_JOB_FIELDS)
+    if unknown:
+        raise ValueError(f"not research_jobs columns: {sorted(unknown)}")
+    conn = _connect()
+    with _lock:
+        conn.execute(f"INSERT INTO research_jobs ({', '.join(RESEARCH_JOB_FIELDS)}) "
+                     f"VALUES ({', '.join('?' * len(RESEARCH_JOB_FIELDS))})",
+                     tuple(row.get(k) for k in RESEARCH_JOB_FIELDS))
+        conn.commit()
+
+
+def update_research_job(job_id: str, **fields) -> bool:
+    """Update columns of one job. Names are checked against RESEARCH_JOB_FIELDS (job_id itself is not updatable)
+    and the SQL only ever contains names from that constant; values are bound. Returns whether a row changed."""
+    unknown = set(fields) - (set(RESEARCH_JOB_FIELDS) - {"job_id"})
+    if unknown:
+        raise ValueError(f"not updatable research_jobs columns: {sorted(unknown)}")
+    if not fields:
+        return False
+    cols = [c for c in RESEARCH_JOB_FIELDS if c in fields]
+    conn = _connect()
+    with _lock:
+        cur = conn.execute(f"UPDATE research_jobs SET {', '.join(f'{c} = ?' for c in cols)} WHERE job_id = ?",
+                           (*(fields[c] for c in cols), job_id))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_research_job(job_id: str) -> dict | None:
+    row = _one("SELECT * FROM research_jobs WHERE job_id = ?", (job_id,))
+    return dict(row) if row else None
+
+
+def list_research_jobs(kind: str | None = None, offset: int = 0, limit: int = 50) -> list[dict]:
+    """Newest created_ns first (job_id breaks ties). limit is clamped to 0..1000, offset to >= 0."""
+    limit, offset = max(0, min(int(limit), _MAX_PAGE)), max(0, int(offset))
+    sql, args = "SELECT * FROM research_jobs", []
+    if kind is not None:
+        sql += " WHERE kind = ?"
+        args.append(kind)
+    sql += " ORDER BY created_ns DESC, job_id LIMIT ? OFFSET ?"
+    return [dict(r) for r in _all(sql, (*args, limit, offset))]
+
+
+def count_research_jobs(kind: str | None = None) -> int:
+    """How many research_jobs rows there are (of one kind, when given)."""
+    sql, args = "SELECT COUNT(*) FROM research_jobs", ()
+    if kind is not None:
+        sql, args = sql + " WHERE kind = ?", (kind,)
+    return int(_one(sql, args)[0])
+
+
+def backfill_null_families(compute) -> int:  # noqa: ANN001
+    """For each runs row whose family_id IS NULL call `compute(row) -> str | None`; a string is written to that
+    column only (and only while it is still NULL). Returns how many rows were set. The lock is not held while
+    `compute` runs (it may call any store function); the updates are one transaction, each guarded by
+    `family_id IS NULL`, so a row that got a family meanwhile is left alone."""
+    rows = _all("SELECT * FROM runs WHERE family_id IS NULL ORDER BY run_id")
+    chosen = []
+    for row in rows:
+        fam = compute(dict(row))
+        if fam is not None:
+            chosen.append((fam, row["run_id"]))
+    conn = _connect()
+    with _lock:
+        try:
+            n = 0
+            for fam, run_id in chosen:
+                n += conn.execute("UPDATE runs SET family_id = ? WHERE run_id = ? AND family_id IS NULL",
+                                  (fam, run_id)).rowcount
+            conn.commit()
+            return n
+        except BaseException:
+            conn.rollback()
+            raise
+
+
+def backfill_null_session_families(compute) -> int:  # noqa: ANN001
+    """The sessions twin of `backfill_null_families`: `compute(row) -> str | None` for each sessions row whose
+    family_id IS NULL; a string is written to that column only, while it is still NULL. Nothing else changes."""
+    rows = _all("SELECT * FROM sessions WHERE family_id IS NULL ORDER BY session_id")
+    chosen = []
+    for row in rows:
+        fam = compute(dict(row))
+        if fam is not None:
+            chosen.append((fam, row["session_id"]))
+    conn = _connect()
+    with _lock:
+        try:
+            n = 0
+            for fam, sid in chosen:
+                n += conn.execute("UPDATE sessions SET family_id = ? WHERE session_id = ? AND family_id IS NULL",
+                                  (fam, sid)).rowcount
+            conn.commit()
+            return n
+        except BaseException:
+            conn.rollback()
+            raise
+
+
 # ── sessions (M5.2; A1 §4 sessions, session_days, session_timeline, session_commands) ──
 
 SESSION_STATES = ("CREATED", "ARMED", "RUNNING", "PAUSED", "STOPPED")
@@ -359,9 +578,11 @@ def create_session(session_id: str, name: str, cfg: dict, created_ns: int) -> No
         raise ValueError(f"not a valid session id: {session_id!r}")
     conn = _connect()
     with _lock:
-        conn.execute("INSERT INTO sessions (session_id, name, status, pause_reason, pause_reasons_json, config_json, "
-                     "created_ns) VALUES (?, ?, 'CREATED', NULL, '[]', ?, ?)",
-                     (session_id, name, json.dumps(cfg, sort_keys=True, separators=(",", ":")), int(created_ns)))
+        fam = cfg.get("family_id") if isinstance(cfg, dict) else None     # the family report reads this column
+        conn.execute("INSERT INTO sessions (session_id, name, family_id, status, pause_reason, pause_reasons_json, "
+                     "config_json, created_ns) VALUES (?, ?, ?, 'CREATED', NULL, '[]', ?, ?)",
+                     (session_id, name, fam if isinstance(fam, str) and fam else None,
+                      json.dumps(cfg, sort_keys=True, separators=(",", ":")), int(created_ns)))
         conn.commit()
 
 

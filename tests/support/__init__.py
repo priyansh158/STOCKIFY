@@ -150,6 +150,41 @@ def _have(name: str) -> bool:
 _install_cache_dir_guard()
 
 
+# ── 1b. The locked holdout is OFF in tests ───────────────────────────────────
+#
+# The shipped research.json sets `holdout_from` (D-89), and many tests run backtests over synthetic dates after it.
+# So `stockify.research.settings` is wrapped here, in this process only, to report `holdout_from: null`. Nothing in
+# production reads a switch: the override lives in the test harness, so it cannot be used to turn the holdout off in
+# real use. `loader.load_json("research.json")` still returns the shipped file (the config tests read it).
+# A test that wants a holdout uses `with holdout_on("2026-08-01"):` (or patches `research.settings` itself).
+
+def _install_holdout_off() -> None:
+    from stockify import research
+
+    if getattr(research.settings, "__stockify_holdout_off__", False):
+        return
+    real = research.settings
+
+    def settings_without_holdout() -> dict:
+        return {**real(), "holdout_from": None}
+
+    settings_without_holdout.__stockify_holdout_off__ = True
+    settings_without_holdout.real = real
+    research.settings = settings_without_holdout
+
+
+_install_holdout_off()
+
+
+def holdout_on(date_text):
+    """Context manager: `research.settings()` reports `holdout_from = date_text` (a YYYY-MM-DD string)."""
+    from unittest import mock
+
+    from stockify import research
+
+    return mock.patch.object(research, "settings", return_value={**research.settings(), "holdout_from": date_text})
+
+
 HAVE_PYDANTIC = _have("pydantic")
 HAVE_FASTAPI = _have("fastapi")
 HAVE_YFINANCE = _have("yfinance")

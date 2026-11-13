@@ -88,7 +88,7 @@ def _read(path: Path, query: Callable[[sqlite3.Connection], T], nothing: T, not_
     if why is None:
         got = nothing
         try:
-            conn = sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)
+            conn = sqlite3.connect(paths.readonly_uri(path, immutable=True), uri=True)
             try:
                 got = query(conn)
             finally:

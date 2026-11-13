@@ -186,6 +186,54 @@ def paise(text: str) -> int:
     return numerics.to_paise(text)
 
 
+# ── Text and level helpers (CH 6.1): identical in engine/src/notes.cpp ───────
+
+def _group_indian(n: int) -> str:
+    """Digits of n >= 0, the last three together and the rest in pairs: 1234567 -> '12,34,567'."""
+    s = str(n)
+    if len(s) <= 3:
+        return s
+    head, tail = s[:-3], s[-3:]
+    pairs = [head[max(0, i - 2):i] for i in range(len(head), 0, -2)][::-1]
+    return ",".join(pairs) + "," + tail
+
+
+def _require_int(v: object, what: str) -> int:
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise TypeError(f"{what} must be an int, not {type(v).__name__}")
+    return v
+
+
+def fmt_price(paise: int) -> str:
+    """Paise as rupees with Indian grouping and two decimals: 241840 -> '2,418.40'; -5 -> '-0.05'."""
+    p = _require_int(paise, "paise")
+    whole, frac = divmod(abs(p), 100)
+    return f"{'-' if p < 0 else ''}{_group_indian(whole)}.{frac:02d}"
+
+
+def fmt_qty(units: int) -> str:
+    """Units with Indian grouping: 125000 -> '1,25,000'."""
+    q = _require_int(units, "units")
+    return f"{'-' if q < 0 else ''}{_group_indian(abs(q))}"
+
+
+def to_level(x: float) -> int:
+    """An indicator value as an integer, x * 10,000 rounded half to even: 54.3217 -> 543217.
+    Only an int or a float (not a bool or a string). NaN, infinity, or a result outside int64: ValueError."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        raise TypeError(f"x must be an int or a float, not {type(x).__name__}")
+    v = float(x)
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError("a level must be finite")
+    try:
+        r = round(v * 10000.0)
+    except OverflowError:
+        raise ValueError("a level does not fit in an int64") from None
+    if not -2**63 <= r < 2**63:
+        raise ValueError("a level does not fit in an int64")
+    return r
+
+
 # ── Indicators (A2 §4.3): exactly this expression order ──────────────────────
 
 def sma(values: list[int], n: int) -> float:

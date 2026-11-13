@@ -13,6 +13,7 @@ import copy
 import difflib
 import json
 import re
+from decimal import Decimal
 from pathlib import Path
 
 from stockify import numerics, paths
@@ -33,7 +34,8 @@ DEFAULTS = {
     "family_id": None,
     "price_basis": None,
     "latency_ms": 0,
-    "costs": {"broker": "zerodha", "allow_unverified": False, "auto_square_off_fee": True, "dp_charges": True},
+    "costs": {"broker": "zerodha", "allow_unverified": False, "auto_square_off_fee": True, "dp_charges": True,
+              "scale": "1"},
     "margin": {"model": "staircase"},
     "policies": {"preopen": "queue", "cas": "none", "freeze": "slice", "max_slices": 10, "rms_square_off": False},
     "mark": "ltp",
@@ -52,8 +54,10 @@ FILL_KEYS = ("kind", *FILL_DEFAULTS)
 # validated again when its run starts (runs.launch), so a derived key is accepted when it is what its source
 # gives, and refused when it is anything else.
 FILL_DERIVED = {"participation": "participation_ppm", "depth_take": "depth_take_ppm"}
-SLIPPAGE_KEYS = {"none": ("kind",), "fixed_ticks": ("kind", "k"), "random_ticks": ("kind", "k"),
-                 "bps": ("kind", "x", "bp")}                                        # bp is derived from x
+MAX_EXTRA_TICKS = 1000
+MAX_RANDOM_TICKS_K = 2**32 - 2        # CH 6.8: engine/src/matcher.cpp `kMaxRandomTicksK`
+SLIPPAGE_KEYS = {"none": ("kind", "extra_ticks"), "fixed_ticks": ("kind", "k", "extra_ticks"),
+                 "random_ticks": ("kind", "k", "extra_ticks"), "bps": ("kind", "x", "bp", "extra_ticks")}   # bp is derived from x
 STRATEGY_KEYS = {"python": ("kind", "ref", "params"), "cpp": ("kind", "ref", "params"),
                  "script": ("kind", "actions", "params")}
 DATA_KEYS = ("packs",)
@@ -76,6 +80,25 @@ class RunConfigError(ValueError):
     def __init__(self, message: str, problems: list[str] | None = None) -> None:
         super().__init__(message)
         self.problems = list(problems) if problems else [str(message)]
+
+
+COST_SCALE_MAX = Decimal(10)
+_COST_SCALE_RE = re.compile(r"[0-9]+(\.[0-9]{1,4})?")
+
+
+def _cost_scale(value) -> Decimal:  # noqa: ANN001
+    """`costs.scale` (FW 6.1): a plain decimal string, 0 to 10, at most 4 decimal places. A number, an exponent, a
+    sign or a space is refused, so that what a config says is exactly what is multiplied."""
+    _need(isinstance(value, str) and _COST_SCALE_RE.fullmatch(value) is not None, "costs.scale",
+          f'must be a decimal string like "1.5" with at most 4 decimal places, got {value!r}')
+    scale = Decimal(value)
+    _need(scale <= COST_SCALE_MAX, "costs.scale", f"must be between 0 and 10, got {value!r}")
+    return scale
+
+
+def cost_scale(cfg: dict) -> Decimal:
+    """The multiplier on every charge in the run's bundle (1 when the config has no `costs.scale`)."""
+    return _cost_scale(cfg["costs"].get("scale", "1"))
 
 
 def seed_mode(cfg: dict) -> str:
@@ -232,8 +255,16 @@ def _fill(f: dict) -> dict:
     _need(isinstance(slip, dict), "fill_model.slippage", "must be an object")
     _known(slip, SLIPPAGE_KEYS[_choice(slip.get("kind"), SLIPPAGE_KINDS, "fill_model.slippage.kind")],
            "fill_model.slippage")
+    if "extra_ticks" in slip:                       # FW 6.2: left out of the normalised form when 0
+        _int(slip["extra_ticks"], "fill_model.slippage.extra_ticks", 0)
+        _need(slip["extra_ticks"] <= MAX_EXTRA_TICKS, "fill_model.slippage.extra_ticks",
+              f"must be <= {MAX_EXTRA_TICKS}")
+        if slip["extra_ticks"] == 0:
+            del slip["extra_ticks"]
     if slip["kind"] in ("fixed_ticks", "random_ticks"):
         _int(slip.get("k"), "fill_model.slippage.k", 0)
+        if slip["kind"] == "random_ticks":      # CH 6.8: the engine draws below(k + 1) as a uint32
+            _need(slip["k"] <= MAX_RANDOM_TICKS_K, "fill_model.slippage.k", f"must be <= {MAX_RANDOM_TICKS_K}")
     if slip["kind"] == "bps":
         x = slip.get("x")
         _need(isinstance(x, str), "fill_model.slippage.x", f"{x!r} is not a string: it must be {SLIPPAGE_X_UNIT}")
@@ -277,6 +308,11 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     cfg["fill_model"] = _fill(raw.get("fill_model"))
     _int(cfg["latency_ms"], "latency_ms", 0)
     _choice(cfg["costs"]["allow_unverified"], (True, False), "costs.allow_unverified")
+    # Like seed_mode: 1 is left out (in any spelling) so that every config and bundle made without the key is
+    # unchanged byte for byte; any other value is kept in its shortest form.
+    scale = _cost_scale(cfg["costs"].pop("scale", "1"))
+    if scale != 1:
+        cfg["costs"]["scale"] = format(scale.normalize(), "f")
     _choice(cfg["margin"]["model"], MARGIN_MODELS, "margin.model")
     if "live_fresh_s" in cfg["margin"]:
         check_live_fresh(cfg["margin"]["live_fresh_s"], cfg["margin"]["model"])
@@ -287,6 +323,9 @@ def validate(raw: dict, *, packs_required: bool = True) -> dict:
     _int(pol["max_slices"], "policies.max_slices", 1)
     _choice(pol["rms_square_off"], (True, False), "policies.rms_square_off")
     _choice(cfg["mark"], ("ltp", "mid"), "mark")
+    unlock = cfg["unlock_holdout"]
+    _need(unlock is None or isinstance(unlock, str), "unlock_holdout",
+          f"must be null or a written reason (a string), got {unlock!r}")
     _int(cfg["seed"], "seed", 0)
     _need(cfg["seed"] < 2 ** 64, "seed", "must fit in 64 bits")
     # The default is left out of the normalised form, so a run config (and its bundle) without seed_mode, or

@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
+import { getSessionChart } from "@/lib/chart_api";
+import { pollDelay } from "@/lib/chart";
 import { istWhen, pct, rupees } from "@/lib/format";
 import {
   getFills,
@@ -32,12 +34,14 @@ import type {
   TradeLoginDTO,
 } from "@/lib/types";
 import { useTicks } from "@/lib/useTicks";
+import { PriceChartLazy } from "@/components/PriceChartLazy";
 import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table, toneClass } from "../ui";
 import { CommandMessage, ConfirmDialog, LoginBanner, PauseReasons, StatusChip, useCommandWatch } from "../Commands";
 
 const FAST_MS = 2000; // while RUNNING
 const SLOW_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;
+const CHART_POLL_MS = 5000; // the chart polls only while the day is open and the tab is visible
 
 type Extra = {
   positions: SessionPositionDTO[];
@@ -294,6 +298,27 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   }, [extra.positions]);
   const name = useCallback((iid: number | null | undefined) => (iid == null ? "" : names.get(iid) ?? `(instrument ${iid})`), [names]);
 
+  // The chart polls only while its day is open (the API says so in each answer) and the tab is visible.
+  const [chartLive, setChartLive] = useState(false);
+  const [tabHidden, setTabHidden] = useState(false);
+  const wantedDay = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const sync = () => setTabHidden(document.hidden);
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
+  }, []);
+  const loadChart = useCallback<NonNullable<React.ComponentProps<typeof PriceChartLazy>["load"]>>(
+    async (_range, opts) => {
+      const asked = opts?.trade_date;
+      wantedDay.current = asked ?? wantedDay.current; // a poll repeats the day already shown
+      const model = await getSessionChart(id, opts);
+      if (asked === undefined || asked === wantedDay.current) setChartLive(Boolean(model?.live)); // not for a day the picker has left
+      return model;
+    },
+    [id],
+  );
+
   async function control(verb: Control) {
     setSending(true);
     try {
@@ -390,6 +415,16 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
               <Stat size="s" plain label="Last replay check" value={parityText(detail.session.parity_last)} />
             </StatGrid>
             <p className="stk-fine stk-gap-s">Last replay check: {PARITY_HELP}</p>
+          </Panel>
+
+          <Panel>
+            <PriceChartLazy
+              load={loadChart}
+              title="Price and trades"
+              headingLevel={2}
+              paperBadge
+              pollMs={pollDelay(chartLive, tabHidden, CHART_POLL_MS) ?? undefined}
+            />
           </Panel>
 
           <Section title="What it holds now">

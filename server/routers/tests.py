@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Response
 
-from server.schemas import (StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
+from server.routers.research import _clean, run_research_dto
+from server.schemas import (ChartBarDTO, ChartChunkDTO, ChartInstrumentDTO, ChartMarkerDTO, ChartPlotDTO, ChartPointDTO,
+                            ComparisonDTO, RunChartDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
+from stockify.reporting.settlements import DELIVERED as _DELIVERED  # noqa: F401  (still importable from here)
+from stockify.reporting.settlements import SETTLED as _SETTLED  # noqa: F401
+from stockify.reporting.settlements import read_settlements
 
 router = APIRouter(tags=["tests"])
 
@@ -198,15 +204,37 @@ def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     problems = _catalogue.validate_params(schema, s.get("params", {}))
     if problems:
         raise HTTPException(status_code=422, detail=[f"strategy.params.{p}" for p in problems])
-    run_id = runs.queue(config)
+    try:
+        run_id = runs.queue(config)
+    except runconfig.RunConfigError as e:                           # the locked holdout (M6.6): 422, no traceback
+        raise HTTPException(status_code=422, detail=e.problems)
     get_queue().submit(run_id)
     return TestCreatedDTO(run_id=run_id)
 
 
-@router.get("/api/tests/compare")
-def compare_tests() -> None:
-    """Reserved for M6 (A2 §6): declared here so `compare` is never read as a run id."""
-    raise HTTPException(status_code=501, detail="comparing tests arrives in M6")
+_MAX_ID = 128  # paths.run_path's own bound
+
+
+@router.get("/api/tests/compare", response_model=ComparisonDTO)
+def compare_tests(ids: list[str] = Query(default=[], max_length=24)) -> ComparisonDTO:
+    """2 to 6 finished runs side by side (DMF 6.1). `ids` repeats (`?ids=a&ids=b`); a comma list is split too.
+    Declared before `/api/tests/{run_id}` so `compare` is never read as a run id."""
+    from stockify.reporting import compare as rc
+    from server.routers.research import _clean
+    wanted = [p.strip() for v in ids for p in v.split(",") if p.strip()]
+    if not rc.MIN_RUNS <= len(wanted) <= rc.MAX_RUNS or len(set(wanted)) != len(wanted):
+        raise HTTPException(status_code=422, detail="compare 2 to 6 runs")
+    if any(len(w) > _MAX_ID for w in wanted):
+        raise HTTPException(status_code=422, detail=f"a run id is at most {_MAX_ID} characters")
+    try:
+        c = rc.compare_runs(wanted)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=f"no test run {str(e.args[0])!r}") from None
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    except (OSError, sqlite3.Error):
+        raise HTTPException(status_code=409, detail="the runs could not be read right now") from None
+    return ComparisonDTO(**_clean(c))
 
 
 # ── one run ──────────────────────────────────────────────────────────────────
@@ -222,6 +250,65 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
                             metrics=_json(row.get("metrics_json"), {}), manifest=manifest,
                             fill_count=fill_count, cost_totals=cost_totals)
+
+
+@router.get("/api/tests/{run_id}/export")
+def export_test(run_id: str, with_packs: bool = Query(False)) -> Response:
+    """The run as a reproducible zip (DMF 6.2). Loopback only like the whole API. NOTE: this GET writes the derived zip
+    into exports/ (a deterministic overwrite). The file name is the checked run id; the refusal text never echoes a match."""
+    from stockify.reporting import export
+    try:
+        path = export.build(run_id, with_packs=with_packs)
+    except export.ExportError as e:
+        raise HTTPException(status_code=404 if e.code in ("bad_id", "not_found") else 409, detail=str(e)) from None
+    return Response(content=path.read_bytes(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
+
+
+@router.get("/api/tests/{run_id}/research", response_model=RunResearchDTO)
+def test_research(run_id: str) -> RunResearchDTO:
+    """The run's deflated Sharpe and bootstrap intervals (M6.4, M6.8). Derived from the database; the slow
+    bootstrap is cached in the run folder's research.json, so this GET may write that derived file."""
+    _row_or_404(run_id)
+    return run_research_dto(run_id)
+
+
+@router.get("/api/tests/{run_id}/sensitivity", response_model=SensitivityDTO)
+def test_sensitivity(run_id: str) -> SensitivityDTO:
+    """The stored sensitivity.json of a finished run, with one plain sentence. Read-only: it never runs the suite.
+    A missing, unreadable or malformed file is the same 404 (a hand-edited file must not become a 500)."""
+    from stockify import paths
+    from stockify.research import plain, sensitivity
+    try:
+        folder = paths.run_path(run_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"no test run {run_id!r}")
+    _row_or_404(run_id)
+    not_run = HTTPException(status_code=404,
+                            detail=f"not run yet; run `python -m stockify sensitivity --run {run_id}`")
+    try:
+        d = _clean(json.loads((folder / "sensitivity.json").read_text(encoding="utf-8")))
+        if d["run_id"] != run_id or d["verdict"] not in sensitivity.VERDICTS:
+            raise ValueError("not this run's result")
+        rows = [sensitivity.SensitivityRow(**{k: r[k] for k in ("key", "axis", "label", "run_id", "status",
+                                                                  "net_pnl_paise", "sharpe", "delta_net_paise",
+                                                                  "error")}) for r in d["rows"]]
+        result = sensitivity.SensitivityResult(run_id, d["job_id"], rows, d["baseline_net_paise"],
+                                               bool(d["fragile"]), d["verdict"], list(d["reasons"]))
+        text = plain.fragile_sentence(result, fragile_cost_scale=d["fragile_cost_scale"],
+                                      fragile_extra_ticks=d["fragile_extra_ticks"])
+        # Raw refusal or exception text stays in storage: a row shows a plain reason, and so does an older file's
+        # reasons sentence, which holds the raw text inside its brackets.
+        rows_out = [SensitivityRowDTO(**{**r, "error": plain.not_run_reason(r.get("error"))}) for r in d["rows"]]
+        reasons = [re.sub(r"(could not be checked \()(.*)(\)\.)$",
+                          lambda m: m.group(1) + (m.group(2) if m.group(2) == "it did not run"
+                                                  else plain.not_run_reason(m.group(2)) or "it did not run") + m.group(3), x)
+                   for x in result.reasons]
+        return SensitivityDTO(run_id=run_id, job_id=d["job_id"], rows=rows_out,
+                              baseline_net_paise=d["baseline_net_paise"], fragile=result.fragile,
+                              verdict=d["verdict"], reasons=reasons, plain=text)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
+        raise not_run
 
 
 @router.get("/api/tests/{run_id}/orders", response_model=list[dict[str, Any]])
@@ -267,13 +354,6 @@ def test_charges(run_id: str, offset: int = Query(0, ge=0),
     return out
 
 
-# Expiry settlements and deliveries, as the engines log them (identical lines on both, A4 §7):
-#   "<t_ns> INFO settled <instrument> <product> at FSP <price> (<source>)"
-#   "<t_ns> INFO delivered <stock> CNC <BUY|SELL> <units> at <price> (<source>)"
-_SETTLED = re.compile(r"^(\d+) INFO settled (\d+) (\w+) at FSP (-?\d+) \((\w+)\)$")
-_DELIVERED = re.compile(r"^(\d+) INFO delivered (\d+) (\w+) (BUY|SELL) (\d+) at (-?\d+) \((\w+)\)$")
-
-
 @router.get("/api/tests/{run_id}/margin", response_model=list[TestMarginDTO])
 def test_margin(run_id: str) -> list[TestMarginDTO]:
     """margin_daily.csv: one row per day and underlying (SPAN-lite runs; a flat-margin run writes none)."""
@@ -308,20 +388,18 @@ def test_settlements(run_id: str) -> list[TestSettlementDTO]:
                 key = (c["instrument_id"], c["trade_date"])
                 charges[key] = charges.get(key, 0) + (c["total"] or 0)
     out = []
-    with (folder / "events_log.txt").open(encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.rstrip("\r\n")
-            if m := _SETTLED.match(line):
-                t, iid, product, price, source = int(m[1]), int(m[2]), m[3], int(m[4]), m[5]
-                day = _ist_date(t)
-                out.append(TestSettlementDTO(t_ns=t, t_ist=_ist(t) or "", trade_date=day, kind="cash", instrument_id=iid,
-                                             tradingsymbol=symbols.get(iid), product=product, price_paise=price,
-                                             source=source, charges_paise=charges.get((iid, day))))
-            elif m := _DELIVERED.match(line):
-                t, iid = int(m[1]), int(m[2])
-                out.append(TestSettlementDTO(t_ns=t, t_ist=_ist(t) or "", trade_date=_ist_date(t), kind="delivery",
-                                             instrument_id=iid, tradingsymbol=symbols.get(iid), product=m[3],
-                                             side=m[4], qty=int(m[5]), price_paise=int(m[6]), source=m[7]))
+    for st in read_settlements(folder):
+        day = _ist_date(st.t_ns)
+        if st.kind == "cash":
+            out.append(TestSettlementDTO(t_ns=st.t_ns, t_ist=_ist(st.t_ns) or "", trade_date=day, kind="cash",
+                                         instrument_id=st.instrument_id, tradingsymbol=symbols.get(st.instrument_id),
+                                         product=st.product, price_paise=st.price_paise, source=st.source,
+                                         charges_paise=charges.get((st.instrument_id, day))))
+        else:
+            out.append(TestSettlementDTO(t_ns=st.t_ns, t_ist=_ist(st.t_ns) or "", trade_date=day, kind="delivery",
+                                         instrument_id=st.instrument_id, tradingsymbol=symbols.get(st.instrument_id),
+                                         product=st.product, side=st.side, qty=st.qty, price_paise=st.price_paise,
+                                         source=st.source))
     return out
 
 
@@ -405,6 +483,100 @@ def _expiry_close_estimate(inst: dict, day: dict, trade_date: str) -> int | None
 def _ist_date(t_ns: int) -> str:
     from stockify import timeutil
     return timeutil.ns_to_ist(t_ns).date().isoformat()
+
+
+# ── a run's chart (CH 6.11) ──────────────────────────────────────────────────
+
+_NS = 1_000_000_000
+_INT64 = 2**63 - 1
+_CHART_PLAIN = {
+    "pruned": "The market data for this run has been removed, so there are no bars; its trades are listed without a chart.",
+    "no_pack": "This run has no stored market data, so there are no bars; its trades are listed without a chart.",
+    "pack unreadable": "This run's market data could not be read, so there are no bars; its trades are listed without a chart.",
+}
+
+
+def _rupees(paise: int) -> str:
+    """Paise as an exact rupee string with two decimals ("241840" -> "2418.40"); no float is involved."""
+    from decimal import Decimal
+    return format(Decimal(paise).scaleb(-2), ".2f")
+
+
+def _level(units: int) -> str:
+    """A "level" plot value (1/10,000 units) as an exact decimal string with four decimals."""
+    from decimal import Decimal
+    return format(Decimal(units).scaleb(-4), ".4f")
+
+
+def _chart_dto(m: dict) -> RunChartDTO:
+    from stockify import timeutil
+
+    def day(t_ns: int) -> str:
+        return timeutil.ns_to_ist(t_ns).date().isoformat()
+
+    seen: dict[tuple, int] = {}
+    markers = []
+    for k in m["markers"]:
+        pre = f"w{k['window']}-" if k.get("window") is not None else ""     # a walk-forward chart: one run per window
+        if k["fill_id"] is not None:
+            mid = f"{pre}f{k['fill_id']}"
+        else:                                      # a settlement: its instant, quantity and nth occurrence (stable per window)
+            key = (pre, k["t_ns"], k["qty"])
+            seen[key] = seen.get(key, 0) + 1
+            mid = f"{pre}x{k['t_ns']}-{k['qty']}-{seen[key] - 1}"
+        markers.append(ChartMarkerDTO(
+            id=mid, kind=k["kind"], t=k["t_ns"] // _NS, bar_t=k["bar_start_ns"] // _NS, bar_d=day(k["bar_start_ns"]),
+            side=k["side"], qty=k["qty"], price=_rupees(k["price_paise"]), price_paise=k["price_paise"],
+            fsp_paise=k["fsp_paise"], order_id=k["order_id"], fill_id=k["fill_id"], note=k["note"], tag=k["tag"],
+            tag_is_code=k["tag_is_code"], charges_paise=k["charges_paise"], trade_pnl_paise=k["trade_pnl_paise"],
+            chunks=[ChartChunkDTO(**c) for c in k["chunks"]]))
+    plots = []
+    for p in m["plots"]:
+        fmt = _rupees if p["kind"] == "price" else _level
+        plots.append(ChartPlotDTO(name=p["name"], kind=p["kind"], instrument_id=p["instrument_id"],
+                                  points=[ChartPointDTO(t=t // _NS, value=fmt(v)) for t, v in p["points"]]))
+    bars = [ChartBarDTO(t=b["start_ns"] // _NS, d=day(b["start_ns"]), open=_rupees(b["open"]), high=_rupees(b["high"]),
+                        low=_rupees(b["low"]), close=_rupees(b["close"]), volume=b["volume"]) for b in m["bars"]]
+    notice = m["notice"]
+    if not m["pnl_complete"] and not notice:
+        notice = "The profit on some trades of this run is not complete here; its metrics have the whole figure."
+    return RunChartDTO(
+        instruments=[ChartInstrumentDTO(**i) for i in m["instruments"]], instrument_id=m["instrument_id"],
+        basis=m["basis"], interval_s=m["interval_s"], bars=bars, markers=markers, plots=plots,
+        truncated=m["truncated"], next_from_ns=m["next_from_ns"], data_state=m["data_state"],
+        omitted_markers=m["omitted_markers"], notice=notice, pnl_complete=m["pnl_complete"],
+        skipped_settlements=m["skipped_settlements"], idle_settlements=m["idle_settlements"],
+        plain=_CHART_PLAIN.get(m["data_state"]))
+
+
+@router.get("/api/tests/{run_id}/chart", response_model=RunChartDTO)
+def test_chart(run_id: str, instrument: int | None = Query(None, ge=0, le=_INT64),
+               from_ns: int | None = Query(None, ge=0, le=_INT64), to_ns: int | None = Query(None, ge=0, le=_INT64),
+               interval_s: int | None = Query(None, le=366 * 86400)) -> RunChartDTO:
+    """One instrument of a run as bars, markers (a fill or an expiry settlement, with the strategy's note) and plotted
+    lines (CH 6.11). Times are UTC seconds (`from_ns`/`to_ns` are the range, in ns); prices are exact rupee strings.
+    At most MAX_BARS bars per call: when `truncated`, ask again from `next_from_ns`. Reads the run folder and its pack
+    only; a run whose pack is gone or unreadable is a 200 with `data_state` and `plain`, never an error."""
+    from stockify import paths
+    from stockify.reporting import chart
+    if interval_s is not None and interval_s <= 0:
+        raise HTTPException(status_code=422, detail="interval_s must be above 0 seconds")
+    if from_ns is not None and to_ns is not None and from_ns >= to_ns:
+        raise HTTPException(status_code=422, detail="from_ns must be before to_ns")
+    try:
+        paths.run_path(run_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="no such test run") from None
+    from stockify import store
+    if store.get_run(run_id) is None or not paths.run_path(run_id).is_dir():     # as the sibling routes: a known run
+        raise HTTPException(status_code=404, detail="no such test run")
+    try:
+        model = chart.run_chart(run_id, instrument, from_ns, to_ns, interval_s=interval_s)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="no such instrument in this run") from None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="the chart request is not valid") from None
+    return _chart_dto(model)
 
 
 @router.get("/api/tests/{run_id}/logs", response_model=TestLogsDTO)

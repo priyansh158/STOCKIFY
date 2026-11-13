@@ -61,6 +61,11 @@ def _validate(raw: dict) -> dict:
     for n, sel in enumerate(universe):
         _need(isinstance(sel, (str, dict)), f"universe[{n}]", "must be a selector object or a symbol like 'NSE:RELIANCE'")
     runconfig.selectors_known(universe, "universe")
+    costs = raw.get("costs", {})
+    if isinstance(costs, dict) and "scale" in costs:       # D-90: paper trading is the real-cost check
+        _need(isinstance(costs["scale"], str) and runconfig._cost_scale(costs["scale"]) == 1, "costs.scale",
+              f"{costs['scale']!r}: a paper session always pays the real costs, so costs.scale must be left out "
+              'or be "1"; scaled costs are for backtests')
     margin = raw.get("margin", {})
     _need(isinstance(margin, dict), "margin", "must be an object")
     runconfig._known(margin, MARGIN_KEYS, "margin")
@@ -80,6 +85,9 @@ def _validate(raw: dict) -> dict:
     cfg = runconfig.validate(run, packs_required=False)
     cfg["schema"] = SCHEMA
     cfg["universe"] = copy.deepcopy(universe)
+    if cfg.get("family_id") is None:                       # M6.4: every session has a family (dataset `live`)
+        from stockify.research import registry
+        cfg["family_id"] = registry.family_for_session(cfg)
     if cfg["margin"]["model"] == "live_with_fallback":     # a number that means something only there (MEZ 5.1)
         cfg["margin"]["live_fresh_s"] = fresh
     return cfg

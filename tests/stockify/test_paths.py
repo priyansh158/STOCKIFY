@@ -31,6 +31,41 @@ class PathsTests(unittest.TestCase):
     def test_directories_are_created_lazily(self):
         self.assertTrue(paths.run_dir("r1").is_dir())
 
+    def test_research_path_refuses_unsafe_ids(self):
+        for bad in ("..", "a/b", "a\\b", "CON", "nul.x", "x" * 65, "", "C:evil", ".hidden"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    paths.research_path(bad)
+        ok = paths.research_path("sweep-1")
+        self.assertEqual(ok.parent, paths.research_dir())
+        self.assertEqual(paths.research_path("x" * 64).name, "x" * 64)
+        support.assert_sandboxed(ok)
+
+    def test_research_path_property_random_segments(self):
+        import random
+        rng = random.Random(11)
+        safe = "abcXYZ019._-"
+        junk = safe + "/\\:*? ~"
+        for _ in range(500):
+            text = "".join(rng.choice(junk) for _ in range(rng.randint(0, 70)))
+            try:
+                got = paths.research_path(text)
+            except ValueError:
+                continue
+            self.assertEqual(got.parent.resolve(), paths.research_dir().resolve())
+            self.assertEqual(got.name, text)
+            self.assertTrue(set(text) <= set(safe) and 0 < len(text) <= 64)
+
+    def test_exports_dir_is_under_the_lab(self):
+        self.assertEqual(paths.exports_dir(), paths.lab_dir() / "exports")
+        support.assert_sandboxed(paths.exports_dir())
+
+    def test_export_path_names_the_variant(self):
+        self.assertEqual(paths.export_path("r1", False), paths.exports_dir() / "r1.zip")
+        self.assertEqual(paths.export_path("r1", True), paths.exports_dir() / "r1-with-packs.zip")
+        with self.assertRaises(ValueError):
+            paths.export_path("../x", False)
+
 
 if __name__ == "__main__":
     unittest.main()

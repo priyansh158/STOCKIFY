@@ -286,7 +286,7 @@ class _Run:
         try:
             folder.mkdir(parents=True, exist_ok=True)
             part.unlink(missing_ok=True)
-            source = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+            source = sqlite3.connect(paths.readonly_uri(src), uri=True, timeout=30)
             dest = sqlite3.connect(part)
             source.backup(dest)
             verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]

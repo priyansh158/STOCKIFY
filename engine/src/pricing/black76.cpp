@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "stocksim/int128.hpp"
+
 namespace stocksim::pricing {
 
 namespace {
@@ -186,7 +188,8 @@ ImpliedVol implied_vol(bool is_call, double target, double f, double k, double t
 }
 
 double year_fraction(TimeNs now, TimeNs last_trading) {
-    const TimeNs left = last_trading - now > kMinTimeNs ? last_trading - now : kMinTimeNs;
+    const TimeNs diff = stocksim::checked_sub(last_trading, now);
+    const TimeNs left = diff > kMinTimeNs ? diff : kMinTimeNs;
     return static_cast<double>(left) / static_cast<double>(kNsPerYear);  // the oracle divides the same two doubles
 }
 

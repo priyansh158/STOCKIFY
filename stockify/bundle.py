@@ -15,6 +15,7 @@ Validation happens here, before anything runs (I-5, I-8, I-14).
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -23,6 +24,7 @@ import os
 import zipfile
 import zlib
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from stockify import numerics, paths, runconfig, timeutil
@@ -71,6 +73,104 @@ def _dated_section(doc: dict, start: date, end: date) -> dict:
         else:
             out[k] = v
     return out
+
+
+class _Ctx:
+    """What one `scale_charges` call needs: the scale, its decimal places, and the charge components' names."""
+    def __init__(self, scale: Decimal, names: set[str]):
+        exponent = scale.normalize().as_tuple().exponent
+        self.scale, self.names = scale, names
+        self.places = -exponent if isinstance(exponent, int) and exponent < 0 else 0
+
+
+TURNOVER_BASES = ("turnover", "value")
+
+
+def _rates_follow_their_base(row: dict, path: str, ctx: _Ctx) -> bool:
+    """True when the row's rate applies to other charges (its `on:` names charge components, as GST's does): scaling
+    those charges already scales it by exactly the scale, so scaling the rate too would compound it (D-90).
+    A row with no `on:` is a rate on turnover or value (STT, stamp, exchange, SEBI, brokerage %). An `on:` that names
+    anything else, or mixes the two, cannot be classified and raises."""
+    if "on" not in row:
+        return False
+    on = row["on"]
+    if not isinstance(on, list) or not all(isinstance(x, str) for x in on):
+        raise runconfig.RunConfigError(f"charges {path}.on: must be a list of component names")
+    if on and all(x in ctx.names for x in on):
+        return True
+    if on and all(x in TURNOVER_BASES for x in on):
+        return False
+    if not on and all(row.get(f, "0") in ("0", 0) for f in _rate_fields()):
+        return False                                     # an empty base with every rate zero: nothing to scale
+    raise runconfig.RunConfigError(
+        f"charges {path}.on: {on!r} is neither charge components ({', '.join(sorted(ctx.names))}) nor "
+        f"{'/'.join(TURNOVER_BASES)}; costs.scale cannot tell what this rate applies to")
+
+
+def _rate_fields() -> tuple:
+    from stockify.config import loader
+    return loader.CHARGE_RATE_FIELDS
+
+
+def _scale_leaf(node, path: str, key: str, siblings: dict, ctx: _Ctx, rates: bool):  # noqa: ANN001, ANN202
+    """One leaf of a charge row. Rates on turnover or value: scaled in Decimal and written back as a string (the
+    `_ppb` beside it is re-derived by the caller); rates on other charges stay. Whole paise: value x scale, rounded
+    once, half-up. Text, flags, None: as they are."""
+    fields = _rate_fields()
+    if isinstance(node, (str, bool)) or node is None:
+        if key in fields and isinstance(node, str) and rates:
+            try:
+                return format((Decimal(node) * ctx.scale).normalize(), "f")
+            except ArithmeticError as e:                 # decimal.InvalidOperation: not a number at all
+                raise runconfig.RunConfigError(f"charges {path}: {node!r} is not a decimal string") from e
+        return node
+    if isinstance(node, int) and key.endswith("_paise"):
+        if node < 0:
+            raise runconfig.RunConfigError(f"charges {path}: {node} is negative; an amount in paise cannot be")
+        k = max(ctx.places, 1)
+        return numerics.mul_div_round_half_up(node, int(ctx.scale.scaleb(k)), 10 ** k)
+    if isinstance(node, int) and key.endswith("_ppb") and key[:-4] in fields:
+        if not isinstance(siblings.get(key[:-4]), str):
+            raise runconfig.RunConfigError(f"charges {path}: {key} has no {key[:-4]!r} string beside it to scale")
+        return node                                     # replaced from the scaled string by _scale_node
+    raise runconfig.RunConfigError(f"charges {path}: a {type(node).__name__} leaf of a kind costs.scale does not "
+                                   "know how to scale; teach bundle.scale_charges before using it")
+
+
+def _scale_node(node, path: str, key: str, siblings: dict, ctx: _Ctx, rates: bool):  # noqa: ANN001, ANN202
+    if isinstance(node, dict):
+        rates = not _rates_follow_their_base(node, path, ctx) if "on" in node else rates
+        out = {k: _scale_node(v, f"{path}.{k}", k, node, ctx, rates) for k, v in node.items()}
+        for field in _rate_fields():                     # the derived integer follows its string, never the reverse
+            if isinstance(out.get(field), str) and f"{field}_ppb" in node:
+                try:
+                    out[f"{field}_ppb"] = numerics.to_ppb(out[field])
+                except (ArithmeticError, ValueError) as e:
+                    raise runconfig.RunConfigError(
+                        f"charges {path}.{field}: {node[field]!r} x {format(ctx.scale, 'f')} = {out[field]!r} does "
+                        f"not fit whole parts per billion ({e}); use a scale that keeps every rate exact") from e
+        return out
+    if isinstance(node, list):
+        return [_scale_node(v, f"{path}[{i}]", key, siblings, ctx, rates) for i, v in enumerate(node)]
+    return _scale_leaf(node, path, key, siblings, ctx, rates)
+
+
+def scale_charges(charges: dict, scale: Decimal) -> dict:
+    """FW 6.1 (D-90): a copy of the dated `charges` section in which the total cost is `scale` times as large.
+    Rates on turnover or value are multiplied exactly and their `_ppb` re-derived (a rate ppb cannot hold exactly is
+    refused, never rounded); a rate on other charges (GST's `on:` brokerage, exchange, SEBI) is left alone, because
+    those charges are scaled and the rate follows them; whole-paise amounts are rounded once, half-up (a fee's
+    includes_gst / plus_gst flag is untouched, so its GST follows the fee). Every key but `schema` and `broker` is
+    walked, and a numeric leaf of an unknown kind raises, so a field added later cannot be skipped by accident."""
+    ctx = _Ctx(scale, set(charges.get("components", {})))
+    return {key: copy.deepcopy(value) if key in ("schema", "broker")
+            else _scale_node(value, key, key, charges, ctx, True) for key, value in charges.items()}
+
+
+def apply_cost_scale(cfg: dict, charges: dict) -> dict:
+    """The charges a run uses: untouched at scale 1, else `scale_charges`."""
+    scale = runconfig.cost_scale(cfg)
+    return charges if scale == 1 else scale_charges(charges, scale)
 
 
 def _ppb_fields(doc: dict, fields: tuple[str, ...]) -> None:
@@ -681,7 +781,7 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
     days = resolve_days(start, end, policy)
     if not days:
         raise BundleError(f"no trading days between {start} and {end}")
-    charges = _dated_section(loader.load_json("charges.json"), start, end)
+    charges = apply_cost_scale(cfg, _dated_section(loader.load_json("charges.json"), start, end))   # FW 6.1, once
     margin = _dated_section(loader.load_json("margin_params.json"), start, end)
     _ppb_fields(margin, ("index_pct", "stock_pct", "pct", "psr_pct", "psr_futures_pct", "vsr_pct", "extreme_weight",
                          "elm_pct", "default_iv"))
@@ -696,6 +796,8 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
                                                                           instruments_rows, days)))
     if cfg["fill_model"]["kind"] == "eod_close":
         labels.append("eod_approx")
+    if runconfig.cost_scale(cfg) != 1:
+        labels.append("costs:scaled")
     gap_days = {d for p in pack_rows for d in p.get("gaps", {}).get("days", {})}
     if gap_days:                                 # CAM 5.3: instruments with no data on a day; nothing is filled in (I-7)
         labels.append(f"data:gaps={len(gap_days)}")
@@ -715,6 +817,7 @@ def _resolve_core(cfg: dict, pack_rows: list[dict], ids: set[int], traded: dict[
         "instruments": instruments_rows,
         "charges": charges, "broker_policy": policy, "margin_params": margin, "pricing": pricing,
         "packs": pack_rows, "strategy": strategy_ref(cfg), "labels": sorted(set(labels)), "sod_state": None,
+        "system_notes": loader.load_json("system_notes.json")["notes"],     # CH 6.2: words for orders the broker makes
     }
     if cfg["margin"]["model"] in SPAN_MODELS:    # CAM 4.3: other models' bundles stay byte for byte as they were
         skipped: dict[str, list[dict]] = {}

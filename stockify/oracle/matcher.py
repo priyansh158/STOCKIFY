@@ -21,6 +21,17 @@ def protection_limit(side: str, ref: int, bp: int, tick: int) -> int:
     return numerics.ceil_div(ref * (10000 - bp), 10000 * tick) * tick
 
 
+MAX_EXTRA_TICKS = 1000
+
+
+def extra_ticks_of(slip: dict) -> int:
+    """FW 6.2: `slip["extra_ticks"]`, 0 when absent; a whole number from 0 to 1000 (no bool, float or string)."""
+    n = slip.get("extra_ticks", 0)
+    if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= MAX_EXTRA_TICKS:
+        raise ValueError(f"fill_model.slippage.extra_ticks: must be a whole number from 0 to {MAX_EXTRA_TICKS}")
+    return n
+
+
 def slipped(side: str, price: int, tick: int, slip: dict, rng, cap: int | None) -> int:  # noqa: ANN001
     """Adverse slippage (A4 §4.4), never beyond `cap` (the protection / limit price)."""
     kind = slip.get("kind", "none")
@@ -34,6 +45,7 @@ def slipped(side: str, price: int, tick: int, slip: dict, rng, cap: int | None) 
         move = numerics.ceil_to(numerics.ceil_div(price * slip["bp"], 10000), tick)
     else:
         raise ValueError(f"slippage {kind!r}")
+    move += extra_ticks_of(slip) * tick             # FW 6.2: after the kind's own draw, before the sign and the cap
     out = price + move if side == "BUY" else price - move
     if cap is not None:
         out = min(out, cap) if side == "BUY" else max(out, cap)
@@ -54,7 +66,16 @@ def path_points(o: int, h: int, lo: int, c: int, high_first: bool) -> list[int]:
 
 def _value(points: list[int], pos) -> Fraction:  # noqa: ANN001
     k, f = pos
-    return points[k] + (points[k + 1] - points[k]) * f
+    return points[k] + numerics.check_int64(points[k + 1] - points[k]) * f
+
+
+def _frac(num: int, den: int) -> Fraction:
+    """Fraction(num, den) refusing what the engine's Frac::of refuses: a num or den that does not fit int64, or
+    whose sign flip (den < 0) does not."""
+    num, den = numerics.check_int64(num), numerics.check_int64(den)
+    if den < 0:
+        num, den = numerics.check_int64(-num), numerics.check_int64(-den)
+    return Fraction(num, den)
 
 
 def first_reach(points: list[int], x: int, down: bool, after=OPEN_POS):  # noqa: ANN001
@@ -67,7 +88,7 @@ def first_reach(points: list[int], x: int, down: bool, after=OPEN_POS):  # noqa:
             return (k, start)
         a, b = points[k], points[k + 1]
         if a != b and ok(b):
-            f = Fraction(a - x, a - b)
+            f = _frac(a - x, a - b)
             if f >= start:
                 return (k, f)
     return None

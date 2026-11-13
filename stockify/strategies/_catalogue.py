@@ -85,15 +85,20 @@ def schema_for(kind: str, ref: str) -> list[dict] | None:
     return None
 
 
-def schema_of(kind: str, ref: str) -> list[dict] | None:
-    """The params schema of one catalogue strategy by its ref, or None when it is not a catalogue strategy (a
-    user's own module, a tool such as _margin_watch, a C++ name without a schema, a ref that does not load).
-    The same schemas as `catalogue()`, found without listing it: no engine, and no module is imported unchecked."""
+def _cpp_classes() -> dict[str, type]:
+    from stockify.strategies.opening_range_breakout import OpeningRangeBreakout
+    from stockify.strategies.sma_cross import SmaCross
+    return {"sma_cross_cpp": SmaCross, "orb_cpp": OpeningRangeBreakout}
+
+
+def _class_of(kind: str, ref: str) -> type | None:
+    """The strategy class of a catalogue ref (a C++ name gives the Python original it ports), or None when it is not a
+    catalogue strategy (a user's own module, a tool such as _margin_watch, an unknown C++ name, a ref that does not
+    load). No engine, and no module is imported unchecked."""
     if not isinstance(ref, str):
         return None
     if kind == "cpp":
-        known = _cpp_params().get(ref)
-        return None if known is None else list(known)
+        return _cpp_classes().get(ref)
     if kind != "python" or not _REF.match(ref):
         return None
     module_name, cls_name = ref.split(":")
@@ -106,10 +111,25 @@ def schema_of(kind: str, ref: str) -> list[dict] | None:
         except (S.StrategyCodeError, ImportError):
             return None                       # the run fails where it loads the strategy, with that error
     cls = getattr(module, cls_name, None)
-    if not isinstance(cls, type) or cls is S.Strategy or not issubclass(cls, S.Strategy) \
-            or cls.__module__ != module.__name__:
+    if not isinstance(cls, type) or cls is S.Strategy or not issubclass(cls, S.Strategy)             or cls.__module__ != module.__name__:
         return None
-    return list(getattr(cls, "PARAMS", []))
+    return cls
+
+
+def schema_of(kind: str, ref: str) -> list[dict] | None:
+    """The params schema of one catalogue strategy by its ref, or None when it is not a catalogue strategy (a
+    user's own module, a tool such as _margin_watch, a C++ name without a schema, a ref that does not load).
+    The same schemas as `catalogue()`, found without listing it: no engine, and no module is imported unchecked."""
+    cls = _class_of(kind, ref)
+    return None if cls is None else list(getattr(cls, "PARAMS", []))
+
+
+def bar_interval_of(kind: str, ref: str) -> int | None:
+    """The bar interval (seconds) a catalogue strategy subscribes to when it has no `interval_s` param: the class's
+    declared `BAR_INTERVAL_S` (the strategy's own `subscribe_bars` call reads it). None when it declares none."""
+    cls = _class_of(kind, ref)
+    v = getattr(cls, "BAR_INTERVAL_S", None) if cls is not None else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
 
 
 def _bound_problem(p: dict, v) -> str | None:  # noqa: ANN001

@@ -6,12 +6,15 @@
 #include <cctype>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "stocksim/errors.hpp"
 #include "stocksim/indicators.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/margin/spanlite.hpp"
 #include "stocksim/margin/staircase.hpp"
+#include "stocksim/matcher.hpp"
+#include "stocksim/notes.hpp"
 #include "stocksim/pricing/black76.hpp"
 #include "stocksim/sod_state.hpp"
 
@@ -130,9 +133,23 @@ Engine::Engine(Bundle bundle)
     stale_after_ns_ = checked_mul(require_int(pricing, "stale_after_ms", "pricing"), 1'000'000);
     const Json& run = run_of(bundle_);
     fill_cfg_ = require(run, "fill_model", "run");
+    if (const auto slip = fill_cfg_.find("slippage"); slip != fill_cfg_.end()) {
+        (void)extra_ticks_of(*slip);  // FW 6.2: a hand-edited bundle fails here, before any event
+    }
     fill_kind_ = require_string(fill_cfg_, "kind", "run.fill_model");
     policies_ = require(run, "policies", "run");
     mark_kind_ = require_string(run, "mark", "run");
+    if (const auto sn = bundle_.root.find("system_notes"); sn != bundle_.root.end() && !sn->is_null()) {
+        if (!sn->is_object()) {
+            throw RunError("bundle: system_notes must be an object");
+        }
+        for (const auto& [tag, text] : sn->items()) {
+            if (!text.is_string()) {
+                throw RunError("bundle: system_notes." + tag + " must be text");
+            }
+            system_notes_.emplace(tag, text.get<std::string>());
+        }
+    }
     latency_ns_ = checked_mul(require_int(run, "latency_ms", "run"), 1'000'000);
     last_day_end_ = calendar_.last_day_end();
     for (std::size_t i = 0; i < bundle_.day_seeds.size() && i < calendar_.days().size(); ++i) {
@@ -809,7 +826,7 @@ std::optional<Evidence> Engine::evidence(const MarketState& m) {  // runner._evi
     const Snapshot& s0 = *m.s0;
     const Snapshot& s1 = *m.s1;
     Evidence ev;
-    ev.dv = s1.volume - s0.volume;
+    ev.dv = checked_sub(s1.volume, s0.volume);
     if (ev.dv < 0) {
         log("WARN", "day volume decreased; treated as 0");
         ev.dv = 0;
@@ -849,19 +866,19 @@ void Engine::build_bars(InstrumentId iid, TimeNs t, Paise price, std::optional<Q
             continue;
         }
         const TimeNs step = checked_mul(isec, kNsPerSecond);
-        const TimeNs start = *cs + floor_div(t - *cs, step) * step;
+        const TimeNs start = checked_add(*cs, checked_mul(floor_div(checked_sub(t, *cs), step), step));
         auto& acc = built_[{iid, isec}];
         // dv = vol if prev_vol is None else (max(0, vol - prev_vol) if vol is not None else 0); None counts as 0.
         std::int64_t dv = 0;
         if (!prev_vol) {
             dv = vol.value_or(0);
         } else if (vol) {
-            dv = std::max<std::int64_t>(0, *vol - *prev_vol);
+            dv = std::max<std::int64_t>(0, checked_sub(*vol, *prev_vol));
         }
         const auto it = acc.find(start);
         if (it == acc.end()) {
             acc[start] = {price, price, price, price, dv, 0};
-            InternalEvent ev{EventKey{start + step, kRankBarBuilt, 0, 0}, InternalKind::BarBuilt};
+            InternalEvent ev{EventKey{checked_add(start, step), kRankBarBuilt, 0, 0}, InternalKind::BarBuilt};
             ev.instrument = iid;
             ev.interval_s = isec;
             ev.start = start;
@@ -871,7 +888,7 @@ void Engine::build_bars(InstrumentId iid, TimeNs t, Paise price, std::optional<Q
             b[1] = std::max(b[1], price);
             b[2] = std::min(b[2], price);
             b[3] = price;
-            b[4] += dv;
+            b[4] = checked_add(b[4], dv);
         }
     }
 }
@@ -1020,6 +1037,7 @@ void Engine::mis_sqoff(const InternalEvent& ev) {  // runner._mis_sqoff
         r.product = "MIS";
         r.type = "MARKET";
         r.tag = "AUTO_SQOFF";
+        r.note = system_note("AUTO_SQOFF");
         place(r, 0, true);
     }
     deliver();
@@ -1102,8 +1120,9 @@ void Engine::on_timer(const InternalEvent& ev) {  // runner._on_timer
     }
     const auto [t, period] = it->second;
     if (period != 0) {
-        it->second = {t + period, period};
-        InternalEvent next{EventKey{t + period, kRankTimer, 0, 0}, InternalKind::Timer};
+        const TimeNs next_t = checked_add(t, period);
+        it->second = {next_t, period};
+        InternalEvent next{EventKey{next_t, kRankTimer, 0, 0}, InternalKind::Timer};
         next.timer = ev.timer;
         push_internal(std::move(next));
     } else {
@@ -1216,6 +1235,53 @@ void Context::log(std::string_view level, std::string_view msg) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
     e_.log(upper, msg);
+}
+
+namespace {
+
+// A name's length in code points: the bytes that are not UTF-8 continuation bytes (a clean name is valid UTF-8).
+std::size_t code_points(std::string_view s) {
+    return static_cast<std::size_t>(std::count_if(s.begin(), s.end(), [](char ch) {
+        return (static_cast<unsigned char>(ch) & 0xC0U) != 0x80U;
+    }));
+}
+
+}  // namespace
+
+// The oracle's Context.plot / Engine.plot (stockify/oracle): the same checks in the same order, the same words.
+void Context::plot(std::string_view name, std::int64_t value, std::string_view kind, std::int64_t instrument) {
+    if (kind != "price" && kind != "level") {
+        throw std::invalid_argument(R"(ctx.plot: kind must be "price" or "level")");
+    }
+    if (const std::size_t n = code_points(name); n < 1 || n > 32 || clean_note(name) != name) {
+        throw std::invalid_argument(
+            "ctx.plot: name must be 1 to 32 characters, with no control characters and no space at either end");
+    }
+    if (instrument != 0 && (instrument < 0 || instrument > std::numeric_limits<InstrumentId>::max() ||
+                            !e_.instruments_.contains(static_cast<InstrumentId>(instrument)))) {
+        throw std::invalid_argument("ctx.plot: instrument " + std::to_string(instrument) +
+                                    " is not in this run's bundle");
+    }
+    Engine::PlotSeries series{instrument, std::string(name)};
+    const auto have = e_.plot_kinds_.find(series);
+    if (have != e_.plot_kinds_.end() && have->second != kind) {
+        throw std::invalid_argument("ctx.plot: series \"" + std::string(name) + "\" of instrument " +
+                                    std::to_string(instrument) + " is kind \"" + have->second + "\", not \"" +
+                                    std::string(kind) + "\"");
+    }
+    Engine::PlotKey key{e_.now_, instrument, std::string(name)};
+    if (have == e_.plot_kinds_.end() && e_.plot_kinds_.size() >= kPlotMaxSeries) {
+        if (!std::exchange(e_.plot_series_capped_, true)) {
+            e_.log("WARN", "plot limit reached: more than " + std::to_string(kPlotMaxSeries) + " series");
+        }
+    } else if (e_.plot_points_.size() >= kPlotMaxPoints && !e_.plot_points_.contains(key)) {
+        if (!std::exchange(e_.plot_points_capped_, true)) {
+            e_.log("WARN", "plot limit reached: more than " + std::to_string(kPlotMaxPoints) + " points");
+        }
+    } else {
+        e_.plot_kinds_.try_emplace(std::move(series), std::string(kind));
+        e_.plot_points_.insert_or_assign(std::move(key), value);
+    }
 }
 
 Pcg32& Context::rng() { return e_.strategy_rng_; }
@@ -1358,7 +1424,7 @@ std::optional<double> Context::quote_mid(InstrumentId iid) const {
     if (it == e_.market_.end() || !it->second.bid || !it->second.ask) {
         return std::nullopt;
     }
-    return static_cast<double>(*it->second.bid + *it->second.ask) / 2;
+    return static_cast<double>(checked_add(*it->second.bid, *it->second.ask)) / 2;
 }
 
 Context::ChainView Context::chain(std::string_view underlying, std::string_view expiry) const {  // context.chain

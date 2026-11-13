@@ -16,12 +16,16 @@ group's **CONTINUOUS** phase:
 
 Day-level rows use instrument_id 0: instruments, packets, total gap seconds per
 reason, and silent_minutes (minutes of the F&O continuous phase with neither a
-packet nor a heartbeat). Rows go to refdata.sqlite → data_quality (replaced on
+packet nor a heartbeat), coverage_full_pct and coverage_quote_pct (mean coverage_pct of the instruments with a
+"full" subscription row at any time, and of those logged only in another mode; no row when a group is empty) and
+the always-written counts coverage_full_n, coverage_quote_n (instruments in each mean) and coverage_unlogged_n
+(instruments with no subscription row at all: older recordings, counted and never averaged; D-120). Rows go to refdata.sqlite → data_quality (replaced on
 each run) and a Markdown summary to $LAB/reports/quality_YYYYMMDD.md.
 """
 from __future__ import annotations
 
 import logging
+import sqlite3
 from array import array
 from dataclasses import dataclass, field
 from datetime import date
@@ -96,8 +100,18 @@ def report(day: date, *, write: bool = True) -> dict:
         return _report(day, tick_day, write)
 
 
+def _mean(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 3) if values else None
+
+
 def _report(day: date, tick_day, write: bool) -> dict:  # noqa: ANN001
-    spans = _sub_intervals(tick_day.subscriptions())
+    subs = tick_day.subscriptions()
+    spans = _sub_intervals(subs)
+    # LCM 6.1 / D-120: FULL = any subscription row with mode "full" (stays FULL if later changed); QUOTE = rows with
+    # another mode and none "full"; no row at all = unlogged (older recordings): counted, never averaged.
+    # Modes compare exactly, as limits.py does (the recorder writes them lowercase).
+    full_ids = {r["instrument_id"] for r in subs if r["instrument_id"] is not None and r.get("mode") == "full"}
+    logged_ids = {r["instrument_id"] for r in subs if r["instrument_id"] is not None and r.get("mode")}
     insts: dict[int, _Inst] = {}
 
     def state(iid: int) -> _Inst | None:
@@ -189,7 +203,16 @@ def _report(day: date, tick_day, write: bool) -> dict:  # noqa: ANN001
         silent = sum(1 for m in range(lo, hi) if m not in active_minutes)
     day_metrics = {"instruments": len(insts), "packets": sum(st.packets for st in insts.values()),
                    "silent_minutes": silent, **{f"gap_s_{k}": round(v, 3) for k, v in gap_s.items()}}
-    rows += [(day.isoformat(), 0, k, v, None) for k, v in day_metrics.items()]
+    # D-120: two means (None, and no row, for an empty group) and three counts that are always written.
+    full_cov = [m["coverage_pct"] for iid, m in per_inst if iid in full_ids and m["coverage_pct"] is not None]
+    quote_cov = [m["coverage_pct"] for iid, m in per_inst
+                 if iid in logged_ids and iid not in full_ids and m["coverage_pct"] is not None]
+    day_metrics["coverage_full_pct"] = _mean(full_cov)
+    day_metrics["coverage_quote_pct"] = _mean(quote_cov)
+    day_metrics["coverage_full_n"] = len(full_cov)
+    day_metrics["coverage_quote_n"] = len(quote_cov)
+    day_metrics["coverage_unlogged_n"] = sum(1 for iid, m in per_inst if iid not in logged_ids)
+    rows += [(day.isoformat(), 0, k, v, None) for k, v in day_metrics.items() if v is not None]
 
     result = {"date": day.isoformat(), "source": tick_day.source, "day": day_metrics,
               "instruments": {iid: m for iid, m in per_inst}}
@@ -220,9 +243,18 @@ def _name(iid: int) -> str:
 def summary_markdown(result: dict) -> str:
     d, insts = result["day"], result["instruments"]
     lat = [m["latency_p50_ms"] for m in insts.values() if m.get("latency_p50_ms") is not None]
+    cov = ""
+    if "coverage_full_n" in d:
+        cov = (f"- Recorder coverage: FULL {d['coverage_full_pct']:.1f}% over {d['coverage_full_n']:.0f}, "
+               if d.get("coverage_full_pct") is not None else f"- Recorder coverage: FULL none ({d['coverage_full_n']:.0f}), ")
+        cov += (f"QUOTE {d['coverage_quote_pct']:.1f}% over {d['coverage_quote_n']:.0f}, "
+                if d.get("coverage_quote_pct") is not None else f"QUOTE none ({d['coverage_quote_n']:.0f}), ")
+        cov += f"no mode logged for {d['coverage_unlogged_n']:.0f}"
     lines = [f"# Data quality {result['date']} ({result['source']})", "",
              f"- Instruments: {d['instruments']}, packets in the continuous phase: {d['packets']:,}",
              f"- Silent minutes (no packet, no heartbeat): {d['silent_minutes']}"]
+    if cov:
+        lines.append(cov)
     for k, v in sorted(d.items()):
         if k.startswith("gap_s_"):
             lines.append(f"- Gap time, {k[6:]}: {v:,.0f} s")
@@ -238,6 +270,72 @@ def summary_markdown(result: dict) -> str:
     for cov, iid, m in ranked:
         lines.append(f"| {_name(iid)} | {cov:.1f} | {m['longest_gap_s']} | {m['packets']:,} |")
     return "\n".join(lines) + "\n"
+
+
+# What each store is called in the plain sentences of an `errors` list (no file names, paths or exception text).
+# The keys are the store keys of the coverage matrix's `error_stores`.
+STORE_NAMES = {"refdata": "recorded-day and download store", "bars": "bar store", "lab": "recorder status"}
+
+
+def unreadable_sentence(store_key: str) -> str:
+    return f"Couldn't read the {STORE_NAMES[store_key]}."
+
+
+class StoreUnreadable(RuntimeError):
+    """A store a read needs is missing or cannot be read. The text is the fixed sentence, never a path."""
+
+    def __init__(self, store_key: str):
+        super().__init__(unreadable_sentence(store_key))
+        self.store_key = store_key
+
+
+_ID_CHUNK = 500      # instrument ids per IN (...) list: far under SQLite's bound-variable limit (32766)
+
+
+def _rows_or_none(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list:
+    """The rows of a read; a missing table (an older schema) reads as no rows."""
+    try:
+        return conn.execute(sql, args).fetchall()
+    except sqlite3.OperationalError as e:
+        if str(e).startswith("no such table"):
+            return []
+        raise
+
+
+def stored_readonly(day: date) -> tuple[dict, dict[int, str | None]]:
+    """`stored(day)` plus the tradingsymbol of each instrument it names, read from refdata.sqlite on its own
+    READ-ONLY connection (`mode=ro`), closed after use.
+
+    Never through `refdata._connect()`: that opens read-write, so a missing file would be created empty and a locked
+    or corrupt one would raise. A missing file or a file that cannot be read raises `StoreUnreadable("refdata")`; a
+    readable file without the table (an older schema) reads as no rows.
+    """
+    path = paths.refdata_db()
+    if not path.exists():
+        raise StoreUnreadable("refdata")
+    try:
+        conn = sqlite3.connect(paths.readonly_uri(path), uri=True, timeout=5.0)
+    except (sqlite3.Error, OSError):
+        raise StoreUnreadable("refdata") from None
+    try:
+        conn.row_factory = sqlite3.Row
+        out: dict[int, dict] = {}
+        for r in _rows_or_none(conn, "SELECT instrument_id, metric, value FROM data_quality WHERE trade_date=?",
+                               (day.isoformat(),)):
+            out.setdefault(r["instrument_id"], {})[r["metric"]] = r["value"]
+        ids = [i for i in out if i != 0]
+        symbols: dict[int, str | None] = {}
+        for k in range(0, len(ids), _ID_CHUNK):
+            chunk = ids[k:k + _ID_CHUNK]
+            for r in _rows_or_none(
+                    conn, "SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
+                          f"({','.join('?' * len(chunk))})", tuple(chunk)):
+                symbols[r["instrument_id"]] = r["tradingsymbol"]
+        return out, symbols
+    except (sqlite3.Error, OSError):
+        raise StoreUnreadable("refdata") from None
+    finally:
+        conn.close()
 
 
 def stored(day: date) -> dict:

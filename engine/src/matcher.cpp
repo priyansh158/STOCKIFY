@@ -1,6 +1,10 @@
 #include "stocksim/matcher.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <numeric>
+#include <string>
 
 #include "stocksim/errors.hpp"
 
@@ -11,10 +15,10 @@ Frac Frac::of(std::int64_t num, std::int64_t den) {
         throw NumericError("Fraction with a zero denominator");
     }
     if (den < 0) {
-        num = -num;
-        den = -den;
+        num = checked_neg(num);
+        den = checked_neg(den);
     }
-    const std::int64_t g = std::gcd(num < 0 ? -num : num, den);
+    const std::int64_t g = std::gcd(num < 0 ? checked_neg(num) : num, den);
     return Frac{num / g, den / g};
 }
 
@@ -31,20 +35,66 @@ Paise protection_limit(Side side, Paise ref, Bp bp, Paise tick) {  // matcher.pr
     return checked_mul(-mul_div_floor(-ref, 10'000 - bp, checked_mul(10'000, tick)), tick);
 }
 
+std::int64_t extra_ticks_of(const Json& slip) {  // matcher.extra_ticks_of
+    const auto it = slip.find("extra_ticks");
+    if (it == slip.end()) {
+        return 0;
+    }
+    // nlohmann holds a non-negative integer as unsigned: read it as such and clamp, so 2^64 - 1 never wraps to -1.
+    const bool whole = it->is_number_integer();
+    const std::int64_t n = !whole ? -1
+                           : it->is_number_unsigned()
+                               ? static_cast<std::int64_t>(std::min<std::uint64_t>(it->get<std::uint64_t>(), kMaxExtraTicks + 1))
+                               : it->get<std::int64_t>();
+    if (n < 0 || n > kMaxExtraTicks) {
+        throw RunError("fill_model.slippage.extra_ticks: must be a whole number from 0 to " +
+                       std::to_string(kMaxExtraTicks));
+    }
+    return n;
+}
+
+namespace {
+// CH 6.8: a whole number of the slippage object in [0, hi], else RunError naming the key (the bundle is not trusted:
+// no float, bool, string, negative value or uint64 past int64; nlohmann would otherwise wrap or throw its own type).
+std::int64_t slip_whole(const Json& slip, const char* key, std::int64_t hi) {
+    const auto it = slip.find(key);
+    const bool ok = it != slip.end() && it->is_number_integer() &&
+                    !(it->is_number_unsigned() && it->get<std::uint64_t>() > static_cast<std::uint64_t>(hi));
+    const std::int64_t n = ok ? it->get<std::int64_t>() : -1;
+    if (n < 0 || n > hi) {
+        throw RunError(std::string("fill_model.slippage.") + key + ": must be a whole number from 0 to " +
+                       std::to_string(hi));
+    }
+    return n;
+}
+
+constexpr std::int64_t kMaxRandomTicksK = 0xFFFF'FFFE;  // rng.below takes k + 1 as a uint32
+}  // namespace
+
 Paise slipped(Side side, Paise price, Paise tick, const Json& slip, Pcg32& rng, std::optional<Paise> cap) {
-    const std::string kind = slip.contains("kind") ? slip.at("kind").get<std::string>() : "none";
+    std::string kind = "none";
+    if (const auto kit = slip.find("kind"); kit != slip.end()) {
+        if (!kit->is_string()) {
+            throw RunError("fill_model.slippage.kind: must be text");
+        }
+        kind = kit->get<std::string>();
+    }
     Paise move = 0;
     if (kind == "none") {
         move = 0;
     } else if (kind == "fixed_ticks") {
-        move = checked_mul(slip.at("k").get<std::int64_t>(), tick);
+        move = checked_mul(slip_whole(slip, "k", std::numeric_limits<std::int64_t>::max()), tick);
     } else if (kind == "random_ticks") {
-        move = checked_mul(rng.below(static_cast<std::uint32_t>(slip.at("k").get<std::int64_t>() + 1)), tick);
+        move = checked_mul(rng.below(static_cast<std::uint32_t>(slip_whole(slip, "k", kMaxRandomTicksK) + 1)), tick);
     } else if (kind == "bps") {
-        move = ceil_to(ceil_div(checked_mul(price, slip.at("bp").get<std::int64_t>()), 10'000), tick);
+        move = ceil_to(ceil_div(checked_mul(price, slip_whole(slip, "bp", std::numeric_limits<std::int64_t>::max())),
+                                10'000),
+                       tick);
     } else {
         throw RunError("slippage '" + kind + "'");
     }
+    // FW 6.2: after the kind's own draw, before the sign and the cap
+    move = checked_add(move, checked_mul(extra_ticks_of(slip), tick));
     Paise out = side == Side::Buy ? checked_add(price, move) : checked_sub(price, move);
     if (cap) {
         out = side == Side::Buy ? std::min(out, *cap) : std::max(out, *cap);
@@ -64,7 +114,7 @@ PathValue path_value(const PathPoints& points, const PathPos& pos) {  // matcher
     const Paise a = points[static_cast<std::size_t>(pos.k)];
     const Paise b = points[static_cast<std::size_t>(pos.k + 1)];
     // a + (b − a)·n/d = (a·d + (b − a)·n) / d
-    return PathValue{Int128::mul(a, pos.f.d) + Int128::mul(b - a, pos.f.n), pos.f.d};
+    return PathValue{Int128::mul(a, pos.f.d) + Int128::mul(checked_sub(b, a), pos.f.n), pos.f.d};
 }
 
 std::optional<PathPos> first_reach(const PathPoints& points, Paise x, bool down, PathPos after) {
@@ -78,7 +128,7 @@ std::optional<PathPos> first_reach(const PathPoints& points, Paise x, bool down,
         const Paise a = points[static_cast<std::size_t>(k)];
         const Paise b = points[static_cast<std::size_t>(k + 1)];
         if (a != b && ok_int(b)) {
-            const Frac f = Frac::of(a - x, a - b);
+            const Frac f = Frac::of(checked_sub(a, x), checked_sub(a, b));
             if (f >= start) {
                 return PathPos{k, f};
             }

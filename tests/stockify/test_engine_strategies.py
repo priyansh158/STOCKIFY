@@ -73,7 +73,7 @@ def daily_world(seed: int, future: bool = False) -> tuple[dict, dict]:
         evs.append(_bar(1, 86400, f"{d}T00:00:00+05:30", o, hi, lo, c, rng.choice([0, 500, 100_000, 10**7])))
         prev = c
         p = c
-    inst = [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": SPEC}]
+    inst = [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": copy.deepcopy(SPEC)}]
     if future:
         inst = [{"id": 1, "kind": "FUT", "tradingsymbol": "TEST", "underlying": "IDX", "underlying_id": 2,
                  "expiry": "2026-12-31", "specs": [{"from": "2026-01-01", "lot": rng.choice([15, 50]), "tick_paise": 5}]},
@@ -106,7 +106,7 @@ def minute_world(seed: int) -> tuple[dict, dict]:
             hi, lo = max(o, c) + rng.randint(0, 3) * 5, max(5, min(o, c) - rng.randint(0, 3) * 5)
             evs.append(_bar(1, 60, f"{d}T{hh:02d}:{mm:02d}:00+05:30", o, hi, lo, c, rng.choice([0, 200, 50_000])))
             p = c
-    g = _world(f"M{seed}", evs, [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": SPEC}], days, rng,
+    g = _world(f"M{seed}", evs, [{"id": 1, "kind": "EQ", "tradingsymbol": "TEST", "specs": copy.deepcopy(SPEC)}], days, rng,
                mis_cutoff={"CM": rng.choice(["15:12", "15:20"])})
     if rng.random() < 0.5:
         g["bundle"]["charges"] = _real_charges()
@@ -180,6 +180,21 @@ def _fills(folder: Path) -> int:
     return len((folder / "fills.csv").read_text(encoding="utf-8").splitlines()) - 1
 
 
+class WorldIsolationTests(unittest.TestCase):
+    """A test that edits a world's instrument specs (e.g. a freeze quantity) must not change the next world."""
+
+    def test_a_world_does_not_share_its_specs_with_the_next(self):
+        for make in (daily_world, minute_world):
+            with self.subTest(world=make.__name__):
+                g, _ = make(5100)
+                for i in g["bundle"]["instruments"]:
+                    for s in i["specs"]:
+                        s["freeze_qty"] = 3
+                g2, _ = make(5100)
+                self.assertTrue(all("freeze_qty" not in s for i in g2["bundle"]["instruments"] for s in i["specs"]))
+        self.assertEqual(SPEC, [{"from": "2026-01-01", "lot": 1, "tick_paise": 5}])
+
+
 @unittest.skipUnless(engine.available(), "stockify._engine is not built")
 class ReferenceStrategyTests(unittest.TestCase):
     """The same strategy object type on both implementations: identical run folders (DT-02)."""
@@ -220,6 +235,51 @@ class ReferenceStrategyTests(unittest.TestCase):
             with self.subTest(seed=seed):
                 fills += self._same(REFS["orb"], g, params, cpp="orb_cpp")
         self.assertGreater(fills, 40)
+
+    def test_orb_cpp_and_python_write_the_same_notes(self):
+        notes = 0
+        for seed in range(5500, 5560):                         # more worlds than the parity test: shorts, stops, timers
+            g, params = minute_world(seed)
+            params["short"] = seed % 2 == 0
+            with self.subTest(seed=seed):
+                self._same(REFS["orb"], g, params, cpp="orb_cpp")
+                notes += self._count_notes(g, params, "orb_cpp")[0]
+        self.assertGreater(notes, 20)
+
+    def test_sma_cross_cpp_and_python_write_the_same_notes_and_plots(self):
+        notes = 0
+        for seed in range(5600, 5700):                         # every third is a long/short future; ties come from flat steps
+            g, params = daily_world(seed, future=seed % 3 == 0)
+            with self.subTest(seed=seed):
+                self._same(REFS["sma_cross"], g, params, cpp="sma_cross_cpp")
+                notes += self._count_notes(g, params, "sma_cross_cpp")[0]
+        self.assertGreater(notes, 100)
+
+    def test_cpp_strategy_notes_are_cleaned_and_at_most_200_characters(self):
+        from stockify.oracle.notes import NOTE_MAX, clean_note
+        seen = 0
+        for cpp, make, seeds in (("sma_cross_cpp", daily_world, range(5700, 5720)), ("orb_cpp", minute_world, range(5720, 5740))):
+            for seed in seeds:
+                g, params = make(seed)
+                with self.subTest(cpp=cpp, seed=seed), tempfile.TemporaryDirectory(prefix="notes-") as tmp:
+                    folder = Path(tmp)
+                    pack, b = _materialise(g, params, folder)
+                    engine_mod.run_bundle(b, [pack], folder / "cpp", strategy=cpp, report=False)
+                    with open(folder / "cpp" / "orders.csv", newline="", encoding="utf-8") as fh:
+                        for row in csv.DictReader(fh):
+                            self.assertTrue(row["note"], "a C++ order without a note")
+                            self.assertEqual(clean_note(row["note"]), row["note"])
+                            self.assertLessEqual(len(row["note"]), NOTE_MAX)
+                            seen += 1
+        self.assertGreater(seen, 50)
+
+    def _count_notes(self, g: dict, params: dict, cpp: str) -> tuple[int]:
+        with tempfile.TemporaryDirectory(prefix="notes-") as tmp:
+            folder = Path(tmp)
+            pack, b = _materialise(g, params, folder)
+            engine_mod.run_bundle(b, [pack], folder / "cpp", strategy=cpp, report=False)
+            with open(folder / "cpp" / "orders.csv", newline="", encoding="utf-8") as fh:
+                return (sum(1 for row in csv.DictReader(fh) if row["note"]),)
 
     def test_orb_partial_and_rejected_entries_agree_on_all_three_implementations(self):
         from tests.stockify.test_strategies import StrategyTests

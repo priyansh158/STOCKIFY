@@ -79,7 +79,7 @@ std::string csv_cell(const CsvCell& cell) {
         return std::to_string(*v);
     }
     const std::string_view s = std::get<std::string_view>(cell);
-    if (s.find_first_of(",\"\n") == std::string_view::npos) {
+    if (s.find_first_of(",\"\n\r") == std::string_view::npos) {
         return std::string(s);
     }
     std::string out = "\"";

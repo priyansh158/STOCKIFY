@@ -112,6 +112,8 @@ class DataQualityResponse(BaseModel):
     date: str
     day: dict[str, float] = Field(default_factory=dict, description="day-level metrics (instrument_id 0)")
     instruments: list[InstrumentQualityDTO] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list, description="plain sentences naming a store that could not be read")
+    error_stores: list[str] = Field(default_factory=list, description="store keys the errors name: refdata, bars, lab")
 
 
 # ── Strategy tests (M3.14) ───────────────────────────────────────────────────
@@ -403,4 +405,495 @@ class TickEvent(BaseModel):
     ltp: float
     change_pct: float | None = None
     ts: int  # unix seconds
+
+# ── Research (M6.4 deflated Sharpe, M6.8 bootstrap; WF 6.1) ──────────────────
+
+class IntervalDTO(BaseModel):
+    """A point estimate with its bootstrap interval; any part is None when it could not be computed."""
+    point: float | None = None
+    lo: float | None = None
+    hi: float | None = None
+
+
+class DsrDTO(BaseModel):
+    """The deflated Sharpe of a try (per-day Sharpe; the page annualises). `dsr` and `psr` are probabilities."""
+    sr: float | None = None
+    t: int
+    skew: float | None = None
+    kurt: float | None = None
+    n_trials: int
+    var_sharpe: float | None = None
+    sr0: float | None = None
+    dsr: float | None = None
+    psr: float | None = None
+
+
+class BootstrapDTO(BaseModel):
+    """Stationary block bootstrap intervals at level `ci`; the mean return is a per-day fraction, the drawdown a
+    fraction of the peak."""
+    n_days: int
+    mean_block: float | None = None
+    resamples: int
+    ci: float | None = None
+    enough_days: bool
+    sharpe: IntervalDTO
+    mean_daily_return: IntervalDTO
+    max_drawdown: IntervalDTO
+
+
+class RegimeBucketDTO(BaseModel):
+    """One group of days: P&L in paise (`mean_pnl_paise` rounded half away from zero), `thin` when it has too few
+    days to read much into."""
+    label: str
+    days: int
+    pnl_paise: int
+    mean_pnl_paise: int | None = None
+    up_days: int
+    up_share: float | None = None
+    thin: bool
+    plain: str | None = None
+
+
+class RegimeReportDTO(BaseModel):
+    month: list[RegimeBucketDTO]
+    weekday: list[RegimeBucketDTO]
+    expiry: list[RegimeBucketDTO]
+    vix: list[RegimeBucketDTO]
+    gap: list[RegimeBucketDTO]
+    vix_source: dict[str, str]
+    notes: list[str]
+
+
+class RunResearchDTO(BaseModel):
+    run_id: str
+    family_id: str | None = None
+    role: str
+    objective: str
+    n_trials: int
+    rank: int | None = None
+    is_best: bool
+    picked_run_id: str | None = None
+    picked_name: str | None = None
+    dsr: DsrDTO | None = None
+    bootstrap: BootstrapDTO | None = None
+    regimes: RegimeReportDTO | None = None
+    holdout_unlocks: int
+    plain: dict[str, str]
+
+
+class SensitivityRowDTO(BaseModel):
+    key: str
+    axis: str
+    label: str
+    run_id: str | None = None
+    status: str
+    net_pnl_paise: int | None = None
+    sharpe: float | None = None
+    delta_net_paise: int | None = None
+    error: str | None = None
+
+
+class SensitivityDTO(BaseModel):
+    run_id: str
+    job_id: str
+    rows: list[SensitivityRowDTO]
+    baseline_net_paise: int
+    fragile: bool
+    verdict: str
+    reasons: list[str]
+    plain: str
+
+
+class TrialRowDTO(BaseModel):
+    run_id: str
+    name: str | None = None
+    role: str
+    status: str
+    objective_value: float | None = None
+    sharpe_per_period: float | None = None
+    net_pnl_paise: int | None = None
+    days: int
+    job_id: str | None = None
+
+
+class PboDTO(BaseModel):
+    pbo: float
+    n_trials: int
+    n_days: int
+    slices: int
+    combinations: int
+    rows_dropped: int
+    median_logit: float | None = None
+    prob_loss: float
+
+
+class FamilySummaryDTO(BaseModel):
+    family_id: str
+    description: str | None = None
+    named: bool
+    objective: str
+    n_trials: int
+    n_other_runs: int
+    n_sessions: int
+    best_run_id: str | None = None
+    best_dsr: float | None = None
+    unlocks: int
+    n_finished: int = 0
+    best_plain: str = ""
+
+
+class FamilyDetailDTO(BaseModel):
+    family_id: str
+    description: str | None = None
+    objective: str
+    named: bool
+    n_trials: int
+    var_sharpe: float | None = None
+    best_run_id: str | None = None
+    best: DsrDTO | None = None
+    trials: list[TrialRowDTO]
+    others: list[TrialRowDTO]
+    sessions: list[dict[str, Any]]
+    holdout_unlocks: list[dict[str, Any]]
+    plain: dict[str, str]
+    pbo: PboDTO | None = None
+    pbo_note: str | None = None
+    pbo_dropped: list[str] = []
+    pbo_flat: list[str] = []
+
+
+# ── Parameter sweeps (WF 6.3) ────────────────────────────────────────────────
+
+class ResearchJobDTO(BaseModel):
+    job_id: str
+    kind: str
+    name: str | None = None
+    family_id: str | None = None
+    status: str
+    created_ns: int
+    finished_ns: int | None = None
+    error: str | None = None
+    plain: str = ""
+
+
+class ResearchCountsDTO(BaseModel):
+    """How many families, sweeps and walk-forward runs exist: the totals behind the overview's capped lists."""
+    families: int
+    sweeps: int
+    walkforwards: int
+
+
+class SweepAxisDTO(BaseModel):
+    path: str
+    label: str                      # a plain name from the strategy's params schema, or the path when none is known
+    labels: list[str]
+    values: list[Any]
+
+
+class SweepRowDTO(BaseModel):
+    index: int
+    params: dict[str, Any]
+    run_id: str | None = None
+    status: str
+    objective_value: float | None = None
+    sharpe: float | None = None
+    net_pnl_paise: int | None = None
+    trades: int | None = None
+    max_drawdown: float | None = None
+    error: str | None = None        # a short plain clause, or None when the stored error looks like a raw log line
+
+
+class SweepBestCellDTO(BaseModel):
+    xi: int
+    yi: int
+    run_id: str
+    value: float
+
+
+# Plain data; the page feeds HeatGrid through an adapter (format kind -> formatter, best {xi, yi} -> {x, y}).
+class SweepHeatmapDTO(BaseModel):
+    x: str
+    y: str | None = None
+    xs: list[str]
+    ys: list[str]
+    x_values: list[Any]
+    y_values: list[Any]
+    cells: list[list[float | None]]
+    run_ids: list[list[str | None]]
+    best: SweepBestCellDTO | None = None
+    signed: bool
+    format: str
+    hidden_axes: list[str]
+
+
+class SweepDTO(BaseModel):
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    objective_label: str            # the one name for the objective, as the plain sentence uses it
+    axes: list[SweepAxisDTO]
+    rows: list[SweepRowDTO]
+    best_run_id: str | None = None
+    cells: SweepHeatmapDTO
+    plain: str
+
+
+class CompareMetricDTO(BaseModel):
+    key: str
+    label: str
+    values: list[float | int | None]
+    kind: str
+    plain: str
+
+
+class CompareDiffDTO(BaseModel):
+    field: str
+    values: list[str | None]
+    differs: bool
+
+
+class CompareSeriesDTO(BaseModel):
+    run_id: str
+    dates: list[str]
+    values: list[float | None]
+
+
+class ComparisonDTO(BaseModel):
+    run_ids: list[str]
+    names: list[str]
+    metrics: list[CompareMetricDTO]
+    equity: list[CompareSeriesDTO]
+    drawdown: list[CompareSeriesDTO]
+    labels: dict[str, list[bool]]
+    differing_labels: list[str]
+    manifest_diff: list[CompareDiffDTO]
+    notes: list[str]
+
+
+class CoverageCellDTO(BaseModel):
+    state: str
+    value: float | None = None
+    detail: str | None = None
+
+
+class CoverageDayDTO(BaseModel):
+    date: str
+    trading: bool
+    cells: dict[str, CoverageCellDTO]
+
+
+class BarRangeDTO(BaseModel):
+    instrument_id: int
+    symbol: str | None = None
+    interval: str
+    from_ns: int
+    to_ns: int
+    from_ist: str
+    to_ist: str
+    days: int
+    rows: int
+
+
+class StorageDTO(BaseModel):
+    landing_bytes: int
+    archive_bytes: int
+    refdata_bytes: int
+    lab_bytes: int
+    nse_bytes: int
+    free_bytes: int
+    total_bytes: int
+    warnings: list[str]
+
+
+class CoverageMatrixDTO(BaseModel):
+    from_date: str
+    to_date: str
+    datasets: list[dict[str, str]]
+    days: list[CoverageDayDTO]
+    bars: list[BarRangeDTO]
+    storage: StorageDTO
+    recorder: RecorderStatusDTO | None = None
+    errors: list[str] = []
+    error_stores: list[str] = []
+    earliest_date: str | None = None
+
+
+class GapDTO(BaseModel):
+    start_ns: int
+    end_ns: int | None = None
+    start_ist: str
+    duration_s: float | None = None
+    reason: str | None = None
+    scope: str | None = None
+    frames: int | None = None
+
+
+class GapPageDTO(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    gaps: list[GapDTO]
+
+
+# ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
+
+class WalkforwardSummaryDTO(BaseModel):
+    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive.
+    With fewer than `oos_days_needed` out-of-sample days (research.json walk_forward.min_oos_days) the Sharpe figures,
+    the ratio and `dsr` are None, here and in every window."""
+    windows: int
+    is_windows: int
+    oos_days: int
+    oos_days_needed: int
+    is_sharpe: float | None = None
+    oos_sharpe: float | None = None
+    ratio: float | None = None
+    chosen_modal_share: float | None = None
+    n_trials: int
+    var_sharpe: float | None = None
+    dsr: DsrDTO | None = None
+
+
+class WalkforwardWindowDTO(BaseModel):
+    """One window. `train` and `test` hold run_id, from, to, days, net_pnl_paise (int paise) and sharpe, or are
+    absent when that part did not run. Calendar-day dates, inclusive."""
+    index: int
+    train_from: str
+    train_to: str
+    test_from: str
+    test_to: str
+    chosen_params: dict[str, Any] | None = None
+    chosen_run_id: str | None = None
+    test_run_id: str | None = None
+    test_status: str
+    result: str = ""
+    no_sharpe: str = ""
+    error: str | None = None
+    train: dict[str, Any] | None = None
+    test: dict[str, Any] | None = None
+
+
+class WalkforwardDTO(BaseModel):
+    job_id: str
+    name: str
+    family_id: str
+    objective: str
+    train: int
+    test: int
+    step: int
+    summary: WalkforwardSummaryDTO
+    windows: list[WalkforwardWindowDTO]
+    stitched_dates: list[str]
+    stitched_index: list[float]
+    plain: dict[str, str]
+
+
+# ── Run chart (CH 6.11) ──────────────────────────────────────────────────────
+
+class ChartInstrumentDTO(BaseModel):
+    id: int
+    symbol: str
+    kind: Literal["equity", "future", "option", "index"] | None = None
+
+
+class ChartBarDTO(BaseModel):
+    t: int
+    d: str
+    open: str
+    high: str
+    low: str
+    close: str
+    volume: int
+
+
+class ChartChunkDTO(BaseModel):
+    qty: int
+    open_price_paise: int
+    pnl_paise: int
+
+
+class ChartMarkerDTO(BaseModel):
+    id: str
+    kind: Literal["fill", "settlement"]
+    t: int
+    bar_t: int
+    bar_d: str
+    side: Literal["BUY", "SELL"]
+    qty: int
+    price: str
+    price_paise: int
+    fsp_paise: int | None = None
+    order_id: int | None = None
+    fill_id: int | None = None
+    note: str
+    tag: str
+    tag_is_code: bool
+    charges_paise: int | None = None
+    trade_pnl_paise: int | None = None
+    chunks: list[ChartChunkDTO]
+
+
+class ChartPointDTO(BaseModel):
+    t: int
+    value: str
+
+
+class ChartPlotDTO(BaseModel):
+    name: str
+    kind: Literal["price", "level"]
+    instrument_id: int
+    points: list[ChartPointDTO]
+
+
+class RunChartDTO(BaseModel):
+    instruments: list[ChartInstrumentDTO]
+    instrument_id: int | None = None
+    basis: str | None = None
+    interval_s: int | None = None
+    bars: list[ChartBarDTO]
+    markers: list[ChartMarkerDTO]
+    plots: list[ChartPlotDTO]
+    truncated: bool
+    next_from_ns: int | None = None
+    data_state: Literal["ok", "pruned", "no_pack", "pack unreadable"]
+    omitted_markers: int
+    notice: str | None = None
+    pnl_complete: bool
+    skipped_settlements: int
+    idle_settlements: int
+    plain: str | None = None
+
+
+# ── Walk-forward chart (CH 6.12) ─────────────────────────────────────────────
+
+class WalkforwardChartWindowDTO(BaseModel):
+    """One window's test range: UTC seconds `from_t` (inclusive) to `to_t` (exclusive), the IST dates `from_d` and
+    `to_d` (inclusive), and the test run drawn there (None when it has no chart: see `status`). `result` and `no_sharpe`
+    are the walk-forward report's own words for the window; `excluded` is the reason a window the summary leaves out
+    (no stitched test) is not drawn, else None. `session_open_s`: seconds after IST midnight at which the cash (CM)
+    session opens on the window's first day (sessions.json, dated), where the page puts the shading point of a day with
+    no bars; None when the config has none."""
+    index: int
+    from_t: int
+    to_t: int
+    from_d: str
+    to_d: str
+    run_id: str | None = None
+    status: Literal["done", "failed", "skipped", "pending", "missing", "no_trades", "unknown"]
+    result: str = ""
+    no_sharpe: str = ""
+    excluded: str | None = None
+    session_open_s: int | None = None
+
+
+class WalkforwardChartDTO(RunChartDTO):
+    windows: list[WalkforwardChartWindowDTO]
+
+
+class SessionChartDTO(RunChartDTO):
+    trade_date: str
+    days: list[str]
+    paper: bool
+    live: bool
 # </block>

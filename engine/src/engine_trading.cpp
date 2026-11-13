@@ -8,6 +8,7 @@
 #include "stocksim/errors.hpp"
 #include "stocksim/int128.hpp"
 #include "stocksim/matcher.hpp"
+#include "stocksim/notes.hpp"
 
 namespace stocksim {
 
@@ -242,6 +243,7 @@ OrderId Engine::place(const PlaceRequest& r, OrderId parent, bool system) {  // 
     o.trigger = r.trigger;
     o.protection = r.protection;
     o.tag = r.tag;
+    o.note = clean_note(r.note);  // a slice child gets the parent's already-clean note back (clean is idempotent)
     o.t_submit = now_;
     const OrderId id = o.order_id;
     Order& ord = book_.orders.emplace(id, std::move(o)).first->second;
@@ -1011,10 +1013,10 @@ void Engine::settle_final(InstrumentId underlying_id, Date d, Paise fsp, const s
             p.c = 0;
         } else {
             const Paise k = row.strike.value_or(0);
-            const Paise intrinsic = row.kind == "CE" ? std::max<Paise>(0, fsp - k) : std::max<Paise>(0, k - fsp);
+            const Paise intrinsic = row.kind == "CE" ? std::max<Paise>(0, checked_sub(fsp, k)) : std::max<Paise>(0, checked_sub(k, fsp));
             settle_closes_.push_back(SettleClose{now_, p.instrument, p.product, closing, units, intrinsic});
             led.cash = checked_add(led.cash, checked_mul(p.qty(), intrinsic));
-            p.realised = checked_add(p.realised, p.d * checked_sub(checked_mul(p.q, intrinsic), p.c));
+            p.realised = checked_add(p.realised, (p.d > 0 ? checked_sub(checked_mul(p.q, intrinsic), p.c) : checked_neg(checked_sub(checked_mul(p.q, intrinsic), p.c))));
             // D-59: brokerage on every option open at expiry; exercise STT only on a long ITM one's intrinsic value
             const Paise exercised = p.d > 0 ? checked_mul(p.q, intrinsic) : 0;
             charge_row(book_, "settlement", 0, p.instrument, d, costs_.exercise(row.kind, exercised, iso(d)));
@@ -1144,7 +1146,7 @@ std::optional<double> Engine::exposure() const {  // runner.exposure
             }
         }
         for (const auto& [a, b] : merged) {
-            total += b - a;
+            total = checked_add(total, checked_sub(b, a));
             bool state = false;
             TimeNs cursor = a;
             bool stopped = false;
@@ -1158,14 +1160,14 @@ std::optional<double> Engine::exposure() const {  // runner.exposure
                     break;
                 }
                 if (state) {
-                    held += t - cursor;
+                    held = checked_add(held, checked_sub(t, cursor));
                 }
                 cursor = t;
                 state = flag;
             }
             (void)stopped;
             if (state) {
-                held += b - cursor;
+                held = checked_add(held, checked_sub(b, cursor));
             }
         }
     }

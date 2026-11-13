@@ -3,6 +3,7 @@
  * answer from typed fixtures instead, so the pages can be built and checked without the API.
  */
 import { api } from "./api";
+import { pathSegment } from "./pathSeg";
 import * as F from "./testFixtures";
 import type {
   Strategy,
@@ -30,40 +31,40 @@ export function listTests(limit = 50): Promise<TestRun[]> {
 
 export function getTest(id: string): Promise<TestRunDetail> {
   if (FIXTURES) return Promise.resolve(F.detail(id));
-  return api<TestRunDetail>(`/api/tests/${encodeURIComponent(id)}`);
+  return api<TestRunDetail>(`/api/tests/${pathSegment(id)}`);
 }
 
 export function getFills(id: string, offset = 0, limit = 200): Promise<TestFill[]> {
   if (FIXTURES) return Promise.resolve(F.fills.slice(offset, offset + limit));
-  return api<TestFill[]>(`/api/tests/${encodeURIComponent(id)}/fills?offset=${offset}&limit=${limit}`);
+  return api<TestFill[]>(`/api/tests/${pathSegment(id)}/fills?offset=${offset}&limit=${limit}`);
 }
 
 export function getEquity(id: string): Promise<TestEquity[]> {
-  return FIXTURES ? Promise.resolve(F.equity) : api<TestEquity[]>(`/api/tests/${encodeURIComponent(id)}/equity`);
+  return FIXTURES ? Promise.resolve(F.equity) : api<TestEquity[]>(`/api/tests/${pathSegment(id)}/equity`);
 }
 
 export function getCharges(id: string): Promise<TestCharge[]> {
-  return FIXTURES ? Promise.resolve(F.charges) : api<TestCharge[]>(`/api/tests/${encodeURIComponent(id)}/charges`);
+  return FIXTURES ? Promise.resolve(F.charges) : api<TestCharge[]>(`/api/tests/${pathSegment(id)}/charges`);
 }
 
 export function getMargin(id: string): Promise<TestMargin[]> {
   if (FIXTURES) return Promise.resolve(F.margin(id));
-  return api<TestMargin[]>(`/api/tests/${encodeURIComponent(id)}/margin`);
+  return api<TestMargin[]>(`/api/tests/${pathSegment(id)}/margin`);
 }
 
 export function getSettlements(id: string): Promise<TestSettlement[]> {
   if (FIXTURES) return Promise.resolve(F.settlements(id));
-  return api<TestSettlement[]>(`/api/tests/${encodeURIComponent(id)}/settlements`);
+  return api<TestSettlement[]>(`/api/tests/${pathSegment(id)}/settlements`);
 }
 
 export function getGreeks(id: string): Promise<TestGreek[]> {
   if (FIXTURES) return Promise.resolve(F.greeks(id));
-  return api<TestGreek[]>(`/api/tests/${encodeURIComponent(id)}/greeks`);
+  return api<TestGreek[]>(`/api/tests/${pathSegment(id)}/greeks`);
 }
 
 export function getLogs(id: string, limit = 40): Promise<TestLogs> {
   if (FIXTURES) return Promise.resolve(F.logs);
-  return api<TestLogs>(`/api/tests/${encodeURIComponent(id)}/logs?tail=${limit}`);
+  return api<TestLogs>(`/api/tests/${pathSegment(id)}/logs?tail=${limit}`);
 }
 
 export function createTest(config: Record<string, unknown>): Promise<TestCreated> {
@@ -73,5 +74,5 @@ export function createTest(config: Record<string, unknown>): Promise<TestCreated
 
 export function cancelTest(id: string): Promise<TestRun> {
   if (FIXTURES) return Promise.resolve({ ...F.runs[1], status: "cancelled" });
-  return api<TestRun>(`/api/tests/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  return api<TestRun>(`/api/tests/${pathSegment(id)}/cancel`, { method: "POST" });
 }

@@ -90,13 +90,19 @@ def _kite(value) -> Decimal | None:  # noqa: ANN001
 def read_only(*modules):  # noqa: ANN002
     """For the block, `stockify.store` and `stockify.data.refdata` (or just the `modules` given) answer from
     read-only connections (`mode=ro`), so their own readers (margin_calibrations, instruments.find / get) are used
-    unchanged and nothing can be written."""
-    from stockify import store
-    from stockify.data import refdata
+    unchanged and nothing can be written. A database file that does not exist yet (a fresh lab) reads as an empty
+    one, from memory: `mode=ro` never creates it and neither does this."""
+    from stockify import paths, store
+    from stockify.data import migrate, refdata
     saved, opened = [], []
     try:
         for mod in modules or (store, refdata):
-            conn = sqlite3.connect(Path(mod._db_path()).as_uri() + "?mode=ro", uri=True, check_same_thread=False)
+            path = Path(mod._db_path())
+            if path.exists():
+                conn = sqlite3.connect(paths.readonly_uri(path), uri=True, check_same_thread=False)
+            else:
+                conn = sqlite3.connect(":memory:", check_same_thread=False)
+                migrate.apply(conn, refdata.STORE if mod is refdata else "lab")
             conn.row_factory = sqlite3.Row
             opened.append(conn)
             saved.append((mod, mod._conn))

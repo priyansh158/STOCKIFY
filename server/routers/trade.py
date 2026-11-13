@@ -22,11 +22,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionFillDTO,
-                            SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
+                            SessionChartDTO, SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
 
 router = APIRouter(tags=["trade"])
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_INSTRUMENT = re.compile(r"[0-9]{1,19}")
 MAX_BODY_BYTES = 64 * 1024
 MAX_UNIVERSE = 500
 MAX_LIVE_SESSIONS = 50
@@ -97,6 +98,7 @@ async def _body_cap(request: Request) -> None:
 @router.post("/api/trade/sessions", response_model=SessionCreatedDTO, status_code=201)
 def create_session(body: CreateSessionBody, _size: None = Depends(_body_cap)) -> SessionCreatedDTO:
     from stockify import sessionconfig, store, timeutil
+    from stockify.research import registry
     from stockify.strategies import _catalogue
     universe = body.config.get("universe")
     if isinstance(universe, list) and len(universe) > MAX_UNIVERSE:
@@ -129,6 +131,7 @@ def create_session(body: CreateSessionBody, _size: None = Depends(_body_cap)) ->
     for sid in candidates:
         try:
             store.create_session(sid, name, cfg, now)
+            registry.ensure_family(cfg["family_id"])              # M6.4: the session's family has its row
             return SessionCreatedDTO(session_id=sid)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=[f"session_id: {e}"])
@@ -392,6 +395,39 @@ def session_orders(session_id: str, trade_date: str | None = Query(None), offset
 def session_fills(session_id: str, trade_date: str | None = Query(None), offset: int = Query(0, ge=0),
                   limit: int = Query(500, ge=1, le=5000)) -> list[SessionFillDTO]:
     return _typed(SessionFillDTO, _rows(session_id, "fills", trade_date, offset, limit))
+
+
+_PAPER_SAYS = "Paper trading: no real orders."
+_SESSION_CHART_PLAIN = {
+    "no_pack": "This day has no recorded market data, so there are no bars; its trades are listed without a chart. ",
+    "pack unreadable": "This day's market data could not be read, so there are no bars; its trades are listed without a chart. ",
+}
+
+
+@router.get("/api/trade/sessions/{session_id}/chart", response_model=SessionChartDTO)
+def session_chart(session_id: str, instrument: str | None = Query(None),
+                  trade_date: str | None = Query(None), interval_s: str | None = Query(None)) -> SessionChartDTO:
+    """One instrument of one paper-session day as bars (read incrementally from the day's journal), a marker per paper
+    fill with the strategy's note, and each closing fill's trade profit (CH 6.13). Same wire format as a run's chart
+    (`/api/tests/{run_id}/chart`: times in UTC seconds, prices as exact rupee strings) plus `trade_date`, `days` (for the
+    day picker), `paper` (always true) and `live` (the day is open). A day without a journal, or one that cannot be
+    read, is a 200 with `data_state`. Read-only; no id, path or exception text is echoed."""
+    from server.routers.tests import _chart_dto
+    from stockify.reporting import chart_session
+    if interval_s is not None:                       # the day is drawn at the bars its journal holds: refuse, do not ignore
+        raise HTTPException(status_code=422, detail="this chart does not take interval_s")
+    if instrument is not None and not (_INSTRUMENT.fullmatch(instrument) and int(instrument) <= 2**63 - 1):
+        raise HTTPException(status_code=422, detail="the chart request is not valid")      # (a typed Query would echo the input)
+    try:
+        model = chart_session.session_chart(session_id, trade_date, None if instrument is None else int(instrument))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="no such session, day or instrument") from None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="the chart request is not valid") from None
+    dto = _chart_dto(model)
+    plain = _SESSION_CHART_PLAIN.get(model["data_state"], "") + _PAPER_SAYS
+    return SessionChartDTO(**{**dto.model_dump(), "plain": plain, "trade_date": model["trade_date"],
+                              "days": model["days"], "paper": True, "live": model["live"]})
 
 
 @router.get("/api/trade/sessions/{session_id}/timeline", response_model=list[SessionTimelineDTO])

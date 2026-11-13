@@ -1,0 +1,193 @@
+"""research.json: the shipped file validates and every bad value is refused, naming its key."""
+from __future__ import annotations
+
+import copy
+import json
+import random
+import tempfile
+import unittest
+from pathlib import Path
+
+import tests.support as support  # noqa: F401  — must precede project imports
+
+from stockify import research
+from stockify.config import loader
+
+SHIPPED = json.loads((loader.CONFIG_DIR / "research.json").read_text(encoding="utf-8"))
+
+
+def load(doc: dict) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "research.json").write_text(json.dumps(doc), encoding="utf-8")
+        return loader.load_json("research.json", Path(tmp))
+
+
+def changed(*path, value):
+    doc = copy.deepcopy(SHIPPED)
+    node = doc
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    return doc
+
+
+class ResearchConfigTests(unittest.TestCase):
+    def refused(self, doc: dict, key: str) -> None:
+        with self.assertRaises(loader.ConfigError) as cm:
+            load(doc)
+        self.assertIn(key, str(cm.exception))
+
+    def test_shipped_research_json_validates(self):
+        doc = load(SHIPPED)
+        self.assertEqual(doc["schema"], "stockify.research/1")
+        self.assertEqual(doc["holdout_from"], "2026-08-01")   # the owner's choice, D-89
+        self.assertEqual(research.settings()["pbo"], {"slices": 16, "min_trials": 2})
+
+    def test_shipped_holdout_date_is_the_owners_and_passes_the_strict_loader(self):
+        self.assertEqual(SHIPPED["holdout_from"], "2026-08-01")                      # the file on disk
+        self.assertEqual(loader.load_json("research.json")["holdout_from"], "2026-08-01")   # the strict loader, real file
+        self.assertEqual(load(SHIPPED)["holdout_from"], "2026-08-01")
+
+    def test_the_test_sandbox_has_no_holdout_unless_a_test_asks(self):
+        from stockify.research import holdout
+        self.assertIsNone(research.settings()["holdout_from"])
+        self.assertIsNone(holdout.holdout_from())
+        with support.holdout_on("2026-08-01"):
+            self.assertEqual(str(holdout.holdout_from()), "2026-08-01")
+        self.assertIsNone(holdout.holdout_from())
+
+    def test_holdout_from_must_be_an_iso_date_or_null(self):
+        self.assertEqual(load(changed("holdout_from", value="2026-08-01"))["holdout_from"], "2026-08-01")
+        for bad in ("2026-13-40", 20260801, "", "20260801", "2026-W31-6", " 2026-08-01", "2026-8-1"):
+            with self.subTest(bad=bad):
+                self.refused(changed("holdout_from", value=bad), "holdout_from")
+
+    def test_bootstrap_ci_must_be_in_the_open_unit_interval(self):
+        for bad in ("0", "1", "0.9x", "1.5", "-0.5", ""):
+            with self.subTest(bad=bad):
+                self.refused(changed("bootstrap", "ci", value=bad), "bootstrap.ci")
+        load(changed("bootstrap", "ci", value="0.95"))
+        self.refused(changed("bootstrap", "resamples", value=99), "bootstrap.resamples")
+        self.refused(changed("bootstrap", "resamples", value=True), "bootstrap.resamples")
+        self.refused(changed("bootstrap", "mean_block", value="0.5"), "bootstrap.mean_block")
+        self.refused(changed("bootstrap", "min_days", value=0), "bootstrap.min_days")
+
+    def test_decimal_fields_are_strings(self):
+        self.refused(changed("sensitivity", "cost_scale", value=["0", 1, "1.5"]), "sensitivity.cost_scale")
+        self.refused(changed("sensitivity", "fragile_cost_scale", value=1.5), "sensitivity.fragile_cost_scale")
+        self.refused(changed("coverage", "ok_pct", value=99), "coverage.ok_pct")
+        self.refused(changed("bootstrap", "ci", value=0.9), "bootstrap.ci")
+        self.refused(changed("regimes", "vix_edges", value=[13, "16"]), "regimes.vix_edges")
+
+    def test_min_oos_days_is_a_whole_number_of_at_least_two(self):
+        self.assertEqual(SHIPPED["walk_forward"]["min_oos_days"], 60)                # D-102, an owner-review choice
+        self.assertEqual(research.settings()["walk_forward"]["min_oos_days"], 60)
+        self.assertEqual(load(changed("walk_forward", "min_oos_days", value=2))["walk_forward"]["min_oos_days"], 2)
+        for bad in (1, 0, -5, "60", 60.0, True, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("walk_forward", "min_oos_days", value=bad), "walk_forward.min_oos_days")
+        doc = copy.deepcopy(SHIPPED)
+        del doc["walk_forward"]["min_oos_days"]
+        self.refused(doc, "min_oos_days")
+
+    def test_edges_must_be_strictly_increasing(self):
+        self.refused(changed("regimes", "vix_edges", value=["13", "13", "20"]), "regimes.vix_edges")
+        self.refused(changed("regimes", "gap_edges_pct", value=["0.5", "0.1"]), "regimes.gap_edges_pct")
+        self.refused(changed("regimes", "vix_edges", value=[]), "regimes.vix_edges")
+        self.refused(changed("sensitivity", "cost_scale", value=["1", "0"]), "sensitivity.cost_scale")
+        self.refused(changed("sensitivity", "extra_ticks", value=[0, 2, 1]), "sensitivity.extra_ticks")
+        self.refused(changed("sensitivity", "latency_ms", value=[0, 0]), "sensitivity.latency_ms")
+
+    def test_unknown_key_refused_naming_it(self):
+        for path in ((), ("bootstrap",), ("coverage",), ("sweep",), ("regimes",), ("walk_forward",)):
+            with self.subTest(path=path):
+                doc = copy.deepcopy(SHIPPED)
+                node = doc
+                for key in path:
+                    node = node[key]
+                node["mystery_key"] = 1
+                self.refused(doc, "mystery_key")
+
+    def test_missing_key_refused(self):
+        doc = copy.deepcopy(SHIPPED)
+        del doc["pbo"]["slices"]
+        self.refused(doc, "pbo.slices")
+
+    def test_pbo_slices_must_be_even_and_at_least_4(self):
+        for bad in (2, 3, 5, 0, -4, "16"):
+            with self.subTest(bad=bad):
+                self.refused(changed("pbo", "slices", value=bad), "pbo.slices")
+        load(changed("pbo", "slices", value=4))
+        self.refused(changed("pbo", "min_trials", value=1), "pbo.min_trials")
+
+    def test_coverage_days_limits(self):
+        self.refused(changed("coverage", "default_days", value=500), "coverage")
+        self.refused(changed("coverage", "default_days", value=0), "coverage.default_days")
+        self.refused(changed("coverage", "max_days", value=0), "coverage.max_days")
+        for bad in ("0", "100.5", "-1", "abc"):
+            with self.subTest(bad=bad):
+                self.refused(changed("coverage", "ok_pct", value=bad), "coverage.ok_pct")
+        load(changed("coverage", "ok_pct", value="100"))
+
+    def test_sweep_max_workers_null_or_positive_int(self):
+        load(changed("sweep", "max_workers", value=4))
+        for bad in (0, -1, "4", 1.5):
+            with self.subTest(bad=bad):
+                self.refused(changed("sweep", "max_workers", value=bad), "sweep.max_workers")
+
+    def test_regimes_close_slack_is_a_whole_number_of_minutes(self):
+        load(changed("regimes", "close_slack_min", value=0))
+        load(changed("regimes", "close_slack_min", value=30))
+        for bad in (-1, 31, 241, "5", 1.5, True, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("regimes", "close_slack_min", value=bad), "regimes.close_slack_min")
+        self.assertEqual(SHIPPED["regimes"]["close_slack_min"], 5)
+
+    def test_export_and_pool_limits_are_whole_numbers_in_range(self):
+        load(changed("export", "max_total_mib", value=1))
+        load(changed("export", "max_total_mib", value=16384))
+        load(changed("pool", "max_run_hours", value=1))
+        for path, bad in ((("export", "max_total_mib"), 0), (("export", "max_total_mib"), "2048"),
+                          (("export", "max_total_mib"), 16385),
+                          (("export", "max_total_mib"), True), (("pool", "max_run_hours"), 0),
+                          (("pool", "max_run_hours"), 1.5), (("pool", "max_run_hours"), 100_000)):
+            with self.subTest(path=path, bad=bad):
+                self.refused(changed(*path, value=bad), ".".join(path))
+        self.assertEqual((SHIPPED["export"]["max_total_mib"], SHIPPED["pool"]["max_run_hours"]), (1024, 6))
+
+    def test_sweep_max_trials_is_a_positive_whole_number(self):
+        load(changed("sweep", "max_trials", value=50))
+        for bad in (0, -1, "50", 1.5, None):
+            with self.subTest(bad=bad):
+                self.refused(changed("sweep", "max_trials", value=bad), "sweep.max_trials")
+
+    def test_walk_forward_and_regimes_basics(self):
+        self.refused(changed("walk_forward", "objective", value="luck"), "walk_forward.objective")
+        self.refused(changed("walk_forward", "train_days", value=0), "walk_forward.train_days")
+        self.refused(changed("regimes", "thin_days", value=0), "regimes.thin_days")
+        self.refused(changed("regimes", "vix_symbol", value=""), "regimes.vix_symbol")
+
+    def test_property_random_edge_lists(self):
+        rng = random.Random(20261112)
+        for _ in range(300):
+            ints = [rng.randint(-50, 50) for _ in range(rng.randint(1, 6))]
+            edges = [str(x) for x in ints]
+            doc = changed("regimes", "gap_edges_pct", value=edges)
+            if all(a < b for a, b in zip(ints, ints[1:])):
+                self.assertEqual(load(doc)["regimes"]["gap_edges_pct"], edges)
+            else:
+                self.refused(doc, "regimes.gap_edges_pct")
+
+    def test_property_random_ci_values(self):
+        rng = random.Random(7)
+        for _ in range(200):
+            x = rng.randint(-20, 120) / 100
+            doc = changed("bootstrap", "ci", value=f"{x:.2f}")
+            if 0 < x < 1:
+                load(doc)
+            else:
+                self.refused(doc, "bootstrap.ci")
+
+
+if __name__ == "__main__":
+    unittest.main()

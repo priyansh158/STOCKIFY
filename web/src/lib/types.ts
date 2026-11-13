@@ -101,6 +101,8 @@ export interface DataQualityResponse {
   date: string;
   day: Record<string, number>;
   instruments: InstrumentQuality[];
+  errors: string[];
+  error_stores: string[];
 }
 
 // ── Strategy tests (M3.14) ───────────────────────────────────────────────────
@@ -380,5 +382,480 @@ export interface TickEvent {
   ltp: number;
   change_pct?: number;
   ts: number;
+}
+
+// ── Research (M6.4 deflated Sharpe, M6.8 bootstrap; WF 6.1) ──────────────────
+
+export interface IntervalDTO {
+  point: number | null;
+  lo: number | null;
+  hi: number | null;
+}
+
+export interface DsrDTO {
+  sr: number | null;
+  t: number;
+  skew: number | null;
+  kurt: number | null;
+  n_trials: number;
+  var_sharpe: number | null;
+  sr0: number | null;
+  dsr: number | null;
+  psr: number | null;
+}
+
+export interface BootstrapDTO {
+  n_days: number;
+  mean_block: number | null;
+  resamples: number;
+  ci: number | null;
+  enough_days: boolean;
+  sharpe: IntervalDTO;
+  mean_daily_return: IntervalDTO;
+  max_drawdown: IntervalDTO;
+}
+
+export interface RegimeBucketDTO {
+  label: string;
+  days: number;
+  pnl_paise: number;
+  mean_pnl_paise: number | null;
+  up_days: number;
+  up_share: number | null;
+  thin: boolean;
+  plain?: string | null;
+}
+
+export interface RegimeReportDTO {
+  month: RegimeBucketDTO[];
+  weekday: RegimeBucketDTO[];
+  expiry: RegimeBucketDTO[];
+  vix: RegimeBucketDTO[];
+  gap: RegimeBucketDTO[];
+  vix_source: Record<string, string>;
+  notes: string[];
+}
+
+export interface RunResearchDTO {
+  run_id: string;
+  family_id: string | null;
+  role: string;
+  objective: string;
+  n_trials: number;
+  rank: number | null;
+  is_best: boolean;
+  picked_run_id: string | null;
+  picked_name: string | null;
+  dsr: DsrDTO | null;
+  bootstrap: BootstrapDTO | null;
+  regimes: RegimeReportDTO | null;
+  holdout_unlocks: number;
+  plain: Record<string, string>;
+}
+
+export interface SensitivityRowDTO {
+  key: string;
+  axis: string;
+  label: string;
+  run_id: string | null;
+  status: string;
+  net_pnl_paise: number | null;
+  sharpe: number | null;
+  delta_net_paise: number | null;
+  error: string | null;
+}
+
+export interface SensitivityDTO {
+  run_id: string;
+  job_id: string;
+  rows: SensitivityRowDTO[];
+  baseline_net_paise: number;
+  fragile: boolean;
+  verdict: string;
+  reasons: string[];
+  plain: string;
+}
+
+export interface TrialRowDTO {
+  run_id: string;
+  name: string | null;
+  role: string;
+  status: string;
+  objective_value: number | null;
+  sharpe_per_period: number | null;
+  net_pnl_paise: number | null;
+  days: number;
+  job_id: string | null;
+}
+
+export interface PboDTO {
+  pbo: number;
+  n_trials: number;
+  n_days: number;
+  slices: number;
+  combinations: number;
+  rows_dropped: number;
+  median_logit: number | null;
+  prob_loss: number;
+}
+
+export interface FamilySummaryDTO {
+  family_id: string;
+  description: string | null;
+  named: boolean;
+  objective: string;
+  n_trials: number;
+  n_other_runs: number;
+  n_sessions: number;
+  best_run_id: string | null;
+  best_dsr: number | null;
+  unlocks: number;
+  n_finished: number;
+  best_plain: string;
+}
+
+export interface FamilyDetailDTO {
+  family_id: string;
+  description: string | null;
+  objective: string;
+  named: boolean;
+  n_trials: number;
+  var_sharpe: number | null;
+  best_run_id: string | null;
+  best: DsrDTO | null;
+  trials: TrialRowDTO[];
+  others: TrialRowDTO[];
+  sessions: Record<string, unknown>[];
+  holdout_unlocks: Record<string, unknown>[];
+  plain: Record<string, string>;
+  pbo: PboDTO | null;
+  pbo_note: string | null;
+  pbo_dropped: string[];
+  pbo_flat: string[];
+}
+
+// ── Parameter sweeps (WF 6.3) ────────────────────────────────────────────────
+
+export interface ResearchJobDTO {
+  job_id: string;
+  kind: string;
+  name: string | null;
+  family_id: string | null;
+  status: string;
+  created_ns: number;
+  finished_ns: number | null;
+  error: string | null;
+  plain: string;
+}
+
+export interface ResearchCountsDTO {
+  families: number;
+  sweeps: number;
+  walkforwards: number;
+}
+
+export interface SweepAxisDTO {
+  path: string;
+  label: string;
+  labels: string[];
+  values: (string | number | boolean | null)[];
+}
+
+export interface SweepRowDTO {
+  index: number;
+  params: Record<string, string | number | boolean | null>;
+  run_id: string | null;
+  status: string;
+  objective_value: number | null;
+  sharpe: number | null;
+  net_pnl_paise: number | null;
+  trades: number | null;
+  max_drawdown: number | null;
+  error: string | null;
+}
+
+export interface SweepBestCellDTO {
+  xi: number;
+  yi: number;
+  run_id: string;
+  value: number;
+}
+
+/** Plain data for the heatmap; the page feeds HeatGrid through an adapter: xs, ys and cells (cells[yi][xi], null for a
+ * missing or failed trial) pass as they are, `format` (a kind) becomes a formatter, `best` {xi, yi} becomes {x, y}. */
+export interface SweepHeatmapDTO {
+  x: string;
+  y: string | null;
+  xs: string[];
+  ys: string[];
+  x_values: (string | number | boolean | null)[];
+  y_values: (string | number | boolean | null)[];
+  cells: (number | null)[][];
+  run_ids: (string | null)[][];
+  best: SweepBestCellDTO | null;
+  signed: boolean;
+  format: string;
+  hidden_axes: string[];
+}
+
+export interface SweepDTO {
+  job_id: string;
+  name: string;
+  family_id: string;
+  objective: string;
+  objective_label: string;
+  axes: SweepAxisDTO[];
+  rows: SweepRowDTO[];
+  best_run_id: string | null;
+  cells: SweepHeatmapDTO;
+  plain: string;
+}
+
+export interface CompareMetricDTO {
+  key: string;
+  label: string;
+  values: (number | null)[];
+  kind: string;
+  plain: string;
+}
+
+export interface CompareDiffDTO {
+  field: string;
+  values: (string | null)[];
+  differs: boolean;
+}
+
+export interface CompareSeriesDTO {
+  run_id: string;
+  dates: string[];
+  values: (number | null)[];
+}
+
+export interface ComparisonDTO {
+  run_ids: string[];
+  names: string[];
+  metrics: CompareMetricDTO[];
+  equity: CompareSeriesDTO[];
+  drawdown: CompareSeriesDTO[];
+  labels: Record<string, boolean[]>;
+  differing_labels: string[];
+  manifest_diff: CompareDiffDTO[];
+  notes: string[];
+}
+
+
+export interface CoverageCellDTO {
+  state: string;
+  value?: number | null;
+  detail?: string | null;
+}
+
+export interface CoverageDayDTO {
+  date: string;
+  trading: boolean;
+  cells: Record<string, CoverageCellDTO>;
+}
+
+export interface BarRangeDTO {
+  instrument_id: number;
+  symbol?: string | null;
+  interval: string;
+  from_ns: number;
+  to_ns: number;
+  from_ist: string;
+  to_ist: string;
+  days: number;
+  rows: number;
+}
+
+export interface StorageDTO {
+  landing_bytes: number;
+  archive_bytes: number;
+  refdata_bytes: number;
+  lab_bytes: number;
+  nse_bytes: number;
+  free_bytes: number;
+  total_bytes: number;
+  warnings: string[];
+}
+
+export interface CoverageMatrixDTO {
+  from_date: string;
+  to_date: string;
+  datasets: Record<string, string>[];
+  days: CoverageDayDTO[];
+  bars: BarRangeDTO[];
+  storage: StorageDTO;
+  recorder?: RecorderStatus | null;
+  errors: string[];
+  error_stores: string[];
+  earliest_date?: string | null;
+}
+
+export interface GapDTO {
+  start_ns: number;
+  end_ns?: number | null;
+  start_ist: string;
+  duration_s?: number | null;
+  reason?: string | null;
+  scope?: string | null;
+  frames?: number | null;
+}
+
+export interface GapPageDTO {
+  total: number;
+  offset: number;
+  limit: number;
+  gaps: GapDTO[];
+}
+
+// ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
+
+export interface WalkforwardSummaryDTO {
+  windows: number;
+  is_windows: number;
+  oos_days: number;
+  oos_days_needed: number;
+  is_sharpe?: number | null;
+  oos_sharpe?: number | null;
+  ratio?: number | null;
+  chosen_modal_share?: number | null;
+  n_trials: number;
+  var_sharpe?: number | null;
+  dsr?: DsrDTO | null;
+}
+
+export interface WalkforwardWindowDTO {
+  index: number;
+  train_from: string;
+  train_to: string;
+  test_from: string;
+  test_to: string;
+  chosen_params?: Record<string, unknown> | null;
+  chosen_run_id?: string | null;
+  test_run_id?: string | null;
+  test_status: string;
+  result: string;
+  no_sharpe: string;
+  error?: string | null;
+  train?: Record<string, unknown> | null;
+  test?: Record<string, unknown> | null;
+}
+
+export interface WalkforwardDTO {
+  job_id: string;
+  name: string;
+  family_id: string;
+  objective: string;
+  train: number;
+  test: number;
+  step: number;
+  summary: WalkforwardSummaryDTO;
+  windows: WalkforwardWindowDTO[];
+  stitched_dates: string[];
+  stitched_index: number[];
+  plain: Record<string, string>;
+}
+
+
+// ── Run chart (CH 6.11): times are UTC seconds, prices rupee decimal strings, paise fields integers ─────────
+
+export interface ChartInstrumentDTO {
+  id: number;
+  symbol: string;
+  kind: "equity" | "future" | "option" | "index" | null;
+}
+
+export interface ChartBarDTO {
+  t: number;
+  d: string;
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: number;
+}
+
+export interface ChartChunkDTO {
+  qty: number;
+  open_price_paise: number;
+  pnl_paise: number;
+}
+
+export interface ChartMarkerDTO {
+  id: string;
+  kind: "fill" | "settlement";
+  t: number;
+  bar_t: number;
+  bar_d: string;
+  side: "BUY" | "SELL";
+  qty: number;
+  price: string;
+  price_paise: number;
+  fsp_paise: number | null;
+  order_id: number | null;
+  fill_id: number | null;
+  note: string;
+  tag: string;
+  tag_is_code: boolean;
+  charges_paise: number | null;
+  trade_pnl_paise: number | null;
+  chunks: ChartChunkDTO[];
+}
+
+export interface ChartPointDTO {
+  t: number;
+  value: string;
+}
+
+export interface ChartPlotDTO {
+  name: string;
+  kind: "price" | "level";
+  instrument_id: number;
+  points: ChartPointDTO[];
+}
+
+export interface RunChartDTO {
+  instruments: ChartInstrumentDTO[];
+  instrument_id: number | null;
+  basis: string | null;
+  interval_s: number | null;
+  bars: ChartBarDTO[];
+  markers: ChartMarkerDTO[];
+  plots: ChartPlotDTO[];
+  truncated: boolean;
+  next_from_ns: number | null;
+  data_state: "ok" | "pruned" | "no_pack" | "pack unreadable";
+  omitted_markers: number;
+  notice: string | null;
+  pnl_complete: boolean;
+  skipped_settlements: number;
+  idle_settlements: number;
+  plain: string | null;
+}
+
+export interface WalkforwardChartWindowDTO {
+  index: number;
+  from_t: number;
+  to_t: number;
+  from_d: string;
+  to_d: string;
+  run_id: string | null;
+  status: "done" | "failed" | "skipped" | "pending" | "missing" | "no_trades" | "unknown";
+  result: string;
+  no_sharpe: string;
+  excluded: string | null;
+  session_open_s: number | null;
+}
+
+export interface WalkforwardChartDTO extends RunChartDTO {
+  windows: WalkforwardChartWindowDTO[];
+}
+
+export interface SessionChartDTO extends RunChartDTO {
+  trade_date: string;
+  days: string[];
+  paper: boolean;
+  live: boolean;
 }
 // </block>

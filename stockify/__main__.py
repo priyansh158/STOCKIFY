@@ -15,11 +15,6 @@ from stockify import log
 
 # command -> (milestone, help)
 _STUBS = {
-    "compare": ("M6", "compare runs"),
-    "export": ("M6", "export a run"),
-    "sweep": ("M6", "parameter sweep"),
-    "walkforward": ("M6", "walk-forward analysis"),
-    "sensitivity": ("M6", "cost and fill sensitivity"),
 }
 
 
@@ -387,12 +382,36 @@ def _cmd_pack_show(args) -> int:
     return 0
 
 
+def _with_unlock(config, reason: str | None):  # noqa: ANN001, ANN202
+    """`--unlock-holdout "<reason>"`: the config (a path or a dict) with `unlock_holdout` set to the reason. Without
+    the flag the config goes on as it is (a reason written in the file still counts)."""
+    import json
+    from pathlib import Path
+
+    if reason is None:
+        return config
+    if not isinstance(config, dict):
+        try:
+            config = json.loads(Path(config).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            from stockify import runconfig
+            raise runconfig.RunConfigError(f"run.json could not be read: {e}") from e
+    if not isinstance(config, dict):
+        from stockify import runconfig
+        raise runconfig.RunConfigError("run.json must be a JSON object")
+    return {**config, "unlock_holdout": reason}
+
+
+_UNLOCK_HELP = ("a real written reason (3+ characters) to run over the locked holdout (research.json holdout_from); "
+                "every unlock is logged and counted on the family's report")
+
+
 def _cmd_oracle_run(args) -> int:
     from stockify import bundle, runconfig
     from stockify.oracle import run
 
     try:
-        res = run(args.config, run_id=args.run_id)
+        res = run(_with_unlock(args.config, args.unlock_holdout), run_id=args.run_id)
     except (runconfig.RunConfigError, bundle.BundleError) as e:
         print(e, file=sys.stderr)
         return 1
@@ -410,6 +429,16 @@ def _summary_line(m: dict, labels) -> str:  # noqa: ANN001
             f"labels {', '.join(labels)}")
 
 
+def _objectives() -> tuple[str, ...]:
+    from stockify.research import registry
+    return tuple(registry.OBJECTIVES)
+
+
+def _run_roles() -> tuple[str, ...]:
+    from stockify.research import registry
+    return tuple(r for r in registry.ROLES if r != "rerun")      # only runs.rerun sets "rerun"
+
+
 def _cmd_run(args) -> int:
     """Exit 0 done, 1 run failed (or re-run not reproduced), 2 bad config / usage / a --run-id not queued."""
     import json
@@ -423,7 +452,10 @@ def _cmd_run(args) -> int:
             print(e, file=sys.stderr)
             return 2
         try:
-            new_id, same = runs.rerun(args.rerun)
+            new_id, same = runs.rerun(args.rerun, unlock_holdout=args.unlock_holdout)
+        except runconfig.RunConfigError as e:
+            print(e, file=sys.stderr)
+            return 2
         except runs.RunFailed as e:
             print(e, file=sys.stderr)
             return 1
@@ -434,9 +466,10 @@ def _cmd_run(args) -> int:
         if same:
             print(f"determinism.json reproduced byte for byte ({args.rerun} -> {new_id})", file=sys.stderr)
             return 0
-        if runs.step_column_only(args.rerun, new_id):     # a folder saved before D-64 (final I-3)
-            print(f"reproduced ({runs.STEP_COLUMN_NOTE}) ({args.rerun} -> {new_id}): every other deterministic "
-                  "file is byte for byte the same, and margin_daily.csv only gained its step column", file=sys.stderr)
+        changes = runs.column_changes(args.rerun, new_id)    # a folder saved before D-64 (final I-3) and/or CH 6.2
+        if changes:
+            print(f"reproduced ({'; '.join(changes)}) ({args.rerun} -> {new_id}): every other deterministic "
+                  "file is byte for byte the same, and only the columns and files named above were added", file=sys.stderr)
             return 0
         print(f"not reproduced ({args.rerun} -> {new_id})", file=sys.stderr)
         for name in runs.determinism_diff(args.rerun, new_id):
@@ -445,8 +478,14 @@ def _cmd_run(args) -> int:
     if args.config is None and args.run_id is None:
         print("stockify run: give --config or --rerun", file=sys.stderr)
         return 2
+    if args.unlock_holdout is not None and args.run_id is not None:
+        print("stockify run: --unlock-holdout goes with --config (a queued run keeps the reason it was queued with)",
+              file=sys.stderr)
+        return 2
     try:
-        run_id = runs.launch(args.config, run_id=args.run_id, impl=args.impl, report=not args.no_report)
+        config = _with_unlock(args.config, args.unlock_holdout)
+        run_id = runs.launch(config, run_id=args.run_id, impl=args.impl, report=not args.no_report,
+                             role=args.role, job_id=args.job_id)
     except (runconfig.RunConfigError, runs.RunNotQueued) as e:
         print(e, file=sys.stderr)
         return 2
@@ -538,6 +577,172 @@ def _print_console(text: str) -> None:
     print(text)
 
 
+def _cmd_research_families(args) -> int:
+    """M6.4: the trial families (a table), with `--name` to name one and `--backfill` to give old runs and sessions a family."""
+    from stockify import store
+    from stockify.research import registry, report
+    if args.dry_run and not args.backfill:
+        print("--dry-run only goes with --backfill", file=sys.stderr)
+        return 2
+    if args.name:
+        family_id, description = args.name
+        if store.get_family(family_id) is None:
+            print(f"no such family: {family_id!r} (`research families` lists them)", file=sys.stderr)
+            return 1
+        store.name_family(family_id, description)
+    if args.backfill:
+        n = registry.backfill(dry_run=args.dry_run)
+        ns = registry.backfill_sessions(dry_run=args.dry_run)
+        print(f"would give {n} run(s) and {ns} session(s) a family (dry run, nothing written)" if args.dry_run
+              else f"gave {n} run(s) and {ns} session(s) a family")
+    fams = report.list_families()
+    if not fams:
+        print("no families yet")
+        return 0
+    _print_console(report.families_table(fams))
+    return 0
+
+
+def _cmd_research_show(args) -> int:
+    """M6.4/M6.8: the lines the pages show for a run or a family, in plain words."""
+    from stockify import store
+    from stockify.research import report
+    if store.get_run(args.target) is not None:
+        _print_console(report.run_text(report.run_research(args.target)))
+        return 0
+    if store.get_family(args.target) is not None:
+        _print_console(report.family_text(report.family_report(args.target)))
+        return 0
+    print(f"{args.target!r} is neither a run id nor a family id", file=sys.stderr)
+    return 2
+
+
+def _cmd_research_report(args) -> int:
+    """M6.12 (WF 6.7): re-render research/<job_id>/report.md of a finished walk-forward job through wf_report.render (its
+    only writer) and print the path. Exit 0 written, 1 an internal failure (the job's result file is unreadable or the
+    write failed), 2 an unknown job, a job that is not `done` (the status is named) or a bad --sensitivity-run id."""
+    from stockify.research import wf_report
+    try:
+        dropping = args.sensitivity_run is None and wf_report.has_sensitivity_table(args.walkforward)
+        path = wf_report.render(args.walkforward, sensitivity_run=args.sensitivity_run)
+    except wf_report.WfReportError as e:
+        print(e, file=sys.stderr)
+        return 1 if e.kind == "missing" else 2
+    except Exception as e:  # noqa: BLE001
+        print(f"the report could not be written: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    if dropping:
+        print("note: the cost table of the earlier report.md is dropped, because no --sensitivity-run was given; "
+              "run it again with --sensitivity-run RUN_ID to keep the table", file=sys.stderr)
+    print(path)
+    return 0
+
+
+def _cmd_sensitivity(args) -> int:
+    """M6.7: re-run a finished run with costs, extra slippage ticks, latency and other fill models, one change at a
+    time. Exit 0 done (robust, fragile or already losing), 1 when a variant failed or the verdict is inconclusive, 2 for an unknown or unfinished run or a locked holdout."""
+    from stockify import runconfig
+    from stockify.research import sensitivity
+    try:
+        res = sensitivity.run_suite(args.run, workers=args.workers, unlock_reason=args.unlock_holdout)
+    except sensitivity.SensitivityRunError as e:                  # the job exists and is marked failed
+        print(f"the sensitivity job failed: {e}", file=sys.stderr)
+        return 1
+    except (sensitivity.SensitivityError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 — a run or the pool broke: the job is already marked failed
+        print(f"the sensitivity job failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    _print_console(sensitivity.format_table(res))
+    return 1 if res.verdict == "inconclusive" or any(r.status == "failed" for r in res.rows) else 0
+
+
+def _cmd_sweep(args) -> int:
+    """M6.10: run a sweep.yaml in parallel as its own family. Exit 0 all trials ran, 1 a trial failed or none could
+    be ranked, 2 for a bad spec, a refused confirmation or a locked holdout."""
+    from pathlib import Path
+    from stockify import runconfig
+    from stockify.research import sweep
+    if args.workers is not None and args.workers < 1:
+        print(f"--workers must be a whole number of 1 or more, not {args.workers}", file=sys.stderr)
+        return 2
+    try:
+        spec = sweep.load_spec(Path(args.config))
+        count = len(sweep.expand(spec))
+        print(f"sweep {spec.name}: {count} trials")
+        if count > sweep.CONFIRM_ABOVE and not args.yes:
+            if not sys.stdin.isatty():
+                print(f"{count} trials is more than {sweep.CONFIRM_ABOVE}: pass --yes to run without being asked "
+                      "(there is no terminal to ask on)", file=sys.stderr)
+                return 2
+            try:
+                answer = input(f"Run {count} trials? [y/N] ").strip().lower()
+            except EOFError:
+                print("no answer was given: pass --yes to run without being asked", file=sys.stderr)
+                return 2
+            if answer not in ("y", "yes"):
+                print("not run", file=sys.stderr)
+                return 2
+        res = sweep.run_sweep(spec, unlock_reason=args.unlock_holdout, workers=args.workers)
+    except (sweep.SweepSpecError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    _print_console(sweep.format_table(res))
+    return 1 if res.best_run_id is None or any(r["status"] == "failed" for r in res.rows) else 0
+
+def _cmd_walkforward(args) -> int:
+    """M6.5 (WF 6.6): walk a sweep forward, finish it and write its report. Exit 0 finished, 1 finished but a window
+    could not be tested (or a run, the pool or `finish` broke after the job started), 2 bad arguments, an unusable sweep file, a locked holdout or no
+    window that fits. Every argument is checked before the first run starts."""
+    from datetime import date
+    from pathlib import Path
+    from stockify import paths, research, runconfig
+    from stockify.research import pool, sweep, walkforward, wf_report
+    cfg = research.settings()["walk_forward"]
+    try:
+        train = walkforward.parse_span(args.train or f"{cfg['train_days']}d")
+        test = walkforward.parse_span(args.test or f"{cfg['test_days']}d")
+        step = walkforward.parse_span(args.step or f"{cfg['step_days']}d")
+        start = date.fromisoformat(args.date_from) if args.date_from else None
+        end = date.fromisoformat(args.date_to) if args.date_to else None
+        if args.workers is not None and args.workers < 1:
+            raise ValueError("--workers must be a whole number of 1 or more")
+        if step < test:
+            raise ValueError(f"--step ({step}d) is smaller than --test ({test}d): the out-of-sample pieces would "
+                             "overlap")
+        if args.sensitivity_run is not None:
+            paths.run_path(args.sensitivity_run)
+        spec = sweep.load_spec(Path(args.sweep))
+        res = walkforward.run_windows(spec, train=train, test=test, step=step, objective=args.objective or cfg["objective"],
+                                      start=start, end=end, unlock_reason=args.unlock_holdout, workers=args.workers,
+                                      pool_run=pool.run_all)      # looked up here, so a test can patch it
+    except walkforward.WalkforwardRunError as e:                  # the job exists and is marked failed
+        print(f"the walk-forward job failed: {e}", file=sys.stderr)
+        return 1
+    except (sweep.SweepSpecError, walkforward.WalkforwardError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 — a run or the pool broke: the job is already marked failed
+        print(f"the walk-forward job failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    try:
+        fin = walkforward.finish(res.job_id)
+        report = wf_report.render(res.job_id, sensitivity_run=args.sensitivity_run)
+        text = wf_report.summary_text(res.job_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"the walk-forward job {res.job_id} ran but could not be finished: {type(e).__name__}: {e}",
+              file=sys.stderr)
+        return 1
+    _print_console(text)
+    print(report.parent)
+    untested = [w["index"] + 1 for w in fin.windows if w["test"] is None]
+    if untested:
+        print(f"window {', '.join(map(str, untested))} could not be tested; the report says why", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _cmd_margin_check(args) -> int:
     """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
     from datetime import date
@@ -571,7 +776,11 @@ def _cmd_margin_scorecard(args) -> int:
     from stockify.fno import margin_check as mc
     card = mc.scorecard()
     if not card.rows and not (card.live_answers or card.live_errors):
-        print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
+        if card.notes:                       # answers are stored but none could be scored: say why
+            for note in card.notes:
+                print(f"Note: {note}", file=sys.stderr)
+        else:
+            print("no stored Kite margin answers to score (`margin calibrate` stores them)", file=sys.stderr)
         return 1
     _print_console(mc.scorecard_text(card))
     return 0
@@ -717,6 +926,11 @@ def _cmd_bench(args) -> int:
     return 0
 
 
+def _cmd_tools_measure(args) -> int:
+    from stockify.tools import measure
+    return measure.main(as_json=args.json)
+
+
 def _cmd_golden_run(args) -> int:
     from stockify import golden
 
@@ -752,6 +966,37 @@ def _cmd_compare(args) -> int:
         print(p)
     print("identical" if not problems else f"{len(problems)} differences", file=sys.stderr)
     return 0 if not problems else 1
+
+
+def _cmd_compare_runs(args) -> int:
+    from stockify.reporting import compare as rc
+    try:
+        c = rc.compare_runs(list(args.runs))
+    except KeyError as e:
+        print(f"stockify compare: no test run {str(e.args[0])[:80]!r}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"stockify compare: {e}", file=sys.stderr)
+        return 2
+    print(rc.format_table(c))
+    return 0
+
+
+def _cmd_export(args) -> int:
+    from pathlib import Path
+
+    from stockify.reporting import export
+    _load_env()      # the secret scan compares against KITE_API_KEY / KITE_API_SECRET, as the API process has them
+    try:
+        out = export.build(args.run_id, with_packs=args.with_packs, out=Path(args.out) if args.out else None)
+    except export.ExportError as e:
+        print(f"stockify export: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"stockify export: cannot write the zip: {e.strerror or type(e).__name__}", file=sys.stderr)
+        return 1
+    print(out)
+    return 0
 
 
 def _cmd_capture_charges(args) -> int:
@@ -931,6 +1176,7 @@ def main(argv: list[str] | None = None) -> int:
     orun = osub.add_parser("run", help="run a run.json; prints the run folder")
     orun.add_argument("--config", required=True, help="path to run.json")
     orun.add_argument("--run-id", help="run folder name (default: <name>-<bundle hash>)")
+    orun.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
     orun.set_defaults(func=_cmd_oracle_run)
     rn = sub.add_parser("run", help="run a backtest on the engine and record it in lab.sqlite (M3.11)")
     rmode = rn.add_mutually_exclusive_group()
@@ -941,6 +1187,11 @@ def main(argv: list[str] | None = None) -> int:
     rn.add_argument("--run-id", help="run this queued run (its stored config); --config is then optional")
     rn.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     rn.add_argument("--no-report", action="store_true", help="skip report.md and the charts")
+    rn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    rn.add_argument("--role", default="trial", choices=_run_roles(),
+                    help="how the run counts (default trial: counts toward N in the deflated Sharpe); the research "
+                         "tools set the others for their own runs")
+    rn.add_argument("--job-id", help="the research job this run belongs to (set by the research tools)")
     rn.set_defaults(func=_cmd_run)
     g = sub.add_parser("golden", help="golden scenarios (A3)")
     gsub = g.add_subparsers(dest="golden_command", required=True)
@@ -948,6 +1199,14 @@ def main(argv: list[str] | None = None) -> int:
     grun.add_argument("--impl", default="oracle", choices=["oracle", "engine"])
     grun.add_argument("--only", help="comma list of ids, e.g. G01,G09")
     grun.set_defaults(func=_cmd_golden_run)
+    cr = sub.add_parser("compare", help="put 2 to 6 finished runs side by side (metrics, equity, config differences)")
+    cr.add_argument("runs", nargs="+", metavar="RUN_ID", help="2 to 6 run ids")
+    cr.set_defaults(func=_cmd_compare_runs)
+    ex = sub.add_parser("export", help="write a finished run as a reproducible zip (never holds a secret)")
+    ex.add_argument("run_id", metavar="RUN_ID")
+    ex.add_argument("--with-packs", action="store_true", help="also include the event packs the run used")
+    ex.add_argument("--out", help="write the zip here instead of the exports folder")
+    ex.set_defaults(func=_cmd_export)
     ca = sub.add_parser("compare-artifacts", help="diff two run folders' deterministic artifacts")
     ca.add_argument("run_a")
     ca.add_argument("run_b")
@@ -995,6 +1254,66 @@ def main(argv: list[str] | None = None) -> int:
     lr.add_argument("--to", dest="end", help="last IST trade date, YYYY-MM-DD (default: all)")
     lr.set_defaults(func=_cmd_margin_live_report)
 
+    rs = sub.add_parser("research", help="honest-backtest reports: trial families, deflated Sharpe, bootstrap (M6)")
+    rssub = rs.add_subparsers(dest="research_command", required=True)
+    rf_ = rssub.add_parser("families", help="list the trial families (exit 0; 1 unknown family for --name; 2 bad arguments)")
+    rf_.add_argument("--name", nargs=2, metavar=("FAMILY_ID", "DESCRIPTION"), help="name a family")
+    rf_.add_argument("--backfill", action="store_true",
+                     help="give every run and paper session without a family its default one (writes to the lab database)")
+    rf_.add_argument("--dry-run", action="store_true", help="with --backfill: count what would change, write nothing")
+    rf_.set_defaults(func=_cmd_research_families)
+    rw = rssub.add_parser("show", help="print the research lines of a run or a family, in plain words")
+    rw.add_argument("target", help="a run id or a family id")
+    rw.set_defaults(func=_cmd_research_show)
+    rr = rssub.add_parser("report", help="write the report.md of a finished walk-forward job again and print its path",
+                          description="Re-render research/<job_id>/report.md of a walk-forward job that has finished "
+                                      "(status done). The sensitivity run is not stored on the walk-forward job, so "
+                                      "give it with --sensitivity-run to have the cost table in the report; without "
+                                      "it the report says how to run the suite. Exit 0 written, 1 the job's result "
+                                      "file is missing or the write failed, 2 unknown job, a job that is not done, "
+                                      "or a bad run id.")
+    rr.add_argument("--walkforward", required=True, metavar="JOB_ID", help="a finished walk-forward job's id")
+    rr.add_argument("--sensitivity-run", metavar="RUN_ID",
+                    help="the run whose sensitivity.json goes into the cost table (not stored on the walk-forward "
+                         "job, so name it here)")
+    rr.set_defaults(func=_cmd_research_report)
+
+    sn = sub.add_parser("sensitivity", help="re-run a finished run with costs x0/1.5/2, extra slippage ticks, more "
+                                            "latency and other fill models, and flag it fragile (M6.7)")
+    sn.add_argument("--run", required=True, help="the finished run's id")
+    sn.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
+    sn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    sn.set_defaults(func=_cmd_sensitivity)
+
+    sw = sub.add_parser("sweep", help="run a sweep.yaml (grid or random search) in parallel as its own family and "
+                                      "print the results, best first (M6.10)")
+    sw.add_argument("--config", required=True, help="the sweep.yaml file")
+    sw.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
+    sw.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    sw.add_argument("--yes", action="store_true", help="do not ask before running more than 50 trials")
+    sw.set_defaults(func=_cmd_sweep)
+
+    wk = sub.add_parser("walkforward", help="walk a sweep forward: train, pick the best, test on the days after; "
+                                            "writes report.md (M6.5)",
+                        description="Walk-forward analysis. For each window the sweep's grid runs on the training "
+                                    "days, the best by the objective is run on the test days after them, and the "
+                                    "test pieces are stitched into one out-of-sample record. All lengths are "
+                                    "calendar days (120d). Defaults come from research.json walk_forward. Exit 0 "
+                                    "finished, 1 finished but a window could not be tested or a run broke, 2 bad "
+                                    "arguments or a locked holdout.")
+    wk.add_argument("--sweep", required=True, metavar="FILE", help="the sweep.yaml (its grid is run in every window)")
+    wk.add_argument("--train", metavar="Nd", help="training days, e.g. 120d")
+    wk.add_argument("--test", metavar="Nd", help="test days, e.g. 30d")
+    wk.add_argument("--step", metavar="Nd", help="days between window starts, e.g. 30d (not below --test)")
+    wk.add_argument("--objective", choices=_objectives(), help="how the best training run is picked")
+    wk.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD", help="first day (default: the base config's)")
+    wk.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD", help="last day (default: the base config's)")
+    wk.add_argument("--workers", type=int, default=None, help="runs at once (default: the sweep's, else the pool's)")
+    wk.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    wk.add_argument("--sensitivity-run", metavar="RUN_ID",
+                    help="a finished run whose sensitivity.json goes into the report's cost table")
+    wk.set_defaults(func=_cmd_walkforward)
+
     se = sub.add_parser("session", help="paper session maintenance")
     sesub = se.add_subparsers(dest="session_command", required=True)
     rf = sesub.add_parser("refinalise", help="finalise a failed or unfinished session-day again from its journal "
@@ -1036,6 +1355,11 @@ def main(argv: list[str] | None = None) -> int:
     cs.add_argument("--config", required=True, help="a stockify.compare/1 JSON file")
     cs.add_argument("--impl", default="engine", choices=["engine", "oracle"])
     cs.set_defaults(func=_cmd_compare_strategies)
+    ms = tsub.add_parser("measure", help="the numbers for the write-up, each with its sample and source; \"not measured "
+                                         "yet\" where there is no sample (reads only; exit 0, 1 if the text fails the "
+                                         "privacy scan)")
+    ms.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    ms.set_defaults(func=_cmd_tools_measure)
 
     pk = sub.add_parser("pack", help="event packs for the engine (M1.8)")
     pksub = pk.add_subparsers(dest="pack_command", required=True)

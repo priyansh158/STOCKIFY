@@ -20,6 +20,7 @@ from datetime import date as _date_cls
 
 from stockify import numerics
 from stockify.oracle.ledger import Ledger, Position
+from stockify.oracle.notes import clean_note
 from stockify.oracle.orders import FINAL, LIVE, PRODUCTS, REASONS, SIDES, TYPES, VALIDITIES, Order
 
 SCHEMA = "stockify.sod_state/1"
@@ -40,7 +41,7 @@ POSITION_FIELDS = ("instrument_id", "product", "style", "q", "d", "c", "realised
 # </block>
 # <block name="sod-state-order-fields" same-as-pattern='"(?P<value>[a-z_]+)"'>
 ORDER_FIELDS = ("order_id", "parent_id", "instrument_id", "side", "qty", "product", "type", "price", "trigger",
-                "validity", "protection", "tag", "t_submit", "t_activate", "status", "filled_qty", "fill_value",
+                "validity", "protection", "tag", "note", "t_submit", "t_activate", "status", "filled_qty", "fill_value",
                 "reason", "limit", "from_market", "triggered", "protection_bp", "reserved", "first_eligible_done",
                 "trade_date", "charged", "eod_after")
 # </block>
@@ -395,6 +396,8 @@ def _snapshot(v):  # noqa: ANN001, ANN202
 
 
 def _read_order(o, group: str, bundle_ids, next_order: int, seen: set) -> Order:  # noqa: ANN001
+    if isinstance(o, dict) and "note" not in o:   # CH 6.3: a state written before the note existed
+        o = {**o, "note": ""}
     _need(o, ORDER_FIELDS, group)
     oid = _atleast1(o["order_id"], f"{group}.order_id")
     if oid in seen:
@@ -433,6 +436,7 @@ def _read_order(o, group: str, bundle_ids, next_order: int, seen: set) -> Order:
     if not (type(prot) is str and prot == "AUTO"):
         _i32(prot, w + "protection")
     _str(o["tag"], w + "tag")
+    _str(o["note"], w + "note")
     _int(o["t_submit"], w + "t_submit")
     _int(o["t_activate"], w + "t_activate")
     filled = _nonneg(o["filled_qty"], w + "filled_qty")
@@ -448,7 +452,7 @@ def _read_order(o, group: str, bundle_ids, next_order: int, seen: set) -> Order:
     _opt(_date, o["trade_date"], w + "trade_date")
     _bool(o["charged"], w + "charged")
     _opt(_date, o["eod_after"], w + "eod_after")
-    return Order(**{f: o[f] for f in ORDER_FIELDS})
+    return Order(**{f: (clean_note(o[f]) if f == "note" else o[f]) for f in ORDER_FIELDS})   # CH 6.22: cleaned on load
 
 
 def _stream(v, name: str) -> list:  # noqa: ANN001

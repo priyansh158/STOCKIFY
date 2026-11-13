@@ -186,6 +186,8 @@ class ImportRunTests(SandboxedDBTest):
 
         orders = store.run_rows("t-run", "orders")
         csv_orders = runs.read_csv(folder / "orders.csv")
+        for r in csv_orders:
+            r["note"] = r.get("note") or ""       # CH 6.2: an imported order note is always text
         self.assertGreater(len(orders), 2)
         self.assertEqual(orders, csv_orders)
         o = orders[0]

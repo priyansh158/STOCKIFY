@@ -185,6 +185,8 @@ It keeps DAY validity, so an unfilled remainder rests as a limit. Every fill of 
 
 **4.4 Slippage** (bar and LTP models only): `none`, `fixed_ticks(k)`, `random_ticks(k)` = `below(k+1)` ticks from stream 1, or `bps(x)` (ceil to tick). Always adverse; never beyond the protection limit.
 
+**Extra ticks (FW 6.2, D-91):** `slippage.extra_ticks` (an integer 0 to 1000, any kind, default 0) adds `extra_ticks · tick` to the move: `move = move_kind + extra_ticks · tick`, where `move_kind` is computed as above (a `random_ticks` draw is made exactly as without the key, so stream 1 does not shift), and then the adverse sign (buy up, sell down) and the cap apply. A fill that takes no slippage (a resting limit order's fill) is unchanged. Example: buy at 10000, tick 5, `bps` 10 gives ceil_to(10, 5) = 10, plus 2 extra ticks = +20, so 10020; `fixed_ticks` k 1 plus 2 extra ticks gives 10015.
+
 **4.5 Randomness: PCG32**, exactly as the reference `pcg_basic.c`:
 - Seeding `srandom(initstate, initseq)`: `state = 0; inc = (initseq << 1) | 1; next(); state += initstate; next()`.
 - `next_u32()`: `old = state; state = old·6364136223846793005 + inc (mod 2⁶⁴); x = (((old >> 18) ^ old) >> 27) mod 2³²; r = old >> 59; return (x >> r) | (x << ((−r) & 31)) mod 2³²`.
@@ -280,7 +282,7 @@ Undefined metrics are `null`, never NaN.
 
 ## §9 Outputs and determinism
 
-**9.1 Deterministic artifacts** (A1 §6.3): `orders.csv`, `order_events.csv`, `fills.csv`, `charges.csv`, `positions_eod.csv`, `equity.csv`, `margin_daily.csv`, `metrics.json`, `events_log.txt`. `determinism.json` holds the SHA-256 of each. `manifest.json` (wall-clock duration, host) is outside the hashed set.
+**9.1 Deterministic artifacts** (A1 §6.3): `orders.csv`, `order_events.csv`, `fills.csv`, `charges.csv`, `positions_eod.csv`, `equity.csv`, `margin_daily.csv`, `plots.csv`, `metrics.json`, `events_log.txt`. `determinism.json` holds the SHA-256 of each. `manifest.json` (wall-clock duration, host) is outside the hashed set.
 
 **9.2 Formatting.** CSV: fixed column order, `\n` line ends, UTF-8, enums spelled as in this file (`BUY`, `CNC`, `SL-M`, `COMPLETE`, `R_QTY_LOT`, `AUTO_SQOFF`, …). CSVs contain only integers, enums and plain strings, never floats. Floats appear only in `metrics.json`, written by our own JSON writer (sorted keys, no spaces) using one float format in both implementations: the shortest round-trip digits laid out like Python's `repr` (fixed notation for 1e-4 ≤ |x| < 1e16, otherwise `d.ddde±XX`; a trailing `.0` on integral values). The C++ formatter is tested against Python's `repr` on 10⁶ random doubles (A3 U-11).
 

@@ -15,7 +15,7 @@ class StoreTests(SandboxedDBTest):
     def test_all_documented_tables_exist(self):
         expected = {
             "runs", "run_orders", "run_fills", "run_equity", "run_charges",
-            "trial_families", "holdout_unlocks",
+            "trial_families", "holdout_unlocks", "research_jobs",
             "sessions", "session_days", "session_timeline", "session_orders",
             "session_order_events", "session_fills", "session_charges",
             "session_positions_eod", "session_equity", "margin_live", "parity_results",

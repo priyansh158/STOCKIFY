@@ -29,6 +29,7 @@ class Order:
     validity: str = "DAY"
     protection: object = "AUTO"    # "AUTO" or int bp
     tag: str = ""
+    note: str = ""                 # the strategy's own words for why (CH 6.2); cleaned once, in Engine.place
     t_submit: int = 0
     t_activate: int = 0
     status: str = "PENDING"

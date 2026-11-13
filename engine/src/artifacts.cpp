@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iterator>
 
+#include "stocksim/errors.hpp"
 #include "stocksim/format.hpp"
 #include "stocksim/json_out.hpp"
 #include "stocksim/metrics.hpp"
@@ -18,6 +19,7 @@ constexpr const char* kPositions =
     "trade_date,instrument_id,product,qty,avg_price_paise,mark_paise,mark_source,unrealised_paise,realised_paise,"
     "underlying_mark_paise";
 // </block>
+constexpr const char* kPlots = "t_ns,instrument_id,name,kind,value";
 constexpr const char* kEquity = "trade_date,nav_paise,cash_paise,margin_blocked_paise,gross_pnl_paise,charges_paise";
 constexpr const char* kMargin =
     // <block name="margin-daily-columns" same-as="stockify/oracle/artifacts.py:margin-daily-columns" same-as-mode="sequence" same-as-pattern='(?P<value>[a-z][a-z_]*)'>
@@ -27,12 +29,19 @@ constexpr const char* kMargin =
 // The ✔ rows of A1 §6.3, in order (checked by blockwatch).
 // <block name="deterministic-files" same-as="docs/plan/A1_schemas.md:deterministic-files" same-as-mode="sequence" same-as-pattern='"(?P<value>[a-z_]+\.[a-z]+)"'>
 constexpr const char* kDeterministic[] = {"orders.csv", "order_events.csv", "fills.csv", "charges.csv", "positions_eod.csv", "equity.csv",
-                                          "margin_daily.csv", "metrics.json", "events_log.txt"};
+                                          "margin_daily.csv", "plots.csv", "metrics.json", "events_log.txt"};
 // </block>
 
 std::string read_all(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (!in) {
+        throw RunError("cannot read " + p.string() + " to hash it");  // never the SHA-256 of nothing
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (in.bad()) {
+        throw RunError("read of " + p.string() + " failed");
+    }
+    return text;
 }
 
 }  // namespace
@@ -94,6 +103,15 @@ std::map<std::string, std::string> write_artifacts(const Engine& e, const std::f
                         std::string_view(r.step), r.scan, r.somc, r.elm, r.addons, r.total});
     }
     margin.write(folder / "margin_daily.csv");
+
+    // CH 6.4: the plot buffer's map is sorted by (t_ns, instrument, name): the file's order. Names are CSV-quoted.
+    CsvWriter plots(kPlots);
+    for (const auto& [key, value] : e.plot_points()) {
+        const auto& [t, instrument, name] = key;
+        plots.add_row({t, instrument, std::string_view(name), std::string_view(e.plot_kinds().at({instrument, name})),
+                       value});
+    }
+    plots.write(folder / "plots.csv");
 
     write_file_bytes(folder / "metrics.json", dumps_canonical(compute_metrics(e)) + "\n");
 

@@ -30,8 +30,7 @@ class LandingDB:
         self.day = day
         self.path = path or paths.ticks_landing_file(day)
         if readonly:
-            mode = "mode=ro&immutable=1" if immutable else "mode=ro"
-            self.conn = sqlite3.connect(f"file:{self.path.as_posix()}?{mode}", uri=True,
+            self.conn = sqlite3.connect(paths.readonly_uri(self.path, immutable=immutable), uri=True,
                                         check_same_thread=False, isolation_level=None)
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)

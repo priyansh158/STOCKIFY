@@ -50,10 +50,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("config OK", out)
 
-    def test_unimplemented_command_names_its_milestone(self):
-        code, _, err = self.run_cli("compare")             # `margin` became real in M4.9, `parity` in M5.10
-        self.assertEqual(code, 2)
-        self.assertIn("M6", err)
+    def test_no_command_is_a_stub_any_more(self):
+        # M6 made `export`, `sweep` and `walkforward` real, the last two stubs: a command that is still planned
+        # goes back into cli._STUBS and gets its own "not implemented" test here.
+        self.assertEqual(cli._STUBS, {})
+        for name in ("sweep", "walkforward"):
+            with self.subTest(command=name):
+                out = io.StringIO()
+                with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+                    cli.main([name, "--help"])
+                self.assertEqual(ctx.exception.code, 0)
+                self.assertIn(f"stockify {name}", out.getvalue())
+                self.assertNotIn("not implemented", out.getvalue())
 
     def test_daemon_once_returns(self):
         code, _, _ = self.run_cli("daemon", "--once")

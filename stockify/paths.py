@@ -13,6 +13,17 @@ from pathlib import Path
 import stockify_paths
 
 
+def readonly_uri(path: Path, *, immutable: bool = False) -> str:
+    """The SQLite URI that opens `path` read-only (`sqlite3.connect(uri, uri=True)`).
+
+    The one place a `mode=ro` URI is built. `Path.as_uri()` percent-escapes `#`, `%` and `?`, which a hand-built
+    `file:{path}` leaves as URI syntax (a `#` cuts the path, a `%41` reads as `A`), so a state folder named with one
+    would open another file or none. `mode=ro` never changes the data file, but may leave `-shm`/`-wal` side files
+    beside a WAL store. `immutable` adds `&immutable=1` and is only for a file no process writes.
+    """
+    return f"{Path(path).resolve().as_uri()}?mode=ro" + ("&immutable=1" if immutable else "")
+
+
 def _dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -121,6 +132,32 @@ def run_dir(run_id: str) -> Path:
     return _dir(run_path(run_id))
 
 
+def research_dir() -> Path:
+    return _dir(lab_dir() / "research")
+
+
+def research_path(job_id: str) -> Path:
+    """The folder of a research job (sweep, walk-forward, sensitivity ...), without creating it: one safe segment of
+    at most 64 characters, a direct child of research_dir(), else ValueError (like run_path)."""
+    if not safe_segment(job_id, 64):
+        raise ValueError(f"not a valid research job id: {job_id!r}")
+    base = research_dir()
+    folder = base / job_id
+    if folder.resolve().parent != base.resolve():
+        raise ValueError(f"not a valid research job id: {job_id!r}")
+    return folder
+
+
+def exports_dir() -> Path:
+    return _dir(lab_dir() / "exports")
+
+
+def export_path(run_id: str, with_packs: bool) -> Path:
+    """The zip of a run export, without creating it: `<exports>/<run_id>.zip`, or `<run_id>-with-packs.zip`."""
+    run_path(run_id)                                    # the id is checked exactly as a run folder's is
+    return exports_dir() / (f"{run_id}-with-packs.zip" if with_packs else f"{run_id}.zip")
+
+
 def journals_dir(session_id: str | None = None) -> Path:
     base = lab_dir() / "journals"
     if session_id is None:
@@ -138,6 +175,24 @@ def journal_file(session_id: str, day: date) -> Path:
 def day_bundle_file(session_id: str, day: date) -> Path:
     """The bundle that day's engine was started with, beside its journal."""
     return journals_dir(session_id) / f"{day:%Y%m%d}.bundle.json"
+
+
+def _journals_ro(session_id: str) -> Path:
+    """A session's journal folder, without creating it or anything above it (a reader's path: a missing folder is
+    "nothing recorded", not a reason to make one). The id must be one safe segment, else ValueError."""
+    if not safe_segment(session_id, 128):
+        raise ValueError(f"not a valid session id: {session_id!r}")
+    return stockify_paths.state_dir() / "lab" / "journals" / session_id
+
+
+def journal_path_ro(session_id: str, day: date) -> Path:
+    """`journal_file` for a reader: the same path, and nothing is created."""
+    return _journals_ro(session_id) / f"{day:%Y%m%d}.evt"
+
+
+def day_bundle_path_ro(session_id: str, day: date) -> Path:
+    """`day_bundle_file` for a reader: the same path, and nothing is created."""
+    return _journals_ro(session_id) / f"{day:%Y%m%d}.bundle.json"
 
 
 def journal_day_dir(session_id: str, day: date) -> Path:

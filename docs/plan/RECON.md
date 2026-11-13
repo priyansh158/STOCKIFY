@@ -1169,3 +1169,221 @@ live day: Wed 2026-11-11 IST. Record each day here:
 |---|---|---|---|
 | (none recorded yet) | | | |
 
+
+## 2026-11-12 — M6.0 recon (RCB 6.1)
+
+**Base.** BASE = `7368e7f1779d088cc12060c8d6639abcb9c43d5d` (`XI 6.1: the M6 plan revised after its pre-flight: 38 tasks, each one reviewable`), the plan-only commit on top of `stockify/m5-paper` 47e5683. Branch `stockify/m6-research`, worktree `.worktrees/m6`. `git status --short` at the start: clean (no uncommitted file). Next free decision id: D-85 (D-84 is the last in `00_overview.md` §5).
+
+**Toolchain (venv, Python 3.12.10).** numpy 2.5.4, pandas 2.3.3, PyYAML 6.0.3, matplotlib 3.11.2 import. `scipy`, `statsmodels` and `hypothesis` raise `ModuleNotFoundError` (expected: M6 statistics are stdlib + numpy). `requirements.txt` has `PyYAML>=6.0` (line 29), numpy (25), pandas (26), matplotlib (28).
+
+**Baseline suite:** Baseline suite at 7368e7f (engine_build_id 92b9ac8ff8fd): 2304 tests, 2300 passed, 4 tracked defects (expected failures), exit 0, 1774 s (slower than the usual 4–10 min because other work ran alongside).
+
+**Web baseline** (run in the worktree after the suite ended). `npm run lint`: exit 0, no findings. `npm run build`: exit 1, `TurbopackInternalError: Symlink [project]/node_modules is invalid, it points out of the filesystem root` (the worktree's `web/node_modules` is a link to the main checkout's, which Turbopack refuses; an environment limit of the worktree, not a code failure). Recorded, not fixed; web tasks that need a build must run it from the main checkout's `web/` or with a real install, and Task 1 does not decide which.
+
+**Bootstrap timing (Task 6).** `bootstrap_ci` with `resamples = 2000`, `n = 1500`, `mean_block = 10` takes about 2.3 s on this machine (pure Python, measured around the call, not stored in any result), so the run report caches its intervals (Task 8).
+
+### The mismatch table, verified at BASE
+
+Every row was checked in the code at BASE; rows 4, 10, 12 (partly), 13 and 15 are decisions or design choices, not claims about the code (nothing to falsify beyond the facts cited). No row is false.
+
+| # | Claim in the plan | Evidence at BASE | Holds |
+|---|---|---|---|
+| 1 | `_STUBS` lists the five M6 stubs; `stockify/compare.py` and `_cmd_compare` diff run folders as `compare-artifacts` | `stockify/__main__.py:17-23` (`compare`, `export`, `sweep`, `walkforward`, `sensitivity`, all "M6"); `__main__.py:741` `_cmd_compare`, `:951-955` `compare-artifacts` parser bound to it; `stockify/compare.py:3,40` | yes |
+| 2 | `GET /api/tests/compare` is a 501 stub before `/api/tests/{run_id}` | `server/routers/tests.py:206-209` (501 "comparing tests arrives in M6"), `{run_id}` route at `:214` | yes |
+| 3 | `trial_families`, `runs.family_id`, `holdout_unlocks` exist (lab migration 0001); `runconfig` accepts `family_id` and `unlock_holdout`; nothing fills the tables | `stockify/data/migrations/lab/0001_init.sql:2,15,16`; `stockify/runconfig.py:33,41,263`; a search of `stockify` and `server` finds no writer of `trial_families` or `holdout_unlocks` (only `store.py:180,235-244` and `runs.py:88,143,150,233,274` handle `family_id`); lab migrations present are 0001 to 0004, so 0005 is next | yes |
+| 4 | every run carries a family id; only `trial` runs count | decision (`runs.role` is new). Today `runs` has no `role` column (`0001_init.sql:2`) | n/a |
+| 5 | run-page Sharpe is on excess returns and null when sd = 0 | `stockify/oracle/metrics.py:32` (`x = rd - rate/252`), `:34` (`sharpe = None`), `:44-47` (all-equal gives `sd = 0.0`, Sharpe only if `sd != 0`) | yes |
+| 6 | no run-config key scales costs | `stockify/runconfig.py:36` (costs keys: broker, allow_unverified, auto_square_off_fee, dp_charges); `stockify/bundle.py:667` `resolve_bundle` exists as the single application point; `stockify/config/charges.json` has `flat_paise` (e.g. `:24`) and `pct` decimal strings (e.g. `:25`) | yes |
+| 7 | four slippage kinds, no "extra ticks"; engine change needed | `stockify/runconfig.py:22` (`none`, `fixed_ticks`, `random_ticks`, `bps`), `:55-56` key table, `:43-44` default; `engine/src/matcher.cpp:34-53` `slipped` (move per kind, then adverse sign and cap); mirrored in `stockify/oracle/matcher.py:24-36` | yes |
+| 8 | applicability not defined; `runconfig`/`bundle` enforce what each kind needs | `runconfig.py:231-248` (kind and key validation), `bundle.py:667`; no "applicable" notion anywhere | yes |
+| 9 | run dates come from pack specs, from/to inclusive; POST `/api/tests` and `run` turn `RunConfigError` into 422 / exit 2; no holdout classes yet | `stockify/data/packs.py:13` ("IST trade dates, inclusive"), `:697-699` (`from > to` refused), `:738` (loop from `spec["from"]` to `spec["to"]`), `:948` `manifest(sha)`; `server/routers/tests.py:188-191` (`RunConfigError` to 422); `stockify/__main__.py:450-452` (to exit 2); no `HoldoutLocked` exists | yes |
+| 10 | `--train 120d` undefined | decision; no `walkforward` code exists (stub, `__main__.py:21`) | n/a |
+| 11 | the shipped example config already names a family | `examples/runs/orb_reliance_minute.json:4` (`opening_range_breakout/RELIANCE/minute`) and the other `examples/runs/*.json` | yes |
+| 12 | families pick their best by an objective | `0001_init.sql:15` `trial_families.objective` column exists; nothing reads or writes it (only that line mentions `objective` in `stockify`) | yes |
+| 13 | VIX bucket source | decision; the recorded `INDIA VIX` read cost is measured in Task 10 | n/a |
+| 14 | `data_quality` has per-instrument `coverage_pct`, no per-mode figure; modes are in `subscription_log` | `stockify/data/migrations/refdata/0001_init.sql:97-100` (`trade_date, instrument_id, metric`); `stockify/data/quality.py:10,170` (`coverage_pct`, per instrument); `stockify/data/migrations/landing/0001_init.sql:18` and `stockify/daemon/landing.py:113` (`subscription_log` with `mode`); the real lab metric list has no per-mode metric (see counts below) | yes |
+| 15 | D-26 drops cross-platform checks | `docs/plan/00_overview.md:121,130` (D-26) | yes |
+| 16 | neither `sweep` nor `examples/sweeps/` exists | no `examples/sweeps/` (glob empty); `sweep` is a stub at `__main__.py:20`; `stockify/research/` and `stockify/reporting/` do not exist either | yes |
+| 17 | M5 plan's mobile rules superseded by D-83 | `docs/plan/00_overview.md:185` (D-83); `web/design.md:10` ("Desktop only") | yes |
+
+### Provisional decisions (controller ruling; the owner reviews; the task that implements each writes its D-row)
+
+Rows 1 to 17 of the plan's "Mismatches between the M6 spec and the code" table are adopted as the provisional decisions, with these resolutions: new code in `stockify/reporting/` and `stockify/research/`, the five stubs become real, `compare-artifacts` untouched (1); `GET /api/tests/compare` body replaced in place (2); migration 0005 adds columns, `research_jobs` and triggers only (3); `runs.role` in `trial|sensitivity|oos|rerun`, only `done` trials count in N and V (4); statistics use the run page's excess returns, a flat series has no Sharpe (5); `costs.scale` applied once in `resolve_bundle` (6); `fill_model.slippage.extra_ticks` with an engine change and a parity test (7); applicability = `runconfig.validate` plus a dry `resolve_bundle` accept (8); holdout overlap = last day at or after `holdout_from`, one unlock row per job, `HoldoutLocked` subclasses `RunConfigError`, sessions exempt (9); windows in calendar days, half-open, `step >= test` (10); each sweep or walk-forward job is its own family (11); rank by the family's objective (12); VIX from the previous close, recorded then bhavcopy (13); two day-level coverage metrics in `quality.py` (14); the write-up says cross-platform determinism was not measured (15); the sweep example and command are created by Tasks 17 and 18 (16); M6 pages are desktop, about 1024 px and up (17).
+
+### Provisional roster
+
+RCB recon · AM registry and config · IL statistics · IR bootstrap and regimes · PM holdout and pool · WF sweeps and walk-forward · FW costs, slippage and sensitivity · LF PBO · DMF compare and export · LCM coverage · RCM web pages · OM write-up · XI bookkeeping.
+
+### Gates and owner steps (from the plan)
+
+| Item | Offline (code, tests) | Owner or live gate |
+|---|---|---|
+| M6.1 compare | Tasks 25, 31 | none |
+| M6.2 export | Task 26 | owner opens one export (optional) |
+| M6.3 `/data` | Tasks 27, 28, 32 | OWNER: re-run `data report --date D` for each recorded day so the new coverage metrics exist (derived rows only); LIVE: "full coverage history" needs the recorded days to exist |
+| M6.4 registry, DSR | Tasks 3, 4, 5, 7, 8, 9, 30, 33, 34 | OWNER: run `research families --backfill` once on the real lab (updates only NULL `family_id` rows; `--dry-run` first) and name families if wanted |
+| M6.5 walk-forward | Tasks 20, 21, 22, 36 | LIVE: the demo needs about 330 calendar days of cached RELIANCE minute bars (train 120d + a few 30d tests), fetched with `bars fetch` (Kite login) |
+| M6.6 holdout | Task 11 (done, D-88); owner's date set (D-89) | CLEARED 2026-11-12: `holdout_from = 2026-08-01` (owner: "last 3 month holdout looks good"), shipped in `research.json`. The tests run with the holdout off (`tests/support`). The `examples/runs/` walkthrough configs on recorded November 2026 data now need `--unlock-holdout`. |
+| M6.7 sensitivity | Tasks 13, 14, 15, 16 | demo on the best real run, after the sweep; OWNER: the engine is rebuilt (`.\run.ps1 -BuildEngine`) for Task 14 |
+| M6.8, M6.9 | Tasks 6, 10 | VIX source: if reading the recorded `INDIA VIX` is too slow, Task 10 falls back to bhavcopy and records a D-row (owner reviews) |
+| M6.10 sweeps | Tasks 12, 17, 18, 19, 35 | the demo sweep needs the same minute bars as M6.5 |
+| M6.11 PBO (stretch) | Task 23 | none |
+| M6.12 write-up | Task 38 only prepares the generator and the draft | OWNER: gated on live days and approval of every public sentence; nothing is published or pushed without "push" |
+| Definition of done | Task 37 | OWNER: reads the demo report |
+
+### The real lab, read-only (counts only)
+
+Opened with `mode=ro`; no token store or secret was read.
+
+- `lab.sqlite`: `runs` 7 (all `done`, all 7 have a `family_id`); `trial_families` 0; `holdout_unlocks` 0; `sessions` 0.
+- `refdata.sqlite`: `tick_days` 1 row (`verified`, trade date 2026-11-05). `nse_fetch_log` datasets: `cm` 702, `fo` 702, `idx` 702 (2023-12-28 to 2026-11-04) and `qtyfreeze` 1 (2026-11-05). `data_quality` 2,210 rows over 39 dates; metrics: coverage_pct, crossed_books, exch_ts_out_of_order, longest_gap_s, volume_decreases (202 each), latency p50/p95/p99 (131 each), packets (203), fsp_vs_close_paise (602), instruments and silent_minutes (1 each); no `coverage_full_pct` or `coverage_quote_pct` yet (row 14).
+- `bars.sqlite`, `bar_fetch_log` 5 rows, all `ok`: INFY (44091) day 2025-12-31 to 2026-11-04 (208 rows); RELIANCE (44407) day 2022-01-02 to 2026-10-30 (1,197 rows) and day 2025-12-31 to 2026-11-04 (208 rows), minute 2026-11-03 to 2026-11-04 (360 rows); `CONT:NIFTY:FUT` (150598) day 2023-12-31 to 2026-11-04 (706 rows). Stored bars: RELIANCE minute = 360 bars, all on 2026-11-04 (one day).
+- Consequence for the gates: the M6.5 and M6.10 demos have one day of RELIANCE minute data against the roughly 330 calendar days they need (a `bars fetch` with a Kite login is the owner's live gate). The one recorded tick day is 2026-11-05.
+
+### Notes for the web tasks
+
+- Next.js 16 docs to read before web code (under `web/node_modules/next/dist/docs/01-app/`): `03-api-reference/03-file-conventions/dynamic-routes.md`, `.../page.md` (params and `searchParams` as props), `03-api-reference/04-functions/use-search-params.md`, `.../use-router.md`, `03-api-reference/01-directives/use-client.md`, `03-api-reference/02-components/link.md`, `01-getting-started/05-server-and-client-components.md`, `02-guides/forms.md`.
+- `web/design.md`: tokens in `src/app/tokens.css`; app screen, desktop only (about 1024 px and up, container 1360 px); four states per data region (Skeleton, Empty, red Panel, full); money via `src/lib/format.ts`; components in `src/components/ui.tsx`; plain words, no raw codes.
+- Hallmark `flow.md` § App screens: state in the URL (filters, tabs, pagination), tables before cards, four states per region, accent only for the primary action, no invented figures, destructive actions confirmed or undoable.
+
+### M6.9 regime breakdown: VIX source timing (Task 10)
+
+Read-only on the real lab (refdata opened `mode=ro`, the tick archive read through `stockify.data.ticks`; nothing written). `regimes._recorded_close` on the one recorded day, 2026-11-05 (`INDIA VIX` = refdata instrument 43549; the tick packets' `instrument_id` is the refdata id): first call 1.2 s (cold start, pyarrow import included), later calls 0.002 to 0.003 s; 598 VIX packets; recorded close 1516 (15.16 points) against the bhavcopy close 1519 for the day before. Far under the 5 s line, so the order stays recorded first, bhavcopy second, and no D-row was needed. A recorded day that holds only part of a session gives the last VIX print it has, not the official close: the `vix_source` map on the report says which days used which source.
+
+### M6.7 extra slippage ticks (Task 14)
+
+🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.\run.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.
+
+### M6.3 recorder coverage in the quality report (Task 27, LCM 6.1)
+
+`stockify.data.quality.report` adds day rows (`instrument_id = 0`, D-120): `coverage_full_pct` (mean `coverage_pct` of instruments with a `subscription_log` row of mode `full` at any time), `coverage_quote_pct` (rows of another mode, none `full`), written only for a non-empty group; and always `coverage_full_n`, `coverage_quote_n`, `coverage_unlogged_n` (instruments with no subscription row at all, counted and never averaged). Task 28: count rows present = reported with Task 27 or later; n = 0 = none subscribed; count rows absent = not reported yet. An instrument with no packet in its window is in no count. Reads unchanged (packets, subscriptions, heartbeats, gaps); the only writes are `data_quality` rows; no schema change, no migration.
+
+🛑 Owner step: re-run `python -m stockify data report --date D` for each recorded day (today: 2026-11-05) to add the two rows; derived rows only, recorded packets are not touched. Until then `/data` shows no recorder coverage for older days.
+
+### M6.11 PBO by CSCV (Task 23)
+
+`pbo.cscv` on a 320-day by 100-try matrix (S = 16, 12,870 combinations, numpy gathers in chunks of 1,024): 0.60 s on this machine (the first version, with a Python loop for the complements, took 1.25 s). One noise draw of 320 x 20 gives a PBO anywhere from about 0.15 to 0.75; the mean over 16 seeded draws is 0.41 and over 300 numpy draws 0.52 (standard error 0.012), as theory says (exactly one half for iid noise).
+
+### M6.12 write-up generator and draft (Task 38, OM 6.1)
+
+`python -m stockify tools measure [--json]` (`stockify/tools/measure.py`) reads the lab and prints each measured number
+with its sample size and source; where the sample is missing or short it prints "not measured yet" and `--json` has
+`value` null with a `needs` text. It runs a privacy scan on its own text (lab and home folder, user name, a path, the
+words for the broker and its credentials) and prints nothing if that fails (exit 1); Task 26's export scan is a separate
+check that the final review may unify. `docs/plan/writeup_draft.md` is the draft, pasted from the sandboxed fixture lab:
+every row reads "not measured yet". Nothing is in `README.md`.
+
+Not read from any store yet, so always "not measured yet": oracle against engine on the goldens (no stored result),
+cross-platform determinism (Windows only, D-26), full-day engine throughput (D-48; `tools bench` prints and stores nothing).
+
+Fix round 1 (D-122): parity rows count parity days, live and test together, because nothing in `parity_results` or the session tables says which days were live; they stay "not measured yet" and gate (a) is confirmed by the owner by hand. Determinism needs five re-runs. The scan now also catches addresses, hosts, emails, drive and UNC paths and credential-shaped strings, and the draft itself is tested against it and against the generator's table.
+
+🛑 Gates before M6.12 is ticked: (a) five or more live days of journal parity and recorder parity (the owner confirms which days were live), (b) a full-day
+throughput measurement, (c) the owner reads and approves every public sentence, (d) the owner's "push".
+
+
+## 2026-11-12 — chart engine side (CH 6.8)
+
+What the code really looks like after C1-C7 (`8985275~1..b43f2da`, plus one fix).
+
+- **Rebuild first.** `.\run.ps1 -BuildEngine` is required on every machine before any run is compared: a stale `_engine`
+  has no `note` on `ctx.place`, no `ctx.plot`, no `plots.csv`, no `orb_cpp`/`sma_cross_cpp` notes, and now the checked
+  slippage reads, so the oracle and the engine then write different bytes.
+- **Hashes C3 and C4 changed.** C3 (D-92): `orders.csv` gains the last column `note`, so every run's `orders.csv` hash and
+  its `determinism.json` hash moved; the bundle gains `system_notes` (the pinned run bundles keep their old pins, the test
+  pops `system_notes` and checks it on its own); the `sod_state` order fields gain `note` (optional on read, so
+  `tests/fixtures/sod_state/day0_state.json` was regenerated with `"note": ""`); the pins re-measured then were flat
+  `de43313c` to `c9566a44` and staircase `62f700a5` to `0cb3291d` (cause: the `extra_ticks` key of Task 14 reached the
+  bundle first, not the note). C4 (D-94): `plots.csv` is a new deterministic file, so `determinism.json` of every run
+  lists a new row and its hash moved again; a re-run of an older folder is "reproduced" with `PLOTS_NOTE` (D-94),
+  `NOTE_COLUMN_NOTE` (D-92) and the step note (D-64) composed in `runs.column_changes`. The paper parity compare skips
+  `note` for a stored order that lacks the key (D-93).
+- **Review fixes.** One defect: a `random_ticks` slippage `k` of 4294967295 or more was cast to `uint32_t` after `+ 1`
+  (wrapped, or int64 overflow for the largest), so a valid run config made the engine disagree with the oracle. The engine
+  and `runconfig` now both refuse `k` above 4294967294 (`kMaxRandomTicksK`, `MAX_RANDOM_TICKS_K`); the other slippage
+  reads (`k`, `bp`, `kind`) are checked in `matcher.cpp::slip_whole`. The remaining unchecked reads of the C3 list
+  (`engine_trading.cpp` market protection `bp`, `costs.cpp` rows, `engine.cpp` queued `kind`) read dated repo config or
+  the engine's own data and are recorded as safe in the audit.
+- **Open, not fixed.** The C++ strategies `orb_cpp` and `sma_cross_cpp` carry no state between runs of an engine
+  (`save_state` is the default `"{}"`), while the Python twins carry every attribute (the C++ `closed_` of the ORB is one
+  such member); the two agree across a day boundary, not on a resume inside one day. A carried `sod_state` note is checked as text
+  only (like `tag`).
+- **c-review is deferred** to the final whole-branch review (owner ruling, 2026-11-12). The full suite is run by the
+  integrator on the integration branch; this task ran focused filters only.
+- The reviews are in `.superpowers/audits/charts-C1-C7-engine-reviews.md`.
+
+## 2026-11-13 — candlestick charts close (CH 6.20)
+
+What the chart code looks like now (integration branch `stockify/m6-integration`, from `102dd7c`).
+
+- **Engine and runners.** `ctx.place(note=)` and `ctx.plot` exist in both runners (D-92, D-94); `clean_note` also drops Unicode bidi controls (D-127, CH 6.25); a carried note is cleaned on load (CH 6.22); engine arithmetic on pack and bundle values is checked, with the same refusal in both runners (CH 6.21); the C++ twins keep their in-day state across a restart (CH 6.24). Shipped strategies write the D-95 sentences. `BAR_INTERVAL_S` is declared by `opening_range_breakout` (60) and `eod_short_straddle` (86400); the HOWTO listing now shows it (XI 6.38).
+- **Server side.** `stockify/oracle/bars.py` (D-123), `stockify/reporting/chartbars.py`, `chart.py` (`run_chart`, D-124, D-112, D-115), `chart_wf.py` (D-126, no mixing of bases or intervals), `chart_session.py` (D-103); three routes `GET /api/tests/{id}/chart`, `GET /api/research/walkforward/{job_id}/chart`, `GET /api/trade/sessions/{id}/chart` (D-125; A2 rows exist for all three).
+- **Web side.** `lightweight-charts` 5.3.0 pinned exactly with `fancy-canvas` 2.1.0 (D-110); `web/src/lib/chart.ts` (pure helpers, checked by `test_chart_checks.py`), `chart_api.ts`, `pathSeg.ts` (D-113), `components/PriceChart.tsx` behind `PriceChartLazy.tsx` (client only), `TrialChart.tsx` (sweep), `WfChart.tsx` (walk-forward); the run page order is D-111; the `/data` page pages back by whole windows (D-114). The footer carries the TradingView notice and `attributionLogo` stays on.
+- **Audits (reports in `.superpowers/audits/`; none re-run for this close).**
+  - `spec-compliance-charts-2026-11-13.json`: sampled, 10 of 1073 requirements checked, 8 hold. REQ-02 (the spec said 5.2.1, the owner moved to 5.3.0 under D-110) is a documents fix, done in CH 6.28. Undocumented U-1 (a tick-run chart was always on 60 s bars) fixed in G2 (D-112); U-2 (re-bucketing without a notice) fixed with a notice; U-3 (a walk-forward chart took basis and interval from its first window) fixed, mixing is refused (D-115). About 1,060 requirements were not checked: their status is unknown, not compliant.
+  - `next-upgrade-2026-11-13.md` (supply chain, `next` and `eslint-config-next` 16.2.6 to 16.4.6, `lightweight-charts` 5.2.1 to 5.3.0): all 20 `next` advisories cleared, direct dependencies with advisories 1 to 0, production transitive 5 to 2 (`baseline-browser-mapping`, `source-map-js`, outside our control, no fix applied); `lightweight-charts` 5.3.0 has no advisories, no install script and no provenance, as 5.2.1.
+  - `c14-lockfile-supply-chain.md`: the lockfile diff added only `lightweight-charts` and `fancy-canvas`; no advisories, no install scripts.
+  - `differential-review-m6-branch-2026-11-13.md`: 0 Critical, 0 High, 1 Medium, 9 Low. The Medium (a CLI export scanned without the Kite key and secret literals) and the Lows (dot-segment ids, export memory, unbounded points, a path in a 422, bidi and CSV formulas, pool child timeout, journal delete sharing, bare 500s, log rotation) went to the final fix round G1/G2/G3 and are merged (XI 6.35 to 6.37).
+  - `c-review-engine-2026-11-13.md`: 25 LOW primaries, 3 reported. The arithmetic findings (unchecked int64 subtractions on pack values) were fixed in F1 (CH 6.21).
+- **Decisions.** D-110 (pin and the 5.3.0 timing: taken now, by the owner), D-111 (run page order), D-112 (strategy's own bar interval), D-113 (dot segments), D-114 (data page windows), D-115 (marker and point caps, no basis mixing), D-123 to D-126 (bars, run chart, wire format, walk-forward chart), D-127 (bidi), D-128 and D-129 (shared reads, rotating log), D-92 to D-95 (notes and plots).
+- **Owner steps (STOP, not blockers).**
+  1. Look at a run, a paper session, a walk-forward and a sweep trial at 1024 px.
+  2. Confirm the TradingView attribution reads acceptably.
+  3. The durable fix for recording bar intervals (D-112): a run that does not record its bar interval is charted from the strategy's declared `BAR_INTERVAL_S` or its parameter default, and says so; the run config should record it.
+
+## 2026-11-13 — M6 closed: built, reviewed, recorded; live gates listed (XI 6.1)
+
+M6 is "built (open: live gates)" in `00_overview.md` §4. Everything below ran on the integration branch `stockify/m6-integration` at `9d232a9` plus the doc commits `XI 6.38` and `CH 6.20`. Nothing touched the owner's real lab: the transcript used a scratch lab (`LOCALAPPDATA` pointed at a folder under the job's tmp directory), seeded with the fixture instrument dump (RELIANCE) and 97 trading days (2026-02-02 to 2026-06-26) of synthetic minute bars from a fixed generator. The figures are meaningless as results (a random walk loses to costs); they show that every command runs end to end and what it prints.
+
+### Verification transcript (sandboxed fixture lab)
+
+| Command | Result |
+|---|---|
+| `python -m stockify sweep --config orb_fix.yaml` (`orb_grid.yaml` over the fixture days: 3 range lengths x 2 exit times = 6 trials) | exit 0, 3.9 s wall. Best trial `orb_fix-t004` (range 20, exit 15:00): Sharpe -16.57, net -Rs 3,731, 97 trades. One job and one family, `sweep/sweep-orb_fix-...` |
+| `python -m stockify walkforward --sweep orb_fix.yaml --train 40d --test 20d --step 20d --objective sharpe` | exit 0, 10.0 s. 5 of 5 windows tested, 64 out-of-sample days; Sharpe in-sample -17.88, out-of-sample -18.98 ("in-sample was not positive, so there is no ratio"); deflated: 0% over 30 tries; the same settings won 3 of 5 windows. Wrote `report.md`, `walkforward.json`, `walkforward.png` |
+| `python -m stockify sensitivity --run orb_fix-t004-...` | exit 0, 4.4 s. Costs x0 / x1.5 / x2: -Rs 1,157 / -Rs 4,970 / -Rs 6,233 against the baseline -Rs 3,731; slippage +1 and +2 ticks; latency 250 and 1000 ms; verdict "already losing" (a worse case proves nothing). The `snapshot_ltp` and `snapshot_quote` fill models show Rs 0 because the fixture holds bars only, no ticks; `eod_close` is "not applicable" |
+| `python -m stockify research report --walkforward <job> --sensitivity-run orb_fix-t004-...` | exit 0; wrote `research/<job>/report.md` with the cost table |
+| `python -m stockify compare orb_fix-t004 orb_fix-t002 orb_fix-t000` | exit 0; side-by-side table, `*` on every differing row, all three on engine build `ae7ca3654e80` |
+| `python -m stockify export orb_fix-t004 --out export_t004.zip` | exit 0; a 32,754-byte zip of 13 files (bundle, charges, determinism, equity, fills, manifest, margin, metrics, order events, orders, positions, run.json, plots.csv), secret scan passing |
+| `python -m stockify research families --backfill --dry-run` | exit 0, "would give 0 run(s) and 0 session(s) a family (dry run, nothing written)" (every run here was made after M6) |
+
+- 🛑 The same commands on the owner's real minute bars (about 330 days of one liquid stock, so the demo walk-forward has enough out-of-sample days) are not run; they need the owner's Kite fetch. `orb_grid.yaml` points at 2026-06-01 to 2026-06-30 and must be moved to the fetched range, which has to end before `holdout_from` (2026-08-01) or be unlocked with a written reason.
+- The engine was built at this head (`engine_build_id ae7ca3654e80`, `ctest` 2/2).
+
+### Measured timings
+
+- Probability of backtest overfitting: 12,870 combinations x 100 trials = 0.565 s (pbo 0.467), printed by `test_pbo` in full suite 8.
+- Stationary bootstrap: `bootstrap_ci` with `resamples = 2000`, `n = 1500`, `mean_block = 10`: about 2.3 s (Task 6, above), so the run report caches its intervals in `runs/<id>/research.json`.
+- India VIX read (`regimes._recorded_close`, real lab, read-only, Task 10, above): first call 1.2 s (cold start, pyarrow import included), later calls 0.002 to 0.003 s.
+- Fixture lab, above: a sweep of 6 trials 3.9 s, a walk-forward of 5 windows (30 training runs and 5 test runs) 10.0 s, a sensitivity of 11 variants 4.4 s.
+
+### Full suites
+
+- Suite 8 (`9d232a9`): 3402 tests, 3397 passed, 4 tracked defects (expected failures), 1 failure: `test_howto.test_the_code_shown_is_the_reference_strategy` (the HOWTO listing lacked `BAR_INTERVAL_S = 60`). Fixed in `XI 6.38`; the `howto` filter then passed 12 of 12. The four earlier order-dependent flakes passed (their cause, a shared test list, was fixed in `a076c24`). 2334 s.
+- Suite 9 (`1aa4b14`, after the doc commits; engine build `ae7ca3654e80`): exit 0, 3402 tests, 3398 passed, 4 tracked defects (expected failures), 0 failures, 0 errors, 2379 s; PBO 12,870 x 100 in 0.586 s. `npm run lint`, `npx tsc --noEmit` and `npm run build` exit 0; `ctest --preset win-msvc-release` 2 of 2 passed; blockwatch clean on every commit.
+- Dependencies: `git diff 7368e7f HEAD -- requirements.txt requirements-lock.txt` is empty (no new Python package). `web/package.json` changed in 5 lines since `102dd7c`: `lightweight-charts` 5.3.0 (new), `next` and `eslint-config-next` 16.4.6; the supply-chain reports for those versions are cited in the chart close above, so the M6 task's "supply-chain-risk-auditor skipped" became "run for those three versions".
+
+### Milestone audits (reports in `.superpowers/audits/`)
+
+- `spec-compliance-m6-2026-11-13.json` (the M6 plan and its documents): 1620 requirements extracted, 10 checked, 3 hold, 7 diverge; about 1,610 were not checked, so their status is unknown, not compliant. REQ-30 high (a paper session never got a `family_id`, so family reports showed no sessions): fixed in G1 (session `family_id`; `research families --backfill` covers sessions). REQ-115 medium (no demo report in the lab): an owner step, below. REQ-001 medium (session-time literals): regimes now read the close from config (G1, with `close_slack`); the chart's 09:15 literal now comes from the server's `session_open_s` (G2). REQ-09 medium (CLI export without the Kite literals): fixed in G1 (D-104). REQ-113 medium (`/data` reached only 180 days): fixed in G2 (D-114). REQ-114 and REQ-002 low: documents, plus the loader now refuses an undated row (D-106). The undocumented `run --role/--job-id` hole (a hand try leaving N) is closed by the variant guard (G1); the export cap and the formula-neutralised copy are D-104.
+- `spec-compliance-charts-2026-11-13.json`: see the chart close above.
+- `differential-review-m6-branch-2026-11-13.md`: 0 Critical, 0 High, 1 Medium, 9 Low; all went to G1 to G3 (see the chart close above).
+- `insecure-defaults-server-2026-11-13.json` (`server/`, 108 files, 6 categories, 65 patterns): no finding confirmed; 11 candidates in 7 files, all refuted (loopback-only origin checks, one CORS origin, Origin and Host guards, loopback bind). Nothing to fix.
+- `c-review-engine-2026-11-13.md`: 25 LOW primaries, 3 reported (unchecked int64 subtraction on pack values and in `year_fraction`); fixed in F1 (CH 6.21). `c-review-task14-extra-ticks.md` covers `extra_ticks`.
+- `next-upgrade-2026-11-13.md`, `c14-lockfile-supply-chain.md`, `lightweight-charts-supply-chain.md`: supply chain, see the chart close above.
+- A1, A2 and A3 now carry a row for every new endpoint, file and test class. Each M6 and chart route was grepped against A2: every one had a row except `GET /api/research/counts`, now added (`/api/trade/sessions/{id}/orders` and `/fills` sit in the M5.12 row). A1 gained §6.7 (the research job folder) and the run-folder `sensitivity.json` and `research.json` rows; A3 gained U-14 to U-26.
+- Not done: the optional M6.12 README write-up (its box stays open; its parity and divergence figures need live days, D-122).
+
+### Owner list (all 🛑; none blocks the code)
+
+1. `holdout_from` is set (2026-08-01, D-89); no action beyond keeping the demo's bars before it, or unlocking with a reason.
+2. 🛑 `python -m stockify research families --backfill --dry-run`, read it, then run it without `--dry-run`.
+3. 🛑 `python -m stockify data report --date D` for each recorded day (the coverage page reads the stored rows).
+4. 🛑 Fetch minute bars, about 330 days of the demo stock, so the demo walk-forward has at least `min_oos_days` (60) out-of-sample days (D-102).
+5. 🛑 Run the demo (`sweep`, `walkforward`, `sensitivity`, `research report`) on those bars and read `research/<job>/report.md` (the Definition of done asks for it).
+6. 🛑 Look at each page at 1024 px: a run, a paper session, a walk-forward, a sweep trial, `/data`, `/research`, `/tests/compare`.
+7. 🛑 Confirm the TradingView attribution reads acceptably (the footer notice and the chart logo).
+8. 🛑 Decide the durable fix for recording bar intervals (D-112): the run config does not record the interval a strategy subscribed to; the chart reads the strategy's `BAR_INTERVAL_S` or parameter default and says so.
+9. 🛑 Rebuild the engine on every machine (`.\run.ps1 -BuildEngine`) before comparing runs.
+10. The stuck-process note is resolved: the old `sod` filter process (pid 37796) ended on its own and the worktree's `.pyd` is free. Nothing to do.
+11. 🛑 Push, only on the owner's word. Nothing has been pushed past `102dd7c`.

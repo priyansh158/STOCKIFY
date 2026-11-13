@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 import struct
 import tempfile
 import unittest
@@ -722,6 +723,251 @@ class DayJournalTests(pf.PaperDayTest):
         self.assertEqual([r["seq"] for r in recs], list(range(1, len(recs) + 1)))
         self.assertEqual((header["t_min"], header["t_max"]), (recs[0]["t_event"], recs[-1]["t_event"]))
         self.assertTrue(header["flags"] & packs.FLAG_CLOCK)
+
+
+class ReadFromTests(unittest.TestCase):
+    """`read_from`: the whole records after a state, nothing else read, nothing written (the chart's poll)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="jr-")
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "day.evt"
+
+    def append(self, n: int, t0: int, path: Path | None = None) -> None:
+        w = writer(path or self.path)
+        w.append(clock_records(n, t0))
+        w.close(finalise=False)
+
+    def take(self, state=None, path: Path | None = None):
+        got: list[dict] = []
+        header, st, torn, restarted = journal.read_from(path or self.path, state, got.append)
+        return got, st, torn, restarted
+
+    def _mid_read(self, fn, *, reader=None):
+        """Run `reader` (default read_from) with `fn()` called while the journal is open for reading: the header
+        check runs inside the open, so that is where a daemon's rename would collide."""
+        real, seen = journal._check_header, []
+
+        def hook(data):
+            if not seen:
+                seen.append(fn())
+            return real(data)
+
+        with patch.object(journal, "_check_header", hook):
+            (reader or (lambda: self.take()))()
+        self.assertEqual(len(seen), 1)
+
+    def test_a_daemon_can_rename_delete_and_finalise_a_journal_a_reader_has_open(self):
+        """LCM 6.4 (D-128): readers open with FILE_SHARE_DELETE, so a rename, a delete and the finalising header
+        write never fail while a chart reads. (A replace OVER the open file is refused by Windows whatever the
+        share flags: that is the owner-run salvage adoption, which runs with the daemon stopped.)"""
+        w = writer(self.path)
+        w.append(clock_records(10, 1_000))
+
+        def collide():
+            w.close(finalise=True)                         # the in-place header write
+            moved = Path(self.tmp.name) / "moved.evt"
+            os.rename(self.path, moved)                    # a rename of the open file
+            os.rename(moved, self.path)
+            crc = journal._crc_path(self.path)
+            os.rename(crc, Path(str(crc) + ".aside"))      # the checksum file (adopt moves it aside)
+            os.rename(Path(str(crc) + ".aside"), crc)
+            moved = self.path.with_name("gone.evt")
+            os.rename(self.path, moved)
+            moved.unlink()                                 # a deletion
+
+        self._mid_read(collide)
+
+    def _hold_suffix_mid_read(self, suffix, fn, reader):
+        """Run `reader()` with `fn()` called the moment the file ending `suffix` is read, while its handle is open."""
+        real, seen = journal._open_read, []
+
+        class Held:
+            def __init__(self, f):
+                self._f = f
+
+            def __enter__(self):
+                self._f.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return self._f.__exit__(*a)
+
+            def read(self, *a):
+                if not seen:
+                    seen.append(fn())
+                return self._f.read(*a)
+
+            def __getattr__(self, name):
+                return getattr(self._f, name)
+
+        def opener(path):
+            f = real(path)
+            return Held(f) if str(path).endswith(suffix) else f
+
+        with patch.object(journal, "_open_read", opener):
+            reader()
+        self.assertEqual(len(seen), 1, f"the {suffix} file was never read through _open_read")
+
+    def test_the_daemon_can_rename_and_delete_the_checksum_file_while_read_holds_it(self):
+        """LCM 6.4 (D-128): `read()` takes the checksum file through the same sharing open, and so does the torn file."""
+        self.append(5, 1_000)
+        crc = journal._crc_path(self.path)
+
+        def collide():
+            aside = Path(str(crc) + ".aside")
+            os.rename(crc, aside)
+            os.rename(aside, crc)
+
+        self._hold_suffix_mid_read(".crc", collide, lambda: journal.read(self.path))
+        torn = journal._torn_path(self.path)
+        torn.write_bytes(b"")
+
+        def collide_torn():
+            os.rename(torn, torn.with_name("t.aside"))
+            os.rename(torn.with_name("t.aside"), torn)
+
+        self._hold_suffix_mid_read(".torn", collide_torn, lambda: journal.torn_entries(self.path))
+
+    def test_a_reader_never_creates_the_journal(self):
+        with self.assertRaises(OSError):
+            journal.read_from(Path(self.tmp.name) / "none.evt", None, lambda r: None)
+        with self.assertRaises(OSError):
+            journal.read(Path(self.tmp.name) / "none.evt")
+        self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
+
+    def test_a_reader_cannot_write_the_journal(self):
+        self.append(3, 1_000)
+        with journal._open_read(self.path) as f:
+            with self.assertRaises(OSError):
+                f.write(b"x")
+
+    def test_reads_only_the_new_records_and_decodes_only_them(self):
+        self.append(10, 1_000)
+        got, st, torn, restarted = self.take()
+        self.assertEqual(([r["seq"] for r in got], torn, restarted), (list(range(1, 11)), 0, False))
+        self.append(5, 2_000)
+        real, calls = packs.decode, []
+
+        def counting(data, off):
+            calls.append(off)
+            return real(data, off)
+
+        with patch.object(packs, "decode", counting):
+            more, st2, torn, restarted = self.take(st)
+        self.assertEqual(([r["seq"] for r in more], restarted, len(calls)), (list(range(11, 16)), False, 5))
+        whole = journal.read(self.path)[1]
+        self.assertEqual(st2.offset, journal.HEADER_SIZE + len(whole))
+        self.assertEqual(self.take(st2)[0], [])                         # nothing new: nothing read
+
+    def test_a_torn_tail_reads_cleanly_and_is_taken_once_whole(self):
+        self.append(6, 1_000)
+        whole = self.path.read_bytes()
+        crc = Path(str(self.path) + ".crc")
+        crc_whole = crc.read_bytes()
+        self.path.write_bytes(whole[:-7])
+        got, st, torn, _ = self.take()
+        self.assertEqual((len(got), torn > 0), (5, True))
+        self.assertEqual(self.path.read_bytes(), whole[:-7])              # nothing repaired
+        self.path.write_bytes(whole)
+        more, _, torn, restarted = self.take(st)
+        self.assertEqual(([r["seq"] for r in more], torn, restarted), ([6], 0, False))
+        self.assertEqual(crc.read_bytes(), crc_whole)
+
+    def test_a_replaced_file_restarts_the_read(self):
+        self.append(5, 1_000)
+        _, st, _, _ = self.take()
+        other = Path(self.tmp.name) / "other.evt"
+        self.append(8, 5_000, other)
+        self.path.write_bytes(other.read_bytes())                        # same file id, other and longer content
+        Path(str(self.path) + ".crc").write_bytes(Path(str(other) + ".crc").read_bytes())
+        got, _, _, restarted = self.take(st)
+        self.assertEqual((restarted, [r["t_event"] for r in got][:2]), (True, [5_000, 5_001]))
+        self.assertEqual(len(got), 8)
+
+    def test_a_shorter_file_restarts_the_read(self):
+        self.append(8, 1_000)
+        _, st, _, _ = self.take()
+        self.path.unlink()
+        Path(str(self.path) + ".crc").unlink()
+        self.append(3, 1_000)
+        got, _, _, restarted = self.take(st)
+        self.assertEqual((restarted, len(got)), (True, 3))
+
+    def test_chunks_give_the_same_records(self):
+        self.append(40, 1_000)
+        want = self.take()[0]
+        with patch.object(journal, "CHUNK_BYTES", 100):
+            got, st, torn, _ = self.take()
+            self.assertEqual((got, torn), (want, 0))
+            self.append(7, 9_000)
+            more, _, _, _ = self.take(st)
+        self.assertEqual([r["seq"] for r in more], list(range(41, 48)))
+
+    def test_each_chunk_reads_only_the_checksums_it_can_use(self):
+        self.append(60, 1_000)
+        crc = Path(str(self.path) + ".crc").read_bytes()
+        full = list(struct.unpack(f"<{len(crc) // 4}I", crc))
+        want = self.take()[0]
+        seen = []
+        real = journal._crcs_from
+
+        def spy(path, header, data, slot):
+            got = real(path, header, data, slot)
+            seen.append((slot, got, len(data)))
+            return got
+
+        with patch.object(journal, "CHUNK_BYTES", 200), patch.object(journal, "_crcs_from", spy):
+            got, st, torn, _ = self.take()
+        self.assertEqual((got, torn), (want, 0))                         # the same records
+        self.assertGreater(len(seen), 5)                                 # in many chunks
+        for slot, crcs, size in seen:
+            self.assertEqual(crcs, full[slot:slot + len(crcs)])          # the same checksums as the sidecar holds
+            self.assertLessEqual(len(crcs), size // journal.PREFIX.size + 1)   # and no more than the chunk can hold
+        self.assertLess(sum(len(c) for _, c, _ in seen), 2 * len(full) + len(seen))    # not the sidecar once per chunk
+
+    def test_records_of_other_instruments_are_not_decoded_but_still_checked(self):
+        w = writer(self.path)
+        recs = []
+        for i in range(12):
+            iid = 1 + i % 3
+            recs.append((1_000 + i, packs.RANK[packs.BAR_K], packs.enc_bar(iid, 1_000 + i, 60, 1_000 + i, 1, 2, 0, 1, 5, 0)))
+        w.append(recs)
+        w.close(finalise=False)
+        real, calls = packs.decode, []
+
+        def counting(data, off):
+            calls.append(off)
+            return real(data, off)
+
+        got: list[dict] = []
+        with patch.object(packs, "decode", counting):
+            _, st, torn, _ = journal.read_from(self.path, None, got.append, want=lambda iid, kind: iid == 2)
+        self.assertEqual((len(calls), {r["instrument_id"] for r in got}, len(got)), (4, {2}, 4))
+        every = self.take()[1]
+        self.assertEqual((st.offset, st.n, st.last_key), (every.offset, every.n, every.last_key))   # same position
+        # a checksum failure inside a skipped record is still caught
+        data = bytearray(self.path.read_bytes())
+        data[journal.HEADER_SIZE + 88 * 2 + 40] ^= 0xFF                  # the third record (instrument 3, skipped)
+        self.path.write_bytes(bytes(data))
+        with self.assertRaises(journal.JournalError):
+            journal.read_from(self.path, None, lambda r: None, want=lambda iid, kind: iid == 2)
+
+    def test_it_writes_nothing(self):
+        self.append(6, 1_000)
+        files = sorted(Path(self.tmp.name).iterdir())
+        before = {f: (f.read_bytes(), f.stat().st_mtime_ns) for f in files}
+        self.take()
+        self.assertEqual(sorted(Path(self.tmp.name).iterdir()), files)
+        self.assertEqual({f: (f.read_bytes(), f.stat().st_mtime_ns) for f in files}, before)
+
+    def test_a_short_or_foreign_file_is_a_journal_error(self):
+        self.path.write_bytes(b"short")
+        with self.assertRaises(journal.JournalError):
+            self.take()
+        self.path.write_bytes(b"x" * 200)
+        with self.assertRaises(journal.JournalError):
+            self.take()
 
 
 if __name__ == "__main__":

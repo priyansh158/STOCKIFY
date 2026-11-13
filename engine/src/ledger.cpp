@@ -36,7 +36,7 @@ Paise Ledger::apply_fill(InstrumentId iid, Product product, CashStyle style, Sid
     if (p.q != 0 && p.d != sign) {  // reducing (and maybe flipping)
         const Qty k = std::min(remaining, p.q);
         const Paise removed = k == p.q ? p.c : mul_div_floor(p.c, k, p.q);
-        p.realised = checked_add(p.realised, p.d * checked_sub(checked_mul(k, price), removed));
+        p.realised = checked_add(p.realised, p.signed_by_side(checked_sub(checked_mul(k, price), removed)));
         p.c -= removed;
         p.q -= k;
         remaining -= k;

@@ -24,10 +24,11 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import timeutil
-from stockify.strategy import Strategy, encode_state
+from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class EodShortStraddle(Strategy):
+    BAR_INTERVAL_S = 86400           # the one bar interval it subscribes to (the chart reads it)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
         {'name': 'underlying', 'label': 'Index for the options', 'type': 'underlying', 'default': 'NIFTY', 'required': False, 'help': 'the index whose options are sold'},
@@ -49,7 +50,7 @@ class EodShortStraddle(Strategy):
         self.legs: list[int] = []
         self.credit = 0
         self.pending_day = None
-        ctx.subscribe_bars(self.index, 86400)        # option closes are read with ctx.bars()
+        ctx.subscribe_bars(self.index, self.BAR_INTERVAL_S)        # option closes are read with ctx.bars()
 
     def on_bar(self, ctx, bar):  # noqa: ANN001
         if self.pending_day != ctx.today():
@@ -81,8 +82,12 @@ class EodShortStraddle(Strategy):
             for c, p in zip(closes, held):
                 value += c * abs(p.qty)
             if Decimal(value) > self.stop * self.credit:
+                why = (f"the options cost {fmt_price(value)} to close, over {self.stop}x the "
+                       f"{fmt_price(self.credit)} received")
+                names = {r["id"]: r["tradingsymbol"] for r in ctx._rows()}
                 for p in held:
-                    ctx.place(p.instrument, "BUY", abs(p.qty), "NRML", "MARKET", protection=self.bp, tag="stop")
+                    ctx.place(p.instrument, "BUY", abs(p.qty), "NRML", "MARKET", protection=self.bp, tag="stop",
+                              note=f"Bought back {fmt_qty(abs(p.qty))} {names[p.instrument]}: {why}")
                 ctx.log("INFO", f"stop: legs worth {value} vs credit {self.credit}")
                 self.legs = []
             return
@@ -103,9 +108,12 @@ class EodShortStraddle(Strategy):
         if len(legs) != 2 or any(self._close(ctx, i) is None for i in legs):
             return
         credit = 0
+        names = {r["id"]: r["tradingsymbol"] for r in ctx._rows()}
         for iid in legs:
             qty = self.lots * ctx.spec(iid)["lot"]
-            ctx.place(iid, "SELL", qty, "NRML", "MARKET", protection=self.bp, tag="entry")
+            ctx.place(iid, "SELL", qty, "NRML", "MARKET", protection=self.bp, tag="entry",
+                      note=f"Sold {fmt_qty(qty)} {names[iid]}: short straddle at the {fmt_price(atm)} strike, "
+                           f"expires {expiries[0]}")
             credit += self._close(ctx, iid) * qty
         self.legs, self.credit = legs, credit
         ctx.log("INFO", f"sell straddle {expiries[0]} strike {atm} spot {spot}")

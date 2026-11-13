@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from stockify.strategy import Strategy
+from stockify.strategy import Strategy, fmt_qty
 
 
 class BuyAndHold(Strategy):
@@ -19,7 +19,8 @@ class BuyAndHold(Strategy):
     ]
 
     def on_start(self, ctx):  # noqa: ANN001
-        self.iid = ctx.resolve(ctx.params["symbol"])
+        self.symbol = ctx.params["symbol"]
+        self.iid = ctx.resolve(self.symbol)
         self.isec = int(ctx.params.get("interval_s", 86400))
         self.share = Decimal(str(ctx.params.get("invest", "0.95")))
         self.done = False
@@ -31,5 +32,6 @@ class BuyAndHold(Strategy):
         budget = int(Decimal(ctx.funds().available) * self.share)
         qty = budget // (bar.close * 103 // 100)               # headroom for the 2 % protection band
         if qty > 0:
-            ctx.place(self.iid, "BUY", qty, "CNC", "MARKET", tag="entry")
+            ctx.place(self.iid, "BUY", qty, "CNC", "MARKET", tag="entry",
+                      note=f"Bought {fmt_qty(qty)} {self.symbol} on the first bar and will hold")
             self.done = True
