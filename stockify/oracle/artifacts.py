@@ -17,7 +17,7 @@ from pathlib import Path
 from stockify import numerics
 
 ORDERS = ("order_id,parent_id,instrument_id,side,product,type,validity,qty,price_paise,trigger_paise,protection_bp,"
-          "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason")
+          "tag,t_submit_ns,t_activate_ns,status,filled_qty,avg_price_paise,reason,note")
 ORDER_EVENTS = "t_ns,order_id,event,detail"
 FILLS = "fill_id,order_id,t_ns,instrument_id,side,qty,price_paise,evidence"
 CHARGES = ("row_no,kind,order_id,instrument_id,trade_date,turnover_paise,brokerage,stt,exchange,sebi,stamp,gst,dp,"
@@ -62,7 +62,7 @@ def write(folder: Path, engine, metrics: dict, manifest: dict) -> dict:  # noqa:
     b = engine.book
     _csv(folder / "orders.csv", ORDERS, [
         (o.order_id, o.parent_id, o.instrument_id, o.side, o.product, o.type, o.validity, o.qty, o.price, o.trigger,
-         o.protection_bp, o.tag, o.t_submit, o.t_activate, o.status, o.filled_qty, o.avg_price, o.reason)
+         o.protection_bp, o.tag, o.t_submit, o.t_activate, o.status, o.filled_qty, o.avg_price, o.reason, o.note)
         for o in sorted(engine.day_orders().values(), key=lambda o: o.order_id)])
     _csv(folder / "order_events.csv", ORDER_EVENTS, b.order_events)
     _csv(folder / "fills.csv", FILLS, [(f.fill_id, f.order_id, f.t_ns, f.instrument_id, f.side, f.qty, f.price,

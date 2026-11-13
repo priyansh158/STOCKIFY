@@ -42,6 +42,7 @@ SCHEMAS = {
     "contract_rules.json": "stockify.contract_rules/1",
     "freeze_limits.json": "stockify.freeze_limits/1",
     "broker_policy.json": "stockify.broker_policy/1",
+    "system_notes.json": "stockify.system_notes/1",
     "margin_params.json": "stockify.margin_params/1",
     "pricing.json": "stockify.pricing/1",
     "schedule.json": "stockify.schedule/1",
@@ -242,6 +243,30 @@ def _check_storage(doc: dict) -> None:
         raise ConfigError(f"storage.json: backup.include_span must be true or false, got {cfg['include_span']!r}")
 
 
+def _check_system_notes(doc: dict) -> None:
+    """system_notes.json (CH 6.2): words, not market rules (no `effective_from`). A key is a system order tag
+    (`orders.SYSTEM_TAGS`) or SETTLEMENT; every value is text that `clean_note` leaves unchanged; SETTLEMENT holds the
+    one placeholder `{price}` (the chart fills it) and no other value or key may hold a brace."""
+    from stockify.oracle.notes import clean_note
+    from stockify.oracle.orders import SYSTEM_TAGS
+    notes = doc.get("notes")
+    if not isinstance(notes, dict):
+        raise ConfigError("system_notes.json: notes must be an object")
+    for tag, text in notes.items():
+        where = f"system_notes.json: notes.{tag}"
+        if tag not in SYSTEM_TAGS and tag != "SETTLEMENT":
+            raise ConfigError(f"{where}: not a system tag (one of {', '.join(SYSTEM_TAGS)} or SETTLEMENT)")
+        if not isinstance(text, str) or clean_note(text) != text:
+            raise ConfigError(f"{where}: must be text that clean_note leaves unchanged (trimmed, no control "
+                              "characters, at most 200 characters)")
+        if tag == "SETTLEMENT":
+            rest = text.replace("{price}", "")
+            if text.count("{price}") != 1 or "{" in rest or "}" in rest:
+                raise ConfigError(f"{where}: must contain the placeholder {{price}} once and no other brace")
+        elif "{" in text or "}" in text:
+            raise ConfigError(f"{where}: only SETTLEMENT may hold a placeholder")
+
+
 def _check_paper(doc: dict) -> None:
     """paper.json (stockify.paper/1): every key present, whole numbers within PAPER_BOUNDS, and
     `coverage_threshold` a plain decimal string (digits and one optional dot: no sign, spaces or exponent) in (0, 1]."""
@@ -409,6 +434,8 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
         _convert_charge_rates(doc)
     if name == "broker_policy.json":
         _check_mis_margin(doc)
+    if name == "system_notes.json":
+        _check_system_notes(doc)
     if name == "paper.json":
         _check_paper(doc)
     if name == "notify.json":

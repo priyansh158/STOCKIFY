@@ -238,8 +238,10 @@ class SessionBundleTests(unittest.TestCase):
 
     # The content hashes (sha256 of bundle.json as `bundle.write` writes it) of a run bundle over the pack tests' tick
     # pack, resolved before and after REG 5.1 / 5.2: measured on 69c320d (before the session code) and on this code.
-    PINNED_RUN_BUNDLE = {"flat": "de43313c91ec3a4f2b41278184192bd378455f1889c411e344a77c44c634d2ab",
-                         "staircase": "62f700a5e00bd4068146df1279eabf99e396c65071b78f12bfb788588444fd66"}
+    # CH 6.2 (D-92) added the top-level `system_notes` key to every bundle; these are the same bundles measured with
+    # it (before it: flat de43313c..., staircase 62f700a5...). Nothing else in them changed.
+    PINNED_RUN_BUNDLE = {"flat": "7941f9eb4dadf4f1c2415e668c9c448c6e824b345f7ff1e6e8e93f4eebba7415",
+                         "staircase": "183d093fc9b753bf47c660b416908009224ce54222626c895499e11dd4c17425"}
 
     def test_existing_run_bundles_unchanged(self):
         self.record()

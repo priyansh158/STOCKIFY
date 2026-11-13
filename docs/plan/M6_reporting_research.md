@@ -87,6 +87,7 @@ cd web; npm run lint; npm run build
 ## Candlestick charts (CH)
 
 - [x] CH 6.1 Note cleaning and Indian-grouped price and quantity text, the same in Python and C++ (`stockify/oracle/notes.py`, `engine/src/notes.cpp`; `fmt_price`, `fmt_qty`, `to_level` exported from `stockify.strategy`).
+- [x] CH 6.2 Every order carries the strategy's own `note`, written to `orders.csv` by the oracle (`Order.note`, `ctx.place(note=)`, `system_notes.json`, bundle `system_notes`, D-92; the engine half is CH 6.3).
 
 ## Definition of done
 

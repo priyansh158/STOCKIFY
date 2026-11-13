@@ -406,6 +406,39 @@ def step_column_only(run_old: str, run_new: str) -> bool:
     return all(new[:step] + new[step + 1:] == old for old, new in zip(old_rows[1:], new_rows[1:]))
 
 
+# orders.csv's header before CH 6.2 added the last column, `note` (D-92).
+NOTE_COLUMN_NOTE = "orders.csv gained the note column, D-92"
+
+
+def note_column_only(run_old: str, run_new: str) -> bool:
+    """Whether a re-run of a folder saved before CH 6.2 differs from it only by orders.csv's added last column,
+    `note` (the D-64 pattern above), plus plots.csv when the old folder has none: determinism.json differs in
+    orders.csv alone (and a plots.csv only the new one lists), the old file is the one its determinism.json names,
+    its header is today's without `note`, and row by row the new file without its `note` cell is the old file.
+    `determinism_diff` itself is unchanged: this only decides whether the difference it reports is that one."""
+    import hashlib
+    import io
+    from stockify.oracle.artifacts import ORDERS
+    old_folder, new_folder = paths.run_path(run_old), paths.run_path(run_new)
+    try:
+        old_hashes = json.loads((old_folder / "determinism.json").read_text(encoding="utf-8"))
+        new_hashes = json.loads((new_folder / "determinism.json").read_text(encoding="utf-8"))
+        old_bytes = (old_folder / "orders.csv").read_bytes()
+        old_rows = list(csv.reader(io.StringIO(old_bytes.decode("utf-8"), newline="")))
+        new_rows = list(csv.reader(io.StringIO((new_folder / "orders.csv").read_text(encoding="utf-8"), newline="")))
+    except (OSError, ValueError):
+        return False
+    new_only = {"plots.csv"} if "plots.csv" in new_hashes and "plots.csv" not in old_hashes else set()
+    if determinism_diff(run_old, run_new) != sorted({"orders.csv"} | new_only):
+        return False
+    if old_hashes.get("orders.csv") != hashlib.sha256(old_bytes).hexdigest():
+        return False
+    header = ORDERS.split(",")
+    if header[-1] != "note" or not old_rows or not new_rows or old_rows[0] != header[:-1] or new_rows[0] != header             or len(old_rows) != len(new_rows):
+        return False
+    return all(new[:-1] == old for old, new in zip(old_rows[1:], new_rows[1:]))
+
+
 def determinism_diff(run_a: str, run_b: str) -> list[str]:
     """The deterministic files whose hashes differ between two run folders' determinism.json."""
     def hashes(run_id: str) -> dict:

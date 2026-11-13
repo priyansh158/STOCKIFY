@@ -470,6 +470,10 @@ def _cmd_run(args) -> int:
             print(f"reproduced ({runs.STEP_COLUMN_NOTE}) ({args.rerun} -> {new_id}): every other deterministic "
                   "file is byte for byte the same, and margin_daily.csv only gained its step column", file=sys.stderr)
             return 0
+        if runs.note_column_only(args.rerun, new_id):     # a folder saved before CH 6.2
+            print(f"reproduced ({runs.NOTE_COLUMN_NOTE}) ({args.rerun} -> {new_id}): every other deterministic "
+                  "file is byte for byte the same, and orders.csv only gained its note column", file=sys.stderr)
+            return 0
         print(f"not reproduced ({args.rerun} -> {new_id})", file=sys.stderr)
         for name in runs.determinism_diff(args.rerun, new_id):
             print(f"differs: {name}", file=sys.stderr)
