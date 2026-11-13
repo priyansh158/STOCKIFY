@@ -35,3 +35,16 @@ export const SERIES_TOKENS = ["accent", "info", "warn"] as const;
 export function heatMoreWord(scheme: "dark" | "light"): "brighter" | "darker" {
   return scheme === "dark" ? "brighter" : "darker";
 }
+
+/**
+ * The run's cost multiplier as text when it is not 1 (config `costs.scale`, a decimal string), else null. Anything
+ * unreadable gives null (no banner); 0 (free trading) is shown, since that is the most flattering result of all.
+ */
+export function costScale(config: Record<string, unknown> | null | undefined): string | null {
+  const costs = config?.costs;
+  const raw = costs && typeof costs === "object" ? (costs as Record<string, unknown>).scale : undefined;
+  if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n === 1) return null;
+  return String(n);
+}

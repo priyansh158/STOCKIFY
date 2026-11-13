@@ -421,6 +421,7 @@ export interface RegimeBucketDTO {
   up_days: number;
   up_share: number | null;
   thin: boolean;
+  plain?: string | null;
 }
 
 export interface RegimeReportDTO {

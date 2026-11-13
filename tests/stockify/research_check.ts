@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, heatColourStep, heatMoreWord, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
+import { SERIES_TOKENS, bucketTone, costScale, heatColourStep, heatMoreWord, sentenceOrDash } from "../../web/src/lib/researchHelpers.ts";
 
 const css = readFileSync(new URL("../../web/src/app/globals.css", import.meta.url), "utf-8");
 const colourRules = [...css.matchAll(/\.stk-lc-line\[data-c="(\d)"\]\s*\{\s*stroke:\s*var\(--color-([a-z0-9-]+)\)/g)].map((m) => [m[1], m[2]]);
@@ -23,6 +23,9 @@ const out = {
   heatMixes,
   scheme: /:root\s*\{[^}]*color-scheme:\s*(\w+)/.exec(css)?.[1] ?? null,
   more: [heatMoreWord("dark"), heatMoreWord("light")],
+  costScale: [undefined, {}, { costs: {} }, { costs: { scale: "1" } }, { costs: { scale: "1.00" } }, { costs: { scale: "2" } },
+    { costs: { scale: "1.50" } }, { costs: { scale: "0" } }, { costs: { scale: "x" } }, { costs: { scale: null } },
+    { costs: "no" }].map((c) => costScale(c as Record<string, unknown> | undefined)),
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

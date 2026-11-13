@@ -36,14 +36,19 @@ def _clean(v: Any) -> Any:
 
 def run_research_dto(run_id: str) -> RunResearchDTO:
     """The caller has checked that the run exists (404 there)."""
-    from stockify.research import report
-    d = _clean(report.run_research(run_id))
+    from stockify.research import plain, report
+    rr = report.run_research(run_id)
+    d = _clean(rr)
     b = d["bootstrap"]
     if b is not None:
         b.pop("seed", None)
         for k in _INTERVALS:
             b[k] = IntervalDTO(**b[k])
         d["bootstrap"] = BootstrapDTO(**b)
+    if rr.regimes is not None:       # one plain sentence per bucket, written by the server (IL 6.2)
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            for row, bucket in zip(d["regimes"][dim], getattr(rr.regimes, dim)):
+                row["plain"] = plain.regime_sentence(bucket)
     if d["dsr"] is not None:
         d["dsr"] = DsrDTO(**d["dsr"])
     return RunResearchDTO(**d)

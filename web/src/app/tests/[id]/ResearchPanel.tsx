@@ -7,21 +7,15 @@ import type { RegimeBucketDTO, RunResearchDTO, SensitivityDTO } from "@/lib/type
 import { IntervalBar } from "@/components/charts";
 import { Chip, Loading, Panel, Skeleton, Table } from "@/components/ui";
 
-/** What each regime split is for. These are the server's own one-line meanings (stockify/research/plain.py), not new wording. */
-const REGIMES: { key: "month" | "weekday" | "expiry" | "vix" | "gap"; title: string; meaning: string; first: string }[] = [
-  { key: "month", title: "By calendar month", first: "Month",
-    meaning: "Results split by calendar month, to show whether the profit comes from only a few months." },
-  { key: "weekday", title: "By day of the week", first: "Day",
-    meaning: "Results split by day of the week, to show whether the profit sits on one or two days." },
-  { key: "expiry", title: "Expiry days and other days", first: "Group",
-    meaning: "Results on expiry days compared with all other days." },
-  { key: "vix", title: "By the day before's India VIX", first: "VIX band",
-    meaning: "Results split into four bands of the day before's India VIX (calm to jumpy), plus a no-data group." },
-  { key: "gap", title: "By how far the market opened from the previous close", first: "Opening gap",
-    meaning: "Results split into five bands of how far the market opened from the previous close, plus no data." },
+/** The five regime splits: key in the DTO, its heading and the first column's name. What each split is for comes from
+ * the server (plain.regime_*), never from this file. */
+const REGIMES: { key: "month" | "weekday" | "expiry" | "vix" | "gap"; title: string; first: string }[] = [
+  { key: "month", title: "By calendar month", first: "Month" },
+  { key: "weekday", title: "By day of the week", first: "Day" },
+  { key: "expiry", title: "Expiry days and other days", first: "Group" },
+  { key: "vix", title: "By the day before's India VIX", first: "VIX band" },
+  { key: "gap", title: "By how far the market opened from the previous close", first: "Opening gap" },
 ];
-
-const HOLDOUT_MEANING = "Times you looked at the recent days you had set aside. Each look makes them a less fair test.";
 
 const VERDICT: Record<string, { word: string; tone: "up" | "down" | "warn" | "info" }> = {
   fragile: { word: "Fragile", tone: "warn" },
@@ -48,7 +42,8 @@ function signedRupees(paise: number | null): string {
 type Load<T> = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; value: T };
 
 /** The run page's "How much to trust this result" panel. Every sentence is the server's `plain` text; this file adds only
- * the numbers beside it. Each region (research, sensitivity) has its own loading, error, empty and full state. */
+ * the numbers beside it. Each region (headline, sensitivity, swing, regimes) has its own loading, error, empty and full
+ * state. The answer comes first: the headline sentence, then whether the result survives worse conditions. */
 export default function ResearchPanel({ runId }: { runId: string }) {
   const [research, setResearch] = useState<Load<RunResearchDTO>>({ state: "loading" });
   const [sens, setSens] = useState<Load<SensitivityDTO | null>>({ state: "loading" });
@@ -82,68 +77,75 @@ export default function ResearchPanel({ runId }: { runId: string }) {
             <Skeleton size="l" />
           </Loading>
         )}
-        {research.state === "error" && (
-          <div role="alert">
-            <Panel tone="red">
-              <p>The trust checks could not be loaded: {research.message}. Reload the page to try again.</p>
-            </Panel>
-          </div>
-        )}
-        {research.state === "ready" && <Research r={research.value} />}
-        {research.state === "ready" && research.value.regimes && <Regimes r={research.value} />}
+        {research.state === "error" && <LoadError what="the research for this run" detail={research.message} />}
+        {research.state === "ready" && <Headline r={research.value} />}
         <Sensitivity runId={runId} load={sens} />
+        {research.state === "ready" && <Swing r={research.value} />}
+        {research.state === "ready" && <Regimes r={research.value} />}
       </div>
     </section>
   );
 }
 
-function Research({ r }: { r: RunResearchDTO }) {
-  const p = r.plain;
-  const b = r.bootstrap;
+/** A failed region: a plain sentence for the reader, the server's raw message behind a disclosure. */
+function LoadError({ what, detail }: { what: string; detail: string }) {
   return (
-    <>
-      <div className="stk-trust-head">
-        <p className="stk-trust-line">{sentence(p.dsr)}</p>
-        <dl className="stk-trust-facts">
-          <div><dt>Tries</dt><dd>{r.n_trials.toLocaleString("en-IN")}</dd></div>
-          {r.dsr && r.is_best && <div><dt>Deflated Sharpe</dt><dd>{pct(r.dsr.dsr)}</dd></div>}
-          {r.dsr && <div><dt>Sharpe above zero, this run alone</dt><dd>{pct(r.dsr.psr)}</dd></div>}
-        </dl>
-        {r.dsr && p.psr && <p className="stk-fine">{sentence(p.psr)}</p>}
-        {r.is_best && (
-          <p className="stk-fine">
-            Deflated Sharpe: the chance the real Sharpe beats what the luckiest of all your tries would show by chance alone.
-          </p>
-        )}
-      </div>
+    <div role="alert">
+      <Panel tone="red">
+        <p>Couldn&apos;t load {what}. Reload the page to try again.</p>
+        <details className="stk-trust-details">
+          <summary>Technical details</summary>
+          <p className="stk-mono stk-break">{detail}</p>
+        </details>
+      </Panel>
+    </div>
+  );
+}
 
+/** The one-line answer first: where this run stands among its tries. The number is in the sentence, so it is not repeated. */
+function Headline({ r }: { r: RunResearchDTO }) {
+  const p = r.plain;
+  return (
+    <div className="stk-trust-head">
+      <p className="stk-trust-line">{sentence(p.dsr)}</p>
+      {r.dsr && p.psr && <p>{sentence(p.psr)}</p>}
+      <p className="stk-fine">
+        <strong>{r.n_trials.toLocaleString("en-IN")} {r.n_trials === 1 ? "try" : "tries"}.</strong>{" "}
+        {p.trials ? sentence(p.trials) : null} {r.is_best && p.dsr_meaning ? sentence(p.dsr_meaning) : null}
+      </p>
       {r.holdout_unlocks > 0 && (
         <Panel tone="amber">
           <p>
             <strong>
               You have looked at the days you set aside {r.holdout_unlocks.toLocaleString("en-IN")} {r.holdout_unlocks === 1 ? "time" : "times"}.
             </strong>{" "}
-            {HOLDOUT_MEANING}
+            {p.holdout_unlocks ? sentence(p.holdout_unlocks) : null}
           </p>
         </Panel>
       )}
+    </div>
+  );
+}
 
-      <div className="stk-trust-block">
-        <h3>How far the numbers could swing</h3>
-        {b === null ? (
-          <p className="stk-muted">No range for this run: it has no daily results to re-draw.</p>
-        ) : (
-          <>
-            {!b.enough_days && <p className="stk-warn">This run has only {b.n_days} days, too few for a reliable range.</p>}
-            <div className="stk-trust-intervals">
-              <IntervalRow name="Sharpe" iv={b.sharpe} format={(n) => n.toFixed(2)} text={p.bootstrap_sharpe} />
-              <IntervalRow name="Average day" iv={b.mean_daily_return} format={(n) => pct(n, true)} text={p.bootstrap_mean_return} />
-              <IntervalRow name="Worst drop" iv={b.max_drawdown} format={(n) => pct(n)} text={p.bootstrap_max_drawdown} />
-            </div>
-          </>
-        )}
-      </div>
-    </>
+function Swing({ r }: { r: RunResearchDTO }) {
+  const p = r.plain;
+  const b = r.bootstrap;
+  return (
+    <div className="stk-trust-block">
+      <h3>How far the numbers could swing</h3>
+      {b === null ? (
+        <p className="stk-muted">No range for this run: it has no daily results to re-draw.</p>
+      ) : (
+        <>
+          {!b.enough_days && <p className="stk-warn">This run has only {b.n_days} days, too few for a reliable range.</p>}
+          <div className="stk-trust-intervals">
+            <IntervalRow name="Sharpe" iv={b.sharpe} format={(n) => n.toFixed(2)} text={p.bootstrap_sharpe} />
+            <IntervalRow name="Average day" iv={b.mean_daily_return} format={(n) => pct(n, true)} text={p.bootstrap_mean_return} />
+            <IntervalRow name="Worst drop" iv={b.max_drawdown} format={(n) => pct(n)} text={p.bootstrap_max_drawdown} />
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -159,21 +161,27 @@ function IntervalRow({ name, iv, format, text }: {
 }
 
 function Regimes({ r }: { r: RunResearchDTO }) {
-  const reg = r.regimes!;
+  const reg = r.regimes;
   return (
     <div className="stk-trust-block">
       <h3>Where the profit came from</h3>
-      {r.plain.regimes_caveat && <p className="stk-fine">{r.plain.regimes_caveat}</p>}
-      <div className="stk-stack">
-        {REGIMES.map(({ key, title, meaning, first }) => (
-          <div key={key} className="stk-stack-s">
-            <h4>{title}</h4>
-            <p className="stk-fine">{meaning}</p>
-            <RegimeTable rows={reg[key]} first={first} caption={`${title}: days, gain or loss, and share of up days`} />
+      {reg === null ? (
+        <p className="stk-muted">No split by month, weekday, expiry, volatility or opening gap for this run: it has no daily results.</p>
+      ) : (
+        <>
+          {r.plain.regimes_caveat && <p className="stk-fine">{r.plain.regimes_caveat}</p>}
+          <div className="stk-stack">
+            {REGIMES.map(({ key, title, first }) => (
+              <div key={key} className="stk-stack-s">
+                <h4>{title}</h4>
+                {r.plain[`regime_${key}`] && <p className="stk-fine">{r.plain[`regime_${key}`]}</p>}
+                <RegimeTable rows={reg[key]} first={first} caption={`${title}: days, gain or loss, and share of up days`} />
+              </div>
+            ))}
+            {reg.notes.length > 0 && <ul className="stk-bullets">{reg.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
           </div>
-        ))}
-        {reg.notes.length > 0 && <ul className="stk-bullets">{reg.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
-      </div>
+        </>
+      )}
     </div>
   );
 }
@@ -185,7 +193,7 @@ function RegimeTable({ rows, first, caption }: { rows: RegimeBucketDTO[]; first:
       caption={caption}
       head={[
         { label: first }, { label: "Days", num: true }, { label: "Total gain or loss", num: true },
-        { label: "Average a day", num: true }, { label: "Up days", num: true },
+        { label: "Average a day", num: true }, { label: "Up days", num: true }, { label: "In words" },
       ]}
     >
       {rows.map((b) => {
@@ -201,6 +209,7 @@ function RegimeTable({ rows, first, caption }: { rows: RegimeBucketDTO[]; first:
             <td className={cls ? `num ${cls}` : "num"}>{signedRupees(b.pnl_paise)}</td>
             <td className="num">{signedRupees(b.mean_pnl_paise)}</td>
             <td className="num">{b.thin || b.up_share === null ? "—" : `${b.up_days.toLocaleString("en-IN")} (${pct(b.up_share)})`}</td>
+            <td data-wrap>{sentenceOrDash(b.plain)}</td>
           </tr>
         );
       })}
@@ -213,11 +222,7 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
   if (load.state === "loading") {
     body = <Loading label="Loading the sensitivity check"><Skeleton size="l" /></Loading>;
   } else if (load.state === "error") {
-    body = (
-      <div role="alert">
-        <Panel tone="red"><p>The sensitivity check could not be loaded: {load.message}. Reload the page to try again.</p></Panel>
-      </div>
-    );
+    body = <LoadError what="the sensitivity check" detail={load.message} />;
   } else if (load.value === null) {
     body = (
       <div className="stk-stack-s">
@@ -237,6 +242,7 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
           {v && <Chip tone={v.tone}>{v.word}</Chip>}
           <span>{sentence(s.plain)}</span>
         </p>
+        {s.reasons.length > 0 && <ul className="stk-bullets">{s.reasons.map((x) => <li key={x}>{sentence(x)}</li>)}</ul>}
         <Table
           caption="The test re-run with higher costs and worse fills"
           head={[
@@ -251,7 +257,7 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
                 <td data-wrap>{row.label}</td>
                 <td data-wrap>
                   {row.status === "baseline" ? "This run" : row.status === "done" ? "Finished"
-                    : row.error ? `Did not finish: ${row.error}` : upper1(row.status)}
+                    : row.error ? "Did not finish" : upper1(row.status)}
                 </td>
                 <td className="num">{signedRupees(row.net_pnl_paise)}</td>
                 <td className={d !== null && d > 0 ? "num stk-up" : d !== null && d < 0 ? "num stk-down" : "num"}>
@@ -262,7 +268,6 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
             );
           })}
         </Table>
-        {s.reasons.length > 0 && <ul className="stk-bullets">{s.reasons.map((x) => <li key={x}>{sentence(x)}</li>)}</ul>}
       </div>
     );
   }

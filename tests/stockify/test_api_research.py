@@ -56,12 +56,24 @@ class ResearchApiTests(SandboxedDBTest):
         reg = j["regimes"]
         self.assertEqual(list(reg), ["month", "weekday", "expiry", "vix", "gap", "vix_source", "notes"])
         self.assertEqual(list(reg["month"][0]), ["label", "days", "pnl_paise", "mean_pnl_paise", "up_days",
-                                                 "up_share", "thin"])
+                                                 "up_share", "thin", "plain"])
         for dim in ("month", "weekday", "expiry", "vix", "gap"):
             self.assertEqual(sum(b["days"] for b in reg[dim]), 30, dim)
         self.assertEqual([b["label"] for b in reg["vix"]], ["no data"])
         self.assertIn("regimes_caveat", j["plain"])
         self.assertIn("dsr", j["plain"])
+
+    def test_run_research_carries_the_server_meanings_and_bucket_sentences(self):
+        from stockify.research import plain
+        j = self.client.get("/api/tests/r0/research").json()
+        for key in ("trials", "holdout_unlocks", "regime_month", "regime_weekday", "regime_expiry", "regime_vix",
+                    "regime_gap"):
+            self.assertEqual(j["plain"][key], plain.meaning(key), key)
+        self.assertEqual(j["plain"]["dsr_meaning"], plain.meaning("dsr"))
+        rep = report.run_research("r0")
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            want = [plain.regime_sentence(b) for b in getattr(rep.regimes, dim)]
+            self.assertEqual([b["plain"] for b in j["regimes"][dim]], want, dim)
 
     def test_run_research_404(self):
         r = self.client.get("/api/tests/nope/research")
@@ -76,6 +88,8 @@ class ResearchApiTests(SandboxedDBTest):
         self.assertIsNone(j["dsr"])
         self.assertIsNone(j["bootstrap"])
         self.assertTrue(j["plain"]["dsr"])
+        self.assertIsNone(j["regimes"])
+        self.assertFalse([k for k in j["plain"] if k.startswith("regime_")])
 
     def test_families_list_and_detail(self):
         r = self.client.get("/api/research/families")

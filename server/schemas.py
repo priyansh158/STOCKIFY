@@ -449,6 +449,7 @@ class RegimeBucketDTO(BaseModel):
     up_days: int
     up_share: float | None = None
     thin: bool
+    plain: str | None = None
 
 
 class RegimeReportDTO(BaseModel):

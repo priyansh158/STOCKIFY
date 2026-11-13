@@ -10,6 +10,7 @@ import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table } from "@/compon
 import { LabelChips, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
 import EquityChart from "./EquityChart";
 import ResearchPanel from "./ResearchPanel";
+import { costScale } from "@/lib/research";
 
 const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 30_000;  // after errors the poll waits longer each time, up to this
@@ -39,16 +40,6 @@ type Extra = {
 const NO_EXTRA: Extra = { fills: [], equity: [], margin: [], settlements: [], greeks: [], logs: null };
 // pending: poll again soon; terminal: the run finished (stop); missing: 404 (stop); error: retry with back-off
 type Outcome = "pending" | "terminal" | "missing" | "error";
-
-/** The run's cost multiplier when it is not 1 (config costs.scale, a decimal string), else null. */
-function costScale(config: Record<string, unknown> | undefined): string | null {
-  const costs = config?.costs;
-  const raw = costs && typeof costs === "object" ? (costs as Record<string, unknown>).scale : undefined;
-  if (raw === undefined || raw === null) return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n === 1) return null;
-  return String(n);
-}
 
 function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -137,6 +128,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
     ? [runSummary(run, extra.equity[0]?.trade_date, extra.equity[extra.equity.length - 1]?.trade_date),
       run.capital_paise ? `started with ${rupeesWhole(run.capital_paise)}` : null].filter(Boolean).join(", ")
     : "";
+  const scale = costScale(detail?.config);
   const costTotal = run?.costs_total_paise ?? Object.values(costTotals).reduce((a, b) => a + b, 0);
 
   return (
@@ -174,13 +166,17 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
             <LabelChips run={run} />
           </div>
 
-          {costScale(detail?.config) && (
-            <Panel tone="amber">
-              <p role="status">
-                <strong>Costs ×{costScale(detail?.config)}.</strong> Every trading cost in this test was multiplied by {costScale(detail?.config)}, so
-                its results are not what real costs would give.
+          {scale && (
+            <section className="stk-costs-banner" aria-label="Costs were changed in this test">
+              <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false">
+                <path d="M12 3 2.5 20h19L12 3Z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                <path d="M12 10v5M12 17.5v.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              <p>
+                <strong>Costs ×{scale} — not real costs.</strong>{" "}
+                Every trading cost in this test was multiplied by {scale}, so its results are not what real costs would give.
               </p>
-            </Panel>
+            </section>
           )}
 
           {(run.status === "queued" || run.status === "running") && (

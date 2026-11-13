@@ -34,6 +34,10 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_sentence_or_dash_gives_a_dash_for_nothing_and_trims_the_rest(self):
         self.assertEqual(self.answers["sentence"], ["—", "—", "—", "—", "Held up.", "A. B."])
 
+    def test_cost_scale_is_null_for_one_and_for_anything_unreadable(self):
+        # absent, empty, "1", "1.00", null, a bad string and a non-object: no banner; 2, 1.50 and 0 (free) are shown
+        self.assertEqual(self.answers["costScale"], [None, None, None, None, None, "2", "1.5", "0", None, None, None])
+
     def test_series_palette_is_the_validated_one(self):
         # accent, info, warn passed the dataviz validator on the dark surface (chroma, deutan, normal-vision, contrast);
         # a change to the palette must re-run scripts/validate_palette.js and update this list on purpose.
