@@ -486,6 +486,7 @@ class RunResearchDTO(BaseModel):
     dsr: DsrDTO | None = None
     bootstrap: BootstrapDTO | None = None
     regimes: RegimeReportDTO | None = None
+    regimes_error: str | None = None
     holdout_unlocks: int
     plain: dict[str, str]
 

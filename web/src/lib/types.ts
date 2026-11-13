@@ -457,6 +457,7 @@ export interface RunResearchDTO {
   dsr: DsrDTO | null;
   bootstrap: BootstrapDTO | null;
   regimes: RegimeReportDTO | null;
+  regimes_error: string | null;
   holdout_unlocks: number;
   plain: Record<string, string>;
 }

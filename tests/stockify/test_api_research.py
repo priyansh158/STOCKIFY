@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import random
+import sqlite3
 import unittest
 from unittest import mock
 
@@ -46,7 +47,7 @@ class ResearchApiTests(SandboxedDBTest):
         j = r.json()
         self.assertEqual(list(j), ["run_id", "family_id", "role", "objective", "n_trials", "rank", "is_best",
                                    "picked_run_id", "picked_name", "dsr", "bootstrap", "regimes",
-                                   "holdout_unlocks", "plain"])
+                                   "regimes_error", "holdout_unlocks", "plain"])
         self.assertEqual((j["run_id"], j["family_id"], j["n_trials"]), ("r0", FAM, 3))
         self.assertEqual(list(j["dsr"]), ["sr", "t", "skew", "kurt", "n_trials", "var_sharpe", "sr0", "dsr", "psr"])
         self.assertEqual(j["dsr"]["t"], 30)
@@ -89,7 +90,16 @@ class ResearchApiTests(SandboxedDBTest):
         self.assertIsNone(j["bootstrap"])
         self.assertTrue(j["plain"]["dsr"])
         self.assertIsNone(j["regimes"])
+        self.assertIsNone(j["regimes_error"])             # nothing to split is a true "no daily results", not an error
         self.assertFalse([k for k in j["plain"] if k.startswith("regime_")])
+
+    def test_a_failed_regime_split_is_sent_as_could_not_be_worked_out(self):
+        from stockify.research import regimes
+        with mock.patch.object(regimes, "build", side_effect=sqlite3.InterfaceError("bad parameter")):
+            j = self.client.get("/api/tests/r0/research").json()
+        self.assertIsNone(j["regimes"])
+        self.assertEqual(j["regimes_error"], report.REGIMES_UNAVAILABLE)
+        self.assertNotIn("no daily results", j["regimes_error"])
 
     def test_families_list_and_detail(self):
         r = self.client.get("/api/research/families")

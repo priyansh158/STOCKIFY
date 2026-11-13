@@ -166,7 +166,9 @@ function Regimes({ r }: { r: RunResearchDTO }) {
   return (
     <div className="stk-trust-block">
       <h3>Where the profit came from</h3>
-      {reg === null ? (
+      {reg === null && r.regimes_error ? (
+        <p className="stk-warn" role="status">{r.regimes_error}</p>
+      ) : reg === null ? (
         <p className="stk-muted">No split by month, weekday, expiry, volatility or opening gap for this run: it has no daily results.</p>
       ) : (
         <>

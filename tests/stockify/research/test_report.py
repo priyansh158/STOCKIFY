@@ -89,6 +89,29 @@ class RunResearchTests(ReportTest):
         self.assertFalse([k for k in res.plain if k.startswith("regime_")])
         self.assertEqual(res.plain["holdout_unlocks"], plain.meaning("holdout_unlocks"))
 
+    def test_a_failed_regime_split_says_so_instead_of_claiming_no_daily_results(self):
+        # D-143: an unreadable refdata used to come back as regimes None, which the page words as "it has no daily
+        # results", a false statement about a run that has them.
+        import sqlite3
+        from stockify.research import regimes
+        family_of(3)
+        with mock.patch.object(regimes, "build", side_effect=sqlite3.InterfaceError("bad parameter or other API misuse")):
+            res = report.run_research("r00", use_cache=False)
+        self.assertIsNone(res.regimes)
+        self.assertEqual(res.regimes_error, report.REGIMES_UNAVAILABLE)
+        self.assertNotIn("no daily results", res.regimes_error)
+        self.assertIsNotNone(res.bootstrap)                       # the rest of the report is unaffected
+        self.assertFalse([k for k in res.plain if k.startswith("regime_")])
+        ok = report.run_research("r00", use_cache=False)          # and it recovers, nothing was cached
+        self.assertIsNotNone(ok.regimes)
+        self.assertIsNone(ok.regimes_error)
+
+    def test_a_run_without_daily_results_has_no_regimes_and_no_error(self):
+        store.create_run({"run_id": "bad2", "status": "failed", "family_id": FAM, "created_ns": 1})
+        res = report.run_research("bad2", use_cache=False)
+        self.assertIsNone(res.regimes)
+        self.assertIsNone(res.regimes_error)
+
     def test_rank_and_best_follow_the_objective(self):
         fam = "f/pnl/net_pnl"
         registry.ensure_family(fam, "net_pnl")
