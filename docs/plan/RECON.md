@@ -1360,7 +1360,7 @@ M6 is "built (open: live gates)" in `00_overview.md` §4. Everything below ran o
 ### Full suites
 
 - Suite 8 (`9d232a9`): 3402 tests, 3397 passed, 4 tracked defects (expected failures), 1 failure: `test_howto.test_the_code_shown_is_the_reference_strategy` (the HOWTO listing lacked `BAR_INTERVAL_S = 60`). Fixed in `XI 6.38`; the `howto` filter then passed 12 of 12. The four earlier order-dependent flakes passed (their cause, a shared test list, was fixed in `a076c24`). 2334 s.
-- Suite 9: see the follow-up line at the end of this section.
+- Suite 9 (`1aa4b14`, after the doc commits; engine build `ae7ca3654e80`): exit 0, 3402 tests, 3398 passed, 4 tracked defects (expected failures), 0 failures, 0 errors, 2379 s; PBO 12,870 x 100 in 0.586 s. `npm run lint`, `npx tsc --noEmit` and `npm run build` exit 0; `ctest --preset win-msvc-release` 2 of 2 passed; blockwatch clean on every commit.
 - Dependencies: `git diff 7368e7f HEAD -- requirements.txt requirements-lock.txt` is empty (no new Python package). `web/package.json` changed in 5 lines since `102dd7c`: `lightweight-charts` 5.3.0 (new), `next` and `eslint-config-next` 16.4.6; the supply-chain reports for those versions are cited in the chart close above, so the M6 task's "supply-chain-risk-auditor skipped" became "run for those three versions".
 
 ### Milestone audits (reports in `.superpowers/audits/`)
