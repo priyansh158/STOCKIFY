@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import re
 import sys
 from pathlib import Path
@@ -57,9 +58,51 @@ def configured_caps() -> tuple[int, int]:
         return DEFAULT_MAX_BYTES, DEFAULT_BACKUPS
 
 
+def _open_append_shared(path: str, encoding: str):  # noqa: ANN202
+    """A text stream appending to `path` with FILE_SHARE_READ | WRITE | DELETE (LCM 6.4, D-129). Python's `open`
+    does not share DELETE, so a second process rotating (renaming) a log this process has open fails on Windows.
+    Append-only access (FILE_APPEND_DATA) keeps each write at the end of the file whoever else writes."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                wintypes.DWORD, wintypes.HANDLE]
+    handle = k32.CreateFileW(path, 0x0004, 0x7, None, 4, 0x80, None)     # FILE_APPEND_DATA, share all, OPEN_ALWAYS
+    if handle in (None, ctypes.c_void_p(-1).value):
+        code = ctypes.get_last_error()
+        raise OSError(0, ctypes.FormatError(code).strip(), path, code)
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_APPEND | os.O_WRONLY | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        k32.CloseHandle(handle)
+        raise
+    return os.fdopen(fd, "a", encoding=encoding)
+
+
+class SharedRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """A RotatingFileHandler for a file several processes log to. The stream is opened sharing DELETE, so another
+    process can rename it; and a rotation that still fails (a rename onto a file another process holds) is skipped
+    and retried on a later record instead of raising out of `handleError`: the file may pass its cap for a moment,
+    no line is lost, and the handler goes on writing."""
+
+    def _open(self):  # noqa: ANN202
+        if os.name != "nt":
+            return super()._open()
+        return _open_append_shared(os.fspath(self.baseFilename), self.encoding or "utf-8")
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except OSError:
+            if self.stream is None:
+                self.stream = self._open()
+
+
 def file_handler(path: Path, *, max_bytes: int, backups: int) -> logging.Handler:
     """A size-capped rotating log file whose every line is redacted, tracebacks included."""
-    handler = logging.handlers.RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+    handler = SharedRotatingFileHandler(path, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
     handler.setFormatter(RedactFormatter(_FORMAT))
     handler.addFilter(RedactFilter())
     return handler
