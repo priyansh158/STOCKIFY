@@ -99,11 +99,17 @@ def greeks(is_call: bool, f: float, k: float, t: float, r: float, sigma: float) 
     return Greeks(value, delta, gamma, vega, theta, rho)
 
 
+def _check_int64(v: int) -> int:
+    if not -(2**63) <= v < 2**63:
+        raise OverflowError(f"{v} does not fit in int64")
+    return v
+
+
 def year_fraction(now_ns: int, last_trading_ns: int) -> float:
     """ACT/365 from now to the contract's last trading moment, floored at one second. Both integers are turned into
     floats first, as the engine does: Python's int / int rounds once, the engine's double / double twice, and the
     two differ for spans over 2^53 ns (about 104 days)."""
-    return float(max(int(last_trading_ns) - int(now_ns), MIN_T_NS)) / float(NS_PER_YEAR)
+    return float(max(_check_int64(int(last_trading_ns) - int(now_ns)), MIN_T_NS)) / float(NS_PER_YEAR)
 
 
 def rate_on(rows: list[dict], d: str) -> float:

@@ -75,6 +75,26 @@ inline std::int64_t checked_sub(std::int64_t a, std::int64_t b) {
     return a - b;
 }
 
+// -a; INT64_MIN has no negation in int64.
+inline std::int64_t checked_neg(std::int64_t a) {
+    if (a == kInt64Min) {
+        detail::overflow("checked_neg");
+    }
+    return -a;
+}
+
+// A double to int64 by truncation (the caller applies ceil/floor first): NaN is a NumericError (the oracle's
+// ValueError from int(nan)); a value outside int64, infinity included, is an overflow (OverflowError).
+inline std::int64_t checked_trunc(double x) {
+    if (std::isnan(x)) {
+        throw NumericError("cannot convert float NaN to int64");
+    }
+    if (!(x >= -9223372036854775808.0 && x < 9223372036854775808.0)) {
+        detail::overflow("checked_trunc");
+    }
+    return static_cast<std::int64_t>(x);
+}
+
 inline std::int64_t checked_mul(std::int64_t a, std::int64_t b) {
     std::int64_t hi = 0;
     const std::int64_t lo = _mul128(a, b, &hi);

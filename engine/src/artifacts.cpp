@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iterator>
 
+#include "stocksim/errors.hpp"
 #include "stocksim/format.hpp"
 #include "stocksim/json_out.hpp"
 #include "stocksim/metrics.hpp"
@@ -33,7 +34,14 @@ constexpr const char* kDeterministic[] = {"orders.csv", "order_events.csv", "fil
 
 std::string read_all(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (!in) {
+        throw RunError("cannot read " + p.string() + " to hash it");  // never the SHA-256 of nothing
+    }
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (in.bad()) {
+        throw RunError("read of " + p.string() + " failed");
+    }
+    return text;
 }
 
 }  // namespace
