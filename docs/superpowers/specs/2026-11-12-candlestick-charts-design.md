@@ -13,7 +13,7 @@ app's look needs to be "way better", and functionality comes first; these charts
 ## Goals
 
 1. **Candlestick chart** of the bars the strategy actually traded on (minute or daily), with volume, zoom, pan and a
-   crosshair, built with **TradingView Lightweight Charts, pinned exactly at `5.2.1`** (owner chose the library;
+   crosshair, built with **TradingView Lightweight Charts, pinned exactly at `5.3.0`** (D-110: the owner moved the pin from 5.2.1 to 5.3.0 on 2026-11-13) (owner chose the library;
    supply-chain audit `.superpowers/audits/lightweight-charts-supply-chain.md`: OK with conditions).
 2. **Buy and sell markers** on the bar where each fill happened: buy below the bar, sell above it, sized and coloured
    from the design tokens.
@@ -47,7 +47,7 @@ app's look needs to be "way better", and functionality comes first; these charts
 
 ## Constraints
 
-- Windows only; no new package except `lightweight-charts@5.2.1` (exact pin, no caret) and its one dependency
+- Windows only; no new package except `lightweight-charts@5.3.0` (exact pin, no caret) and its one dependency
   `fancy-canvas@2.1.0`; a D-row records the owner's approval and the audit. Licence: Apache-2.0 with TradingView
   attribution: every chart shows the attribution link (`attributionLogo: true`) and the NOTICE line appears once on
   an "About / credits" spot (**[controller's call]**: the app footer).
@@ -91,7 +91,7 @@ app's look needs to be "way better", and functionality comes first; these charts
 
 - `GET /api/tests/{run_id}/chart?instrument=&from_ns=&to_ns=` → `{bars: [{t, o, h, l, c, v}], markers: [...],
   plots: [{name, kind, points}], basis, interval_s, truncated}`. Bars are read from the run's event pack (the exact
-  bars it saw); for tick-driven runs, bars are built from the pack's snapshots at the run's bar interval (or 1 minute)
+  bars it saw); for tick-driven runs, bars are built from the pack's snapshots at the strategy's bar interval (or 1 minute; a caller's `interval_s` rebuilds them at that interval and the chart says so: D-112)
   **[controller's call]**. Without `from/to` the whole run; the response is capped at **50,000 bars**: the client
   asks for a range when the run is longer (the chart loads more as you pan) **[controller's call]**.
 - A marker = one fill: `{t, side, qty, price_paise, order_id, note, tag, charges_paise, trade_pnl_paise | null}`.
@@ -134,8 +134,8 @@ app's look needs to be "way better", and functionality comes first; these charts
    deterministic line goes to `events_log.txt` ("plot limit reached: …"); `manifest.json` is not used for it.
 5. **Where chart bars come from.** For a bar dataset: the `BAR` events in the run's own pack, exactly what the
    strategy received. For a tick dataset: display bars built from the pack's snapshots by the **same** bucketing
-   function the runners use for `BAR_BUILT` (A4 §2.2), called as a shared helper at the strategy's bar interval or
-   1 minute; never a re-fetch, never `bars.sqlite`. A run with several instruments has an instrument picker (F&O legs
+   function the runners use for `BAR_BUILT` (A4 §2.2), called as a shared helper at the strategy's bar interval (its `interval_s` param, else that param's default in
+   its schema, read from the run's bundle: D-112) or 1 minute when the strategy has none; never a re-fetch, never `bars.sqlite`. A run with several instruments has an instrument picker (F&O legs
    included, each showing its own contract's bars); a daily-only run shows daily candles. A run whose pack is gone
    (pruned) shows the markers on an empty time axis with the line "the price data for this run is no longer on disk".
 6. **Old runs and fixtures.** Readers accept an `orders.csv` without a `note` column (all notes `""`). Adding the
