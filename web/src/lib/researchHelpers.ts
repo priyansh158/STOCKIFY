@@ -86,3 +86,38 @@ export function wfCurve(
   }
   return { points, breaks, starts };
 }
+
+/** The compare page takes two to six runs (the API's own limit, GET /api/tests/compare). */
+export const COMPARE_MIN = 2;
+export const COMPARE_MAX = 6;
+
+/** `/tests/compare?ids=a&ids=b…`: repeated `ids`, each encoded, cut at six. No ids gives the bare path. */
+export function compareHref(ids: string[]): string {
+  const q = ids.slice(0, COMPARE_MAX).map((i) => `ids=${encodeURIComponent(i)}`).join("&");
+  return q ? `/tests/compare?${q}` : "/tests/compare";
+}
+
+/** The `ids` of a query string (one value or a repeated one): trimmed, no blanks, no repeats, in order. Commas are not split: an id never has one. */
+export function compareIds(raw: string | string[] | undefined): string[] {
+  const list = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  const out: string[] = [];
+  for (const v of list) {
+    const t = v.trim();
+    if (t !== "" && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** One distinct display name per run: the run's name, with its id added when the name repeats, and the id when there is no name. */
+export function runLabels(names: string[], ids: string[]): string[] {
+  return ids.map((id, i) => {
+    const name = (names[i] ?? "").trim();
+    if (name === "") return id;
+    return names.filter((n) => (n ?? "").trim() === name).length > 1 ? `${name} (${id})` : name;
+  });
+}
+
+/** True when the runs do not all agree (a missing value counts as a value, unless every run lacks it). */
+export function valuesDiffer(values: readonly (string | number | boolean | null)[]): boolean {
+  return new Set(values).size > 1;
+}

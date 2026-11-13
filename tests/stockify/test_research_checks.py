@@ -60,6 +60,26 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["scheme"], "dark")
         self.assertEqual(self.answers["more"], ["brighter", "darker"])
 
+    def test_compare_link_keeps_two_to_six_encoded_ids(self):
+        c = self.answers["compare"]
+        self.assertEqual(c["limits"], [2, 6])
+        self.assertEqual(c["href"], [
+            "/tests/compare?ids=a&ids=b",
+            "/tests/compare?ids=a&ids=b&ids=c&ids=d&ids=e&ids=f",     # a seventh id is cut
+            "/tests/compare?ids=a%20b&ids=x%2Fy%26z",                 # encoded, so & and / cannot split a value
+            "/tests/compare",
+        ])
+
+    def test_compare_ids_from_the_query_are_trimmed_unique_and_never_split_on_commas(self):
+        self.assertEqual(self.answers["compare"]["ids"], [["a"], ["a", "b"], [], ["a", "b"], ["a,b", "c"]])
+
+    def test_compare_labels_are_unique_and_never_empty(self):
+        # a repeated or missing name falls back to the run id, so each chart series has its own name
+        self.assertEqual(self.answers["compare"]["labels"], [["x", "y"], ["x (r1)", "x (r2)", "y"], ["r1", "y"]])
+
+    def test_a_metric_or_setting_differs_only_when_the_runs_do_not_all_agree(self):
+        self.assertEqual(self.answers["compare"]["differ"], [False, True, False, True, True, False])
+
 
 if __name__ == "__main__":
     unittest.main()

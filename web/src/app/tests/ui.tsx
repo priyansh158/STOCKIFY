@@ -79,7 +79,7 @@ function marginLabel(label: string): { text: string; detail: string; warn: boole
 }
 
 /** What each run label means, in plain words (labels from bundle.py / the engine, A4 I-14). */
-function labelText(label: string): { text: string; warn: boolean } {
+export function labelText(label: string): { text: string; warn: boolean } {
   const fixed: Record<string, { text: string; warn: boolean }> = {
     "fill:approximate": { text: "approximate fills", warn: true },
     eod_approx: { text: "end-of-day fills, approximate", warn: true },

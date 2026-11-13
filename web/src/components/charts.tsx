@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { SERIES_TOKENS, heatColourStep, heatMoreWord, splitSegments } from "@/lib/researchHelpers";
 
-const MAX_SERIES = 4;
+const MAX_SERIES = 6;
 const HEAT_STEPS = 5;
 /** globals.css sets `color-scheme: dark` and shades heat cells from faint to strong accent (checked in research_check.ts). */
 const HEAT_SCHEME = "dark" as const;
@@ -39,7 +39,7 @@ const W = 720;
 const H = 280;
 const PAD = { l: 76, r: 16, t: 12, b: 28 };
 
-/** Up to four series over a shared x. Series are told apart by colour and by dash, in a fixed order, and a legend always names them. */
+/** Up to six series over a shared x. Series are told apart by colour, dash and marker shape, in a fixed order (the fourth to sixth reuse the three colours), and a legend always names them. */
 export function LineChart({
   series,
   yFormat,
@@ -212,12 +212,13 @@ export function LineChart({
   );
 }
 
-/** A series marker: a circle for the three colour-distinct series, a square for the fourth, so a reused colour still differs. */
+/** A series marker: a circle for the three colour-distinct series, then a square, a diamond and a triangle, so a reused colour still differs. */
 function Marker({ x, y, i }: { x: number; y: number; i: number }) {
   const c = i % COLOURS;
-  return i < COLOURS
-    ? <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />
-    : <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
+  if (i < COLOURS) return <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />;
+  if (i === COLOURS) return <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
+  if (i === COLOURS + 1) return <polygon points={`${x},${y - 5.5} ${x + 5.5},${y} ${x},${y + 5.5} ${x - 5.5},${y}`} className="stk-lc-dot" data-c={c} />;
+  return <polygon points={`${x},${y - 5} ${x + 5},${y + 4} ${x - 5},${y + 4}`} className="stk-lc-dot" data-c={c} />;
 }
 
 const IW = 560;

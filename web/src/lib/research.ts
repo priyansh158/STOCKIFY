@@ -15,7 +15,10 @@ import type {
   WalkforwardDTO,
 } from "./types";
 
-export { bucketTone, dayNumber, heatColourStep, sentenceOrDash, splitSegments, wfCurve } from "./researchHelpers";
+export {
+  COMPARE_MAX, COMPARE_MIN, bucketTone, compareHref, compareIds, dayNumber, heatColourStep, runLabels, sentenceOrDash,
+  splitSegments, valuesDiffer, wfCurve,
+} from "./researchHelpers";
 export type { BucketTone, WfCurve } from "./researchHelpers";
 
 const enc = encodeURIComponent;

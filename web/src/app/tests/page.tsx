@@ -3,6 +3,7 @@ import { growth, istWhen, pct, rupees, rupeesWhole } from "@/lib/format";
 import { listStrategies, listTests } from "@/lib/tests";
 import type { Strategy, TestRun } from "@/lib/types";
 import { Empty, PageHead, Panel, Table, toneClass } from "@/components/ui";
+import CompareSelect from "./CompareSelect";
 import NewTestForm from "./NewTestForm";
 import { LabelChips, StatusChip, runSummary } from "./ui";
 
@@ -22,6 +23,11 @@ function RunRow({ run }: { run: TestRun }) {
   const g = done ? growth(run.nav_start_paise, run.nav_end_paise) : null;
   return (
     <tr>
+      <td className="stk-pick">
+        {done ? (
+          <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${run.name ?? run.run_id}`} />
+        ) : null}
+      </td>
       <td data-wrap>
         <Link href={`/tests/${encodeURIComponent(run.run_id)}`}>{run.name ?? run.run_id}</Link>
         {runSummary(run) && <div className="stk-label">{runSummary(run)}</div>}
@@ -68,9 +74,11 @@ export default async function TestsPage({ searchParams }: { searchParams: Promis
           {runs.length === 0 ? (
             <Empty>No tests yet. Start one above.</Empty>
           ) : (
+            <CompareSelect>
             <Table
-              caption="Recent strategy tests"
+              caption="Recent strategy tests. Tick two to six finished tests to compare them."
               head={[
+                { label: "Compare" },
                 { label: "Test" },
                 { label: "Status" },
                 { label: "Started" },
@@ -86,6 +94,7 @@ export default async function TestsPage({ searchParams }: { searchParams: Promis
                 <RunRow key={r.run_id} run={r} />
               ))}
             </Table>
+            </CompareSelect>
           )}
         </section>
       </div>

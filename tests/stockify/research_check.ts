@@ -2,7 +2,7 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { readFileSync } from "node:fs";
-import { SERIES_TOKENS, bucketTone, heatColourStep, heatMoreWord, sentenceOrDash, splitSegments, wfCurve } from "../../web/src/lib/researchHelpers.ts";
+import { COMPARE_MAX, COMPARE_MIN, SERIES_TOKENS, bucketTone, compareHref, compareIds, runLabels, valuesDiffer, heatColourStep, heatMoreWord, sentenceOrDash, splitSegments, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 const css = readFileSync(new URL("../../web/src/app/globals.css", import.meta.url), "utf-8");
 const colourRules = [...css.matchAll(/\.stk-lc-line\[data-c="(\d)"\]\s*\{\s*stroke:\s*var\(--color-([a-z0-9-]+)\)/g)].map((m) => [m[1], m[2]]);
@@ -36,6 +36,23 @@ const out = {
       { test_from: "2024-01-09", test: { from: "2024-01-10", to: "2024-01-12" } },
     ],
   ),
+  compare: {
+    limits: [COMPARE_MIN, COMPARE_MAX],
+    href: [
+      compareHref(["a", "b"]),
+      compareHref(["a", "b", "c", "d", "e", "f", "g"]),
+      compareHref(["a b", "x/y&z"]),
+      compareHref([]),
+    ],
+    ids: [
+      compareIds("a"), compareIds(["a", "b"]), compareIds(undefined), compareIds(["a", " ", "a", "b "]),
+      compareIds(["a,b", "c"]),
+    ],
+    labels: [
+      runLabels(["x", "y"], ["r1", "r2"]), runLabels(["x", "x", "y"], ["r1", "r2", "r3"]), runLabels(["", "y"], ["r1", "r2"]),
+    ],
+    differ: [valuesDiffer([1, 1]), valuesDiffer([1, 2]), valuesDiffer([null, null]), valuesDiffer([1, null]), valuesDiffer(["a", "a", "b"]), valuesDiffer([])],
+  },
   sentence: [null, undefined, "", "   ", "  Held up.  ", "A. B."].map(sentenceOrDash),
 };
 process.stdout.write(JSON.stringify(out));

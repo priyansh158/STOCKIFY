@@ -290,7 +290,9 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-lc-line[data-s="1"] { stroke-dasharray: 8 4; }
 .stk-lc-line[data-s="2"] { stroke-dasharray: 1 5; stroke-linecap: round; }
 .stk-lc-line[data-s="3"] { stroke-dasharray: 10 3 2 3; }
-.stk-lc-dot { stroke: var(--color-paper-2); stroke-width: 2; }
+.stk-lc-line[data-s="4"] { stroke-dasharray: 16 4 2 4 2 4; }
+.stk-lc-line[data-s="5"] { stroke-dasharray: 3 3; }
+.stk-lc-dot { stroke: var(--color-paper-2); stroke-width: 2; stroke-linejoin: round; }
 .stk-lc-dot[data-c="0"] { fill: var(--color-accent); }
 .stk-lc-dot[data-c="1"] { fill: var(--color-info); }
 .stk-lc-dot[data-c="2"] { fill: var(--color-warn); }
@@ -317,3 +319,20 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-heat-cell[data-step="4"] { background: color-mix(in oklab, var(--color-accent) 72%, var(--color-paper-2)); color: var(--color-accent-ink); }
 .stk-heat-cell[data-best="true"][data-step="4"] { outline-color: var(--color-paper); }  /* ink on step 4 is 2.8:1, paper is above 3:1 */
 .stk-heat-cell[data-best="true"] { outline: 2px solid var(--color-ink); outline-offset: -2px; font-weight: 700; }
+
+/* Compare runs (/tests/compare and the picker on /tests) */
+.stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
+.stk-pick-bar p { margin: 0; }
+.stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
+.stk-cmp td[data-differs], .stk-cmp th[data-differs] { background: var(--tint-warn); }
+.stk-cmp td.stk-cmp-verdict { white-space: nowrap; color: var(--color-muted); }
+.stk-cmp td.stk-cmp-verdict[data-differs] { color: var(--color-warn); font-weight: 600; }
+.stk-cmp-mono { font-family: var(--font-outlier); overflow-wrap: anywhere; }
+.stk-cmp-mono[title] { white-space: nowrap; }
+.stk-cmp td.num { font-size: var(--text-sm); }
+.stk-cmp td p { max-width: 28rem; }
+.stk-cmp-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); align-items: start; }
+.stk-cmp-charts .stk-lc > svg { max-width: none; }
+.stk-cmp-matched summary { cursor: pointer; font-size: var(--text-sm); color: var(--color-ink-2); min-height: var(--hit); display: flex; align-items: center; }
+.stk-cmp-matched[open] summary { margin-bottom: var(--space-xs); }
+.stk-cmp-pick { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-lg); font-size: var(--text-sm); color: var(--color-ink-2); }
