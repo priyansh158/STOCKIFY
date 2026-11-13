@@ -16,7 +16,8 @@ group's **CONTINUOUS** phase:
 
 Day-level rows use instrument_id 0: instruments, packets, total gap seconds per
 reason, and silent_minutes (minutes of the F&O continuous phase with neither a
-packet nor a heartbeat). Rows go to refdata.sqlite → data_quality (replaced on
+packet nor a heartbeat), coverage_full_pct and coverage_quote_pct (mean coverage_pct of the instruments subscribed
+in FULL, and of the rest; no row when a group is empty). Rows go to refdata.sqlite → data_quality (replaced on
 each run) and a Markdown summary to $LAB/reports/quality_YYYYMMDD.md.
 """
 from __future__ import annotations
@@ -96,8 +97,15 @@ def report(day: date, *, write: bool = True) -> dict:
         return _report(day, tick_day, write)
 
 
+def _mean(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 3) if values else None
+
+
 def _report(day: date, tick_day, write: bool) -> dict:  # noqa: ANN001
-    spans = _sub_intervals(tick_day.subscriptions())
+    subs = tick_day.subscriptions()
+    spans = _sub_intervals(subs)
+    full_ids = {r["instrument_id"] for r in subs
+                if r["instrument_id"] is not None and str(r.get("mode") or "").lower() == "full"}
     insts: dict[int, _Inst] = {}
 
     def state(iid: int) -> _Inst | None:
@@ -189,7 +197,12 @@ def _report(day: date, tick_day, write: bool) -> dict:  # noqa: ANN001
         silent = sum(1 for m in range(lo, hi) if m not in active_minutes)
     day_metrics = {"instruments": len(insts), "packets": sum(st.packets for st in insts.values()),
                    "silent_minutes": silent, **{f"gap_s_{k}": round(v, 3) for k, v in gap_s.items()}}
-    rows += [(day.isoformat(), 0, k, v, None) for k, v in day_metrics.items()]
+    # LCM 6.1: mean coverage_pct of the instruments subscribed in FULL, and of the rest (None when a group is empty).
+    full_cov = [m["coverage_pct"] for iid, m in per_inst if iid in full_ids and m["coverage_pct"] is not None]
+    quote_cov = [m["coverage_pct"] for iid, m in per_inst if iid not in full_ids and m["coverage_pct"] is not None]
+    day_metrics["coverage_full_pct"] = _mean(full_cov)
+    day_metrics["coverage_quote_pct"] = _mean(quote_cov)
+    rows += [(day.isoformat(), 0, k, v, None) for k, v in day_metrics.items() if v is not None]
 
     result = {"date": day.isoformat(), "source": tick_day.source, "day": day_metrics,
               "instruments": {iid: m for iid, m in per_inst}}

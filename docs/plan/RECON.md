@@ -1253,3 +1253,9 @@ Read-only on the real lab (refdata opened `mode=ro`, the tick archive read throu
 ### M6.7 extra slippage ticks (Task 14)
 
 🛑 `fill_model.slippage.extra_ticks` (D-91) needs an engine change in `engine/src/matcher.cpp::slipped`. The `_engine` module must be rebuilt (`.\run.ps1 -BuildEngine`) on every machine before the sensitivity task (Task 16): a stale engine ignores the key, so a run with it differs between the oracle and the engine.
+
+### M6.3 recorder coverage in the quality report (Task 27, LCM 6.1)
+
+`stockify.data.quality.report` adds two day rows (`instrument_id = 0`): `coverage_full_pct` (mean `coverage_pct` of instruments with a `subscription_log` row of mode `full`) and `coverage_quote_pct` (the rest). An instrument with no packet in its window is not in the report, so it is in neither mean; an empty group gives `None` in the result and no row. Reads are unchanged (packets, subscriptions, heartbeats, gaps); the only writes are `data_quality` rows; no schema change, no migration.
+
+🛑 Owner step: re-run `python -m stockify data report --date D` for each recorded day (today: 2026-11-05) to add the two rows; derived rows only, recorded packets are not touched. Until then `/data` shows no recorder coverage for older days.
