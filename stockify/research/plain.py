@@ -366,7 +366,7 @@ GENERIC_FAILURE = "the run failed; see the log"
 PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
     ("HoldoutLocked", "the holdout is locked"),
     ("RunConfigError", "the settings were not accepted"),
-    ("SweepSpecError", "the run pool returned the wrong number of results"),
+    ("SweepSpecError", "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it"),
     ("WalkforwardRunError", "the run pool returned the wrong number of results"),
     ("SensitivityRunError", "the run pool returned the wrong number of results"),
 )

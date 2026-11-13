@@ -302,7 +302,7 @@ class PlainReasonTests(unittest.TestCase):
         self.assertEqual(plain.plain_reason("RunConfigError: strategy.params.slow must be above fast"),
                          "the settings were not accepted")
         self.assertEqual(plain.plain_reason("SweepSpecError: the pool returned 2 outcomes for 3 runs"),
-                         "the run pool returned the wrong number of results")
+                         "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it")
         self.assertEqual(plain.plain_reason("WalkforwardRunError: the pool returned 2 outcomes for 3 runs"),
                          "the run pool returned the wrong number of results")
         for text in set(dict(plain.PLAIN_FAILURES).values()):
