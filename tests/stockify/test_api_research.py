@@ -156,7 +156,7 @@ class SensitivityApiTests(SandboxedDBTest):
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.json()["detail"], "not run yet; run `python -m stockify sensitivity --run s0`")
         self.assertEqual(self.client.get("/api/tests/nope/sensitivity").status_code, 404)
-        for bad in ("{not json", "[]", json.dumps({"rows": 3}), self._doc(verdict="maybe"), self._doc(run_id="other")):
+        for bad in ("{not json", "[]", json.dumps({"rows": 3}), self._doc(verdict="maybe"), self._doc(run_id="other"), self._doc(verdict="robust", fragile=False)):
             self._write(bad)
             r = self.client.get("/api/tests/s0/sensitivity")
             self.assertEqual(r.status_code, 404, bad)

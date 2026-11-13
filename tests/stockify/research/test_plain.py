@@ -290,11 +290,35 @@ class FragileSentenceTests(unittest.TestCase):
         a = plain.fragile_sentence(_sens("already_losing", -310_000), **k)
         self.assertEqual(a, "Already losing money (-₹3,100), so there is nothing to break; it is not called fragile.")
         i = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("failed", None), ticks=("done", 3_000_000)), **k)
-        self.assertEqual(i, "Can't say yet: the 1.5-times-costs run didn't finish, so it isn't called robust.")
-        i2 = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("failed", None),
+        self.assertEqual(i, "Can't say yet: the run with 1.5 times all costs didn't finish, so it isn't called robust.")
+
+    def test_inconclusive_names_each_unchecked_case_and_says_why(self):
+        k = self.K
+        na = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("done", 3_000_000),
                                           ticks=("not_applicable", None)), **k)
-        self.assertEqual(i2, "Can't say yet: the 1.5-times-costs and one-extra-tick runs didn't finish, "
-                             "so it isn't called robust.")
+        self.assertEqual(na, "Can't say yet: one extra tick of slippage couldn't be run for this strategy "
+                             "(it broke), so it isn't called robust.")
+        both = plain.fragile_sentence(_sens("inconclusive", 4_120_000, costs=("failed", None),
+                                            ticks=("not_applicable", None)), **k)
+        self.assertEqual(both, "Can't say yet: the run with 1.5 times all costs didn't finish; and one extra tick "
+                               "of slippage couldn't be run for this strategy (it broke), so it isn't called robust.")
+        for raw in (None, "", "bad_key in C:" + chr(92) + "x", "x" * 200, "line1" + chr(10) + "line2"):
+            s = _sens("inconclusive", 4_120_000, costs=("done", 3_000_000), ticks=("not_applicable", None))
+            s.rows[2] = type(s.rows[2])(**{**s.rows[2].__dict__, "error": raw})
+            text = plain.fragile_sentence(s, **k)
+            self.assertEqual(text, "Can't say yet: one extra tick of slippage couldn't be run for this strategy, "
+                                   "so it isn't called robust.", raw)
+            self.assertEqual(_bad_tokens(text), [], text)
+        self.assertNotIn("1.5-times", na)
+
+    def test_a_baseline_of_exactly_zero_is_not_called_losing(self):
+        z = plain.fragile_sentence(_sens("already_losing", 0), **self.K)
+        self.assertEqual(z, "Made no money (₹0), so there is nothing to break; it is not called fragile.")
+        self.assertNotIn("losing", z)
+
+    def test_a_robust_result_with_a_negative_check_is_refused(self):
+        with self.assertRaises(ValueError):
+            plain.fragile_sentence(_sens("robust", 4_120_000, costs=("done", -1), ticks=("done", 5)), **self.K)
 
     def test_fragile_sentence_names_the_axis_and_both_rupee_figures(self):
         k = self.K
