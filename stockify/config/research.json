@@ -9,5 +9,5 @@
   "pbo": {"slices": 16, "min_trials": 2},
   "sweep": {"max_workers": null, "max_trials": 1000},
   "coverage": {"ok_pct": "99", "default_days": 60, "max_days": 400},
-  "export": {"max_total_mib": 2048},
+  "export": {"max_total_mib": 1024},
   "pool": {"max_run_hours": 6} }

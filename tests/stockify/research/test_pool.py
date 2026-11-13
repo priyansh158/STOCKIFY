@@ -351,9 +351,9 @@ class VariantNeedsARealJobTests(BundleTest):
         for role in ("sensitivity", "oos", "rerun"):
             for job in (None, "", "nope"):
                 with self.subTest(role=role, job=job):
-                    with self.assertRaisesRegex(RunConfigError, "role .* (needs a job_id|no research job)"):
+                    with self.assertRaisesRegex(RunConfigError, "role .* (needs a job_id|no such research job)"):
                         runs.queue(self.cfg(), role=role, job_id=job)
-                    with self.assertRaisesRegex(RunConfigError, "role .* (needs a job_id|no research job)"):
+                    with self.assertRaisesRegex(RunConfigError, "role .* (needs a job_id|no such research job)"):
                         runs.launch(self.cfg(), role=role, job_id=job, impl="oracle", report=False)
         self.assertEqual(store.list_runs(), [])
 
@@ -391,8 +391,9 @@ class VariantNeedsARealJobTests(BundleTest):
         for status in ("done", "failed", "cancelled"):
             self.job("j-" + status, status=status)
             with self.subTest(status=status):
-                with self.assertRaisesRegex(RunConfigError, "is %s, not running" % status):
+                with self.assertRaisesRegex(RunConfigError, "is %s, not running" % status) as cm:
                     runs.queue(self.cfg(), role="sensitivity", job_id="j-" + status)
+                self.assertNotIn("j-" + status, str(cm.exception))
                 with self.assertRaisesRegex(RunConfigError, "is %s, not running" % status):
                     runs.launch(self.cfg(), role="sensitivity", job_id="j-" + status, impl="oracle", report=False)
         self.assertEqual(store.list_runs(), [])
@@ -402,11 +403,21 @@ class VariantNeedsARealJobTests(BundleTest):
         for fam in ("other/fam/1", None):          # an explicit other family, and the default one
             with self.subTest(family=fam):
                 cfg = self.cfg(family=fam) if fam else run_config(name="t", strategy=BUY)
-                with self.assertRaisesRegex(RunConfigError, "not the family of research job"):
+                with self.assertRaisesRegex(RunConfigError, "not the family of the research job") as cm:
                     runs.queue(cfg, role="sensitivity", job_id="real")
-                with self.assertRaisesRegex(RunConfigError, "not the family of research job"):
+                self.assertNotIn("other/fam", str(cm.exception))
+                self.assertNotIn("real", str(cm.exception))
+                with self.assertRaisesRegex(RunConfigError, "not the family of the research job"):
                     runs.launch(cfg, role="sensitivity", job_id="real", impl="oracle", report=False)
         self.assertEqual(store.list_runs(), [])
+        self.assertEqual([f["family_id"] for f in store.list_families()], [])    # a refusal leaves no family row
+
+    def test_no_refusal_echoes_the_typed_job_id(self):
+        self.job("sj", kind="sensitivity")
+        for role, job in (("sensitivity", "typed-ghost-id"), ("oos", "sj")):
+            with self.assertRaises(RunConfigError) as cm:
+                runs.queue(self.cfg(), role=role, job_id=job)
+            self.assertNotIn(job, str(cm.exception))
 
     def test_trial_needs_no_job_and_rerun_still_works(self):
         rid = runs.launch(self.cfg(), impl="oracle", report=False)           # trial, no job

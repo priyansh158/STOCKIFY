@@ -404,7 +404,7 @@ def _check_research(doc: dict) -> None:
     _research_edges(rg["vix_edges"], "regimes.vix_edges", True, low=0)
     _research_edges(rg["gap_edges_pct"], "regimes.gap_edges_pct", True)
     _research_int(rg["thin_days"], "regimes.thin_days", 1, 100_000)
-    _research_int(rg["close_slack_min"], "regimes.close_slack_min", 0, 240)   # how far before the close the last VIX print may be
+    _research_int(rg["close_slack_min"], "regimes.close_slack_min", 0, 30)   # how far before the close the last VIX print may be
 
     pbo = _research_section(doc, "pbo", ("slices", "min_trials"))
     slices = _research_int(pbo["slices"], "pbo.slices", 4, 1000)
@@ -418,7 +418,7 @@ def _check_research(doc: dict) -> None:
     _research_int(sweep["max_trials"], "sweep.max_trials", 1, 1_000_000)
 
     exp = _research_section(doc, "export", ("max_total_mib",))     # the most an export zip may hold uncompressed
-    _research_int(exp["max_total_mib"], "export.max_total_mib", 1, 1_000_000)
+    _research_int(exp["max_total_mib"], "export.max_total_mib", 1, 16_384)
     pool = _research_section(doc, "pool", ("max_run_hours",))      # a pool child that runs longer is killed
     _research_int(pool["max_run_hours"], "pool.max_run_hours", 1, 10_000)
 

@@ -76,13 +76,15 @@ def _config_json(cfg: dict) -> str:
     return numerics.dumps_canonical(cfg)
 
 
-def _with_family(cfg: dict) -> dict:
+def _with_family(cfg: dict, *, ensure: bool = True) -> dict:
     """`cfg` with its `family_id` filled by the default family when it has none (an explicit one is kept), and
-    the family row ensured (M6.4)."""
+    the family row ensured (M6.4). `ensure=False` leaves the row to the caller, who makes it only once the run
+    is accepted (a refused variant must leave no empty family)."""
     from stockify.research import registry
     if cfg.get("family_id") is None:
         cfg = {**cfg, "family_id": registry.default_family_id(cfg)}
-    registry.ensure_family(cfg["family_id"])
+    if ensure:
+        registry.ensure_family(cfg["family_id"])
     return cfg
 
 
@@ -118,19 +120,18 @@ def _require_job_for_variant(role: str, job_id: str | None, family_id: str | Non
     job = store.get_research_job(job_id)
     if job is None:
         raise runconfig.RunConfigError(
-            f"role {role!r}: there is no research job {job_id!r}; a run can only be a variant of a real research job")
+            f"role {role!r}: there is no such research job; a run can only be a variant of a real research job")
     kind = _ROLE_JOB_KIND.get(role)
     if kind is None or job["kind"] != kind:
         raise runconfig.RunConfigError(
-            f"role {role!r} belongs to a {kind or 'research'} job, but {job_id!r} is a {job['kind']} job")
+            f"role {role!r} belongs to a {kind or 'research'} job, but this is a {job['kind']} job")
     if job["status"] != "running":
         raise runconfig.RunConfigError(
-            f"role {role!r}: the research job {job_id!r} is {job['status']}, not running, so it can take no more "
+            f"role {role!r}: the research job is {job['status']}, not running, so it can take no more "
             "variants")
     if family_id is not None and family_id != job["family_id"]:
         raise runconfig.RunConfigError(
-            f"role {role!r}: the run's family {family_id!r} is not the family of research job {job_id!r} "
-            f"({job['family_id']!r})")
+            f"role {role!r}: the run's family is not the family of the research job it names")
 
 
 def queue(config, *, role: str = "trial", job_id: str | None = None) -> str:  # noqa: ANN001
@@ -142,8 +143,9 @@ def queue(config, *, role: str = "trial", job_id: str | None = None) -> str:  # 
     _require_job_for_variant(role, job_id)
     loaded = runconfig.load(config)
     reason = holdout.enforce(loaded)          # before the family row, the folder and the run row (M6.6)
-    cfg = _with_family(loaded)
+    cfg = _with_family(loaded, ensure=False)
     _require_job_for_variant(role, job_id, cfg["family_id"])
+    _with_family(cfg)                         # the family row, only now that the run is accepted
     run_id = queued_run_id(cfg["name"])
     folder = paths.run_path(run_id)
     folder.mkdir(parents=True)
@@ -211,8 +213,9 @@ def launch(config=None, *, run_id: str | None = None, impl: str = "engine", repo
         _require_job_for_variant(role, job_id)
         loaded = runconfig.load(config)
         reason = holdout.enforce(loaded)      # before any row or folder (M6.6)
-        cfg = _with_family(loaded)
+        cfg = _with_family(loaded, ensure=False)
         _require_job_for_variant(role, job_id, cfg["family_id"])
+        _with_family(cfg)                     # the family row, only now that the run is accepted
     text = _config_json(cfg)
 
     try:
