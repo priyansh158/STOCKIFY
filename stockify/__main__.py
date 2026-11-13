@@ -19,7 +19,6 @@ _STUBS = {
     "export": ("M6", "export a run"),
     "sweep": ("M6", "parameter sweep"),
     "walkforward": ("M6", "walk-forward analysis"),
-    "sensitivity": ("M6", "cost and fill sensitivity"),
 }
 
 
@@ -615,6 +614,20 @@ def _cmd_research_show(args) -> int:
     return 2
 
 
+def _cmd_sensitivity(args) -> int:
+    """M6.7: re-run a finished run with costs, extra slippage ticks, latency and other fill models, one change at a
+    time. Exit 0 done, 1 when a variant failed unexpectedly, 2 for an unknown or unfinished run or a locked holdout."""
+    from stockify import runconfig
+    from stockify.research import sensitivity
+    try:
+        res = sensitivity.run_suite(args.run, workers=args.workers, unlock_reason=args.unlock_holdout)
+    except (sensitivity.SensitivityError, runconfig.RunConfigError, ValueError) as e:
+        print(e, file=sys.stderr)
+        return 2
+    _print_console(sensitivity.format_table(res))
+    return 1 if any(r.status == "failed" for r in res.rows) else 0
+
+
 def _cmd_margin_check(args) -> int:
     """MEZ 4.11: a proposed basket priced by the margin staircase from the archived NSE files (offline)."""
     from datetime import date
@@ -1089,6 +1102,13 @@ def main(argv: list[str] | None = None) -> int:
     rw = rssub.add_parser("show", help="print the research lines of a run or a family, in plain words")
     rw.add_argument("target", help="a run id or a family id")
     rw.set_defaults(func=_cmd_research_show)
+
+    sn = sub.add_parser("sensitivity", help="re-run a finished run with costs x0/1.5/2, extra slippage ticks, more "
+                                            "latency and other fill models, and flag it fragile (M6.7)")
+    sn.add_argument("--run", required=True, help="the finished run's id")
+    sn.add_argument("--workers", type=int, default=None, help="runs at once (default: the pool's own limit)")
+    sn.add_argument("--unlock-holdout", metavar="REASON", help=_UNLOCK_HELP)
+    sn.set_defaults(func=_cmd_sensitivity)
 
     se = sub.add_parser("session", help="paper session maintenance")
     sesub = se.add_subparsers(dest="session_command", required=True)
