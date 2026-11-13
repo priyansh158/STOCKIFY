@@ -59,14 +59,19 @@ T whole(const char* name, const py::object& v, const char* fn = "ctx.place") {
     return v.cast<T>();  // range-checked: an int that does not fit T is a cast error, not a wrapped value
 }
 
-// A note as the oracle's Context.place takes it (CH 6.2): text only (TypeError otherwise); a lone surrogate becomes
-// U+FFFD before the text is encoded, as stockify.oracle.notes does; the engine then cleans the UTF-8 bytes.
+// A note as Context.place takes it (CH 6.2): text only (TypeError otherwise). A str holding a lone surrogate cannot be
+// encoded as UTF-8, so this binding replaces each one with U+FFFD itself before encoding; the oracle does not: it
+// passes the str on and stockify.oracle.notes.clean_note makes the same replacement. The engine then cleans the bytes.
 std::string note_text(const py::object& v) {
     if (!py::isinstance<py::str>(v)) {
         throw py::type_error("ctx.place: note must be text");
     }
-    const py::object fixed = py::module_::import("re").attr("sub")(R"([\ud800-\udfff])", "\xEF\xBF\xBD", v);  // U+FFFD; a "\u" template is a bad escape to re.sub
-    return fixed.cast<std::string>();
+    // The compiled pattern's sub is looked up once, at the first note, and deliberately leaked (a static py::object
+    // would be destroyed after the interpreter has gone). The replacement is U+FFFD as UTF-8: a "\u" template is a
+    // bad escape to re.sub.
+    static const py::object* const sub =
+        new py::object(py::module_::import("re").attr("compile")(R"([\ud800-\udfff])").attr("sub"));
+    return (*sub)("\xEF\xBF\xBD", v).cast<std::string>();
 }
 
 // B2B 5.2 (audit M-2): `protection` is "AUTO" (nullopt) or an int from 1 to 10000 basis points; anything else is

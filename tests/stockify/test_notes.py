@@ -125,6 +125,21 @@ class EngineParityTests(unittest.TestCase):
                     getattr(eng, name)(bad)
         self.assertEqual((eng.fmt_price(5), eng.fmt_qty(1000), eng.to_level(1)), ("0.05", "1,000", 10000))
 
+    def test_plain_ints_are_not_taken_for_bools_and_past_int64_is_refused(self):
+        eng = engine.load()
+        for n in (0, 1, -1, -2**63, 2**63 - 1):
+            with self.subTest(n=n):
+                self.assertEqual(eng.fmt_price(n), fmt_price(n))
+                self.assertEqual(eng.fmt_qty(n), fmt_qty(n))
+        for n in (0, 1, -1):
+            with self.subTest(level=n):
+                self.assertEqual(eng.to_level(n), to_level(n))
+        for name in ("fmt_price", "fmt_qty"):
+            with self.subTest(fn=name), self.assertRaises(TypeError):
+                getattr(eng, name)(2**63)
+        with self.assertRaises(RuntimeError):      # to_level takes a float; a result past int64 is a ValueError there
+            eng.to_level(2**63)
+
     def test_clean_note_matches_engine_on_random_text(self):
         eng = engine.load()
         rng = random.Random(61)

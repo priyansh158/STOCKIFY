@@ -79,8 +79,8 @@ def _norm(row):  # noqa: ANN001, ANN202
 def _first_difference(table: str, stored: dict, twin: dict) -> dict | None:
     for key in sorted(set(stored) | set(twin)):
         have, want = _norm(stored.get(key)), _norm(twin.get(key))
-        if table == "orders":      # CH 6.3: a stored day written before the note column has no `note`: it reads as ""
-            have, want = (dict(r, note=r.get("note", "")) if isinstance(r, dict) else r for r in (have, want))
+        if table == "orders" and isinstance(have, dict) and isinstance(want, dict) and "note" not in have:
+            want = {k: v for k, v in want.items() if k != "note"}    # D-93: a day stored before the note: not compared
         if have != want:
             return {"table": table, "key": key, "stored": have, "regenerated": want}
     return None

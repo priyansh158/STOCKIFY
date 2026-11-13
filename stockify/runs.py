@@ -399,7 +399,8 @@ def _step_added(old_folder: Path, new_folder: Path, old_hashes: dict) -> bool:
         return False
     if old_hashes.get("margin_daily.csv") != hashlib.sha256(old_bytes).hexdigest():
         return False
-    if not old_rows or not new_rows or old_rows[0] != MARGIN_HEADER_BEFORE_D64.split(",")             or new_rows[0] != MARGIN.split(",") or len(old_rows) != len(new_rows):
+    if not old_rows or not new_rows or old_rows[0] != MARGIN_HEADER_BEFORE_D64.split(",") \
+            or new_rows[0] != MARGIN.split(",") or len(old_rows) != len(new_rows):
         return False
     step = new_rows[0].index("step")
     return all(new[:step] + new[step + 1:] == old for old, new in zip(old_rows[1:], new_rows[1:]))
@@ -417,7 +418,8 @@ def _note_added(old_folder: Path, new_folder: Path, old_hashes: dict) -> bool:
     if old_hashes.get("orders.csv") != hashlib.sha256(old_bytes).hexdigest():
         return False
     header = ORDERS.split(",")
-    if header[-1] != "note" or not old_rows or not new_rows or old_rows[0] != header[:-1]             or new_rows[0] != header or len(old_rows) != len(new_rows):
+    if header[-1] != "note" or not old_rows or not new_rows or old_rows[0] != header[:-1] \
+            or new_rows[0] != header or len(old_rows) != len(new_rows):
         return False
     return all(new[:-1] == old for old, new in zip(old_rows[1:], new_rows[1:]))
 
