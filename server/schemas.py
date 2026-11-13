@@ -169,6 +169,8 @@ class TestRunDetailDTO(BaseModel):
     manifest: dict[str, Any] | None = None
     fill_count: int | None = Field(None, description="all fills of the run (the /fills list is paged)")
     cost_totals: dict[str, int] = Field(default_factory=dict, description="paise per charge component, whole run")
+    withheld: dict[str, str] = Field(default_factory=dict,
+                                     description="metrics key -> plain reason the figure is not shown (null in metrics)")
 
 
 class TestFillDTO(BaseModel):
@@ -645,6 +647,7 @@ class CompareMetricDTO(BaseModel):
     values: list[float | int | None]
     kind: str
     plain: str
+    reasons: list[str | None] = Field(default_factory=list, description="per run: why the value is withheld, else null")
 
 
 class CompareDiffDTO(BaseModel):

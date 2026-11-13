@@ -358,7 +358,8 @@ def _check_research(doc: dict) -> None:
     """research.json (stockify.research/1): every key present, an unknown key at any level refused naming it, rates
     and scales decimal strings, counts whole numbers within sanity bounds, edge lists strictly increasing.
     `holdout_from` is null (no holdout) or an ISO date; `sweep.max_workers` is null (cpu_count - 1) or >= 1; `sweep.max_trials` is the most trials one sweep may expand to."""
-    top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage", "export", "pool")
+    top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage", "export", "pool",
+           "reporting")
     extra = set(doc) - set(top) - {"schema"}
     if extra:
         raise ConfigError(f"research.json: unknown keys {sorted(extra)}; known: {list(top)}")
@@ -421,6 +422,9 @@ def _check_research(doc: dict) -> None:
     _research_int(exp["max_total_mib"], "export.max_total_mib", 1, 16_384)
     pool = _research_section(doc, "pool", ("max_run_hours",))      # a pool child that runs longer is killed
     _research_int(pool["max_run_hours"], "pool.max_run_hours", 1, 10_000)
+
+    rep = _research_section(doc, "reporting", ("min_days_yearly",))   # D-135: shorter runs show no yearly figure
+    _research_int(rep["min_days_yearly"], "reporting.min_days_yearly", 2, 100_000)
 
     cov = _research_section(doc, "coverage", ("ok_pct", "default_days", "max_days"))
     if not 0 < _research_decimal(cov["ok_pct"], "coverage.ok_pct") <= 100:

@@ -327,7 +327,7 @@ No header in A2 conflicts with code that exists; everything else in A2 §1–§2
   `price_basis`); a New test form from the schema (`/tests?new=1` opens it). `/tests/[id]` polls every 2 s while
   waiting or running, has cancel, shows the error and log tail when failed, and when done: the numbers, an SVG money
   curve with the drawdown under it, fills as cards, costs by kind in plain names, and the reproduction details. The
-  yearly rate is shown only for runs of 240+ trading days ("too short to say" otherwise).
+  yearly rate is shown only for runs of 240+ trading days ("too short to say" otherwise; since D-135 the server decides this from `research.json` `reporting.min_days_yearly`, and the compare table and `report.md` follow the same rule).
 - **End to end** (WP 3.4): own API (8791) and web (3791) with `LOCALAPPDATA` in the scratchpad, so no real lab and no
   Kite token. Seeded with three engine runs built from golden worlds and imported with `runs.import_run`. From the
   web origin: a submitted test queued and failed cleanly (`PackError: unknown symbol 'NSE:RELIANCE'`: the sandbox has
