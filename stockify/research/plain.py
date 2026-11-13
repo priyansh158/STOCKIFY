@@ -179,8 +179,9 @@ def _ci_phrase(ci: float) -> str:
 
 
 def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str = "sharpe",
-                 picked_name: str | None = None, flat: bool = False) -> str:
-    """Where this run stands among all the tries of its family, in one line.
+                 picked_name: str | None = None, flat: bool = False, n_finished: int | None = None) -> str:
+    """Where this run stands among all the tries of its family, in one line. Every setting tried counts, finished
+    or not (D-85); when some did not finish (`n_finished` below `n_trials`) the line says "N tries (M finished)".
 
     The deflated Sharpe is only meaningful for the best try, so a runner-up gets its rank instead.
     """
@@ -194,13 +195,15 @@ def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str 
         label = OBJECTIVE_LABELS[objective]
     except KeyError:
         raise ValueError(f"objective must be one of {list(registry.OBJECTIVES)}, not {objective!r}") from None
+    tries = (f"{n_trials} tries ({n_finished} finished)" if n_finished is not None and n_finished < n_trials
+             else f"{n_trials} tries")
     if rank == 1:
         p = _usable(dsr)
         verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the edge beats luck"
         # the luck allowance is always computed on the picked run's Sharpe, whatever ranked the tries
         scope = "" if objective == "sharpe" else " on its Sharpe"
-        return f"best of {n_trials} tries by {label}, after allowing for luck{scope}: {verdict}"
-    head = f"{ordinal(rank)} best of {n_trials} tries by {label}"
+        return f"best of {tries} by {label}, after allowing for luck{scope}: {verdict}"
+    head = f"{ordinal(rank)} best of {tries} by {label}"
     if picked_name:
         name = picked_name if len(picked_name) <= _NAME_LIMIT else picked_name[:_NAME_LIMIT - 3] + "..."
         return f"{head}; the job picked {name}, so this is a runner-up"

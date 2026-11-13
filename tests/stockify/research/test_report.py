@@ -309,28 +309,67 @@ class FamilyReportTests(ReportTest):
     def test_family_report_lists_sessions_and_unlocks_without_counting_them(self):
         family_of(3)
         make_run("sens", FAM, daily_returns=noisy(50), role="sensitivity", name="sens")
-        make_run("failed", FAM, navs=[], status="failed", name="failed")
+        make_run("failed", FAM, navs=[], status="failed", name="z-failed")
         store.create_session("sess1", "paper", {"family_id": FAM}, 1)
         self.sql("UPDATE sessions SET family_id = ? WHERE session_id = 'sess1'", (FAM,))
         store.log_holdout_unlock("r00", FAM, "look", job_id="job1")
         store.log_holdout_unlock("r01", FAM, "look again", job_id="job1")
         store.name_family(FAM, "my idea")
         rep = report.family_report(FAM)
-        self.assertEqual((rep.n_trials, len(rep.trials)), (3, 3))
-        self.assertEqual({o.run_id for o in rep.others}, {"sens", "failed"})
+        self.assertEqual((rep.n_trials, len(rep.trials)), (4, 4))       # the failed try counts (D-85, 2026-11-13)
+        self.assertEqual({o.run_id for o in rep.others}, {"sens"})
         self.assertEqual([s["session_id"] for s in rep.sessions], ["sess1"])
         self.assertEqual(len(rep.holdout_unlocks), 2)
         self.assertEqual((rep.description, rep.named), ("my idea", True))
         self.assertEqual(rep.best_run_id, registry.best_trial(FAM).run_id)
-        self.assertEqual(rep.best.n_trials, 3)
+        self.assertEqual(rep.best.n_trials, 4)
         self.assertIsInstance(rep.trials[0].net_pnl_paise, int)
         self.assertEqual(rep.trials[0].days, 30)
         summary = {s.family_id: s for s in report.list_families()}[FAM]
         self.assertEqual((summary.n_trials, summary.n_other_runs, summary.n_sessions, summary.unlocks),
-                         (3, 2, 1, 2))
+                         (4, 1, 1, 2))
         self.assertEqual(summary.best_run_id, rep.best_run_id)
         self.assertEqual(summary.best_dsr, rep.best.dsr)
         finite_json(rep)
+
+    def test_a_sweep_of_four_with_one_failure_has_n_four_and_a_stricter_dsr(self):
+        fam = "sweep/job-a"
+        registry.ensure_family(fam, "sharpe")
+        for i in range(3):
+            make_run(f"r{i}", fam, daily_returns=noisy(i), name=f"t{i}")
+        finished_only = report.family_report(fam)
+        self.assertEqual(finished_only.n_trials, 3)
+        make_run("bad", fam, navs=[], status="failed", name="t3")
+        rep = report.family_report(fam)
+        self.assertEqual((rep.n_trials, rep.best.n_trials), (4, 4))
+        self.assertGreater(rep.best.sr0, finished_only.best.sr0)       # more tries, a higher luck bar
+        self.assertLess(rep.best.dsr, finished_only.best.dsr)
+        self.assertEqual(report.run_research("r0", use_cache=False).n_trials, 4)
+        self.assertEqual({s.family_id: s for s in report.list_families()}[fam].n_trials, 4)
+        self.assertIn("4 tries (3 finished)", rep.plain["dsr"])
+
+    def test_a_point_that_never_made_a_run_still_counts(self):
+        fam = "sweep/job-b"
+        registry.ensure_family(fam, "sharpe")
+        store.create_research_job({"job_id": "job-b", "kind": "sweep", "name": "s", "family_id": fam,
+                                   "status": "done", "created_ns": 1,
+                                   "spec_json": json.dumps({"trials": 4})})
+        for i in range(3):
+            make_run(f"r{i}", fam, daily_returns=noisy(i), name=f"t{i}")
+        self.assertEqual(report.family_report(fam).n_trials, 4)
+
+    def test_a_walkforward_n_is_windows_times_grid_as_before(self):
+        fam = "walkforward/job-c"
+        registry.ensure_family(fam, "sharpe")
+        store.create_research_job({"job_id": "job-c", "kind": "walkforward", "name": "w", "family_id": fam,
+                                   "status": "done", "created_ns": 1,
+                                   "spec_json": json.dumps({"windows": 2, "grid": 3})})
+        for i in range(5):
+            make_run(f"r{i}", fam, daily_returns=noisy(i), name=f"t{i}")
+        make_run("bad", fam, navs=[], status="failed", name="t5")
+        make_run("oos", fam, daily_returns=noisy(9), role="oos", name="oos")
+        self.assertEqual(registry.n_tries(fam), 6)
+        self.assertEqual(report.family_report(fam).n_trials, 6)
 
     def test_unknown_family_is_a_value_error(self):
         with self.assertRaises(ValueError):

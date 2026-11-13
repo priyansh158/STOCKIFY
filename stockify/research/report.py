@@ -314,7 +314,7 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     family_id, role = row.get("family_id"), row.get("role") or "trial"
     objective = registry.family_objective(family_id) if family_id else "sharpe"
     tries = registry.trials(family_id) if family_id else []
-    n = len(tries)
+    n = registry.n_tries(family_id) if family_id else 0          # every setting tried, finished or not (D-85)
     series = store.run_nav_series(run_id)
     dates, navs = [d for d, _ in series], [v for _, v in series]
     capital = _int_or_none(_config(row).get("capital_paise")) or 0
@@ -330,22 +330,23 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     if usable:
         _, x = _series(dates, navs, capital, rf_rows)
         flat = stats.sharpe_per_period(x) is None
-        res = stats.deflated_sharpe(x, [_trial_sharpe(t, rf_rows) for t in tries], max(n, 1))
+        res = stats.deflated_sharpe(x, [_trial_sharpe(t, rf_rows) for t in tries], max(n, len(tries), 1))
 
     texts: dict[str, str] = {}
     if not usable:
         texts["dsr"] = texts["psr"] = _NO_SERIES
     elif flat:
-        texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True)
+        texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True, n_finished=len(tries))
         texts["psr"] = texts["dsr"]
     else:
         if not is_try:
-            texts["dsr"] = _NOT_A_TRY if role != "trial" else "did not finish, so it is not a try"
+            texts["dsr"] = _NOT_A_TRY if role != "trial" else "did not finish; it still counts toward the number of tries"
         elif rank is None:
             texts["dsr"] = "no value for the family's objective, so it is not ranked among the tries"
         else:
             texts["dsr"] = plain.dsr_sentence(n, rank, res.dsr if res else None, objective=objective,
-                                              picked_name=picked.name if picked else None)
+                                              picked_name=picked.name if picked else None,
+                                              n_finished=len(tries))
         texts["psr"] = plain.psr_sentence(res.psr if res else None)
     boot = _bootstrap(run_id, row, dates, navs, use_cache, rf_rows)
     if boot is not None:
@@ -380,15 +381,16 @@ def _row(row: dict, objective: str, rf_rows: list[dict]) -> TrialRow:
 
 
 def _family_stats(tries: list[registry.TrialRun], best: registry.TrialRun | None,
-                  rf_rows: list[dict]) -> tuple[float, DsrResult | None]:
+                  rf_rows: list[dict], n: int | None = None) -> tuple[float, DsrResult | None]:
     """(V, the best trial's DSR). V comes from every trial's own Sharpe, whether or not the best trial has one;
-    the DSR is None only when the best trial itself has no Sharpe."""
+    the DSR is None only when the best trial itself has no Sharpe. `n` is N, every setting tried (default: the
+    finished tries); a try that failed counts in N but has no Sharpe, so it is left out of V."""
     srs = [_trial_sharpe(t, rf_rows) for t in tries]
     v = stats.sharpe_variance(srs)
     if best is None:
         return v, None
     _, x = _series(best.dates, best.navs, best.capital_paise, rf_rows)
-    return v, stats.deflated_sharpe(x, srs, len(tries))
+    return v, stats.deflated_sharpe(x, srs, max(len(tries), n or 0))
 
 
 def _family_sessions(family_id: str, sessions: list[dict]) -> list[dict]:
@@ -404,13 +406,14 @@ def family_report(family_id: str) -> FamilyReport:
     objective = registry.family_objective(family_id)
     tries = registry.trials(family_id)
     best = registry.best_trial(family_id)
-    var, dsr = _family_stats(tries, best, rf_rows)
-    counted = {t.run_id for t in tries}
+    n = registry.n_tries(family_id)
+    var, dsr = _family_stats(tries, best, rf_rows, n)
+    counted = {r["run_id"] for r in registry.counted_runs(family_id)}
     rows = store.family_runs(family_id, roles=None, status=None)
     texts: dict[str, str] = {}
     if best is not None:
-        texts["dsr"] = plain.dsr_sentence(len(tries), 1, dsr.dsr if dsr else None, objective=objective,
-                                          flat=dsr is None)
+        texts["dsr"] = plain.dsr_sentence(n, 1, dsr.dsr if dsr else None, objective=objective,
+                                          flat=dsr is None, n_finished=len(tries))
     texts["objective"] = plain.OBJECTIVE_LABELS[objective]
     texts["trials"] = plain.meaning("trials")
     texts["scores_caveat"] = plain.SCORES_CAVEAT
@@ -421,7 +424,7 @@ def family_report(family_id: str) -> FamilyReport:
     if overfit is not None:
         texts["pbo"] = plain.pbo_sentence(overfit.pbo, overfit.n_trials, outcome.n_total)
     return FamilyReport(family_id=family_id, description=fam.get("description"), objective=objective,
-                        named=bool(fam.get("named")), n_trials=len(tries),
+                        named=bool(fam.get("named")), n_trials=n,
                         var_sharpe=var if tries else None, best_run_id=best.run_id if best else None,
                         best=dsr, trials=[_row(r, objective, rf_rows) for r in rows if r["run_id"] in counted],
                         others=[_row(r, objective, rf_rows) for r in rows if r["run_id"] not in counted],
@@ -439,11 +442,12 @@ def list_families() -> list[FamilySummary]:
         fid = fam["family_id"]
         tries = registry.trials(fid)
         best = registry.best_trial(fid)
-        _, dsr = _family_stats(tries, best, rf_rows)
+        n = registry.n_tries(fid)
+        _, dsr = _family_stats(tries, best, rf_rows, n)
         out.append(FamilySummary(
             family_id=fid, description=fam.get("description"), named=bool(fam.get("named")),
-            objective=registry.family_objective(fid), n_trials=len(tries),
-            n_other_runs=len(store.family_runs(fid, roles=None, status=None)) - len(tries),
+            objective=registry.family_objective(fid), n_trials=n,
+            n_other_runs=len(store.family_runs(fid, roles=None, status=None)) - len(registry.counted_runs(fid)),
             n_sessions=len(_family_sessions(fid, sessions)),
             best_run_id=best.run_id if best else None, best_dsr=dsr.dsr if dsr else None,
             unlocks=_unlock_count(fid)))
