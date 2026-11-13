@@ -361,7 +361,7 @@ void bind_engine(py::module_& m) {
              },
              py::arg("instrument"), py::arg("side"), py::arg("qty"), py::arg("product"), py::arg("type"),
              py::arg("price") = 0, py::arg("trigger") = 0, py::arg("validity") = "DAY", py::arg("protection") = "AUTO",
-             py::arg("tag") = "", py::arg("note") = "")
+             py::kw_only(), py::arg("tag") = "", py::arg("note") = "")
         .def("modify",
              [](CtxProxy& x, std::uint64_t order_id, const py::kwargs& changes) {
                  // B2B 5.4: the oracle's Context.modify. qty, price and trigger are whole ints, checked in that order,

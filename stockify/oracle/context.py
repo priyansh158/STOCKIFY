@@ -133,7 +133,7 @@ class Context:
 
     # orders
     def place(self, instrument: int, side: str, qty: int, product: str, type: str, price: int = 0, trigger: int = 0,  # noqa: A002
-              validity: str = "DAY", protection="AUTO", tag: str = "", note: str = "") -> int:  # noqa: ANN001
+              validity: str = "DAY", protection="AUTO", *, tag: str = "", note: str = "") -> int:  # noqa: ANN001
         o = self._e.place(int(instrument), side, _whole("qty", qty), product, type, _whole("price", price),
                           _whole("trigger", trigger), validity, _protection(protection), tag, note=_note(note))
         return o.order_id
