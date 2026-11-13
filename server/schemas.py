@@ -95,7 +95,8 @@ class RecorderStatusDTO(BaseModel):
     last_packet_age_ms: dict[str, int | None] = Field(default_factory=dict)
     bytes_today: int
     age_s: float = Field(..., description="seconds since this row was written")
-    stale: bool = Field(False, description="the row is too old to be current: the recorder is not running; connected is then false")
+    stale: bool = Field(False, description="the row is older than the recorder's report interval allows (stockify.daemon.recorder_health); connected is then false")
+    market_open: bool = Field(False, description="now is inside market hours on a trading day (the recorder reports only then)")
 
 
 class RecorderStatusResponse(BaseModel):

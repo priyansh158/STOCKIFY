@@ -136,9 +136,6 @@ export function bytesWords(n: number | null | undefined): string {
   return `${Number(v.toFixed(1))} ${units[u]}`;
 }
 
-/** Used only when the API did not say `stale` itself (an older server): the recorder writes a row every 5 s. */
-const STALE_REPORT_S = 60;
-
 /** "3 min", "5 h 2 min", "8 days": how long ago, coarse enough to read at a glance. */
 function agoWords(seconds: number): string {
   if (seconds >= 2 * 86400) return `${Math.floor(seconds / 86400)} days`;
@@ -146,19 +143,26 @@ function agoWords(seconds: number): string {
 }
 
 /**
- * The recorder strip in words. A report that is too old (the API's `stale`) says only that the recorder is not running and how to
- * start it: its packet rate and packet age belong to the moment of that report, so they are not shown as if they were now.
+ * The recorder strip in words. A report that is too old (the API's `stale`) says, in market hours, that the recorder is not running and how to
+ * start it (outside them the recorder writes nothing, so the strip says only that the market is closed): its packet rate and packet age belong to the moment of that report, so they are not shown as if they were now.
  */
 export function recorderWords(
-  s: Pick<RecorderStatus, "connected" | "packets_per_s" | "last_packet_age_ms" | "age_s"> & { stale?: boolean } | null | undefined,
-): { headline: string; tone: "up" | "down" | "warn"; rate: string; last: string; note: string | null } {
+  s: Pick<RecorderStatus, "connected" | "packets_per_s" | "last_packet_age_ms" | "age_s" | "stale" | "market_open"> | null | undefined,
+): { headline: string; tone: "up" | "down" | "warn" | "info"; rate: string; last: string; note: string | null } {
   if (!s) {
     return {
       headline: "The recorder has not reported yet", tone: "warn", rate: "—", last: "—",
       note: `Start the recorder to see live figures: run ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
     };
   }
-  if (s.stale ?? s.age_s > STALE_REPORT_S) {
+  if (s.stale && !s.market_open) {
+    // outside market hours the recorder writes nothing, running or not: say what is known, not that it is broken
+    return {
+      headline: "No report while the market is closed", tone: "info", rate: "—", last: "—",
+      note: `The last report was ${agoWords(s.age_s)} ago. The recorder reports only while the market is open. If it should have run, start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
+    };
+  }
+  if (s.stale) {
     return {
       headline: "The recorder is not running", tone: "warn", rate: "—", last: "—",
       note: `Its last report was ${agoWords(s.age_s)} ago, so nothing is being recorded now. Start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,

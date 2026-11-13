@@ -1,4 +1,4 @@
-"""LCM 7.1: every terminal command the web UI shows comes from web/src/lib/commands.ts, uses the venv interpreter, and names
+"""LCM 7.2: every terminal command the web UI shows comes from web/src/lib/commands.ts, uses the venv interpreter, and names
 a command and flags the CLI really has."""
 from __future__ import annotations
 

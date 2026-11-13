@@ -107,6 +107,8 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["bytes"], ["—", "0 B", "999 B", "1.5 kB", "2.5 MB", "12.3 GB", "3 TB", "—"])
         old = ("Its last report was {} ago, so nothing is being recorded now. Start it with .\\run.ps1 -DaemonOnly "
                "in a terminal in the STOCKIFY folder.")
+        closed = ("The last report was {} ago. The recorder reports only while the market is open. If it should have run, "
+                  "start it with .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder.")
         none = {"headline": "The recorder has not reported yet", "tone": "warn", "rate": "—", "last": "—",
                 "note": "Start the recorder to see live figures: run .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder."}
         self.assertEqual(self.answers["recorder"], [
@@ -116,6 +118,7 @@ class ResearchHelperChecks(unittest.TestCase):
             {"headline": "Not connected", "tone": "down", "rate": "0 packets a second", "last": "last packet 2 min 5 s ago", "note": None},
             {"headline": "The recorder is not running", "tone": "warn", "rate": "—", "last": "—", "note": old.format("6 min 40 s")},
             {"headline": "The recorder is not running", "tone": "warn", "rate": "—", "last": "—", "note": old.format("8 days")},
+            {"headline": "No report while the market is closed", "tone": "info", "rate": "—", "last": "—", "note": closed.format("8 days")},
             {"headline": "Connected", "tone": "up", "rate": "204.3 packets a second", "last": "last packet 94 ms ago", "note": None},
         ])
 
