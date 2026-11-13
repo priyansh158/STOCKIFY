@@ -32,6 +32,8 @@ export type ChartMarker = {
   qty: number;
   price: string;
   price_paise: number;
+  /** A settlement's exchange settlement price (the underlying's, for an option); null or absent otherwise. */
+  fsp_paise?: number | null;
   order_id: number | null;
   fill_id: number | null;
   note: string;
@@ -114,13 +116,22 @@ function signedRupees(paise: number): string {
   return paise > 0 ? `+${rupees(paise)}` : rupees(paise);
 }
 
+/** An option's symbol ends in a strike then CE or PE; anything else settled here is a future. */
+export function settlementKindOf(symbol: string): "option" | "future" {
+  return /\d(CE|PE)$/.test(symbol) ? "option" : "future";
+}
+
 /** What the card beside a marker shows. All values are plain text. */
-export function cardModel(m: ChartMarker): CardModel {
+export function cardModel(m: ChartMarker, contract?: "option" | "future"): CardModel {
   const verb = m.kind === "settlement" ? "Settled" : isBuy(m) ? "Bought" : "Sold";
-  const lines: CardModel["lines"] = [
-    { label: "Quantity", value: String(m.qty), code: false },
-    { label: "Price", value: rupees(m.price_paise), code: false },
-  ];
+  const lines: CardModel["lines"] = [{ label: "Quantity", value: String(m.qty), code: false }];
+  if (m.kind === "settlement" && contract === "option") {
+    // The runner closes an option at its value at expiry; the exchange's settlement price is the underlying's.
+    lines.push({ label: "Value at expiry", value: rupees(m.price_paise), code: false });
+    if (m.fsp_paise != null) lines.push({ label: "Settlement price", value: rupees(m.fsp_paise), code: false });
+  } else {
+    lines.push({ label: m.kind === "settlement" ? "Settlement price" : "Price", value: rupees(m.price_paise), code: false });
+  }
   if (m.charges_paise !== null) lines.push({ label: "Costs", value: rupees(m.charges_paise), code: false });
   if (m.tag) lines.push({ label: "Tag", value: m.tag, code: m.tag_is_code });
 
@@ -159,4 +170,123 @@ export function rangeAround(tSec: number, interval_s: number, bars: number): { f
   const t = Math.floor(tSec);
   const span = Math.ceil(bars * interval_s);
   return { from_ns: Math.max(0, t - span) * 1e9, to_ns: (t + span) * 1e9 };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The component's pure parts (CH 6.15).
+// Guessed where C11's brief is silent (C11 replaces these types at integration): `data_state` is "ok" or a word
+// for missing prices ("pruned" for a pruned run, "no_pack" for a session day without a recording); `plain` is a
+// short plain-words line about the chart, shown as is. Session and walk-forward fields are optional.
+// ---------------------------------------------------------------------------------------------------------
+export type ChartPlotPoint = { t: number; value: string };
+export type ChartPlot = { name: string; kind: "price" | "level"; instrument_id: number | null; points: ChartPlotPoint[] };
+export type ChartWindow = { from_ns: number; to_ns: number; label: string };
+
+export type ChartModel = {
+  instruments: { id: number; symbol: string }[];
+  instrument_id: number | null;
+  basis: string;
+  interval_s: number;
+  bars: ChartBar[];
+  markers: ChartMarker[];
+  plots: ChartPlot[];
+  truncated: boolean;
+  next_from_ns: number | null;
+  data_state: string;
+  omitted_markers: number;
+  plain?: string;
+  /** A plain sentence to show above the chart (a different interval, an unpriced settlement, delivery); null when none. */
+  notice?: string | null;
+  /** False when some profit is not on the markers (delivery, an unpriced settlement). */
+  pnl_complete?: boolean;
+  // sessions (C13)
+  trade_date?: string;
+  days?: string[];
+  paper?: boolean;
+  live?: boolean;
+  // walk-forward (C12)
+  windows?: { index: number; from_ns: number; to_ns: number; run_id: string | null; status: string }[];
+};
+
+export type ChartViewState = "loading" | "error" | "pruned" | "empty" | "full";
+
+/** null: not loaded yet. "error": the load failed. A model: no price data, no trades, or both drawn. */
+export function chartViewState(model: ChartModel | null | "error"): ChartViewState {
+  if (model === null) return "loading";
+  if (model === "error") return "error";
+  if (model.data_state === "pruned" || model.data_state === "no_pack") return "pruned";
+  return model.markers.length === 0 ? "empty" : "full";
+}
+
+/** A daily chart uses dates, not instants. */
+export const isDaily = (interval_s: number): boolean => interval_s >= 86400;
+
+function istStamp(t: number, daily: boolean): string {
+  const iso = new Date((t + istShift) * 1000).toISOString();
+  return daily ? iso.slice(0, 10) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+}
+
+export type MarkerRow = { id: string; when: string; title: string; reason: string };
+
+/** One row per marker, the same ids and order as the chart's markers, for the keyboard-reachable list. */
+export function markerRows(markers: ChartMarker[], daily: boolean, tokens: MarkerTokens): MarkerRow[] {
+  return markers.map((m, i) => {
+    const card = cardModel(m);
+    return { id: toMarker(m, daily, tokens, i).id, when: istStamp(m.t, daily), title: card.title, reason: card.reason };
+  });
+}
+
+/** A plot point on the chart's time rule; the value arrives as a decimal string. */
+export function toPlotPoint(p: ChartPlotPoint, daily: boolean): { time: ChartTime; value: number } {
+  return { time: daily ? istDate(p.t) : p.t + istShift, value: Number(p.value) };
+}
+
+export type EdgeRequest = { side: "before" | "after"; from_ns: number; to_ns: number };
+
+/**
+ * Which neighbouring ranges to fetch when the visible range (UTC seconds) reaches an edge of the bars held:
+ * within three bars of it. `count` bars are asked for beyond the edge.
+ */
+export function edgeRequests(
+  visible: { from: number; to: number },
+  bars: ChartBar[],
+  interval_s: number,
+  count: number,
+): EdgeRequest[] {
+  if (bars.length === 0) return [];
+  const first = bars[0].t;
+  const last = bars[bars.length - 1].t;
+  const near = 3 * interval_s;
+  const span = Math.ceil(count * interval_s);
+  const out: EdgeRequest[] = [];
+  if (visible.from <= first + near) out.push({ side: "before", from_ns: Math.max(0, first - span) * 1e9, to_ns: first * 1e9 });
+  if (visible.to >= last - near) out.push({ side: "after", from_ns: last * 1e9, to_ns: (last + span) * 1e9 });
+  return out;
+}
+
+/** Bars inside a test window, with the window's index: the walk-forward shading. */
+export function shadeWindows(
+  bars: ChartBar[],
+  windows: ChartWindow[],
+  daily: boolean,
+): { time: ChartTime; index: number }[] {
+  const out: { time: ChartTime; index: number }[] = [];
+  for (const b of bars) {
+    const ns = b.t * 1e9;
+    const index = windows.findIndex((w) => ns >= w.from_ns && ns < w.to_ns);
+    if (index >= 0) out.push({ time: timeOf(b.t, b.d, daily), index });
+  }
+  return out;
+}
+
+export type ChartOpts = { instrument?: number; from_ns?: number; to_ns?: number; trade_date?: string };
+
+/** The query string for a chart request: only what is set (an instrument of 0 is set). */
+export function chartQuery(o: ChartOpts): string {
+  const q: string[] = [];
+  if (o.instrument !== undefined) q.push(`instrument=${o.instrument}`);
+  if (o.from_ns !== undefined) q.push(`from_ns=${o.from_ns}`);
+  if (o.to_ns !== undefined) q.push(`to_ns=${o.to_ns}`);
+  if (o.trade_date !== undefined) q.push(`trade_date=${encodeURIComponent(o.trade_date)}`);
+  return q.length ? `?${q.join("&")}` : "";
 }

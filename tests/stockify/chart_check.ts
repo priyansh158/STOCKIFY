@@ -121,4 +121,64 @@ for (let i = 0; i < 300; i++) {
 }
 out.propMarkerText = noteText;
 
+// The view state of the component (CH 6.15): null is "not loaded yet", "error" is a failed load.
+const model = (over: Record<string, unknown>) => ({
+  instruments: [{ id: 1, symbol: "RELIANCE" }], instrument_id: 1, basis: "adjusted", interval_s: 60,
+  bars: [bar(60, "d")], markers: [fill({})], plots: [], truncated: false, next_from_ns: null, data_state: "ok",
+  omitted_markers: 0, plain: "", ...over,
+});
+out.viewState = {
+  loading: chart.chartViewState(null),
+  error: chart.chartViewState("error"),
+  pruned: chart.chartViewState(model({ data_state: "pruned", bars: [] })),
+  noPack: chart.chartViewState(model({ data_state: "no_pack", bars: [], markers: [] })),
+  empty: chart.chartViewState(model({ markers: [] })),
+  emptyNoBars: chart.chartViewState(model({ markers: [], bars: [] })),
+  full: chart.chartViewState(model({})),
+  fullNoBars: chart.chartViewState(model({ bars: [] })),
+};
+
+// Every marker has a list row, with the id the chart marker carries, in the same order.
+const listed = [
+  fill({ fill_id: 1, note: "one" }), fill({ fill_id: 2, side: "SELL" }),
+  fill({ kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 }),
+  fill({ kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75 }),
+];
+out.listRows = chart.markerRows(listed, false, TOKENS);
+out.listIds = listed.map((m: unknown, i: number) => chart.toMarker(m, false, TOKENS, i).id);
+out.listDaily = chart.markerRows([fill({ bar_t: 1_762_913_100 })], true, TOKENS)[0].when;
+out.listEmpty = chart.markerRows([], false, TOKENS);
+
+// A plot point shifts like a candle; a daily chart uses the IST date.
+out.plotIntraday = chart.toPlotPoint({ t: 1_762_913_100, value: "2412.50" }, false);
+out.plotDaily = chart.toPlotPoint({ t: 1_762_913_100, value: "54.3217" }, true);
+
+// Panning to an edge asks for the neighbouring range (UTC seconds in, nanoseconds out).
+const held = [bar(10_000, "d"), bar(10_060, "d"), bar(20_000, "d")];
+out.edgeNone = chart.edgeRequests({ from: 12_000, to: 15_000 }, held, 60, 100);
+out.edgeBefore = chart.edgeRequests({ from: 10_000, to: 15_000 }, held, 60, 100);
+out.edgeAfter = chart.edgeRequests({ from: 15_000, to: 20_100 }, held, 60, 100);
+out.edgeBoth = chart.edgeRequests({ from: 9_000, to: 21_000 }, held, 60, 100).length;
+out.edgeNoBars = chart.edgeRequests({ from: 0, to: 1 }, [], 60, 100);
+out.edgeZero = chart.edgeRequests({ from: 0, to: 1 }, [bar(100, "d")], 60, 100)[0];
+
+// Walk-forward shading: a bar in a window gets that window's index; outside every window, none.
+const wins = [{ from_ns: 100e9, to_ns: 200e9, label: "w1" }, { from_ns: 200e9, to_ns: 300e9, label: "w2" }];
+out.shade = chart.shadeWindows([bar(50, "d"), bar(100, "d"), bar(199, "d"), bar(200, "d"), bar(300, "d")], wins, false)
+  .map((p: { time: number; index: number }) => [p.time, p.index]);
+
+// The request for a range, as the API wants it.
+out.queryAll = chart.chartQuery({});
+out.queryFull = chart.chartQuery({ instrument: 3, from_ns: 5, to_ns: 9, trade_date: "2026-11-12" });
+out.queryZero = chart.chartQuery({ instrument: 0 });
+
+// Settlements (C10 fix round): the price is "value at expiry" for an option, "settlement price" for a future.
+const settle = fill({ kind: "settlement", side: "SELL", fill_id: null, order_id: null, qty: 75, price: "112.00",
+  price_paise: 11200, fsp_paise: 2441000, note: "Settled at expiry" });
+out.cardSettleOption = chart.cardModel(settle, "option");
+out.cardSettleFuture = chart.cardModel(settle, "future");
+out.cardSettleUnknown = chart.cardModel(settle);
+out.cardFillWithFsp = chart.cardModel(fill({ fsp_paise: null }), "option");
+out.kinds = ["NIFTY25NOV24500CE", "NIFTY25NOV24500PE", "NIFTY25NOVFUT", "RELIANCE"].map(chart.settlementKindOf);
+
 process.stdout.write(JSON.stringify(out));

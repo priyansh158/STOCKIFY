@@ -131,6 +131,60 @@ class ChartHelperChecks(unittest.TestCase):
     def test_generated_marker_text_never_holds_the_note(self):
         self.assertEqual(self.r["propMarkerText"], [])
 
+    def test_empty_and_error_states(self):
+        v = self.r["viewState"]
+        self.assertEqual(v["loading"], "loading")
+        self.assertEqual(v["error"], "error")
+        self.assertEqual(v["pruned"], "pruned")
+        self.assertEqual(v["noPack"], "pruned")
+        self.assertEqual(v["empty"], "empty")
+        self.assertEqual(v["emptyNoBars"], "empty")
+        self.assertEqual(v["full"], "full")
+        self.assertEqual(v["fullNoBars"], "full")
+
+    def test_marker_list_is_complete(self):
+        rows = self.r["listRows"]
+        self.assertEqual([r["id"] for r in rows], self.r["listIds"])
+        self.assertEqual(len(set(self.r["listIds"])), 4)
+        self.assertEqual(self.r["listEmpty"], [])
+        self.assertEqual(rows[0]["title"], "Bought 50 at ₹2,418.40")
+        self.assertEqual(rows[0]["reason"], "one")
+        self.assertEqual(rows[0]["when"], "2025-11-12 07:35")
+        self.assertEqual(self.r["listDaily"], "2025-11-12")
+
+    def test_plot_points_follow_the_candle_time_rule(self):
+        self.assertEqual(self.r["plotIntraday"], {"time": 1_762_913_100 + 19800, "value": 2412.5})
+        self.assertEqual(self.r["plotDaily"], {"time": "2025-11-12", "value": 54.3217})
+
+    def test_edges_ask_for_the_neighbouring_range(self):
+        self.assertEqual(self.r["edgeNone"], [])
+        self.assertEqual(self.r["edgeNoBars"], [])
+        self.assertEqual(self.r["edgeBefore"], [{"side": "before", "from_ns": (10_000 - 6000) * 10**9, "to_ns": 10_000 * 10**9}])
+        self.assertEqual(self.r["edgeAfter"], [{"side": "after", "from_ns": 20_000 * 10**9, "to_ns": 26_000 * 10**9}])
+        self.assertEqual(self.r["edgeBoth"], 2)
+        self.assertEqual(self.r["edgeZero"]["from_ns"], 0)
+
+    def test_window_shading_follows_the_window_bounds(self):
+        self.assertEqual(self.r["shade"], [[100 + 19800, 0], [199 + 19800, 0], [200 + 19800, 1]])
+
+    def test_chart_query_lists_only_what_is_set(self):
+        self.assertEqual(self.r["queryAll"], "")
+        self.assertEqual(self.r["queryZero"], "?instrument=0")
+        self.assertEqual(self.r["queryFull"], "?instrument=3&from_ns=5&to_ns=9&trade_date=2026-11-12")
+
+    def test_settlement_card_names_the_price_by_contract_kind(self):
+        def line(card, label):
+            return [x["value"] for x in card["lines"] if x["label"] == label]
+        opt, fut, unk = self.r["cardSettleOption"], self.r["cardSettleFuture"], self.r["cardSettleUnknown"]
+        self.assertEqual(line(opt, "Value at expiry"), ["₹112.00"])
+        self.assertEqual(line(opt, "Settlement price"), ["₹24,410.00"])
+        self.assertEqual(line(opt, "Price"), [])
+        self.assertEqual(line(fut, "Settlement price"), ["₹112.00"])
+        self.assertEqual(line(fut, "Value at expiry"), [])
+        self.assertEqual(line(unk, "Settlement price"), ["₹112.00"])
+        self.assertEqual(line(self.r["cardFillWithFsp"], "Price"), ["₹2,418.40"])
+        self.assertEqual(self.r["kinds"], ["option", "option", "future", "future"])
+
 
 if __name__ == "__main__":
     unittest.main()
