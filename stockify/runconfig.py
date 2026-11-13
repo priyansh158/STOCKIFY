@@ -55,6 +55,7 @@ FILL_KEYS = ("kind", *FILL_DEFAULTS)
 # gives, and refused when it is anything else.
 FILL_DERIVED = {"participation": "participation_ppm", "depth_take": "depth_take_ppm"}
 MAX_EXTRA_TICKS = 1000
+MAX_RANDOM_TICKS_K = 2**32 - 2        # CH 6.8: engine/src/matcher.cpp `kMaxRandomTicksK`
 SLIPPAGE_KEYS = {"none": ("kind", "extra_ticks"), "fixed_ticks": ("kind", "k", "extra_ticks"),
                  "random_ticks": ("kind", "k", "extra_ticks"), "bps": ("kind", "x", "bp", "extra_ticks")}   # bp is derived from x
 STRATEGY_KEYS = {"python": ("kind", "ref", "params"), "cpp": ("kind", "ref", "params"),
@@ -262,6 +263,8 @@ def _fill(f: dict) -> dict:
             del slip["extra_ticks"]
     if slip["kind"] in ("fixed_ticks", "random_ticks"):
         _int(slip.get("k"), "fill_model.slippage.k", 0)
+        if slip["kind"] == "random_ticks":      # CH 6.8: the engine draws below(k + 1) as a uint32
+            _need(slip["k"] <= MAX_RANDOM_TICKS_K, "fill_model.slippage.k", f"must be <= {MAX_RANDOM_TICKS_K}")
     if slip["kind"] == "bps":
         x = slip.get("x")
         _need(isinstance(x, str), "fill_model.slippage.x", f"{x!r} is not a string: it must be {SLIPPAGE_X_UNIT}")

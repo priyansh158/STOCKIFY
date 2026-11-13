@@ -55,3 +55,25 @@ TEST_CASE("a hand-edited bundle's extra_ticks outside 0 to 1000, or not a whole 
     CHECK(stocksim::extra_ticks_of(Json::parse(R"({"kind":"none","extra_ticks":1000})")) == 1000);
     CHECK(stocksim::extra_ticks_of(Json::parse(R"({"kind":"none","extra_ticks":0})")) == 0);
 }
+
+// CH 6.8: the other slippage reads are checked as extra_ticks is (a hand-edited bundle is not trusted).
+TEST_CASE("slippage k and bp are whole numbers in range, else RunError naming the key") {
+    using stocksim::RunError;
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"random_ticks","k":4294967295})"), RunError);  // k + 1 would wrap to 0
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"random_ticks","k":4294967296})"), RunError);  // ... to 1
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"random_ticks","k":-1})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"random_ticks","k":18446744073709551615})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"random_ticks","k":"3"})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"random_ticks"})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"fixed_ticks","k":-1})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"fixed_ticks","k":2.5})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"fixed_ticks","k":true})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"bps","bp":-1})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"bps","bp":"10"})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":"bps"})"), RunError);
+    CHECK_THROWS_AS(slip(Side::Buy, R"({"kind":7})"), RunError);
+    CHECK_THROWS_WITH_AS(slip(Side::Buy, R"({"kind":"random_ticks","k":4294967295})"),
+                         doctest::Contains("fill_model.slippage.k"), RunError);
+    CHECK(slip(Side::Buy, R"({"kind":"random_ticks","k":4294967294})") >= 10'000);  // the largest k is still drawn
+    CHECK(slip(Side::Buy, R"({"kind":"random_ticks","k":0})") == 10'000);
+}
