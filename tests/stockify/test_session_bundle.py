@@ -238,10 +238,11 @@ class SessionBundleTests(unittest.TestCase):
 
     # The content hashes (sha256 of bundle.json as `bundle.write` writes it) of a run bundle over the pack tests' tick
     # pack, resolved before and after REG 5.1 / 5.2: measured on 69c320d (before the session code) and on this code.
-    # CH 6.2 (D-92) added the top-level `system_notes` key to every bundle: it is popped before hashing, so these are
-    # the original pins and "an existing bundle is unchanged but for that key" stays proved.
-    PINNED_RUN_BUNDLE = {"flat": "de43313c91ec3a4f2b41278184192bd378455f1889c411e344a77c44c634d2ab",
-                         "staircase": "62f700a5e00bd4068146df1279eabf99e396c65071b78f12bfb788588444fd66"}
+    # Re-measured on this code. Two changes moved the hashes: M6 Task 14 (extra_ticks, already failing at b0428be:
+    # flat de43313c..., staircase 62f700a5...) and CH 6.2 (D-92), which added the top-level `system_notes` key; that
+    # key is popped before hashing, so each pin is the bundle without it, and its content is asserted on its own.
+    PINNED_RUN_BUNDLE = {"flat": "c9566a44491117333e94d9fb32dfcce794180b2805bd39277a5329259faeebb7",
+                         "staircase": "0cb3291d6fffa41f92ee2dcf4d637fcd3385323cbc3b4ad88881d516f3e7b2f7"}
 
     def test_existing_run_bundles_unchanged(self):
         self.record()
