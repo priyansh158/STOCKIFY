@@ -253,8 +253,14 @@ class VariantNeedsARealJobTests(BundleTest):
         support.reset_sqlite_singleton(store)
         self.addCleanup(support.reset_sqlite_singleton, store)
 
-    def cfg(self, name="t"):
-        return run_config(name=name, strategy=BUY)
+    FAM = "fam/x/1"
+
+    def cfg(self, name="t", family=FAM):
+        return run_config(name=name, strategy=BUY, family_id=family)
+
+    def job(self, job_id="real", kind="sensitivity", status="running", family=FAM):
+        store.create_research_job({"job_id": job_id, "kind": kind, "status": status, "family_id": family,
+                                   "created_ns": 1})
 
     def test_a_variant_role_without_a_real_job_is_refused_everywhere(self):
         for role in ("sensitivity", "oos", "rerun"):
@@ -278,10 +284,44 @@ class VariantNeedsARealJobTests(BundleTest):
         self.assertEqual(store.list_runs(), [])
 
     def test_a_real_research_job_may_mark_its_runs(self):
-        store.create_research_job({"job_id": "real", "kind": "sensitivity", "status": "running", "created_ns": 1})
+        self.job("real")
+        self.job("wf", kind="walkforward")
         rid = runs.launch(self.cfg(), role="sensitivity", job_id="real", impl="oracle", report=False)
         self.assertEqual((store.get_run(rid)["role"], store.get_run(rid)["job_id"]), ("sensitivity", "real"))
-        self.assertTrue(runs.queue(self.cfg("t2"), role="oos", job_id="real"))
+        self.assertTrue(runs.queue(self.cfg("t2"), role="oos", job_id="wf"))
+
+    def test_a_job_of_the_wrong_kind_is_refused(self):
+        self.job("sj", kind="sensitivity")
+        self.job("wj", kind="walkforward")
+        self.job("sw", kind="sweep")
+        for role, job in (("oos", "sj"), ("sensitivity", "wj"), ("sensitivity", "sw"), ("oos", "sw")):
+            with self.subTest(role=role, job=job):
+                with self.assertRaisesRegex(RunConfigError, "role .* belongs to a .* job"):
+                    runs.queue(self.cfg(), role=role, job_id=job)
+                with self.assertRaisesRegex(RunConfigError, "role .* belongs to a .* job"):
+                    runs.launch(self.cfg(), role=role, job_id=job, impl="oracle", report=False)
+        self.assertEqual(store.list_runs(), [])
+
+    def test_a_job_that_is_not_running_is_refused(self):
+        for status in ("done", "failed", "cancelled"):
+            self.job("j-" + status, status=status)
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(RunConfigError, "is %s, not running" % status):
+                    runs.queue(self.cfg(), role="sensitivity", job_id="j-" + status)
+                with self.assertRaisesRegex(RunConfigError, "is %s, not running" % status):
+                    runs.launch(self.cfg(), role="sensitivity", job_id="j-" + status, impl="oracle", report=False)
+        self.assertEqual(store.list_runs(), [])
+
+    def test_a_run_of_another_family_is_refused_and_leaves_no_folder(self):
+        self.job("real")
+        for fam in ("other/fam/1", None):          # an explicit other family, and the default one
+            with self.subTest(family=fam):
+                cfg = self.cfg(family=fam) if fam else run_config(name="t", strategy=BUY)
+                with self.assertRaisesRegex(RunConfigError, "not the family of research job"):
+                    runs.queue(cfg, role="sensitivity", job_id="real")
+                with self.assertRaisesRegex(RunConfigError, "not the family of research job"):
+                    runs.launch(cfg, role="sensitivity", job_id="real", impl="oracle", report=False)
+        self.assertEqual(store.list_runs(), [])
 
     def test_trial_needs_no_job_and_rerun_still_works(self):
         rid = runs.launch(self.cfg(), impl="oracle", report=False)           # trial, no job
@@ -327,8 +367,8 @@ class RealProcessTests(BundleTest):
     def test_two_real_subprocesses_run_a_tiny_config(self):
         for n in ("pa", "pb"):
             store.create_research_job({"job_id": "job-" + n, "kind": "sensitivity", "status": "running",
-                                       "created_ns": 1})
-        jobs = [PoolJob(run_config(name=n, strategy=BUY), role="sensitivity", job_id="job-" + n, impl="oracle")
+                                       "family_id": "fam/" + n + "/1", "created_ns": 1})
+        jobs = [PoolJob(run_config(name=n, strategy=BUY, family_id="fam/" + n + "/1"), role="sensitivity", job_id="job-" + n, impl="oracle")
                 for n in ("pa", "pb")]
         out = pool.run_all(jobs, workers=2)
         self.assertEqual([o.status for o in out], ["done", "done"], out)
