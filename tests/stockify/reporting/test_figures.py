@@ -47,10 +47,21 @@ class PresentTests(unittest.TestCase):
             self.assertEqual(why[k], figures.FEW_DAYS, k)
 
     def test_no_sharpe_reasons_match_the_real_cause(self):
-        idle = figures.present(metrics(10, sharpe=None, sortino=None, trades=0))[1]
+        idle = figures.present(metrics(10, sharpe=None, sortino=None, trades=0, turnover=0.0))[1]
         self.assertEqual((idle["sharpe"], idle["sortino"]), (figures.NO_TRADES, figures.NO_TRADES))
         flat = figures.present(metrics(10, sharpe=None, trades=3))[1]
         self.assertEqual(flat["sharpe"], figures.NO_SWING)
+
+    def test_a_run_that_only_opened_a_position_is_never_called_tradeless(self):
+        """metrics.trades counts closed round trips; an open position has trades == 0 but did fill (review I1)."""
+        one = figures.present(metrics(1, sharpe=None, sortino=None, volatility=None, trades=0))[1]
+        self.assertEqual((one["sharpe"], one["sortino"]), (figures.FEW_DAYS, figures.FEW_DAYS))
+        hold = figures.present(metrics(10, sortino=None, trades=0))[1]          # rising buy-and-hold, never closed
+        self.assertEqual(hold["sortino"], figures.NO_LOSING_DAY)
+        idle = figures.present(metrics(10, sharpe=None, trades=0, turnover=0.0))[1]
+        self.assertEqual(idle["sharpe"], figures.NO_TRADES)             # nothing filled at all
+        self.assertEqual(figures.present(metrics(1, sharpe=None, trades=0, turnover=0.0))[1]["sharpe"],
+                         figures.FEW_DAYS)                              # fewer than 2 days comes first
 
     def test_the_boundary_is_the_configured_day_count(self):
         self.assertIsNone(figures.present(metrics(LIMIT - 1))[0]["cagr"])

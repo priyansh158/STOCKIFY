@@ -138,10 +138,13 @@ class RunResearchTests(ReportTest):
         self.assertIn(best.name, res.plain["dsr"])
         self.assertIn("runner-up", res.plain["dsr"])
 
-    def _set_trades(self, run_id: str, trades: int) -> None:
+    def _set_trades(self, run_id: str, trades: int, *, filled: bool | None = None) -> None:
+        """`trades` counts closed round trips; `filled` (default: trades > 0) says whether any order was filled, which
+        is what `turnover` records (0 when nothing was)."""
         row = store.get_run(run_id)
         m = json.loads(row["metrics_json"])
         m["trades"] = trades
+        m["turnover"] = 5.0 if (trades > 0 if filled is None else filled) else 0.0
         self.sql("UPDATE runs SET metrics_json=? WHERE run_id=?", (json.dumps(m), run_id))
 
     def test_no_sharpe_says_why_and_a_run_that_traded_is_not_called_tradeless(self):
@@ -159,6 +162,17 @@ class RunResearchTests(ReportTest):
         self.assertEqual(said["oneday"]["psr"], said["oneday"]["dsr"])
         for r in ("oneday", "steady"):
             self.assertNotIn("no trades", said[r]["dsr"])
+
+    def test_a_run_that_only_opened_a_position_is_not_called_tradeless(self):
+        """trades counts round trips: an open position has trades == 0 but did fill (D-135, review I1)."""
+        registry.ensure_family(FAM, "sharpe")
+        make_run("open1", FAM, daily_returns=[-0.0002], name="open1")             # opened, 1 day
+        make_run("openflat", FAM, daily_returns=[0.0] * 10, name="openflat")      # opened, never closed, flat days
+        self._set_trades("open1", 0, filled=True)
+        self._set_trades("openflat", 0, filled=True)
+        said = {r: report.run_research(r, use_cache=False).plain for r in ("open1", "openflat")}
+        self.assertEqual(said["open1"]["dsr"], plain.no_sharpe_sentence(plain.ONE_DAY))
+        self.assertEqual(said["openflat"]["dsr"], plain.no_sharpe_sentence(plain.NO_SWING))
 
     def test_family_report_says_why_the_best_try_has_no_sharpe(self):
         fam = "strat/ds-1m-RELIANCE/net_pnl"          # ranked by profit, so a one-day try can still be the best

@@ -25,6 +25,7 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import paths, store
+from stockify.reporting import figures
 from stockify.research import bootstrap, fileio, pbo, plain, regimes, registry, settings, stats
 from stockify.research.bootstrap import BootstrapResult, Interval
 from stockify.research.pbo import PboResult
@@ -134,15 +135,15 @@ def _series(dates, navs, capital: int, rf_rows: list[dict]) -> tuple[list[float]
     return r, stats.excess_returns(list(dates), r, rf_rows)
 
 
+_PLAIN_REASON = {figures.NO_TRADES: plain.NO_TRADES, figures.FEW_DAYS: plain.ONE_DAY}
+
+
 def _flat_reason(x: list[float], row: dict | None) -> str:
-    """Why a daily-return series has no Sharpe (D-135): the run never traded, it has fewer than 2 days, or every
-    day ended the same. A run that traded is never called "no trades"."""
-    trades = _json_metrics(row).get("trades")
-    if isinstance(trades, int) and not isinstance(trades, bool) and trades == 0:
-        return plain.NO_TRADES
-    if len(x) < 2:
-        return plain.ONE_DAY
-    return plain.NO_SWING
+    """Why a daily-return series has no Sharpe (D-135): fewer than 2 days, nothing filled at all, or every day ended
+    the same. The decision is `figures.no_figure_reason`, the one the compare table and report.md use; a run that
+    traded is never called "no trades"."""
+    reason = figures.no_figure_reason("sharpe", len(x), _json_metrics(row))
+    return _PLAIN_REASON.get(reason, plain.NO_SWING)
 
 
 def _json_metrics(row: dict | None) -> dict:
