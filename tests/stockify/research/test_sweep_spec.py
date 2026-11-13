@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import math
 import tempfile
@@ -174,6 +175,37 @@ class SweepSpecTest(unittest.TestCase):
         with self.assertRaises(sweep.SweepSpecError):
             spec_from(yaml_text(big, "{kind: random, trials: %d, seed: 3}" % (cap + 1)))
 
+    def test_unquoted_date_in_an_axis_or_the_base_is_refused_telling_to_quote(self):
+        with self.assertRaises(sweep.SweepSpecError) as cm:
+            spec_from(yaml_text("  seed: [2026-06-01]\n"))
+        self.assertIn("quote", str(cm.exception))
+        self.assertIn("seed", str(cm.exception))
+        text = yaml_text(AXES).replace(json.dumps(BASE), "{schema: stockify.run/1, name: x, when: 2026-06-01}")
+        with self.assertRaises(sweep.SweepSpecError) as cm:
+            spec_from(text)
+        self.assertIn("quote", str(cm.exception))
+
+    def test_unquoted_time_stays_the_string_the_user_wrote(self):
+        spec = spec_from(yaml_text("  strategy.params.exit_hhmm: [14:30, '15:00']\n"))
+        self.assertEqual(spec.axes["strategy.params.exit_hhmm"], ["14:30", "15:00"])
+        self.assertEqual(spec_from(yaml_text("  seed: [0x10, 11, 12, 3]\n")).axes["seed"], [16, 11, 12, 3])
+
+    def test_name_family_schema_and_unlock_holdout_cannot_be_axes(self):
+        for path in ("name", "family_id", "schema", "unlock_holdout"):
+            with self.subTest(path=path), self.assertRaises(sweep.SweepSpecError) as cm:
+                spec_from(yaml_text(f"  {path}: ['a', 'b']\n"))
+            self.assertIn(path, str(cm.exception))
+
+    def test_deep_nesting_and_bad_utf8_are_spec_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "s.yaml"
+            p.write_bytes(b"schema: \xff\xfe\n")
+            with self.assertRaises(sweep.SweepSpecError):
+                sweep.load_spec(p)
+            p.write_text("a: " + "[" * 5000 + "]" * 5000 + "\n", encoding="utf-8")
+            with self.assertRaises(sweep.SweepSpecError):
+                sweep.load_spec(p)
+
     def test_workers_must_be_null_or_a_positive_int(self):
         self.assertIsNone(spec_from(yaml_text(AXES)).workers)
         with self.assertRaises(sweep.SweepSpecError):
@@ -189,12 +221,14 @@ class SweepPropertiesTest(unittest.TestCase):
     """Seeded loops over random grids (stdlib property testing)."""
 
     def random_axes(self, rng) -> tuple[str, list[int]]:
-        pool = ["strategy.params.range_minutes", "strategy.params.qty", "seed", "latency_ms", "capital_paise"]
+        pool = ["strategy.params.exit_hhmm", "strategy.params.range_minutes", "strategy.params.qty", "seed", "latency_ms", "capital_paise"]
         chosen = list(dict.fromkeys(pool[rng.below(len(pool))] for _ in range(1 + rng.below(3))))
         sizes, lines = [], []
         for path in chosen:
             n = 1 + rng.below(4)
             vals = [1 + 10 * i + rng.below(9) for i in range(n)]      # distinct, positive
+            if path.endswith("exit_hhmm"):
+                vals = [f"1{3 + i}:{10 + rng.below(40)}" for i in range(n)]    # strings, quoted in the file
             sizes.append(n)
             lines.append(f"  {path}: {vals}\n")
         return "".join(lines), sizes
@@ -210,6 +244,11 @@ class SweepPropertiesTest(unittest.TestCase):
             for p in pts:
                 runconfig.validate(copy.deepcopy(p.config))
             self.assertEqual([p.config for p in pts], [p.config for p in sweep.expand(spec_from(text))])
+            # Stable order: the last axis fastest, i.e. the points are sorted by their axis positions.
+            spec = spec_from(text)
+            pos = [tuple(spec.axes[a].index(p.params[a]) for a in spec.axes) for p in pts]
+            self.assertEqual(pos, sorted(pos))
+            self.assertEqual(pos, list(itertools.product(*(range(len(v)) for v in spec.axes.values()))))
 
     def test_random_search_same_seed_same_trials_and_a_subset_of_the_grid(self):
         rng = seeding.stream(6, "random_search")

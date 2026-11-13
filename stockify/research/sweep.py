@@ -11,6 +11,7 @@ import dataclasses
 import difflib
 import json
 import math
+import re
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,7 @@ from stockify.research import registry, seeding
 SCHEMA = "stockify.sweep/1"
 KEYS = ("schema", "name", "base", "objective", "search", "workers", "axes")
 NAME_MAX = 40
+LOCKED_AXES = ("name", "family_id", "schema", "unlock_holdout")
 _U32 = 1 << 32                       # Pcg32.below takes a 32-bit bound
 
 
@@ -64,6 +66,15 @@ class _Loader(yaml.SafeLoader):
         return super().construct_mapping(node, deep)
 
 
+# YAML 1.1 reads an unquoted 14:30 as the base-60 integer 870. A time must stay the string the user wrote, so the
+# loader's int rule is the same one without its base-60 branch.
+_INT_NO_SEXAGESIMAL = re.compile(r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+)$")
+_Loader.yaml_implicit_resolvers = {
+    ch: [(tag, rx) for tag, rx in rules if tag != "tag:yaml.org,2002:int"]
+    for ch, rules in yaml.SafeLoader.yaml_implicit_resolvers.items()}
+_Loader.add_implicit_resolver("tag:yaml.org,2002:int", _INT_NO_SEXAGESIMAL, list("-+0123456789"))
+
+
 def max_trials() -> int:
     return research.settings()["sweep"]["max_trials"]
 
@@ -104,6 +115,19 @@ def set_path(cfg: dict, dotted: str, value):  # noqa: ANN001, ANN201
     return out
 
 
+def _plain(node, where: str) -> None:  # noqa: ANN001
+    """The base holds JSON-like values only: a bare YAML date or timestamp would otherwise fail much later."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            _plain(v, f"{where}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            _plain(v, f"{where}[{i}]")
+    elif node is not None and not isinstance(node, (int, float, str, bool)):
+        raise SweepSpecError(f"{where}: {node!r} is a {type(node).__name__}, not a JSON value; quote it, "
+                             "like '2026-06-01'")
+
+
 def _search(raw) -> dict:  # noqa: ANN001
     if raw is None:
         raw = {"kind": "grid"}
@@ -130,9 +154,15 @@ def _axes(raw) -> dict:  # noqa: ANN001
             raise SweepSpecError(f"axes: key {path!r} must be a dotted path")
         if not isinstance(vals, list) or not vals:
             raise SweepSpecError(f"axes.{path}: must be a non-empty list of values")
+        if path in LOCKED_AXES or path.split(".")[0] in LOCKED_AXES:
+            raise SweepSpecError(f"axes.{path}: {path.split('.')[0]!r} cannot be swept (a sweep names its own runs and "
+                                 "family, and the holdout is not unlocked from a sweep)")
         for v in vals:
             if isinstance(v, float):
                 raise SweepSpecError(f"axes.{path}: {v!r} is a float; write decimals as strings, like '0.05'")
+            if v is not None and not isinstance(v, (int, str, bool)):
+                raise SweepSpecError(f"axes.{path}: {v!r} is a {type(v).__name__}, not a number, string, true/false "
+                                     "or null; quote it, like '2026-06-01'")
         if len({json.dumps(v, sort_keys=True) for v in vals}) != len(vals):
             raise SweepSpecError(f"axes.{path}: repeats a value, which would make two equal trials")
     return {k: list(v) for k, v in raw.items()}
@@ -144,8 +174,10 @@ def load_spec(path: Path) -> SweepSpec:
         raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_Loader)  # noqa: S506 — a SafeLoader subclass
     except SweepSpecError:
         raise
-    except (OSError, yaml.YAMLError) as e:
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
         raise SweepSpecError(f"{path.name}: cannot be read as YAML: {e}") from e
+    except RecursionError as e:
+        raise SweepSpecError(f"{path.name}: nested too deeply") from e
     if not isinstance(raw, dict):
         raise SweepSpecError("sweep.yaml: must be a mapping")
     if raw.get("schema") != SCHEMA:
@@ -163,6 +195,7 @@ def load_spec(path: Path) -> SweepSpec:
             raise SweepSpecError(f"base: cannot read run config {bp}: {e}") from e
     if not isinstance(base, dict):
         raise SweepSpecError("base: must be a path to a run.json or an inline run config")
+    _plain(base, "base")
     try:
         base = runconfig.validate(base)       # normalised, so an axis can reach a defaulted section (policies, costs)
     except runconfig.RunConfigError as e:
