@@ -86,3 +86,39 @@ export function wfCurve(
   }
   return { points, breaks, starts };
 }
+
+/**
+ * The run's cost multiplier as text when it is not 1 (config `costs.scale`, a decimal string), else null. Anything
+ * unreadable gives null (no banner); 0 (free trading) is shown, since that is the most flattering result of all.
+ */
+export function costScale(config: Record<string, unknown> | null | undefined): string | null {
+  const costs = config?.costs;
+  const raw = costs && typeof costs === "object" ? (costs as Record<string, unknown>).scale : undefined;
+  if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n === 1) return null;
+  return String(n);
+}
+
+/** The overview's link to a trial family. Family ids hold "/", so the id rides fully encoded in the query. */
+export function familyHref(id: string): string {
+  return `/research/family?id=${encodeURIComponent(id)}`;
+}
+
+/** The page of a sweep or walk-forward job; null for any other kind of job (it has no page). */
+export function jobHref(kind: string, id: string): string | null {
+  if (kind === "sweep") return `/research/sweeps/${encodeURIComponent(id)}`;
+  if (kind === "walkforward") return `/research/walkforward/${encodeURIComponent(id)}`;
+  return null;
+}
+
+/**
+ * The line under a list that was cut at its page size: how many are shown of how many exist, and which end is shown.
+ * Null when everything is shown or the total is not known (a missing total is never guessed).
+ */
+export function listCapNote(shown: number, total: number | null, what: string, order: "first" | "latest"): string | null {
+  if (total === null || !(total > shown)) return null;
+  return `Showing the ${order} ${shown.toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")} ${what}. ${
+    order === "first" ? "The rest are not listed here." : "Older ones are not listed here."
+  }`;
+}

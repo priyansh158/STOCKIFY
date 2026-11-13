@@ -449,6 +449,7 @@ class RegimeBucketDTO(BaseModel):
     up_days: int
     up_share: float | None = None
     thin: bool
+    plain: str | None = None
 
 
 class RegimeReportDTO(BaseModel):
@@ -535,6 +536,7 @@ class FamilySummaryDTO(BaseModel):
     best_run_id: str | None = None
     best_dsr: float | None = None
     unlocks: int
+    best_plain: str = ""
 
 
 class FamilyDetailDTO(BaseModel):
@@ -568,6 +570,14 @@ class ResearchJobDTO(BaseModel):
     created_ns: int
     finished_ns: int | None = None
     error: str | None = None
+    plain: str = ""
+
+
+class ResearchCountsDTO(BaseModel):
+    """How many families, sweeps and walk-forward runs exist: the totals behind the overview's capped lists."""
+    families: int
+    sweeps: int
+    walkforwards: int
 
 
 class SweepAxisDTO(BaseModel):
@@ -699,6 +709,8 @@ class CoverageMatrixDTO(BaseModel):
     bars: list[BarRangeDTO]
     storage: StorageDTO
     recorder: RecorderStatusDTO | None = None
+    errors: list[str] = []
+    error_stores: list[str] = []
 
 
 class GapDTO(BaseModel):

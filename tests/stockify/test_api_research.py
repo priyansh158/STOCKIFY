@@ -56,12 +56,24 @@ class ResearchApiTests(SandboxedDBTest):
         reg = j["regimes"]
         self.assertEqual(list(reg), ["month", "weekday", "expiry", "vix", "gap", "vix_source", "notes"])
         self.assertEqual(list(reg["month"][0]), ["label", "days", "pnl_paise", "mean_pnl_paise", "up_days",
-                                                 "up_share", "thin"])
+                                                 "up_share", "thin", "plain"])
         for dim in ("month", "weekday", "expiry", "vix", "gap"):
             self.assertEqual(sum(b["days"] for b in reg[dim]), 30, dim)
         self.assertEqual([b["label"] for b in reg["vix"]], ["no data"])
         self.assertIn("regimes_caveat", j["plain"])
         self.assertIn("dsr", j["plain"])
+
+    def test_run_research_carries_the_server_meanings_and_bucket_sentences(self):
+        from stockify.research import plain
+        j = self.client.get("/api/tests/r0/research").json()
+        for key in ("trials", "holdout_unlocks", "regime_month", "regime_weekday", "regime_expiry", "regime_vix",
+                    "regime_gap"):
+            self.assertEqual(j["plain"][key], plain.meaning(key), key)
+        self.assertEqual(j["plain"]["dsr_meaning"], plain.meaning("dsr"))
+        rep = report.run_research("r0")
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            want = [plain.regime_sentence(b) for b in getattr(rep.regimes, dim)]
+            self.assertEqual([b["plain"] for b in j["regimes"][dim]], want, dim)
 
     def test_run_research_404(self):
         r = self.client.get("/api/tests/nope/research")
@@ -76,6 +88,8 @@ class ResearchApiTests(SandboxedDBTest):
         self.assertIsNone(j["dsr"])
         self.assertIsNone(j["bootstrap"])
         self.assertTrue(j["plain"]["dsr"])
+        self.assertIsNone(j["regimes"])
+        self.assertFalse([k for k in j["plain"] if k.startswith("regime_")])
 
     def test_families_list_and_detail(self):
         r = self.client.get("/api/research/families")
@@ -83,6 +97,8 @@ class ResearchApiTests(SandboxedDBTest):
         rows = r.json()
         self.assertEqual([f["family_id"] for f in rows], [FAM, OTHER])
         self.assertEqual(rows[0]["n_trials"], 3)
+        self.assertIn("best of 3 tries", rows[0]["best_plain"])
+        self.assertEqual(rows[1]["best_plain"], "the only try, so nothing to allow for")
         self.assertEqual(len(self.client.get("/api/research/families", params={"limit": 1}).json()), 1)
         self.assertEqual(self.client.get("/api/research/families", params={"offset": 1}).json()[0]["family_id"],
                          OTHER)
@@ -252,6 +268,17 @@ class SweepApiTests(SandboxedDBTest):
             "wf-r": "the run pool returned the wrong number of results", "wf-k": "Failed",
             "wf-new": "the holdout is locked", "wf-ok": None})
 
+    def test_counts_give_the_totals_behind_the_capped_overview_lists(self):
+        self.assertEqual(self.client.get("/api/research/counts").json(),
+                         {"families": 0, "sweeps": 0, "walkforwards": 0})
+        store.add_family("strat/x/sharpe", objective="sharpe", description=None)
+        add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
+        add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)
+        add_sweep_job(None, "wf-1", kind="walkforward", status="running", created_ns=3)
+        add_sweep_job(None, "s-1", kind="sensitivity", created_ns=4)
+        self.assertEqual(self.client.get("/api/research/counts").json(),
+                         {"families": 1, "sweeps": 2, "walkforwards": 1})
+
     def test_jobs_list_filters_by_kind(self):
         add_sweep_job(sweep_doc("sweep-a"), "sweep-a", created_ns=1)
         add_sweep_job(sweep_doc("sweep-b"), "sweep-b", created_ns=2)
@@ -259,7 +286,8 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/jobs")
         self.assertEqual([j["job_id"] for j in r.json()], ["wf-1", "sweep-b", "sweep-a"])
         self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "family_id", "status", "created_ns",
-                                             "finished_ns", "error"])
+                                             "finished_ns", "error", "plain"])
+        self.assertEqual([j["plain"] for j in r.json()], ["still running", "finished", "finished"])
         r = self.client.get("/api/research/jobs", params={"kind": "sweep"})
         self.assertEqual([j["job_id"] for j in r.json()], ["sweep-b", "sweep-a"])
         self.assertEqual(self.client.get("/api/research/jobs", params={"kind": "sweep", "limit": 1,

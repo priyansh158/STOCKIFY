@@ -426,5 +426,31 @@ class WfSentenceTests(unittest.TestCase):
             plain.wf_dsr_sentence(0, 0.5)
 
 
+class OverviewSentenceTests(unittest.TestCase):
+    """Task 33: the /research overview's two sentences, written once on the server."""
+
+    def test_family_best_sentence_covers_no_tries_one_try_and_a_missing_figure(self):
+        self.assertEqual(plain.family_best_sentence(0, None, "sharpe"), "no finished tries yet")
+        self.assertEqual(plain.family_best_sentence(1, 0.5, "sharpe"), "the only try, so nothing to allow for")
+        text = plain.family_best_sentence(12, 0.874, "sharpe")
+        self.assertIn("best of 12 tries", text)
+        self.assertIn("87% chance the edge beats luck", text)
+        self.assertEqual(_bad_tokens(text), [])
+        self.assertIn(plain.TOO_FEW_DAYS, plain.family_best_sentence(12, None, "sharpe"))
+        self.assertIn("profit after costs", plain.family_best_sentence(3, 0.5, "net_pnl"))
+        with self.assertRaises(ValueError):
+            plain.family_best_sentence(3, 0.5, "luck")
+
+    def test_job_status_sentence_says_running_finished_or_why_it_failed(self):
+        self.assertEqual(plain.job_status_sentence("running", None), "still running")
+        self.assertEqual(plain.job_status_sentence("done", None), "finished")
+        self.assertEqual(plain.job_status_sentence("failed", "no data for that day."), "failed: no data for that day")
+        for raw in (None, "", "KeyError: run_id", "Traceback (most recent call last)"):
+            self.assertEqual(plain.job_status_sentence("failed", raw), "failed, and no readable reason was saved")
+        self.assertEqual(plain.job_status_sentence("running", "ignored"), "still running")
+        self.assertEqual(plain.job_status_sentence("weird", None), "in an unrecognised state (weird)")
+        self.assertEqual(plain.job_status_sentence("a/b c", None), "in an unrecognised state")
+
+
 if __name__ == "__main__":
     unittest.main()

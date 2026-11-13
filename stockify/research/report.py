@@ -356,6 +356,11 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     reg = _regimes(run_id, dates, navs, capital, use_cache)
     if reg is not None:
         texts["regimes_caveat"] = plain.REGIME_CAVEAT
+        for dim in ("month", "weekday", "expiry", "vix", "gap"):
+            texts[f"regime_{dim}"] = plain.meaning(f"regime_{dim}")
+    texts["trials"] = plain.meaning("trials")
+    texts["dsr_meaning"] = plain.meaning("dsr")           # `dsr` itself is this run's sentence
+    texts["holdout_unlocks"] = plain.meaning("holdout_unlocks")
     return RunResearch(run_id=run_id, family_id=family_id, role=role, objective=objective, n_trials=n,
                        rank=rank, is_best=rank == 1, picked_run_id=picked.run_id if picked else None,
                        picked_name=picked.name if picked else None, dsr=res if is_try and not flat else None,

@@ -7,15 +7,18 @@ import { api, ApiError } from "./api";
 import type {
   ComparisonDTO,
   CoverageMatrixDTO,
+  DataQualityResponse,
   FamilyDetailDTO,
   FamilySummaryDTO,
   GapPageDTO,
+  ResearchCountsDTO,
+  ResearchJobDTO,
   RunResearchDTO,
   SensitivityDTO,
   WalkforwardDTO,
 } from "./types";
 
-export { bucketTone, dayNumber, heatColourStep, sentenceOrDash, splitSegments, wfCurve } from "./researchHelpers";
+export { bucketTone, costScale, dayNumber, familyHref, heatColourStep, jobHref, listCapNote, sentenceOrDash, splitSegments, wfCurve } from "./researchHelpers";
 export type { BucketTone, WfCurve } from "./researchHelpers";
 
 const enc = encodeURIComponent;
@@ -42,6 +45,20 @@ export function getSensitivity(id: string): Promise<SensitivityDTO | null> {
 
 export function getFamilies(offset = 0, limit = 50): Promise<FamilySummaryDTO[]> {
   return api<FamilySummaryDTO[]>(`/api/research/families?offset=${offset}&limit=${limit}`);
+}
+
+/** How many families, sweeps and walk-forward runs exist in all (the lists above are capped). */
+export function getResearchCounts(): Promise<ResearchCountsDTO> {
+  return api<ResearchCountsDTO>("/api/research/counts");
+}
+
+/** Sweep and walk-forward jobs, newest first (sensitivity jobs belong to a run and are left out). */
+export async function getJobs(limit = 50): Promise<{ sweeps: ResearchJobDTO[]; walkforwards: ResearchJobDTO[] }> {
+  const [sweeps, walkforwards] = await Promise.all([
+    api<ResearchJobDTO[]>(`/api/research/jobs?kind=sweep&limit=${limit}`),
+    api<ResearchJobDTO[]>(`/api/research/jobs?kind=walkforward&limit=${limit}`),
+  ]);
+  return { sweeps, walkforwards };
 }
 
 /** One trial family, or null when there is no such family. */
@@ -89,6 +106,16 @@ export async function getWalkforward(id: string): Promise<WalkforwardLoad> {
       }
       return { kind: "unreadable" };
     }
+    throw e;
+  }
+}
+
+/** A day's stored quality report, or the API's own sentence about why there is none (404: it has not been run). */
+export async function getQuality(date: string): Promise<{ report: DataQualityResponse | null; reason: string | null }> {
+  try {
+    return { report: await api<DataQualityResponse>(`/api/data/quality?date=${enc(date)}`), reason: null };
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { report: null, reason: e.message };
     throw e;
   }
 }
