@@ -818,4 +818,11 @@ export interface RunChartDTO {
   idle_settlements: number;
   plain: string | null;
 }
+
+export interface SessionChartDTO extends RunChartDTO {
+  trade_date: string;
+  days: string[];
+  paper: boolean;
+  live: boolean;
+}
 // </block>

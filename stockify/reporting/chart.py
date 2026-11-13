@@ -138,12 +138,19 @@ def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, i
     """Every marker of the run (all instruments), ordered by (t_ns, kind == "settlement", fill_id), each with its
     FIFO trade profit from the whole run's fills; also the settlements skipped per instrument and whether the run
     has a physical delivery."""
-    orders = {r["order_id"]: r for r in _read(folder, "orders.csv")}
+    return markers_of(_read(folder, "orders.csv"), _read(folder, "fills.csv"), _read(folder, "charges.csv"),
+                      read_settlements(folder), bundle)
+
+
+def markers_of(order_rows: list[dict], fill_rows: list[dict], charge_rows: list[dict], settles: list,
+               bundle: dict | None) -> tuple[list[dict], dict[int, int], bool, dict[int, int]]:
+    """`_markers` over rows already read (a run's CSVs, or a paper session's stored rows): the same markers, the
+    same FIFO profit. Order and fill ids must be unique across the rows given."""
+    orders = {r["order_id"]: r for r in order_rows}
     fills = [_Fill(r["fill_id"], r["order_id"], r["t_ns"], r["instrument_id"], r["side"], r["qty"], r["price_paise"])
-             for r in _read(folder, "fills.csv")]
+             for r in fill_rows]
     products = _Products({oid: o.get("product") or "" for oid, o in orders.items()})
     inst = {i["id"]: i for i in (bundle or {}).get("instruments", []) if isinstance(i, dict) and "id" in i}
-    settles = read_settlements(folder)
     closes, skipped, idle = _cash_closes(fills, products, settles, inst)
     chunks, _ = metrics.fifo_trades(fills, closes, products)
     by_fill: dict[int, list] = {}
@@ -156,7 +163,7 @@ def _markers(folder: Path, bundle: dict | None) -> tuple[list[dict], dict[int, i
 
     order_cost: dict[int, int] = {}
     settle_cost: dict[tuple[int, str], int] = {}
-    for c in _read(folder, "charges.csv"):
+    for c in charge_rows:
         if c["kind"] == "order":
             order_cost[c["order_id"]] = order_cost.get(c["order_id"], 0) + (c["total"] or 0)
         elif c["kind"] == "settlement":

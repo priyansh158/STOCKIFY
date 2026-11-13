@@ -98,6 +98,7 @@ cd web; npm run lint; npm run build
 - [x] CH 6.9 Display bars read back from a run's own pack or journal with the runner's bucketing (`stockify/oracle/bars.py`, `stockify/reporting/chartbars.py`; D-123); `_build_bars` changes no artifact byte.
 - [x] CH 6.10 A run's chart model: its own bars, a marker per fill and per expiry settlement with the note, costs and trade profit, and its plotted lines (`stockify/reporting/chart.py`, `stockify/reporting/settlements.py`; D-124).
 - [x] CH 6.11 `GET /api/tests/{id}/chart` and its DTOs (`RunChartDTO`, mirrored in `web/src/lib/types.ts`; D-125).
+- [x] CH 6.13 `GET /api/trade/sessions/{id}/chart` and `SessionChartDTO` (`stockify/reporting/chart_session.py`): a paper session day's bars read incrementally from its journal, its fills with notes, FIFO profit across days (D-103).
 
 ## Definition of done
 

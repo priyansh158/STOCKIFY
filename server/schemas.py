@@ -847,4 +847,11 @@ class RunChartDTO(BaseModel):
     skipped_settlements: int
     idle_settlements: int
     plain: str | None = None
+
+
+class SessionChartDTO(RunChartDTO):
+    trade_date: str
+    days: list[str]
+    paper: bool
+    live: bool
 # </block>

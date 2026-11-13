@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionFillDTO,
-                            SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
+                            SessionChartDTO, SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
 
 router = APIRouter(tags=["trade"])
 
@@ -394,6 +394,35 @@ def session_orders(session_id: str, trade_date: str | None = Query(None), offset
 def session_fills(session_id: str, trade_date: str | None = Query(None), offset: int = Query(0, ge=0),
                   limit: int = Query(500, ge=1, le=5000)) -> list[SessionFillDTO]:
     return _typed(SessionFillDTO, _rows(session_id, "fills", trade_date, offset, limit))
+
+
+_PAPER_SAYS = "Paper trading: no real orders."
+_SESSION_CHART_PLAIN = {
+    "no_pack": "This day has no recorded market data, so there are no bars; its trades are listed without a chart. ",
+    "pack unreadable": "This day's market data could not be read, so there are no bars; its trades are listed without a chart. ",
+}
+
+
+@router.get("/api/trade/sessions/{session_id}/chart", response_model=SessionChartDTO)
+def session_chart(session_id: str, instrument: int | None = Query(None, ge=0, le=2**63 - 1),
+                  trade_date: str | None = Query(None)) -> SessionChartDTO:
+    """One instrument of one paper-session day as bars (read incrementally from the day's journal), a marker per paper
+    fill with the strategy's note, and each closing fill's trade profit (CH 6.13). Same wire format as a run's chart
+    (`/api/tests/{run_id}/chart`: times in UTC seconds, prices as exact rupee strings) plus `trade_date`, `days` (for the
+    day picker), `paper` (always true) and `live` (the day is open). A day without a journal, or one that cannot be
+    read, is a 200 with `data_state`. Read-only; no id, path or exception text is echoed."""
+    from server.routers.tests import _chart_dto
+    from stockify.reporting import chart_session
+    try:
+        model = chart_session.session_chart(session_id, trade_date, instrument)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="no such session, day or instrument") from None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="the chart request is not valid") from None
+    dto = _chart_dto(model)
+    plain = _SESSION_CHART_PLAIN.get(model["data_state"], "") + _PAPER_SAYS
+    return SessionChartDTO(**{**dto.model_dump(), "plain": plain, "trade_date": model["trade_date"],
+                              "days": model["days"], "paper": True, "live": model["live"]})
 
 
 @router.get("/api/trade/sessions/{session_id}/timeline", response_model=list[SessionTimelineDTO])
