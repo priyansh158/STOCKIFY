@@ -63,7 +63,7 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## M6.10 Parameter sweeps (M)
 
-- [ ] `sweep.yaml` (grid or seeded random search) → parallel runs (≤ `cpu_count − 1`), results table, and a two-parameter heatmap in the UI. A sweep is a family by default.
+- [ ] `sweep.yaml` (grid or seeded random search) → parallel runs (≤ `cpu_count − 1`), results table, and a two-parameter heatmap in the UI. A sweep is a family by default. (`sweep.yaml` load, validate and expand: done, `stockify/research/sweep.py`, A1 §6.6, Task 17; running it is Task 18.)
 
 ## M6.11 Probability of backtest overfitting (stretch, M)
 

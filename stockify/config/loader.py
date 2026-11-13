@@ -328,7 +328,7 @@ def _research_edges(values, where: str, decimal: bool, low=None) -> None:
 def _check_research(doc: dict) -> None:
     """research.json (stockify.research/1): every key present, an unknown key at any level refused naming it, rates
     and scales decimal strings, counts whole numbers within sanity bounds, edge lists strictly increasing.
-    `holdout_from` is null (no holdout) or an ISO date; `sweep.max_workers` is null (cpu_count - 1) or >= 1."""
+    `holdout_from` is null (no holdout) or an ISO date; `sweep.max_workers` is null (cpu_count - 1) or >= 1; `sweep.max_trials` is the most trials one sweep may expand to."""
     top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage")
     extra = set(doc) - set(top) - {"schema"}
     if extra:
@@ -380,9 +380,10 @@ def _check_research(doc: dict) -> None:
         raise ConfigError(f"research.json: pbo.slices must be even, got {slices}")
     _research_int(pbo["min_trials"], "pbo.min_trials", 2, 100_000)
 
-    sweep = _research_section(doc, "sweep", ("max_workers",))
+    sweep = _research_section(doc, "sweep", ("max_workers", "max_trials"))
     if sweep["max_workers"] is not None:
         _research_int(sweep["max_workers"], "sweep.max_workers", 1, 256)
+    _research_int(sweep["max_trials"], "sweep.max_trials", 1, 1_000_000)
 
     cov = _research_section(doc, "coverage", ("ok_pct", "default_days", "max_days"))
     if not 0 < _research_decimal(cov["ok_pct"], "coverage.ok_pct") <= 100:
