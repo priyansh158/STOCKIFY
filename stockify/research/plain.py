@@ -14,6 +14,7 @@ wf_sentence (Task 22, done). pbo_sentence is here (Task 23). Their meanings are 
 from __future__ import annotations
 
 import math
+import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,10 @@ if TYPE_CHECKING:
 
 RUPEE = "₹"
 TOO_FEW_DAYS = "too few days to say"
+# Shown in place of a Sharpe figure, a ratio or a deflated Sharpe when the out-of-sample days are fewer than
+# research.json walk_forward.min_oos_days (D-102): the figure would look precise and mean nothing.
+NOT_ENOUGH_OOS_SHORT = "too few days"          # the same, for a table cell, with the sentence said once above the table
+NOT_ENOUGH_OOS = "not enough out-of-sample days to judge ({n} of {m} needed)"
 _NAME_LIMIT = 40
 
 # Every line is at most 110 characters (tested).
@@ -76,6 +81,10 @@ OBJECTIVE_LABELS: dict[str, str] = {
     "cagr": "yearly growth rate",
     "net_pnl": "profit after costs",
 }
+
+
+# Under the trial table: the scores are in-sample; only the picked try is deflated (a caveat, so not a one-line meaning).
+SCORES_CAVEAT = "Scores are measured on the days the tries were fitted to. Only the picked try is adjusted for luck, in the sentence above."
 
 
 def meaning(key: str) -> str:
@@ -294,7 +303,8 @@ def wf_stability_sentence(summary, *, chosen_windows: int | None = None) -> str:
     return f"the same settings won {_percent_text(min(1.0, max(0.0, share)))} of the windows"
 
 
-def wf_dsr_sentence(n_trials: int, dsr: float | None) -> str:
+def wf_dsr_sentence(n_trials: int, dsr: float | None, *, oos_days: int | None = None,
+                    min_oos_days: int | None = None) -> str:
     """The deflated Sharpe of the stitched out-of-sample days. They are not "the best of N": each window's settings
     were picked on training days and tried on days the pick never saw. The allowance for luck still counts every
     training try (N = windows x grid), so the figure is a cautious one, and the sentence says so."""
@@ -304,6 +314,8 @@ def wf_dsr_sentence(n_trials: int, dsr: float | None) -> str:
         return "only one try, so nothing to allow for"
     p = _usable(dsr)
     verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the out-of-sample edge beats luck"
+    if oos_days is not None and min_oos_days is not None and oos_days < min_oos_days:
+        verdict = NOT_ENOUGH_OOS.format(n=oos_days, m=min_oos_days)
     return (f"after allowing for luck over {n_trials} tries (every setting run in training, in every window), "
             f"{verdict}; the out-of-sample days were never used to choose, so this is a cautious figure")
 
@@ -343,13 +355,96 @@ def _words_ticks(ticks: int, kind: str) -> str:
     return f"{n} extra tick{'' if one else 's'}" + (" of slippage" if kind in ("break", "survive") else "")
 
 
-def plain_reason(error: str | None) -> str | None:
-    """A stored error as a short clause, or None when it is empty or looks like a raw log line (code names,
-    paths, a traceback, a long text): better to say nothing than to show that."""
-    text = (error or "").strip().rstrip(".")
-    if not text or len(text) > 120 or any(c in text for c in ("_", "/", chr(92), chr(10), chr(13))) or "Traceback" in text:
+# What a failed run or job may say about itself on a page or in the API. A fixed table keyed by the error class (the
+# class name a stored `ClassName: text` starts with), so exception text (a path, a value, a message) never leaves the
+# machine; the raw text stays in the stored row and the log. The same shape as walkforward.py's `_PLAIN_FAILURES`
+# (error class -> sentence), kept apart on purpose so the two tables can be merged later.
+GENERIC_FAILURE = "the run failed; see the log"
+PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
+    ("HoldoutLocked", "the holdout is locked"),
+    ("RunConfigError", "the settings were not accepted"),
+    ("SweepSpecError", "the run pool returned the wrong number of results"),
+    ("WalkforwardRunError", "the run pool returned the wrong number of results"),
+    ("SensitivityRunError", "the run pool returned the wrong number of results"),
+)
+# Why a sensitivity check could not be run for a strategy: the validator's or the resolver's refusal, put into one of these
+# lines by what it is about (NOT_RUN_NEEDLES). The refusal's own text carries values and paths, so it is never shown.
+NOT_RUN_RAW_PRICES = "this fill model only works with raw prices, and this run uses adjusted prices"
+NOT_RUN_EXTRA_TICKS = "the extra slippage is above the most a run allows"
+NOT_RUN_NO_QUOTES = "the recorded data has no quotes for this fill model"
+NOT_RUN_DATA = "the recorded data this run needs could not be found or does not match"
+NOT_RUN_REASONS: tuple[str, ...] = (NOT_RUN_RAW_PRICES, NOT_RUN_EXTRA_TICKS, NOT_RUN_NO_QUOTES, NOT_RUN_DATA)
+NOT_RUN_NEEDLES: tuple[tuple[str, str], ...] = (
+    ("price_basis", NOT_RUN_RAW_PRICES),
+    ("extra_ticks", NOT_RUN_EXTRA_TICKS),
+    ("quote", NOT_RUN_NO_QUOTES),
+    ("pack", NOT_RUN_DATA),
+)
+# The sentences the code itself writes into a stored error (pool.py, sweep.py, sensitivity.py) and the table's lines.
+PLAIN_SENTENCES: frozenset[str] = frozenset({
+    "the run did not report its folder",
+    "the run failed",
+    "the run finished but has no stored result",
+    "the settings were not accepted",
+    GENERIC_FAILURE,
+    *(text for _cls, text in PLAIN_FAILURES),
+    *NOT_RUN_REASONS,
+})
+_CLASS_PREFIX = re.compile(r"([A-Za-z_][A-Za-z0-9_]*):")
+
+
+def plain_reason(error: object, *, fallback: str | None = GENERIC_FAILURE) -> str | None:
+    """A stored failure text as a sentence that is safe to show: None for nothing; the text itself only when it is one of
+    the code's own sentences (PLAIN_SENTENCES); else the table's line for the class a leading `ClassName:` names; else
+    `fallback` (the generic line, or None for a caller that would rather say nothing). Exception text is never returned."""
+    if not isinstance(error, str):
         return None
-    return text
+    text = error.strip().rstrip(".")
+    if not text:
+        return None
+    if text in PLAIN_SENTENCES:
+        return text
+    m = _CLASS_PREFIX.match(text)
+    if m:
+        for cls, line in PLAIN_FAILURES:
+            if cls == m.group(1):
+                return line
+    return fallback
+
+
+def not_run_reason(error: object) -> str | None:
+    """Why a check could not be run, from the refusal text the validator or resolver gave: one of NOT_RUN_REASONS when the
+    text is about one of those things, the code's own sentence or a class-table line as plain_reason gives them, else the
+    generic line (a raw exception, a path, anything else); None for nothing."""
+    known = plain_reason(error, fallback=None)
+    if known is not None or not isinstance(error, str) or not error.strip():
+        return known
+    low = error.lower()
+    if re.match(r"[A-Z][A-Za-z0-9]*:", error.strip()):          # "ClassName: text" is an exception's repr, not a refusal
+        return GENERIC_FAILURE
+    for needle, line in NOT_RUN_NEEDLES:
+        if needle in low:
+            return line
+    return GENERIC_FAILURE
+
+
+def family_best_sentence(n_trials: int, dsr: float | None, objective: str) -> str:
+    """The /research overview's line for a family: its best try and how likely its edge is more than luck."""
+    if n_trials < 1:
+        return "no finished tries yet"
+    return dsr_sentence(n_trials, 1, dsr, objective=objective)
+
+
+def job_status_sentence(status: str, error: str | None) -> str:
+    """A research job's state in words: running, finished, or failed with its readable reason."""
+    if status == "running":
+        return "still running"
+    if status == "done":
+        return "finished"
+    if status == "failed":
+        why = plain_reason(error)
+        return f"failed: {why}" if why else "failed, and no readable reason was saved"
+    return f"in an unrecognised state ({status})" if status.isalpha() else "in an unrecognised state"
 
 
 def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: ANN001
@@ -411,7 +506,7 @@ def fragile_sentence(result, *, fragile_cost_scale: str | None = None,  # noqa: 
                 continue
             what = phrase(axis, "survive")
             if status == "not_applicable":
-                why = plain_reason(error)
+                why = not_run_reason(error)
                 clauses.append(f"{what} couldn't be run for this strategy" + (f" ({why})" if why else ""))
             else:
                 clauses.append(f"the run with {what} didn't finish")

@@ -33,15 +33,39 @@ def win(index: int, day: str, run_id: str | None, status: str = "done", train_ru
             "test_run_id": run_id, "test_status": status, "error": None}
 
 
-def add_job(windows: list[dict], job_id: str = JOB, status: str = "done", kind: str = "walkforward") -> None:
+def add_job(windows: list[dict], job_id: str = JOB, status: str = "done", kind: str = "walkforward",
+            sharpe: float | None = 1.0, oos_days: int = 100, write_file: bool = True) -> None:
+    """A job row with the stored windows and, for a done job, the `walkforward.json` `finish` writes: a window has a
+    `test` block when it has a done test run (and no `no_test` flag), as `walkforward._compute` makes them."""
+    from stockify.research import fileio, walkforward
     store.create_research_job({"job_id": job_id, "kind": kind, "name": "wf", "family_id": f"walkforward/{job_id}",
                                "status": status, "created_ns": 1000, "finished_ns": 1005,
                                "state_json": json.dumps({"windows": windows})})
+    if status != "done" or not write_file:
+        return
+    docw = []
+    for w in windows:
+        row = {k: v for k, v in w.items() if k not in ("train_run_ids", "no_test")}
+        row["train"] = None
+        has = w["test_run_id"] and w["test_status"] == "done" and not w.get("no_test")
+        row["test"] = ({"run_id": w["test_run_id"], "from": w["test_from"], "to": w["test_to"], "days": 1,
+                        "net_pnl_paise": 400, "sharpe": sharpe} if has else None)
+        docw.append(row)
+    folder = paths.research_path(job_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    summary = {"windows": len(windows), "is_windows": 1, "oos_days": oos_days, "is_sharpe": 1.0, "oos_sharpe": 1.0,
+               "ratio": 1.0, "chosen_modal_share": 1.0, "n_trials": 2, "var_sharpe": 0.1, "dsr": None}
+    doc = {"schema": walkforward.SCHEMA, "job_id": job_id, "name": "wf", "objective": "sharpe", "train_days": 28,
+           "test_days": 1, "step_days": 1, "span": None, "summary": summary, "windows": docw, "dates": [], "index": []}
+    fileio.atomic_write_text(folder / "walkforward.json", json.dumps(doc))
 
 
 def chart(job_id: str = JOB, *a, **kw) -> dict:
     from stockify.reporting.chart_wf import walkforward_chart
     return walkforward_chart(job_id, *a, **kw)
+
+
+ZERO_NEW = [{"id": 2, "tradingsymbol": "OTHER", "kind": "EQ", "session_group": "CM", "cas_dates": []}]
 
 
 class WfChartModelTests(SandboxedDBTest):
@@ -162,6 +186,59 @@ class WfChartModelTests(SandboxedDBTest):
         self.assertEqual([(p["name"], [v for _, v in p["points"]]) for p in plots], [("sma", [1, 2])])
 
 
+    def test_a_window_whose_run_never_traded_the_instrument_is_no_trades(self):
+        c = make_run(orders=[order(1, iid=2)], fills=[fill(1, 1, T(9, 16, 5, day=D2), "BUY", 1, 5000, iid=2)],
+                     world=bar_world(3, first=T(9, 15, day=D2), iid=2), instruments=ZERO_NEW)
+        store.create_run({"run_id": c, "status": "done", "role": "oos"})
+        add_job([win(0, D0, self.a), win(1, D1, self.b), win(2, D2, c)], job_id="wf-nt")
+        out = chart("wf-nt")
+        self.assertEqual([(x["index"], x["status"], x["run_id"]) for x in out["windows"]],
+                         [(0, "done", self.a), (1, "done", self.b), (2, "no_trades", c)])
+        self.assertEqual(len(out["bars"]), 6)
+        self.assertIn("1 window did not trade this instrument", out["notice"])
+        self.assertEqual(out["instrument_id"], 1)
+
+    def test_a_window_the_summary_excludes_is_listed_with_its_reason_and_not_drawn(self):
+        add_job([win(0, D0, self.a), win(1, D1, None, "skipped"), {**win(2, D2, self.b), "no_test": True},
+                 {**win(3, D3, None, "failed"), "error": "ValueError: boom at C:\secret"}], job_id="wf-ex")
+        out = chart("wf-ex")
+        w = {x["index"]: x for x in out["windows"]}
+        self.assertEqual(w[0]["result"], "tested")
+        self.assertIsNone(w[0]["excluded"])
+        for i in (1, 2, 3):
+            self.assertTrue(w[i]["result"].startswith("test run did not finish"), w[i]["result"])
+            self.assertEqual(w[i]["excluded"], w[i]["result"], i)
+            self.assertIsNone(w[i]["run_id"], i)
+        self.assertEqual(len(out["bars"]), 3)
+        self.assertEqual({m["window"] for m in out["markers"]}, {0})
+        self.assertNotIn("secret", json.dumps(out["windows"]))
+        self.assertNotIn("boom", json.dumps(out["windows"]))
+
+    def test_the_excluded_reason_is_the_words_of_the_walk_forward_page(self):
+        from stockify.research import wf_report
+        add_job([win(0, D0, self.a), {**win(1, D1, self.b), "chosen_params": None, "test_run_id": None,
+                                      "test_status": "skipped"}], job_id="wf-words")
+        out = chart("wf-words")
+        _, doc = wf_report.load("wf-words")
+        _, page = wf_report._shown(doc)
+        self.assertEqual([x["result"] for x in out["windows"]], [wf_report._result_word(w) for w in page])
+        self.assertEqual(out["windows"][1]["excluded"], "no training run gave a usable result")
+
+    def test_a_tested_window_with_no_sharpe_is_still_drawn_and_says_why(self):
+        add_job([win(0, D0, self.a), win(1, D1, self.b)], job_id="wf-nosharpe", sharpe=None)
+        out = chart("wf-nosharpe")
+        self.assertEqual(len(out["bars"]), 6)
+        self.assertEqual([x["no_sharpe"] for x in out["windows"]], ["too few days to work one out"] * 2)
+        self.assertTrue(all(x["excluded"] is None for x in out["windows"]))
+        self.assertTrue(out["windows"][0]["result"].startswith("tested, no Sharpe"))
+
+    def test_too_few_out_of_sample_days_is_said_in_every_window_and_nothing_is_hidden(self):
+        add_job([win(0, D0, self.a), win(1, D1, self.b)], job_id="wf-few", oos_days=1)
+        out = chart("wf-few")
+        self.assertEqual(len(out["bars"]), 6)
+        self.assertEqual([x["no_sharpe"] for x in out["windows"]], ["too few days to work one out"] * 2)
+
+
 @support.requires_fastapi
 class WfChartApiTests(SandboxedDBTest):
     db_modules = (store,)
@@ -187,7 +264,9 @@ class WfChartApiTests(SandboxedDBTest):
         self.assertEqual(d["markers"][0]["price"], "100.10")
         w = d["windows"]
         self.assertEqual([(x["index"], x["run_id"], x["status"]) for x in w], [(0, self.a, "done"), (1, self.b, "done")])
-        self.assertEqual(list(w[0]), ["index", "from_t", "to_t", "from_d", "to_d", "run_id", "status"])
+        self.assertEqual(list(w[0]), ["index", "from_t", "to_t", "from_d", "to_d", "run_id", "status", "result",
+                                      "no_sharpe", "excluded"])
+        self.assertEqual((w[0]["result"], w[0]["no_sharpe"], w[0]["excluded"]), ("tested", "", None))
         self.assertEqual((w[0]["from_d"], w[0]["to_d"]), (D0, D0))
         self.assertEqual(w[0]["to_t"] - w[0]["from_t"], 86400)
         self.assertNotIn("window", d["markers"][0])
@@ -229,7 +308,7 @@ class WfChartApiTests(SandboxedDBTest):
     def test_no_fixed_path_under_research_is_shadowed(self):
         for path in ("/api/research/families", "/api/research/jobs"):
             self.assertEqual(self.client.get(path).status_code, 200, path)
-        self.assertEqual(self.client.get(f"/api/research/walkforward/{JOB}").status_code, 409)   # Task 22's route, unchanged
+        self.assertEqual(self.client.get(f"/api/research/walkforward/{JOB}").status_code, 200)   # Task 22's route, unchanged
         listed = list(self.client.get("/openapi.json").json()["paths"])
         self.assertIn("/api/research/walkforward/{job_id}/chart", listed)
         self.assertIn("/api/research/walkforward/{job_id}", listed)

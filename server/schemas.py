@@ -451,6 +451,7 @@ class RegimeBucketDTO(BaseModel):
     up_days: int
     up_share: float | None = None
     thin: bool
+    plain: str | None = None
 
 
 class RegimeReportDTO(BaseModel):
@@ -537,6 +538,7 @@ class FamilySummaryDTO(BaseModel):
     best_run_id: str | None = None
     best_dsr: float | None = None
     unlocks: int
+    best_plain: str = ""
 
 
 class FamilyDetailDTO(BaseModel):
@@ -570,10 +572,19 @@ class ResearchJobDTO(BaseModel):
     created_ns: int
     finished_ns: int | None = None
     error: str | None = None
+    plain: str = ""
+
+
+class ResearchCountsDTO(BaseModel):
+    """How many families, sweeps and walk-forward runs exist: the totals behind the overview's capped lists."""
+    families: int
+    sweeps: int
+    walkforwards: int
 
 
 class SweepAxisDTO(BaseModel):
     path: str
+    label: str                      # a plain name from the strategy's params schema, or the path when none is known
     labels: list[str]
     values: list[Any]
 
@@ -588,7 +599,7 @@ class SweepRowDTO(BaseModel):
     net_pnl_paise: int | None = None
     trades: int | None = None
     max_drawdown: float | None = None
-    error: str | None = None
+    error: str | None = None        # a short plain clause, or None when the stored error looks like a raw log line
 
 
 class SweepBestCellDTO(BaseModel):
@@ -619,6 +630,7 @@ class SweepDTO(BaseModel):
     name: str
     family_id: str
     objective: str
+    objective_label: str            # the one name for the objective, as the plain sentence uses it
     axes: list[SweepAxisDTO]
     rows: list[SweepRowDTO]
     best_run_id: str | None = None
@@ -701,6 +713,8 @@ class CoverageMatrixDTO(BaseModel):
     bars: list[BarRangeDTO]
     storage: StorageDTO
     recorder: RecorderStatusDTO | None = None
+    errors: list[str] = []
+    error_stores: list[str] = []
 
 
 class GapDTO(BaseModel):
@@ -723,10 +737,13 @@ class GapPageDTO(BaseModel):
 # ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
 
 class WalkforwardSummaryDTO(BaseModel):
-    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive."""
+    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive.
+    With fewer than `oos_days_needed` out-of-sample days (research.json walk_forward.min_oos_days) the Sharpe figures,
+    the ratio and `dsr` are None, here and in every window."""
     windows: int
     is_windows: int
     oos_days: int
+    oos_days_needed: int
     is_sharpe: float | None = None
     oos_sharpe: float | None = None
     ratio: float | None = None
@@ -748,6 +765,8 @@ class WalkforwardWindowDTO(BaseModel):
     chosen_run_id: str | None = None
     test_run_id: str | None = None
     test_status: str
+    result: str = ""
+    no_sharpe: str = ""
     error: str | None = None
     train: dict[str, Any] | None = None
     test: dict[str, Any] | None = None
@@ -848,14 +867,19 @@ class RunChartDTO(BaseModel):
 
 class WalkforwardChartWindowDTO(BaseModel):
     """One window's test range: UTC seconds `from_t` (inclusive) to `to_t` (exclusive), the IST dates `from_d` and
-    `to_d` (inclusive), and the test run drawn there (None when it has no chart: see `status`)."""
+    `to_d` (inclusive), and the test run drawn there (None when it has no chart: see `status`). `result` and `no_sharpe`
+    are the walk-forward report's own words for the window; `excluded` is the reason a window the summary leaves out
+    (no stitched test) is not drawn, else None."""
     index: int
     from_t: int
     to_t: int
     from_d: str
     to_d: str
     run_id: str | None = None
-    status: Literal["done", "failed", "skipped", "pending", "missing", "unknown"]
+    status: Literal["done", "failed", "skipped", "pending", "missing", "no_trades", "unknown"]
+    result: str = ""
+    no_sharpe: str = ""
+    excluded: str | None = None
 
 
 class WalkforwardChartDTO(RunChartDTO):

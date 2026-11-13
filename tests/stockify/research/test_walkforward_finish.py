@@ -161,6 +161,25 @@ class ChartTests(unittest.TestCase):
             plt.close(fig)
 
 
+class ChartNoteTests(unittest.TestCase):
+    def test_a_note_is_written_on_the_figure_and_the_y_range_keeps_one_inside_a_floor(self):
+        import matplotlib.pyplot as plt
+        fig = wf._figure([ChartTests.A], ["2026-05-01"], note="3 out-of-sample days only")
+        try:
+            ax = fig.axes[0]
+            self.assertIn("3 out-of-sample days only", [t.get_text() for t in ax.texts])
+            lo, hi = ax.get_ylim()
+            self.assertLessEqual(lo, 0.95)
+            self.assertGreaterEqual(hi, 1.05)
+        finally:
+            plt.close(fig)
+        fig = wf._figure([ChartTests.A], ["2026-05-01"])
+        try:
+            self.assertEqual(len(fig.axes[0].texts), 0)
+        finally:
+            plt.close(fig)
+
+
 class FinishTests(SandboxedDBTest):
     db_modules = (store,)
 
@@ -302,6 +321,23 @@ class FinishTests(SandboxedDBTest):
         self.assertIsNotNone(job["finished_ns"])
         self.assertIn("windows", json.loads(job["state_json"]))          # the state stays for a re-finish
 
+    def test_the_png_is_annotated_below_the_minimum_days_and_plain_above_it(self):
+        notes = []
+        real = wf._figure
+
+        def spy(segments, starts, note=None):
+            notes.append(note)
+            return real(segments, starts, note)
+        build_job(two_windows())                                                    # 12 out-of-sample days
+        with mock.patch.object(wf, "_figure", spy):
+            wf.finish(JOB)
+        self.assertEqual(notes, ["12 out-of-sample days only"])
+        notes.clear()
+        store.update_research_job(JOB, status="running")
+        with mock.patch.object(wf, "_figure", spy), mock.patch.object(wf, "min_oos_days", return_value=12):
+            wf.finish(JOB)
+        self.assertEqual(notes, [None])
+
     def test_finish_on_a_done_job_rewrites_identically(self):
         build_job(two_windows())
         first = wf.finish(JOB)
@@ -322,6 +358,8 @@ class FinishTests(SandboxedDBTest):
         self.assertEqual(job["status"], "failed")
         self.assertIn("disk full", job["error"])
         self.assertTrue(job["finished_ns"])
+        self.assertEqual(wf.failure_reason(job), "an internal error; see the log")
+        self.assertEqual(len(json.loads(job["state_json"])["windows"]), 2)       # the windows are kept beside it
 
     def test_a_failure_does_not_demote_a_job_that_is_already_done(self):
         build_job(two_windows())

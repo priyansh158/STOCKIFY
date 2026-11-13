@@ -423,6 +423,7 @@ export interface RegimeBucketDTO {
   up_days: number;
   up_share: number | null;
   thin: boolean;
+  plain?: string | null;
 }
 
 export interface RegimeReportDTO {
@@ -509,6 +510,7 @@ export interface FamilySummaryDTO {
   best_run_id: string | null;
   best_dsr: number | null;
   unlocks: number;
+  best_plain: string;
 }
 
 export interface FamilyDetailDTO {
@@ -542,10 +544,18 @@ export interface ResearchJobDTO {
   created_ns: number;
   finished_ns: number | null;
   error: string | null;
+  plain: string;
+}
+
+export interface ResearchCountsDTO {
+  families: number;
+  sweeps: number;
+  walkforwards: number;
 }
 
 export interface SweepAxisDTO {
   path: string;
+  label: string;
   labels: string[];
   values: (string | number | boolean | null)[];
 }
@@ -592,6 +602,7 @@ export interface SweepDTO {
   name: string;
   family_id: string;
   objective: string;
+  objective_label: string;
   axes: SweepAxisDTO[];
   rows: SweepRowDTO[];
   best_run_id: string | null;
@@ -675,6 +686,8 @@ export interface CoverageMatrixDTO {
   bars: BarRangeDTO[];
   storage: StorageDTO;
   recorder?: RecorderStatus | null;
+  errors: string[];
+  error_stores: string[];
 }
 
 export interface GapDTO {
@@ -700,6 +713,7 @@ export interface WalkforwardSummaryDTO {
   windows: number;
   is_windows: number;
   oos_days: number;
+  oos_days_needed: number;
   is_sharpe?: number | null;
   oos_sharpe?: number | null;
   ratio?: number | null;
@@ -719,6 +733,8 @@ export interface WalkforwardWindowDTO {
   chosen_run_id?: string | null;
   test_run_id?: string | null;
   test_status: string;
+  result: string;
+  no_sharpe: string;
   error?: string | null;
   train?: Record<string, unknown> | null;
   test?: Record<string, unknown> | null;
@@ -823,7 +839,10 @@ export interface WalkforwardChartWindowDTO {
   from_d: string;
   to_d: string;
   run_id: string | null;
-  status: "done" | "failed" | "skipped" | "pending" | "missing" | "unknown";
+  status: "done" | "failed" | "skipped" | "pending" | "missing" | "no_trades" | "unknown";
+  result: string;
+  no_sharpe: string;
+  excluded: string | null;
 }
 
 export interface WalkforwardChartDTO extends RunChartDTO {

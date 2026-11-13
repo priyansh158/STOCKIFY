@@ -367,9 +367,11 @@ def _check_research(doc: dict) -> None:
         if date.fromisoformat(doc["holdout_from"]).isoformat() != doc["holdout_from"]:
             raise ConfigError(f"research.json: holdout_from: not a YYYY-MM-DD date: {doc['holdout_from']!r}")
 
-    wf = _research_section(doc, "walk_forward", ("train_days", "test_days", "step_days", "objective"))
+    wf = _research_section(doc, "walk_forward", ("train_days", "test_days", "step_days", "objective",
+                                                         "min_oos_days"))
     for key in ("train_days", "test_days", "step_days"):
         _research_int(wf[key], f"walk_forward.{key}", 1, 10_000)
+    _research_int(wf["min_oos_days"], "walk_forward.min_oos_days", 2, 10_000)    # D-102
     if wf["objective"] not in RESEARCH_OBJECTIVES:
         raise ConfigError(f"research.json: walk_forward.objective must be one of {list(RESEARCH_OBJECTIVES)}, "
                           f"got {wf['objective']!r}")

@@ -370,6 +370,9 @@ def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int
                 row.update(status="failed", error="the run did not report its folder")
             elif row["error"] is None:
                 row["error"] = "the run failed"
+            # The plain reason is written with the row, so a reader never has to judge raw text; the raw text stays
+            # beside it in sweep.json and results.csv (local files).
+            row["failure_reason"] = None if row["status"] == "done" else plain.plain_reason(row["error"])
             rows.append(row)
         best = registry.select_best(rows, spec.objective)
         res = SweepResult(job_id, spec.name, family, spec.objective, spec.axes, rows,

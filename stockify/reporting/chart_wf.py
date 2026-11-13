@@ -7,18 +7,21 @@ marker is a fill or settlement of an out-of-sample run and keeps that run's own 
 flat); the training runs are never read. A window whose test run failed, was skipped or has no folder is listed with
 its status and no bars, never hidden.
 
-Reads only the job row's `state_json` windows (`walkforward._dump`) and the test runs' folders and packs. Nothing is
-fetched or written. Times are UTC epoch ns here (`from_ns`, `to_ns` of each window, half-open `[from_ns, to_ns)`).
+Reads only the job's `walkforward.json` (through `wf_report`, so the words match the report page) and the test runs'
+folders and packs. A window the summary leaves out (no stitched test) is listed as excluded, with the page's reason,
+and is not drawn; a tested window whose run never traded the chosen instrument is `no_trades`. Nothing is fetched or
+written. Times are UTC epoch ns here (`from_ns`, `to_ns` of each window, half-open `[from_ns, to_ns)`).
 """
 from __future__ import annotations
 
 import json
 from datetime import date, timedelta
 
-from stockify import paths, store, timeutil
+from stockify import paths, timeutil
 from stockify.reporting import chart
 
 _KNOWN = ("done", "failed", "skipped", "pending")
+_NOT_TESTED = "not tested, "
 
 
 class WfChartError(ValueError):
@@ -32,32 +35,40 @@ class WfChartError(ValueError):
 
 
 def _windows(job_id: str) -> list[dict]:
-    """The job's windows, checked for shape, as {index, from_d, to_d, from_ns, to_ns, run_id, status}."""
+    """The job's windows, checked for shape, as {index, from_d, to_d, from_ns, to_ns, run_id, status, result, no_sharpe,
+    excluded}. They come from the job's `walkforward.json` through the same functions the report page uses, so the
+    chart and the summary say the same: a window with no stitched test (`test` is None) is `excluded` with the page's
+    reason and is not drawn; `result` and `no_sharpe` are the page's words."""
+    from stockify.research import wf_report
     try:
-        paths.research_path(job_id)
-    except ValueError:
-        raise WfChartError("no such walk-forward job", kind="unknown") from None
-    job = store.get_research_job(job_id)
-    if job is None or job.get("kind") != "walkforward":
-        raise WfChartError("no such walk-forward job", kind="unknown")
-    if job.get("status") != "done":
-        raise WfChartError("the walk-forward job is not finished, so it has no chart", kind="not_done")
+        _, doc = wf_report.load(job_id)
+    except wf_report.WfReportError as e:
+        if e.kind == "unknown":
+            raise WfChartError("no such walk-forward job", kind="unknown") from None
+        if e.kind == "not_done":
+            raise WfChartError("the walk-forward job is not finished, so it has no chart", kind="not_done") from None
+        raise WfChartError("the walk-forward job has no readable windows", kind="missing") from None
     unreadable = WfChartError("the walk-forward job has no readable windows", kind="missing")
     try:
-        state = json.loads(job.get("state_json") or "")["windows"]
-        if not isinstance(state, list) or not state:
+        _, shown = wf_report._shown(doc)
+        if not shown:
             raise unreadable
         out = []
-        for w in state:
+        for w in shown:
             first, last = date.fromisoformat(w["test_from"]), date.fromisoformat(w["test_to"])
             index, run_id, status = w["index"], w.get("test_run_id"), w["test_status"]
             if (isinstance(index, bool) or not isinstance(index, int) or last < first
                     or not (run_id is None or isinstance(run_id, str)) or not isinstance(status, str)):
                 raise unreadable
+            result = wf_report._result_word(w)
+            excluded = None
+            if w.get("test") is None:
+                excluded = result[len(_NOT_TESTED):] if result.startswith(_NOT_TESTED) else result
             out.append({"index": index, "from_d": first.isoformat(), "to_d": last.isoformat(),
                         "from_ns": timeutil.ist_ns(first, "00:00"),
                         "to_ns": timeutil.ist_ns(last + timedelta(days=1), "00:00"), "run_id": run_id,
-                        "status": status if status in _KNOWN else "unknown"})
+                        "status": status if status in _KNOWN else "unknown", "result": result,
+                        "no_sharpe": wf_report._no_sharpe(w), "excluded": excluded})
     except WfChartError:
         raise
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -101,13 +112,17 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
     truncated, next_from = False, None
     chosen = instrument_id
     queried = found = 0
-    uncharted = 0
+    uncharted = no_trades = 0
     prev_hi = None
     listed = []
     for w in wins:
-        listed.append({k: w[k] for k in ("index", "from_ns", "to_ns", "from_d", "to_d", "run_id", "status")})
+        listed.append({k: w[k] for k in ("index", "from_ns", "to_ns", "from_d", "to_d", "run_id", "status", "result",
+                                         "no_sharpe", "excluded")})
         run_id = w["run_id"]
-        if w["status"] == "done" and not _has_folder(run_id):
+        if w["excluded"] is not None:
+            listed[-1]["run_id"] = None
+            run_id = None
+        elif w["status"] == "done" and not _has_folder(run_id):
             listed[-1]["run_id"], listed[-1]["status"] = None, "missing"
             run_id = None
         elif w["status"] != "done":
@@ -127,7 +142,9 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
         try:
             out = chart.run_chart(run_id, chosen, elo, ehi)
         except LookupError:
-            continue                                             # this run has not traded that instrument
+            listed[-1]["status"] = "no_trades"                   # this run has not traded that instrument
+            no_trades += 1
+            continue
         found += 1
         chosen = out["instrument_id"]
         states.append(out["data_state"])
@@ -165,8 +182,11 @@ def walkforward_chart(job_id: str, instrument_id: int | None = None, from_ns: in
     if instrument_id is not None and queried and not found:
         raise WfChartError("no such instrument in this walk-forward", kind="instrument")
     if uncharted:
-        notices.append(f"{uncharted} of {len(wins)} windows have no chart: their test run failed, was skipped or "
-                       "is gone.")
+        notices.append(f"{uncharted} of {len(wins)} windows have no chart: their test run failed, was skipped, is "
+                       "gone or is left out of the summary.")
+    if no_trades:
+        notices.append(f"{no_trades} window{'s' if no_trades > 1 else ''} did not trade this instrument, so "
+                       f"{'they have' if no_trades > 1 else 'it has'} no markers here.")
     if "ok" in states:
         state = "ok"
     else:

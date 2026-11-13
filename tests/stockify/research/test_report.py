@@ -72,6 +72,23 @@ class RunResearchTests(ReportTest):
         self.assertIn("best of 12 tries", res.plain["dsr"])
         finite_json(res)
 
+    def test_the_plain_meanings_come_from_the_server(self):
+        # The page shows these beside the numbers, so they must be the server's own words (plain.meaning), never a
+        # client copy (M6 Task 30 review).
+        family_of(3)
+        res = report.run_research("r00", use_cache=False)
+        for key in ("trials", "holdout_unlocks", "regime_month", "regime_weekday", "regime_expiry", "regime_vix",
+                    "regime_gap"):
+            self.assertEqual(res.plain[key], plain.meaning(key), key)
+        self.assertEqual(res.plain["dsr_meaning"], plain.meaning("dsr"))
+
+    def test_no_regime_meanings_without_regimes(self):
+        store.create_run({"run_id": "bad", "status": "failed", "family_id": FAM, "created_ns": 1})
+        res = report.run_research("bad", use_cache=False)
+        self.assertIsNone(res.regimes)
+        self.assertFalse([k for k in res.plain if k.startswith("regime_")])
+        self.assertEqual(res.plain["holdout_unlocks"], plain.meaning("holdout_unlocks"))
+
     def test_rank_and_best_follow_the_objective(self):
         fam = "f/pnl/net_pnl"
         registry.ensure_family(fam, "net_pnl")
@@ -104,6 +121,14 @@ class RunResearchTests(ReportTest):
         self.assertEqual((res.n_trials, res.rank, res.is_best), (1, 1, True))
         self.assertIn("only try", res.plain["dsr"])
         self.assertEqual(res.dsr.sr0, 0.0)
+
+    def test_family_report_carries_the_meaning_sentences_the_page_shows(self):
+        family_of(3)
+        rep = report.family_report(FAM)
+        for key in ("trials", "holdout_unlocks", "dsr_meaning"):
+            self.assertEqual(rep.plain[key], plain.meaning({"dsr_meaning": "dsr"}.get(key, key)))
+        self.assertIn("Only the picked try is adjusted for luck", rep.plain["scores_caveat"])
+        self.assertEqual(rep.plain["objective"], plain.OBJECTIVE_LABELS["sharpe"])
 
     def test_variants_do_not_change_n(self):
         family_of(3)

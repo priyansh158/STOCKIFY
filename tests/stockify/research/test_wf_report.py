@@ -39,12 +39,17 @@ def plain_params_windows(**kw) -> list[dict]:
 
 class ReportBase(SandboxedDBTest):
     db_modules = (store,)
+    min_oos = 2                  # the fixtures have 12 out-of-sample days: the shipped 60 is tested in MinOosDaysTests
 
     def setUp(self):
         super().setUp()
         p = mock.patch.object(stats, "risk_free_rows", return_value=[])
         p.start()
         self.addCleanup(p.stop)
+        if self.min_oos is not None:
+            q = mock.patch.object(wf_report, "min_oos_days", return_value=self.min_oos)
+            q.start()
+            self.addCleanup(q.stop)
 
     def finished(self, windows=None) -> str:
         build_job(windows or plain_params_windows())
@@ -60,7 +65,7 @@ def write_sensitivity(run_id: str, verdict: str = "fragile") -> None:
     rows = [
         {"key": "baseline", "axis": "baseline", "label": "As run", "run_id": run_id, "status": "baseline",
          "net_pnl_paise": 500000, "sharpe": 1.5, "delta_net_paise": 0, "error": None},
-        {"key": "costs_x2", "axis": "costs", "label": "All costs x2", "run_id": "s1", "status": "done",
+        {"key": "costs_x2", "axis": "costs", "label": "All costs ×2", "run_id": "s1", "status": "done",
          "net_pnl_paise": -120000, "sharpe": -0.4, "delta_net_paise": -620000, "error": None},
         {"key": "slip_plus1", "axis": "slippage", "label": "1 extra tick", "run_id": "s2", "status": "done",
          "net_pnl_paise": 300000, "sharpe": 0.9, "delta_net_paise": -200000, "error": None}]
@@ -94,6 +99,13 @@ class RenderTests(ReportBase):
             self.assertIn(w["test_from"], text)                            # each window's dates are in the table
         self.assertIn("width = 10", text)                                  # the per-window chosen settings
 
+    def test_the_curve_axis_title_names_the_dashed_line_as_the_starting_capital(self):
+        # one wording for every growth-of-1 chart (the compare page uses the same): the start is the dashed line at 1.0
+        # and the first point is the end of the first day
+        job = self.finished()
+        doc = json.loads((paths.research_path(job) / "walkforward.json").read_text(encoding="utf-8"))
+        self.assertEqual(wf_report.notes(doc)["y_label"], "growth of 1 (dashed line = starting capital)")
+
     def test_report_says_how_the_two_sharpes_are_measured_next_to_the_ratio(self):
         text = self.report_text()
         note = ("The in-sample figure is the average of each window's training Sharpe; the out-of-sample figure is "
@@ -111,7 +123,7 @@ class RenderTests(ReportBase):
     def test_report_with_sensitivity_has_the_table(self):
         write_sensitivity("base1")
         text = self.report_text(sensitivity_run="base1")
-        self.assertIn("All costs x2", text)
+        self.assertIn("All costs ×2", text)
         self.assertIn("-₹1,200", text)
         self.assertIn("| 1 extra tick |", text)
         self.assertNotIn("not run yet", text)
@@ -207,6 +219,84 @@ class RenderTests(ReportBase):
             with self.assertRaises(OSError):
                 wf_report.render(job)
         self.assertEqual(wf_report.report_path(job).read_bytes(), old)
+
+
+def long_windows(days: int = 40) -> list[dict]:
+    """The two-window fixture with `days` out-of-sample days in each window (80 in all by default)."""
+    rng = random.Random(7)
+    t0 = [0.002 + rng.uniform(-0.01, 0.01) for _ in range(days)]
+    t1 = [0.001 + rng.uniform(-0.01, 0.01) for _ in range(days)]
+    return plain_params_windows(w0=dict(test=t0, test_start="2026-05-04"), w1=dict(test=t1, test_start="2026-07-01"))
+
+
+class MinOosDaysTests(ReportBase):
+    """D-102: below research.json walk_forward.min_oos_days the Sharpe figures are not shown."""
+    min_oos = None               # the shipped value, 60
+
+    def test_the_shipped_minimum_is_read_from_the_config(self):
+        self.assertEqual(wf_report.min_oos_days(), 60)
+
+    def test_few_days_show_the_constant_in_place_of_every_sharpe_figure(self):
+        text = self.report_text()                                                       # 12 out-of-sample days
+        s = wf.finish(JOB).summary
+        want = plain.NOT_ENOUGH_OOS.format(n=12, m=60)
+        self.assertGreaterEqual(text.count(want), 4)                                    # row, ratio, dsr, windows note
+        rows = [ln for ln in text.splitlines() if re.match(r"\| [12] \| 2026", ln)]       # the window table's rows
+        self.assertEqual(len(rows), 2)
+        for ln in rows:                                                                  # a short word, not the sentence
+            self.assertIn(f"| {plain.NOT_ENOUGH_OOS_SHORT} |", ln)
+            self.assertNotIn("not enough", ln)
+        self.assertEqual(plain.NOT_ENOUGH_OOS_SHORT, "too few days")
+        above = text[:text.index("| Window |")]
+        self.assertIn(want, above.splitlines()[-3] + above.splitlines()[-2])             # said in full just above it
+        for figure in (s.is_sharpe, s.oos_sharpe):
+            self.assertNotIn(f"{figure:.2f}", text)
+        self.assertNotIn("% chance the out-of-sample edge", text)
+        self.assertNotIn("kept ", text)
+        for w in wf_report.load(JOB)[1]["windows"]:                                      # per-window Sharpes
+            for part in ("train", "test"):
+                self.assertNotIn(f"| {w[part]['sharpe']:.2f} |", text)
+        self.assertIn("less than a year of trading", text)                               # the caution stays
+        self.assertRegex(text, r"\| (\+|-)?₹")                                          # raw P&L stays
+        self.assertIn("](walkforward.png)", text)                                        # and the curve
+
+    def test_the_console_summary_and_the_api_detail_hide_the_figures_too(self):
+        job = self.finished()
+        text = wf_report.summary_text(job)
+        self.assertIn(plain.NOT_ENOUGH_OOS.format(n=12, m=60), text)
+        d = wf_report.detail(job)
+        s = d["summary"]
+        self.assertEqual((s["oos_days"], s["oos_days_needed"]), (12, 60))
+        self.assertTrue(all(s[k] is None for k in ("is_sharpe", "oos_sharpe", "ratio", "dsr")))
+        for w in d["windows"]:
+            self.assertIsNone(w["train"]["sharpe"])
+            self.assertIsNone(w["test"]["sharpe"])
+            self.assertIsInstance(w["test"]["net_pnl_paise"], int)                       # raw P&L stays
+        self.assertEqual(len(d["stitched_index"]), 12)
+        self.assertIn(plain.NOT_ENOUGH_OOS.format(n=12, m=60), d["plain"]["ratio"])
+        self.assertIn(plain.NOT_ENOUGH_OOS.format(n=12, m=60), d["plain"]["dsr"])
+
+    def test_enough_days_show_the_figures(self):
+        job = self.finished(long_windows())                                              # 80 days >= 60
+        text = wf_report.render(job).read_text(encoding="utf-8")
+        s = wf.finish(job).summary
+        self.assertEqual(s.oos_days, 80)
+        self.assertNotIn("not enough out-of-sample days", text)
+        self.assertIn(f"{s.oos_sharpe:.2f}", text)
+        self.assertIn("less than a year of trading", text)                               # 60 <= T < 252: still cautioned
+        self.assertIn("% chance the out-of-sample edge beats luck", text)
+        d = wf_report.detail(job)
+        self.assertEqual(d["summary"]["oos_sharpe"], s.oos_sharpe)
+        self.assertEqual(d["summary"]["oos_days_needed"], 60)
+
+    def test_the_boundary_is_the_minimum_itself(self):
+        job = self.finished(long_windows(30))                                            # exactly 60
+        self.assertEqual(wf.finish(job).summary.oos_days, 60)
+        self.assertNotIn("not enough out-of-sample days", wf_report.render(job).read_text(encoding="utf-8"))
+
+    def test_one_day_below_the_minimum_is_not_enough(self):
+        job = self.finished(long_windows(29))                                            # 58
+        self.assertIn("(58 of 60 needed)", wf_report.render(job).read_text(encoding="utf-8"))
 
 
 class RefusalTests(ReportBase):
@@ -383,7 +473,7 @@ class CliTests(ReportBase):
                                        "--sensitivity-run", "senbase")
         self.assertEqual(code, 0, err)
         job = store.list_research_jobs(kind="walkforward")[0]
-        self.assertIn("All costs x2", (paths.research_path(job["job_id"]) / "report.md").read_text(encoding="utf-8"))
+        self.assertIn("All costs ×2", (paths.research_path(job["job_id"]) / "report.md").read_text(encoding="utf-8"))
 
     def test_exit_1_when_a_window_could_not_be_tested(self):
         class Failing(StubPool):

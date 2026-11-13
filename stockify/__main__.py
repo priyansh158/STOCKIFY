@@ -616,6 +616,27 @@ def _cmd_research_show(args) -> int:
     return 2
 
 
+def _cmd_research_report(args) -> int:
+    """M6.12 (WF 6.7): re-render research/<job_id>/report.md of a finished walk-forward job through wf_report.render (its
+    only writer) and print the path. Exit 0 written, 1 an internal failure (the job's result file is unreadable or the
+    write failed), 2 an unknown job, a job that is not `done` (the status is named) or a bad --sensitivity-run id."""
+    from stockify.research import wf_report
+    try:
+        dropping = args.sensitivity_run is None and wf_report.has_sensitivity_table(args.walkforward)
+        path = wf_report.render(args.walkforward, sensitivity_run=args.sensitivity_run)
+    except wf_report.WfReportError as e:
+        print(e, file=sys.stderr)
+        return 1 if e.kind == "missing" else 2
+    except Exception as e:  # noqa: BLE001
+        print(f"the report could not be written: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    if dropping:
+        print("note: the cost table of the earlier report.md is dropped, because no --sensitivity-run was given; "
+              "run it again with --sensitivity-run RUN_ID to keep the table", file=sys.stderr)
+    print(path)
+    return 0
+
+
 def _cmd_sensitivity(args) -> int:
     """M6.7: re-run a finished run with costs, extra slippage ticks, latency and other fill models, one change at a
     time. Exit 0 done (robust, fragile or already losing), 1 when a variant failed or the verdict is inconclusive, 2 for an unknown or unfinished run or a locked holdout."""
@@ -1242,6 +1263,18 @@ def main(argv: list[str] | None = None) -> int:
     rw = rssub.add_parser("show", help="print the research lines of a run or a family, in plain words")
     rw.add_argument("target", help="a run id or a family id")
     rw.set_defaults(func=_cmd_research_show)
+    rr = rssub.add_parser("report", help="write the report.md of a finished walk-forward job again and print its path",
+                          description="Re-render research/<job_id>/report.md of a walk-forward job that has finished "
+                                      "(status done). The sensitivity run is not stored on the walk-forward job, so "
+                                      "give it with --sensitivity-run to have the cost table in the report; without "
+                                      "it the report says how to run the suite. Exit 0 written, 1 the job's result "
+                                      "file is missing or the write failed, 2 unknown job, a job that is not done, "
+                                      "or a bad run id.")
+    rr.add_argument("--walkforward", required=True, metavar="JOB_ID", help="a finished walk-forward job's id")
+    rr.add_argument("--sensitivity-run", metavar="RUN_ID",
+                    help="the run whose sensitivity.json goes into the cost table (not stored on the walk-forward "
+                         "job, so name it here)")
+    rr.set_defaults(func=_cmd_research_report)
 
     sn = sub.add_parser("sensitivity", help="re-run a finished run with costs x0/1.5/2, extra slippage ticks, more "
                                             "latency and other fill models, and flag it fragile (M6.7)")
