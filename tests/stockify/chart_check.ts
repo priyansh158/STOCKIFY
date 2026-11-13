@@ -220,4 +220,23 @@ out.joinNone = chart.joinFillsAndMarkers([fl(5)], []);
 out.joinEmpty = chart.joinFillsAndMarkers([], [mk(1, "n")]);
 out.joinOrder = chart.joinFillsAndMarkers([fl(9), fl(3)], [mk(3, "c"), mk(9, "n")]).map((r: { fill: { fill_id: number } }) => r.fill.fill_id);
 
+
+// The walk-forward page (CH 6.18): bands from the server's windows, labelled in plain words; gaps shaded without bars.
+const W0 = 1_762_885_800; // IST midnight of Wed 12 Nov 2025
+const wfw = (index: number, over: Record<string, unknown>) => ({
+  index, from_t: W0 + index * 7 * 86400, to_t: W0 + (index + 1) * 7 * 86400, from_d: "d", to_d: "d",
+  run_id: `r${index}`, status: "done", result: "ok", no_sharpe: "", excluded: null, ...over,
+});
+const wfs = [
+  wfw(0, {}),
+  wfw(1, { run_id: null, status: "done", excluded: "too few trading days to rank" }),
+  wfw(2, { status: "no_trades" }),
+  wfw(3, { run_id: null, status: "failed" }),
+];
+out.bands = chart.windowBands(wfs);
+out.bandsEmpty = chart.windowBands([]);
+const wb = chart.windowBands(wfs);
+out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, 60, false);
+out.shadeGapDaily = chart.shadePoints([], [wb[1]], 86400, true);
+
 process.stdout.write(JSON.stringify(out));

@@ -10,6 +10,7 @@ import { Empty, PageHead, Panel, Stat, StatGrid, Table } from "@/components/ui";
 import { rupees } from "@/lib/format";
 import { dayNumber, getWalkforward, sentenceOrDash, wfCurve, type WalkforwardLoad } from "@/lib/research";
 import Curve from "./Curve";
+import WfChart from "./WfChart";
 import type { WalkforwardDTO, WalkforwardWindowDTO } from "@/lib/types";
 
 const DAY = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
@@ -110,7 +111,7 @@ export default async function WalkforwardPage({ params }: { params: Promise<{ id
       </Shell>
     );
   }
-  return <Report r={load.report} />;
+  return <Report r={load.report} id={id} />;
 }
 
 function Shell({ title, lede, children }: { title: string; lede?: string; children: ReactNode }) {
@@ -122,7 +123,7 @@ function Shell({ title, lede, children }: { title: string; lede?: string; childr
   );
 }
 
-function Report({ r }: { r: WalkforwardDTO }) {
+function Report({ r, id }: { r: WalkforwardDTO; id: string }) {
   const p = r.plain;
   const s = r.summary;
   const tested = r.windows.filter((w) => w.test).length;
@@ -169,6 +170,17 @@ function Report({ r }: { r: WalkforwardDTO }) {
           ) : (
             <Curve curve={curve} yLabel={p.y_label} gaps={p.gaps} />
           )}
+        </div>
+      </section>
+
+      <section className="stk-section" aria-labelledby="wf-trades">
+        <h2 id="wf-trades">Out-of-sample trades</h2>
+        <p className="stk-lede">
+          The price during each test window, with the trades the strategy made there. Training days are not drawn. A window
+          the strategy did not trade, or that the report left out, is shaded and named, with nothing drawn in it.
+        </p>
+        <div className="stk-gap-top">
+          {tested === 0 ? <Empty>No window was tested, so there are no trades to show.</Empty> : <WfChart jobId={id} />}
         </div>
       </section>
 

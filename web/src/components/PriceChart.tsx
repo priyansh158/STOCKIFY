@@ -42,7 +42,7 @@ import {
   rangeAround,
   contractOf,
   DEFAULT_INTERVAL_S,
-  shadeWindows,
+  shadePoints,
   toCandle,
   toMarker,
   toPlotPoint,
@@ -390,8 +390,11 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
     volume.applyOptions({ color: readColour("--color-rule") });
 
     const tint = [readColour("--color-info", 0.1), readColour("--color-info", 0.04)];
+    const gapTint = readColour("--color-warn", 0.18); // a window with nothing to draw (excluded, no trades, failed)
     shade.setData(
-      (windows ? shadeWindows(bars, windows, daily).map((p) => ({ time: p.time, value: 1, color: tint[p.index % 2] })) : []) as unknown as HistogramData[],
+      (windows
+        ? shadePoints(bars, windows, meta.interval_s ?? DEFAULT_INTERVAL_S, daily).map((p) => ({ time: p.time, value: 1, color: p.gap ? gapTint : tint[p.index % 2] }))
+        : []) as unknown as HistogramData[],
     );
 
     const tokens = { up: readColour("--color-up"), down: readColour("--color-down"), warn: readColour("--color-warn") };
