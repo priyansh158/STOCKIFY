@@ -5,11 +5,15 @@
  * .stk-heat). Each carries an aria-label that summarises it and a visible table of the same numbers. Desktop sizes:
  * the SVGs keep their aspect ratio and scale with the column, so the text in them is never stretched.
  */
-import { useId, useState } from "react";
-import { heatColourStep } from "@/lib/researchHelpers";
+import { useState } from "react";
+import { SERIES_TOKENS, heatColourStep, heatMoreWord } from "@/lib/researchHelpers";
 
 const MAX_SERIES = 4;
 const HEAT_STEPS = 5;
+/** globals.css sets `color-scheme: dark` and shades heat cells from faint to strong accent (checked in research_check.ts). */
+const HEAT_SCHEME = "dark" as const;
+const HEAT_MORE = heatMoreWord(HEAT_SCHEME);
+const COLOURS = SERIES_TOKENS.length;
 
 type Fmt = (n: number) => string;
 
@@ -39,6 +43,8 @@ export function LineChart({
   yFormat,
   xFormat = (n) => String(n),
   baseline,
+  baselineLabel,
+  xLabel = "Point",
   label,
 }: {
   series: LineSeries[];
@@ -46,6 +52,10 @@ export function LineChart({
   xFormat?: Fmt;
   /** A reference level drawn as a dashed line, such as the starting capital. */
   baseline?: number;
+  /** What the dashed baseline is, such as "starting capital". */
+  baselineLabel?: string;
+  /** What x is (the first column of the table), such as "Date". */
+  xLabel?: string;
   /** What the chart shows, for its accessible name and table caption. */
   label?: string;
 }) {
@@ -53,9 +63,9 @@ export function LineChart({
   const shown = drawn.slice(0, MAX_SERIES);
   const hidden = drawn.length - shown.length;
   const [cursor, setCursor] = useState<number | null>(null);
-  const id = useId();
+  const [keyboard, setKeyboard] = useState(false);
   if (shown.length === 0 || shown.every((s) => s.points.length < 2)) {
-    return <p className="stk-label">Not enough points to draw.</p>;
+    return <p className="stk-label">Not enough data to draw this chart: it needs at least two points.</p>;
   }
 
   const xs = [...new Set(drawn.flatMap((s) => s.points.map((p) => p[0])))].sort((a, b) => a - b);
@@ -76,7 +86,7 @@ export function LineChart({
   const path = (s: LineSeries) =>
     [...s.points].sort((a, b) => a[0] - b[0]).map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join(" ");
 
-  const at = cursor === null ? null : xs[cursor];
+  const at = cursor === null ? null : (xs[Math.min(cursor, xs.length - 1)] ?? null);
   const valueAt = (s: LineSeries, x: number) => s.points.find((p) => p[0] === x)?.[1];
   const summary = `${label ?? "Line chart"}: ${shown.map((s) => {
     const sorted = [...s.points].sort((a, b) => a[0] - b[0]);
@@ -85,6 +95,7 @@ export function LineChart({
 
   const move = (to: number) => setCursor(Math.max(0, Math.min(xs.length - 1, to)));
   const onKey = (e: React.KeyboardEvent) => {
+    setKeyboard(true);
     if (e.key === "ArrowRight") { e.preventDefault(); move((cursor ?? -1) + 1); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); move((cursor ?? xs.length) - 1); }
     else if (e.key === "Home") { e.preventDefault(); move(0); }
@@ -92,6 +103,7 @@ export function LineChart({
     else if (e.key === "Escape") setCursor(null);
   };
   const onPointer = (e: React.PointerEvent<SVGSVGElement>) => {
+    setKeyboard(false);
     const box = e.currentTarget.getBoundingClientRect();
     const frac = (((e.clientX - box.left) / box.width) * W - PAD.l) / (W - PAD.l - PAD.r);
     const x = xLo + frac * (xHi - xLo);
@@ -106,14 +118,17 @@ export function LineChart({
         <ul className="stk-lc-legend" aria-label="Series">
           {shown.map((s, i) => (
             <li key={s.label}>
-              <svg width="28" height="10" aria-hidden="true"><line x1="0" x2="28" y1="5" y2="5" className="stk-lc-line" data-s={i} /></svg>
+              <svg width="28" height="10" aria-hidden="true">
+                <line x1="0" x2="28" y1="5" y2="5" className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
+                <Marker x={14} y={5} i={i} />
+              </svg>
               {s.label}
             </li>
           ))}
         </ul>
       )}
       <svg
-        viewBox={`0 0 ${W} ${H}`} role="img" aria-label={summary} tabIndex={0}
+        viewBox={`0 0 ${W} ${H}`} role="group" aria-roledescription="chart" aria-label={summary} tabIndex={0}
         onKeyDown={onKey} onPointerMove={onPointer} onPointerLeave={() => setCursor(null)} onBlur={() => setCursor(null)}
       >
         {yTicks.map((t) => (
@@ -128,32 +143,36 @@ export function LineChart({
         {baseline !== undefined && (
           <line x1={PAD.l} x2={W - PAD.r} y1={py(baseline)} y2={py(baseline)} className="stk-lc-base" />
         )}
-        {shown.map((s, i) => <path key={s.label} d={path(s)} className="stk-lc-line" data-s={i} />)}
+        {shown.map((s, i) => (
+          s.points.length === 1
+            ? <Marker key={s.label} x={px(s.points[0][0])} y={py(s.points[0][1])} i={i} />
+            : <path key={s.label} d={path(s)} className="stk-lc-line" data-s={i} data-c={i % COLOURS} />
+        ))}
         {at !== null && (
           <g>
             <line x1={px(at)} x2={px(at)} y1={PAD.t} y2={H - PAD.b} className="stk-lc-cursor" />
             {shown.map((s, i) => {
               const v = valueAt(s, at);
-              return v === undefined ? null : <circle key={s.label} cx={px(at)} cy={py(v)} r={4} className="stk-lc-dot" data-s={i} />;
+              return v === undefined ? null : <Marker key={s.label} x={px(at)} y={py(v)} i={i} />;
             })}
           </g>
         )}
       </svg>
-      <p className="stk-lc-read" aria-live="polite">
+      <p className="stk-lc-read" aria-live={keyboard ? "polite" : "off"}>
         {at === null
           ? "Point at the chart, or focus it and use the arrow keys, to read the values."
           : `${xFormat(at)}: ${shown.map((s) => { const v = valueAt(s, at); return `${s.label} ${v === undefined ? "—" : yFormat(v)}`; }).join(", ")}`}
       </p>
-      {baseline !== undefined && <p className="stk-fine">Dashed line: {yFormat(baseline)}.</p>}
+      {baseline !== undefined && <p className="stk-fine">Dashed line: {baselineLabel ? `${baselineLabel} ` : ""}{yFormat(baseline)}.</p>}
       {hidden > 0 && <p className="stk-fine">Showing the first {MAX_SERIES} series; all {drawn.length} are in the table.</p>}
       <details className="stk-lc-table">
         <summary>Show the values as a table</summary>
         <div className="stk-table-wrap">
-          <table className="stk-table" id={id}>
+          <table className="stk-table">
             <caption>{label ?? drawn[0].label}</caption>
             <thead>
               <tr>
-                <th scope="col">Point</th>
+                <th scope="col">{xLabel}</th>
                 {drawn.map((s) => <th key={s.label} scope="col" className="num">{s.label}</th>)}
               </tr>
             </thead>
@@ -173,6 +192,14 @@ export function LineChart({
       </details>
     </figure>
   );
+}
+
+/** A series marker: a circle for the three colour-distinct series, a square for the fourth, so a reused colour still differs. */
+function Marker({ x, y, i }: { x: number; y: number; i: number }) {
+  const c = i % COLOURS;
+  return i < COLOURS
+    ? <circle cx={x} cy={y} r={4} className="stk-lc-dot" data-c={c} />
+    : <rect x={x - 4} y={y - 4} width={8} height={8} className="stk-lc-dot" data-c={c} />;
 }
 
 const IW = 560;
@@ -200,7 +227,7 @@ export function IntervalBar({
     <figure className="stk-iv">
       <figcaption className="stk-iv-name">{label}</figcaption>
       {known ? (
-        <IntervalSvg summary={summary} point={point} lo={lo} hi={hi} format={format} />
+        <IntervalSvg point={point} lo={lo} hi={hi} format={format} />
       ) : (
         <p className="stk-label">Not enough days to estimate.</p>
       )}
@@ -221,7 +248,7 @@ export function IntervalBar({
   );
 }
 
-function IntervalSvg({ summary, point, lo, hi, format }: { summary: string; point: number; lo: number; hi: number; format: Fmt }) {
+function IntervalSvg({ point, lo, hi, format }: { point: number; lo: number; hi: number; format: Fmt }) {
   const a = Math.min(lo, hi, point);
   const b = Math.max(lo, hi, point);
   const pad = (b - a || Math.abs(a) || 1) * 0.15;
@@ -230,7 +257,7 @@ function IntervalSvg({ summary, point, lo, hi, format }: { summary: string; poin
   const x = (v: number) => 16 + ((v - dLo) / (dHi - dLo)) * (IW - 32);
   const zero = dLo < 0 && dHi > 0;
   return (
-    <svg viewBox={`0 0 ${IW} ${IH}`} role="img" aria-label={summary}>
+    <svg viewBox={`0 0 ${IW} ${IH}`} aria-hidden="true">
       {zero && (
         <g>
           <line x1={x(0)} x2={x(0)} y1={8} y2={36} className="stk-iv-zero" />
@@ -284,7 +311,7 @@ export function HeatGrid({
           </caption>
           <thead>
             <tr>
-              <td />
+              <th scope="col"><span className="sr-only">{yLabel ?? "Row"}</span></th>
               {xs.map((x) => <th key={x} scope="col" className="num">{x}</th>)}
             </tr>
           </thead>
@@ -312,7 +339,7 @@ export function HeatGrid({
         </table>
       </div>
       <figcaption className="stk-fine">
-        Darker cells are larger values, from {format(lo)} to {format(hi)}.{best ? " The outlined cell is the best." : ""}
+        {HEAT_MORE[0].toUpperCase() + HEAT_MORE.slice(1)} cells are larger values, from {format(lo)} to {format(hi)}.{best ? " The outlined cell is the best." : ""}
       </figcaption>
     </figure>
   );

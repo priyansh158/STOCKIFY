@@ -34,6 +34,20 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_sentence_or_dash_gives_a_dash_for_nothing_and_trims_the_rest(self):
         self.assertEqual(self.answers["sentence"], ["—", "—", "—", "—", "Held up.", "A. B."])
 
+    def test_series_palette_is_the_validated_one(self):
+        # accent, info, warn passed the dataviz validator on the dark surface (chroma, deutan, normal-vision, contrast);
+        # a change to the palette must re-run scripts/validate_palette.js and update this list on purpose.
+        self.assertEqual(self.answers["seriesTokens"], ["accent", "info", "warn"])
+        self.assertEqual(self.answers["seriesCss"], [["0", "accent"], ["1", "info"], ["2", "warn"]])
+
+    def test_heat_caption_follows_the_scale_direction(self):
+        # Larger values get a stronger accent mix, on a dark surface: so the caption must say brighter.
+        mixes = self.answers["heatMixes"]
+        self.assertEqual(len(mixes), 5)
+        self.assertEqual(mixes, sorted(mixes))
+        self.assertEqual(self.answers["scheme"], "dark")
+        self.assertEqual(self.answers["more"], ["brighter", "darker"])
+
 
 if __name__ == "__main__":
     unittest.main()

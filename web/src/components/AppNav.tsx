@@ -9,7 +9,7 @@ const NAV = [
   { href: "/tests", label: "Strategy tests" },
   { href: "/trade", label: "Paper trading" },
   { href: "/research", label: "Research" },
-  { href: "/data", label: "Data" },
+  { href: "/data", label: "Data coverage" },
 ];
 
 /** The top bar: the wordmark (a link home; on the home page the page's own heading carries it) and the six destinations. */
