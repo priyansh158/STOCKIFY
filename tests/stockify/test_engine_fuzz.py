@@ -231,7 +231,7 @@ class DifferentialFuzzTests(unittest.TestCase):
                         runs.append(repr(exc))
                         continue
                     runs.append((folder / f"run{n}" / "determinism.json").read_bytes())
-                    self.assertEqual(len(res.hashes), 9)
+                    self.assertEqual(len(res.hashes), 10)
                 self.assertEqual(runs[0], runs[1])
 
 
