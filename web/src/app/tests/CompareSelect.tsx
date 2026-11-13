@@ -7,7 +7,7 @@
  * Without scripts the form still works; the page then says plainly what to fix when the count is wrong.
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { COMPARE_MAX, COMPARE_MIN } from "@/lib/researchHelpers";
+import { COMPARE_MAX, COMPARE_MIN, compareReady } from "@/lib/researchHelpers";
 
 export default function CompareSelect({ children }: { children: ReactNode }) {
   const [count, setCount] = useState(0);
@@ -30,7 +30,7 @@ export default function CompareSelect({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("pageshow", again);
   }, []);
 
-  const ok = count >= COMPARE_MIN && count <= COMPARE_MAX;
+  const ok = compareReady(count);
   const need =
     count < COMPARE_MIN
       ? `Tick ${COMPARE_MIN - count} more finished test${COMPARE_MIN - count === 1 ? "" : "s"} to compare.`
@@ -41,7 +41,7 @@ export default function CompareSelect({ children }: { children: ReactNode }) {
   return (
     <form ref={form} action="/tests/compare" method="get" onChange={recount}>
       <div className="stk-pick-bar">
-        <button type="submit" className="stk-btn" data-tone="primary" disabled={!ok} aria-describedby={hint}>
+        <button type="submit" className="stk-btn" data-tone="primary" disabled={!ok} data-ready={ok ? "true" : "false"} aria-describedby={hint}>
           Compare ({COMPARE_MIN}–{COMPARE_MAX})
         </button>
         <p id={hint} className="stk-label" role="status">

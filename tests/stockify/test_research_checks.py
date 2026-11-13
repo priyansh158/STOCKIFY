@@ -119,6 +119,12 @@ class ResearchHelperChecks(unittest.TestCase):
             {"headline": "Connected", "tone": "up", "rate": "204.3 packets a second", "last": "last packet 94 ms ago", "note": None},
         ])
 
+    def test_the_compare_button_is_ready_only_for_two_to_six_ticked_tests(self):
+        self.assertEqual(self.answers["compareReady"], [False, False, True, True, False, False, False])
+
+    def test_stop_all_is_offered_only_when_a_session_is_not_stopped(self):
+        self.assertEqual(self.answers["stopAll"], [False, False, False, False, True, True, True, True])
+
     def test_silence_names_the_last_day_with_data_from_the_coverage_cells(self):
         rec, nse, fresh, empty, never = self.answers["silence"][:5]
         # the recorder last had data on Thu 5 Nov; 4 trading days since (today, 13 Nov, is left out)

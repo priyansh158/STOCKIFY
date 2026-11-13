@@ -1,10 +1,11 @@
 // Runs the pure helpers of web/src/lib/researchHelpers.ts on fixed inputs and prints one JSON object. Node >= 22.18
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
+import { canStopAll } from "../../web/src/lib/stopAll.ts";
 import { START_RECORDER, SWEEP_COMMAND, WALKFORWARD_COMMAND, nseFetchCommand, sensitivityCommand, stockifyCommand } from "../../web/src/lib/commands.ts";
 import { readFileSync } from "node:fs";
 import { pathSegment } from "../../web/src/lib/pathSeg.ts";
-import { COMPARE_MAX, COMPARE_MIN, DIVERGING, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, divergingStep, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatFormat, heatGridProps, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
+import { COMPARE_MAX, COMPARE_MIN, DIVERGING, compareReady, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, divergingStep, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatFormat, heatGridProps, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
 
 import {
   GAP_REASON_WORDS, addDays, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
@@ -92,6 +93,9 @@ const out = {
     { connected: true, packets_per_s: 204.3, last_packet_age_ms: { full: 94 }, age_s: 205 * 3600, stale: true },
     { connected: true, packets_per_s: 204.3, last_packet_age_ms: { full: 94 }, age_s: 3, stale: false },
   ].map((r) => recorderWords(r as never)),
+  compareReady: [0, 1, 2, 6, 7, Number.NaN, 2.5].map((n) => compareReady(n)),
+  stopAll: [null, undefined, [], [{ status: "STOPPED" }], [{ status: "STOPPED" }, { status: "PAUSED" }], [{ status: "ARMED" }], [{ status: "RUNNING" }], [{ status: "CREATED" }]]
+    .map((x) => canStopAll(x as never)),
   silence: (() => {
     const day = (date: string, trading: boolean, rec: string, nse: string) => ({
       date, trading, cells: { recorder_full: { state: rec }, archive: { state: rec }, nse_fo: { state: nse } },
