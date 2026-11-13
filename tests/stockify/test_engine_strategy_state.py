@@ -168,13 +168,18 @@ class StateIsReadChecked(unittest.TestCase):
                     bundle, pack = _inputs(g, params, folder)
                     packs = split_pack(pack, bundle["days"], folder)
                     days = day_bundles(bundle)
-                    state = json.loads(engine_run(days[0], packs[0], cpp, folder / "d0"))
-                    real = dict(days[1], sod_state=copy.deepcopy(state))
+                    last = len(days) - 1                      # resume on the last day, after the warm-up days
+                    text = None
+                    for i in range(last):
+                        day = dict(days[i], sod_state=json.loads(text) if text else None)
+                        text = engine_run(day, packs[i], cpp, folder / f"d{i}")
+                    state = json.loads(text)
+                    real = dict(days[last], sod_state=copy.deepcopy(state))
                     legacy_state = copy.deepcopy(state)
                     legacy_state["strategy"] = {}
-                    legacy = dict(days[1], sod_state=legacy_state)
-                    engine_run(real, packs[1], cpp, folder / "real")
-                    engine_run(legacy, packs[1], cpp, folder / "legacy")
+                    legacy = dict(days[last], sod_state=legacy_state)
+                    engine_run(real, packs[last], cpp, folder / "real")
+                    engine_run(legacy, packs[last], cpp, folder / "legacy")
                     self.assertIsNone(_differs(folder / "real", folder / "legacy"))
                     traded += len((folder / "legacy" / "fills.csv").read_text(encoding="utf-8").splitlines()) - 1
             self.assertGreater(traded, 0, cpp)
