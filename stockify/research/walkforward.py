@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from stockify import paths, runconfig, store, timeutil
+from stockify import paths, research, runconfig, store, timeutil
 from stockify.research import fileio, holdout, pool, registry, stats, sweep
 
 _SPAN = re.compile(r"[0-9]+d", re.ASCII)
@@ -247,6 +247,11 @@ def _dump(results: list[dict]) -> list[dict]:
 SCHEMA = "stockify.walkforward/1"
 
 
+def min_oos_days() -> int:
+    """research.json walk_forward.min_oos_days (D-102): below this many out-of-sample days no Sharpe figure is shown."""
+    return int(research.settings()["walk_forward"]["min_oos_days"])
+
+
 @dataclass(frozen=True)
 class WalkforwardSummary:
     windows: int                       # every window of the job, tested or not
@@ -446,9 +451,11 @@ def _segments(finished: WalkforwardFinished) -> tuple[list[tuple[list[str], list
     return segs, starts
 
 
-def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str]):  # noqa: ANN202
+def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str], note: str | None = None):  # noqa: ANN202
     """One line per out-of-sample piece (so a gap between windows is a gap, not a bridge), a light vertical line at
-    each test start, and a marker on every point so a one-day piece shows."""
+    each test start, and a marker on every point so a one-day piece shows. With a `note` (too few days to judge) it
+    is written on the figure and the vertical range keeps 1.0 inside at least +/-5 %, so noise does not fill the
+    panel."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -459,6 +466,10 @@ def _figure(segments: list[tuple[list[str], list[float]]], starts: list[str]):  
         ax.plot([date.fromisoformat(d) for d in ds], idx, linewidth=1.2, color="#0072B2", marker="o", markersize=2.5,
                 label="out-of-sample")
     ax.axhline(1.0, linewidth=0.8, color="#999999")
+    if note:
+        lo, hi = ax.get_ylim()
+        ax.set_ylim(min(lo, 0.95), max(hi, 1.05))
+        ax.text(0.02, 0.96, note, transform=ax.transAxes, va="top", fontsize=9, color="#444444")
     ax.set_ylabel("growth of 1 (capital = 1.0)")
     ax.grid(alpha=0.3)
     ax.spines[["top", "right"]].set_visible(False)
@@ -473,7 +484,8 @@ def _equity_png(path, finished: WalkforwardFinished) -> None:  # noqa: ANN001
         return
     import matplotlib.pyplot as plt
     segs, starts = _segments(finished)
-    fig = _figure(segs, starts)
+    days = finished.summary.oos_days
+    fig = _figure(segs, starts, f"{days} out-of-sample days only" if days < min_oos_days() else None)
     tmp = path.with_name(path.name + ".tmp.png")
     try:
         fig.savefig(tmp)

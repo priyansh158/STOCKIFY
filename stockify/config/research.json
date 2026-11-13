@@ -1,5 +1,6 @@
 { "schema": "stockify.research/1", "holdout_from": "2026-08-01",
-  "walk_forward": {"train_days": 120, "test_days": 30, "step_days": 30, "objective": "sharpe"},
+  "walk_forward": {"train_days": 120, "test_days": 30, "step_days": 30, "objective": "sharpe",
+                  "min_oos_days": 60},
   "bootstrap": {"mean_block": "10", "resamples": 2000, "ci": "0.90", "min_days": 20},
   "sensitivity": {"cost_scale": ["0", "1", "1.5", "2"], "extra_ticks": [0, 1, 2], "latency_ms": [0, 250, 1000],
                   "fragile_cost_scale": "1.5", "fragile_extra_ticks": 1},

@@ -721,10 +721,13 @@ class GapPageDTO(BaseModel):
 # ---- walk-forward report (M6.5, WF 6.6; Task 22) ----
 
 class WalkforwardSummaryDTO(BaseModel):
-    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive."""
+    """Sharpe figures are annualised; `ratio` is out-of-sample over in-sample, absent unless in-sample is positive.
+    With fewer than `oos_days_needed` out-of-sample days (research.json walk_forward.min_oos_days) the Sharpe figures,
+    the ratio and `dsr` are None, here and in every window."""
     windows: int
     is_windows: int
     oos_days: int
+    oos_days_needed: int
     is_sharpe: float | None = None
     oos_sharpe: float | None = None
     ratio: float | None = None

@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 
 RUPEE = "₹"
 TOO_FEW_DAYS = "too few days to say"
+# Shown in place of a Sharpe figure, a ratio or a deflated Sharpe when the out-of-sample days are fewer than
+# research.json walk_forward.min_oos_days (D-102): the figure would look precise and mean nothing.
+NOT_ENOUGH_OOS = "not enough out-of-sample days to judge ({n} of {m} needed)"
 _NAME_LIMIT = 40
 
 # Every line is at most 110 characters (tested).
@@ -294,7 +297,8 @@ def wf_stability_sentence(summary, *, chosen_windows: int | None = None) -> str:
     return f"the same settings won {_percent_text(min(1.0, max(0.0, share)))} of the windows"
 
 
-def wf_dsr_sentence(n_trials: int, dsr: float | None) -> str:
+def wf_dsr_sentence(n_trials: int, dsr: float | None, *, oos_days: int | None = None,
+                    min_oos_days: int | None = None) -> str:
     """The deflated Sharpe of the stitched out-of-sample days. They are not "the best of N": each window's settings
     were picked on training days and tried on days the pick never saw. The allowance for luck still counts every
     training try (N = windows x grid), so the figure is a cautious one, and the sentence says so."""
@@ -304,6 +308,8 @@ def wf_dsr_sentence(n_trials: int, dsr: float | None) -> str:
         return "only one try, so nothing to allow for"
     p = _usable(dsr)
     verdict = TOO_FEW_DAYS if p is None else f"{_percent_text(p)} chance the out-of-sample edge beats luck"
+    if oos_days is not None and min_oos_days is not None and oos_days < min_oos_days:
+        verdict = NOT_ENOUGH_OOS.format(n=oos_days, m=min_oos_days)
     return (f"after allowing for luck over {n_trials} tries (every setting run in training, in every window), "
             f"{verdict}; the out-of-sample days were never used to choose, so this is a cautious figure")
 

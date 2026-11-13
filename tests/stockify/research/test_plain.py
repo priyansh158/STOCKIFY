@@ -345,6 +345,18 @@ class FragileSentenceTests(unittest.TestCase):
 class WfSentenceTests(unittest.TestCase):
     """WF 6.6: the out-of-sample ratio and the stability of the chosen settings, in plain words."""
 
+    def test_too_few_out_of_sample_days_replace_the_figure_with_the_constant(self):
+        want = plain.NOT_ENOUGH_OOS.format(n=5, m=60)
+        self.assertEqual(want, "not enough out-of-sample days to judge (5 of 60 needed)")
+        text = plain.wf_dsr_sentence(8, 0.00001, oos_days=5, min_oos_days=60)
+        self.assertIn(want, text)
+        self.assertIn("after allowing for luck over 8 tries", text)
+        self.assertNotIn("%", text)
+        self.assertNotIn("beats luck", text)
+        self.assertIn("% chance the out-of-sample edge beats luck", plain.wf_dsr_sentence(8, 0.7, oos_days=60,
+                                                                                          min_oos_days=60))
+        self.assertIn("% chance", plain.wf_dsr_sentence(8, 0.7))                  # no day count given: unchanged
+
     @staticmethod
     def summary(**kw):
         from stockify.research import walkforward as wf

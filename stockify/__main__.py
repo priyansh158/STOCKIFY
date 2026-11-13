@@ -621,6 +621,7 @@ def _cmd_research_report(args) -> int:
     write failed), 2 an unknown job, a job that is not `done` (the status is named) or a bad --sensitivity-run id."""
     from stockify.research import wf_report
     try:
+        dropping = args.sensitivity_run is None and wf_report.has_sensitivity_table(args.walkforward)
         path = wf_report.render(args.walkforward, sensitivity_run=args.sensitivity_run)
     except wf_report.WfReportError as e:
         print(e, file=sys.stderr)
@@ -628,6 +629,9 @@ def _cmd_research_report(args) -> int:
     except Exception as e:  # noqa: BLE001
         print(f"the report could not be written: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
+    if dropping:
+        print("note: the cost table of the earlier report.md is dropped, because no --sensitivity-run was given; "
+              "run it again with --sensitivity-run RUN_ID to keep the table", file=sys.stderr)
     print(path)
     return 0
 

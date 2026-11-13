@@ -698,6 +698,7 @@ export interface WalkforwardSummaryDTO {
   windows: number;
   is_windows: number;
   oos_days: number;
+  oos_days_needed: number;
   is_sharpe?: number | null;
   oos_sharpe?: number | null;
   ratio?: number | null;

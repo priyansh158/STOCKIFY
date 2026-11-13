@@ -18,7 +18,11 @@ from stockify import paths, store
 from stockify.research import fileio, pbo, plain, sensitivity, walkforward
 
 _NOT_RUN = "not run yet: `python -m stockify sensitivity --run {run}`"
+SENSITIVITY_MARK = "Costs and fills changed one at a time"     # starts the cost table's section in report.md
 _YEAR_OF_DAYS = 252             # trading days in the year the Sharpe is scaled to (stats.annualised)
+
+
+min_oos_days = walkforward.min_oos_days      # looked up through this name, so a test can set the minimum here
 
 
 class WfReportError(ValueError):
@@ -68,6 +72,17 @@ def _summary(doc: dict) -> walkforward.WalkforwardSummary:
     return walkforward.WalkforwardSummary(**s)
 
 
+def _few_days(doc: dict) -> tuple[int, int] | None:
+    """`(days, needed)` when the stitched out-of-sample days are fewer than the minimum (D-102), else None."""
+    days, needed = int(doc["summary"]["oos_days"]), min_oos_days()
+    return (days, needed) if days < needed else None
+
+
+def _not_enough(doc: dict) -> str | None:
+    few = _few_days(doc)
+    return plain.NOT_ENOUGH_OOS.format(n=few[0], m=few[1]) if few else None
+
+
 def _chosen_windows(doc: dict) -> int:
     return sum(1 for w in doc["windows"] if w.get("chosen_params") is not None)
 
@@ -78,10 +93,12 @@ def plain_lines(doc: dict, family_id: str) -> dict[str, str]:
     raw = doc["summary"]
     n = int(raw["n_trials"])
     dsr = (raw.get("dsr") or {}).get("dsr")
+    few = _few_days(doc)
     lines = {
-        "ratio": plain.wf_ratio_sentence(s),
+        "ratio": _not_enough(doc) or plain.wf_ratio_sentence(s),
         "stability": plain.wf_stability_sentence(s, chosen_windows=_chosen_windows(doc)),
-        "dsr": plain.wf_dsr_sentence(n, dsr) if n >= 1 else "no tries were recorded",
+        "dsr": (plain.wf_dsr_sentence(n, dsr, oos_days=few[0], min_oos_days=few[1]) if few else
+                plain.wf_dsr_sentence(n, dsr)) if n >= 1 else "no tries were recorded",
     }
     out = pbo.family_pbo(family_id)
     if out.result is not None:
@@ -95,12 +112,27 @@ def plain_lines(doc: dict, family_id: str) -> dict[str, str]:
     return lines
 
 
+def _shown(doc: dict) -> tuple[dict, list[dict]]:
+    """The summary and windows as the page may show them: `oos_days_needed` added, and with too few out-of-sample
+    days every Sharpe, the ratio and the deflated Sharpe None (raw P&L, the curve and the window list stay)."""
+    summary = dict(doc["summary"])
+    summary["oos_days_needed"] = min_oos_days()
+    windows = doc["windows"]
+    if _few_days(doc):
+        for key in ("is_sharpe", "oos_sharpe", "ratio", "dsr"):
+            summary[key] = None
+        windows = [{**w, **{part: ({**w[part], "sharpe": None} if w.get(part) else w.get(part))
+                            for part in ("train", "test")}} for w in windows]
+    return summary, windows
+
+
 def detail(job_id: str) -> dict:
     """The page's view of a finished job: the file's content plus the plain lines (`plain`)."""
     job, doc = load(job_id)
+    summary, windows = _shown(doc)
     return {"job_id": job_id, "name": doc["name"], "family_id": job["family_id"], "objective": doc["objective"],
-            "train": doc["train_days"], "test": doc["test_days"], "step": doc["step_days"], "summary": doc["summary"],
-            "windows": doc["windows"], "stitched_dates": doc["dates"], "stitched_index": doc["index"],
+            "train": doc["train_days"], "test": doc["test_days"], "step": doc["step_days"], "summary": summary,
+            "windows": windows, "stitched_dates": doc["dates"], "stitched_index": doc["index"],
             "plain": plain_lines(doc, job["family_id"])}
 
 
@@ -112,7 +144,8 @@ def summary_text(job_id: str) -> str:
     return "\n".join([
         f"Walk-forward {doc['name']} ({job_id}): {tested} of {raw['windows']} windows tested, "
         f"{raw['oos_days']} out-of-sample days (window lengths are calendar days)",
-        f"Sharpe over a year: in-sample {_sharpe(raw['is_sharpe'])}, out-of-sample {_sharpe(raw['oos_sharpe'])}",
+        (f"Sharpe over a year: {lines['ratio']}" if _few_days(doc) else
+         f"Sharpe over a year: in-sample {_sharpe(raw['is_sharpe'])}, out-of-sample {_sharpe(raw['oos_sharpe'])}"),
         f"Out-of-sample against in-sample: {lines['ratio']}",
         f"Deflated: {lines['dsr']} (N is {raw['n_trials']})",
         f"Stability: {lines['stability']}"])
@@ -164,11 +197,12 @@ def _windows_table(doc: dict) -> list[str]:
     keys = {k for w in ws for k in (w["chosen_params"] or {})}
     short = len({k.rsplit(".", 1)[-1] for k in keys}) == len(keys)        # the last part of a dotted name, if unique
     rows = []
+    few = _not_enough(doc)
     for w in ws:
         train, test = w["train"], w["test"]
         rows.append([w["index"] + 1, f"{w['train_from']} to {w['train_to']}", f"{w['test_from']} to {w['test_to']}",
-                     _settings(w["chosen_params"], short), _sharpe(train["sharpe"]) if train else "-",
-                     _sharpe(test["sharpe"]) if test else "-", _money(test["net_pnl_paise"]) if test else "-",
+                     _settings(w["chosen_params"], short), (few or _sharpe(train["sharpe"])) if train else "-",
+                     (few or _sharpe(test["sharpe"])) if test else "-", _money(test["net_pnl_paise"]) if test else "-",
                      _result_word(w)])
     return _table(["Window", "Training days", "Test days", "Settings chosen", "In-sample Sharpe",
                    "Out-of-sample Sharpe", "Out-of-sample net P&L", "Result"], rows)
@@ -196,7 +230,7 @@ def _sensitivity_lines(run_id: str | None) -> list[str]:
     words = {"baseline": "baseline", "done": "ran", "failed": "did not finish", "not_applicable": "not applicable"}
     body = [[r.label, words.get(r.status, "-"), _money(r.net_pnl_paise),
              _money(r.delta_net_paise) if r.status != "baseline" else "-", _sharpe(r.sharpe)] for r in rows]
-    return [f"Costs and fills changed one at a time on run `{run_id}`.", "",
+    return [f"{SENSITIVITY_MARK} on run `{run_id}`.", "",
             *_table(["Variant", "Status", "Net P&L", "Change", "Sharpe"], body), "", sentence]
 
 
@@ -221,7 +255,8 @@ def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
            + f". Settings were chosen by {plain.OBJECTIVE_LABELS.get(doc['objective'], doc['objective'])}.", "",
            "## In-sample against out-of-sample", "",
            *_table(["", "In-sample", "Out-of-sample"],
-                   [["Sharpe over a year", _sharpe(raw["is_sharpe"]), _sharpe(raw["oos_sharpe"])],
+                   [["Sharpe over a year", *([_not_enough(doc)] * 2 if _few_days(doc) else
+                                             [_sharpe(raw["is_sharpe"]), _sharpe(raw["oos_sharpe"])])],
                     ["Windows", raw["is_windows"], tested],
                     ["Days", "-", raw["oos_days"]]]), "",
            "The in-sample figure is the best of the grid on the training days, so choosing flatters it. "
@@ -248,6 +283,14 @@ def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
             "## Holdout", "", f"{lines['holdout'][:1].upper()}{lines['holdout'][1:]}.", "",
             "## Chance of overfitting", "", f"Overfitting: {lines['pbo']}.", ""]
     return "\n".join(out)
+
+
+def has_sensitivity_table(job_id: str) -> bool:
+    """True when the job's report.md on disk carries a cost-sensitivity table (an unreadable file reads as no)."""
+    try:
+        return SENSITIVITY_MARK in report_path(job_id).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return False
 
 
 def render(job_id: str, *, sensitivity_run: str | None = None) -> Path:

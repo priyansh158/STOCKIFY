@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import time
 import unittest
 from dataclasses import replace
@@ -17,7 +18,7 @@ from tests.support import SandboxedDBTest
 import stockify.store as store
 import stockify_paths
 from stockify import __main__ as cli, paths, runconfig
-from stockify.research import holdout, pool, sensitivity, sweep, walkforward as wf, wf_report
+from stockify.research import holdout, plain, pool, registry, sensitivity, sweep, walkforward as wf, wf_report
 from tests.stockify.research.test_walkforward_finish import JOB, build_job
 from tests.stockify.research.test_wf_report import ReportBase, plain_params_windows, write_sensitivity
 from tests.stockify.test_bundle import BundleTest, run as run_config
@@ -43,7 +44,20 @@ class ResearchReportCommandTests(ReportBase):
         self.assertIn("not run yet", (folder / "report.md").read_text(encoding="utf-8"))
         code, out, err = research_report("--walkforward", job, "--sensitivity-run", "senbase")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("All costs x2", (folder / "report.md").read_text(encoding="utf-8"))
+        self.assertIn("All costs ×2", (folder / "report.md").read_text(encoding="utf-8"))
+
+    def test_dropping_a_sensitivity_table_is_said_on_stderr(self):
+        job = self.finished()
+        write_sensitivity("senbase")
+        self.assertEqual(research_report("--walkforward", job)[2], "")             # nothing to drop yet
+        research_report("--walkforward", job, "--sensitivity-run", "senbase")
+        code, out, err = research_report("--walkforward", job)                      # the table goes away
+        self.assertEqual(code, 0)
+        self.assertIn("--sensitivity-run", err)
+        self.assertIn("dropped", err)
+        self.assertNotIn("All costs ×2", (paths.research_path(job) / "report.md").read_text(encoding="utf-8"))
+        code, out, err = research_report("--walkforward", job, "--sensitivity-run", "senbase")   # kept: no note
+        self.assertEqual((code, err), (0, ""))
 
     def test_research_report_unknown_job_exits_2(self):
         for bad in ("wf-nothing-here", "../escape"):
@@ -98,18 +112,28 @@ class DemoPipelineTests(BundleTest):
         base = runconfig.validate(run_config(name="demo", strategy=BUY))
         hold = holdout.holdout_from()                       # the fixture's days must be before it, so no unlock is needed
         self.assertTrue(hold is None or date(2025, 12, 31) < hold)
-        spec = sweep.SweepSpec(name="demo", base=base, axes={"capital_paise": [10_000_000, 20_000_000],
-                                                             "seed": [0, 1]},
-                               search={"kind": "grid"}, objective="net_pnl", workers=2, source=None)
+        # the capital changes the Sharpe of the run (the fixture's net P&L is the same whatever it is), so selection
+        # ranks real differences; the seed would change nothing and is left out
+        spec = sweep.SweepSpec(name="demo", base=base, axes={"capital_paise": [10_000_000, 20_000_000, 40_000_000]},
+                               search={"kind": "grid"}, objective="sharpe", workers=2, source=None)
         # 1. sweep
         swept = sweep.run_sweep(spec, pool_run=oracle_pool)
-        self.assertEqual([r["status"] for r in swept.rows], ["done"] * 4, [r["error"] for r in swept.rows])
+        self.assertEqual([r["status"] for r in swept.rows], ["done"] * 3, [r["error"] for r in swept.rows])
         self.assertIsNotNone(swept.best_run_id)
+        self.assertGreater(len({r["objective_value"] for r in swept.rows}), 1, swept.rows)
         # 2. walk-forward, then finish
-        res = wf.run_windows(spec, train=3, test=3, step=3, objective="net_pnl", pool_run=oracle_pool, workers=2)
+        res = wf.run_windows(spec, train=3, test=3, step=3, objective="sharpe", pool_run=oracle_pool, workers=2)
         fin = wf.finish(res.job_id)
         self.assertGreaterEqual(len(fin.windows), 2)
         self.assertEqual(store.get_research_job(res.job_id)["status"], "done")
+        state = json.loads(store.get_research_job(res.job_id)["state_json"])["windows"]
+        for w in state:                               # each window's pick is the best of its own training runs
+            if w["chosen_run_id"] is None:
+                continue
+            values = {rid: registry.objective_value(store.get_run(rid), "sharpe") for rid in w["train_run_ids"]}
+            self.assertEqual(values[w["chosen_run_id"]], max(v for v in values.values() if v is not None))
+            self.assertGreater(len(set(values.values())), 1)                       # a real choice among unequal runs
+            self.assertEqual(w["chosen_params"], {"capital_paise": 10_000_000})    # the least negative Sharpe wins
         # 3. sensitivity on the sweep's best run
         sens = sensitivity.run_suite(swept.best_run_id, workers=2, pool_run=oracle_pool)
         self.assertEqual(sens.run_id, swept.best_run_id)
@@ -120,8 +144,18 @@ class DemoPipelineTests(BundleTest):
         report = paths.research_path(res.job_id) / "report.md"
         self.assertEqual(Path(out.strip()), report)
         text = report.read_text(encoding="utf-8")
+        days = fin.summary.oos_days
+        self.assertLess(days, 60)                                           # a few fixture days: too few to judge
+        want = plain.NOT_ENOUGH_OOS.format(n=days, m=60)
+        self.assertEqual(want, f"not enough out-of-sample days to judge ({days} of 60 needed)")
         self.assertIn("after allowing for luck", text)
-        self.assertIn("Out-of-sample against in-sample:", text)
+        self.assertIn(f"Out-of-sample against in-sample: {want}", text)
+        self.assertIn(f"Out of sample: after allowing for luck over {fin.summary.n_trials} tries", text)
+        self.assertGreaterEqual(text.count(want), 4)
+        self.assertNotIn("chance the out-of-sample edge beats luck", text)
+        for figure in (fin.summary.is_sharpe, fin.summary.oos_sharpe):
+            if figure is not None:
+                self.assertNotIn(f"{figure:.2f}", text)
         self.assertIn("Costs and fills changed one at a time", text)
         self.assertIn("| Variant | Status | Net P&L | Change | Sharpe |", text)
         self.assertIn("All costs ×2", text)
@@ -131,11 +165,12 @@ class DemoPipelineTests(BundleTest):
         self.assertEqual(store.holdout_unlock_rows(), [])
         # everything written lies under the sandbox
         state = stockify_paths.state_dir().resolve()
-        written = [p for root in (paths.exports_dir(), paths.research_dir(), paths.runs_dir()) for p in root.rglob("*")]
+        written = [p for root in (paths.exports_dir(), paths.research_dir(), paths.runs_dir(), paths.logs_dir())
+                   for p in root.rglob("*")]
         self.assertTrue(written)
         for p in written:
             self.assertTrue(p.resolve().is_relative_to(state), p)
-        print(f"demo pipeline wall time: {time.monotonic() - t0:.1f}s")
+        self.assertLess(time.monotonic() - t0, 300)                          # a loose bound on the real runs
 
 
 if __name__ == "__main__":
