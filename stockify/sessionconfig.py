@@ -61,6 +61,11 @@ def _validate(raw: dict) -> dict:
     for n, sel in enumerate(universe):
         _need(isinstance(sel, (str, dict)), f"universe[{n}]", "must be a selector object or a symbol like 'NSE:RELIANCE'")
     runconfig.selectors_known(universe, "universe")
+    costs = raw.get("costs", {})
+    if isinstance(costs, dict) and "scale" in costs:       # D-90: paper trading is the real-cost check
+        _need(isinstance(costs["scale"], str) and runconfig._cost_scale(costs["scale"]) == 1, "costs.scale",
+              f"{costs['scale']!r}: a paper session always pays the real costs, so costs.scale must be left out "
+              'or be "1"; scaled costs are for backtests')
     margin = raw.get("margin", {})
     _need(isinstance(margin, dict), "margin", "must be an object")
     runconfig._known(margin, MARGIN_KEYS, "margin")

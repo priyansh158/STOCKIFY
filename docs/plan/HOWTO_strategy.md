@@ -254,6 +254,13 @@ The files in a run folder:
 | `specs:equity_tick_assumed` | the stock had no recorded lot/tick spec for those dates; a 1-paisa tick was assumed (D-43) |
 | `fill:approximate`, `eod_approx` | snapshot or end-of-day fills: rougher still (A4 §4) |
 | `settlement_fallback` | an expiring contract had no official settlement price, so the last underlying price was used |
+| `costs:scaled` | the run's config set `costs.scale`, so every charge was multiplied for a what-if test: its costs are not the real ones |
+
+**What if costs were different?** Put `"costs": {"scale": "1.5"}` in a run config to pay one and a half times the real
+charges (`"0"` for none, `"2"` for double; a decimal string from 0 to 10 with at most 4 decimals). It multiplies the
+total cost: brokerage, STT, stamp duty, exchange and SEBI fees and flat fees are scaled, and GST is not scaled itself
+because it follows its (scaled) base, so total charges come out at 1.5 times the real ones. A scale the rates cannot
+hold exactly is refused rather than rounded. Leave it out (or `"1"`) for a real result; paper sessions refuse it.
 
 ## 6. Determinism and re-runs
 

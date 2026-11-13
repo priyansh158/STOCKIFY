@@ -7,6 +7,9 @@ Leaf classes found in `stockify/config/charges.json` (components -> rows):
     Decimal, then the `_ppb` is re-derived from the new string (never scaled on its own).
   * integer paise amounts: flat_paise, per_order_paise, per_scrip_per_day_paise. Multiplied by the scale and rounded
     once, half-up, to whole paise.
+  * `gst.rate` is a rate on other charges (its `on:` names brokerage, exchange_txn, sebi): NOT scaled, because those
+    charges are scaled and GST follows them (scaling both would make it grow as scale squared). Fees with
+    includes_gst / plus_gst keep their flag, so the fee scales and its GST follows.
   * text, flags and lists that are never money: effective_from, verified_on, observed_on, kind, source, side,
     product, segment, `on` (a list of component names), `applies` (a dict of the same), verified, includes_gst,
     plus_gst (booleans). Left alone.
@@ -137,11 +140,12 @@ class ScaleChargesTests(unittest.TestCase):
         doubled = 0
         for path, v in old.items():
             name = str(path[-1])
+            on_charges = path[0] == "components" and path[1] == "gst"      # a rate on other charges: unchanged
             if name in loader.CHARGE_RATE_FIELDS:
-                self.assertEqual(Decimal(new[path]), Decimal(v) * 2, path)
+                self.assertEqual(Decimal(new[path]), Decimal(v) * (1 if on_charges else 2), path)
                 doubled += 1
             elif name.endswith("_ppb"):
-                self.assertEqual(new[path], 2 * v, path)
+                self.assertEqual(new[path], v if on_charges else 2 * v, path)
                 self.assertEqual(new[path], numerics.to_ppb(new[path[:-1] + (name[:-4],)]), path)
             elif name.endswith("_paise"):
                 self.assertEqual(new[path], 2 * v, path)
@@ -149,6 +153,34 @@ class ScaleChargesTests(unittest.TestCase):
             else:
                 self.assertEqual(new[path], v, path)                    # dates, ids, flags, source text
         self.assertGreater(doubled, 20)
+
+    def test_the_gst_rate_is_unchanged_at_scale_two(self):
+        before, after = real_charges(), bundle.scale_charges(real_charges(), Decimal("2"))
+        self.assertEqual(after["components"]["gst"], before["components"]["gst"])
+        self.assertEqual(after["components"]["stt"][0]["sell"], format(Decimal(before["components"]["stt"][0]["sell"]) * 2, "f").rstrip("0").rstrip(".") or "0")
+        for comp in ("dp", "auto_square_off_fee"):                      # the fee scales, its GST flag stays
+            for b, a in zip(before["components"][comp], after["components"][comp]):
+                self.assertEqual({k: v for k, v in a.items() if not k.endswith("_paise")},
+                                 {k: v for k, v in b.items() if not k.endswith("_paise")})
+
+    def test_a_rate_whose_base_cannot_be_classified_raises(self):
+        for on in (["turnover", "brokerage"], ["mystery"]):
+            doc = row_doc(rate="0.18", on=on)
+            with self.assertRaises(runconfig.RunConfigError) as cm:
+                bundle.scale_charges(doc, Decimal("2"))
+            self.assertIn("components.x[0].on", str(cm.exception))
+        doc = row_doc(rate="0.18", on=["turnover"])                    # a rate on turnover scales
+        self.assertEqual(_row(bundle.scale_charges(doc, Decimal("2")))["rate"], "0.36")
+
+    def test_every_top_level_key_is_checked_and_negative_paise_raise(self):
+        doc = row_doc(flat_paise=5)
+        doc["extra"] = {"limit": 3}
+        with self.assertRaises(runconfig.RunConfigError) as cm:
+            bundle.scale_charges(doc, Decimal("2"))
+        self.assertIn("extra.limit", str(cm.exception))
+        with self.assertRaises(runconfig.RunConfigError) as cm:
+            bundle.scale_charges(row_doc(flat_paise=-5), Decimal("2"))
+        self.assertIn("flat_paise", str(cm.exception))
 
     def test_the_shipped_rates_scale_by_one_and_a_half_and_two(self):
         for scale in ("1.5", "2"):
@@ -244,7 +276,38 @@ class ScaledBundleTests(tb.BundleTest):
         self.assertIn("costs:scaled", report.LABEL_TEXT)
 
 
+class SessionTests(unittest.TestCase):
+    def test_a_paper_session_refuses_costs_scale(self):
+        from stockify import sessionconfig
+        from tests.stockify import test_session_bundle as sb
+        base = sb.raw()
+        for bad in ("2", "0", "0.5", 2):
+            with self.subTest(bad=bad):
+                with self.assertRaises(sessionconfig.SessionConfigError) as cm:
+                    sessionconfig.load({**base, "costs": {"scale": bad}})
+                self.assertIn("costs.scale", str(cm.exception))
+                self.assertIn("real costs", str(cm.exception)) if isinstance(bad, str) else None
+        for ok in ("1", "1.0"):
+            sessionconfig.load({**base, "costs": {"scale": ok}})
+        sessionconfig.load(base)
+
+
 class ScaledRunTests(unittest.TestCase):
+    def test_the_total_cost_is_the_scale_times_the_unscaled_total(self):
+        """The key acceptance: charges.csv at scale N is N times charges.csv at scale 1, row by row, within the
+        half-up rounding of each leaf: at most 1 paise per component (6 in all) plus the whole rupee (100 paise) the
+        stamp duty is rounded to, so at most 106 per row. GST not compounding is what this guards: a squared GST
+        would be off by hundreds of paise on the 2x turnover."""
+        one = totals(golden_run("1"))
+        self.assertGreater(sum(one), 0)
+        for scale in ("2", "1.5", "0.5"):
+            with self.subTest(scale=scale):
+                got = totals(golden_run(scale))
+                self.assertEqual(len(got), len(one))
+                for g, o in zip(got, one):
+                    self.assertLessEqual(abs(Fraction(g) - Fraction(scale) * o), 106, (scale, g, o))
+                self.assertLessEqual(abs(Fraction(sum(got)) - Fraction(scale) * sum(one)), 106 * len(one))
+
     def test_scale_zero_gives_zero_charges(self):
         self.assertGreater(sum(totals(golden_run(None))), 0)           # the scenario does cost something
         zero = totals(golden_run("0"))
