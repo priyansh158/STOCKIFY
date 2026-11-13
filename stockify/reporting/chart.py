@@ -29,6 +29,8 @@ MAX_BARS = 50_000
 TAIL_BARS = 5_000                  # the window of a run with no marker and no range: its last bars
 DEFAULT_INTERVAL_S = chartbars.DEFAULT_INTERVAL_S
 _MINUTE_NS = 60 * 1_000_000_000
+# the bundle's instrument kind to what a card says; any other kind (or none) is None, never guessed
+_KINDS = {"EQ": "equity", "ETF": "equity", "FUT": "future", "CE": "option", "PE": "option", "INDEX": "index"}
 
 
 class _Fill(NamedTuple):
@@ -299,7 +301,8 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
     everything, skipped, delivered, idle = _markers(folder, bundle)
     traded = sorted({m["instrument_id"] for m in everything})
     listed = traded or sorted(inst)
-    instruments = [{"id": i, "symbol": (inst.get(i) or {}).get("tradingsymbol") or str(i)} for i in listed]
+    instruments = [{"id": i, "symbol": (inst.get(i) or {}).get("tradingsymbol") or str(i),
+                    "kind": _KINDS.get((inst.get(i) or {}).get("kind"))} for i in listed]
     if instrument_id is None:
         instrument_id = listed[0] if listed else None
     elif instrument_id not in listed and instrument_id not in inst:

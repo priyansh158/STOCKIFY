@@ -336,9 +336,9 @@ class G10GoldenTests(unittest.TestCase):
 
     def test_instrument_picker_lists_every_traded_instrument_including_fo_legs(self):
         out = chart("c10-g10")
-        self.assertEqual(out["instruments"], [{"id": 2, "symbol": "NIFTY2630324000CE"},
-                                              {"id": 3, "symbol": "NIFTY2630325000CE"},
-                                              {"id": 4, "symbol": "NIFTY2630325000PE"}])
+        self.assertEqual(out["instruments"], [{"id": 2, "symbol": "NIFTY2630324000CE", "kind": "option"},
+                                              {"id": 3, "symbol": "NIFTY2630325000CE", "kind": "option"},
+                                              {"id": 4, "symbol": "NIFTY2630325000PE", "kind": "option"}])
         self.assertEqual(out["instrument_id"], 2)                            # the lowest traded id
         self.assertEqual(chart("c10-g10", 4)["markers"][1]["side"], "BUY")   # the short put is closed by a buy
         with self.assertRaises(LookupError):
@@ -349,7 +349,7 @@ class DataStateTests(unittest.TestCase):
     def test_no_trades_run_still_has_bars(self):
         out = chart(make_run())
         self.assertEqual((len(out["bars"]), out["markers"], out["plots"], out["omitted_markers"]), (5, [], [], 0))
-        self.assertEqual(out["instruments"], [{"id": 1, "symbol": "TEST"}])
+        self.assertEqual(out["instruments"], [{"id": 1, "symbol": "TEST", "kind": "equity"}])
         self.assertEqual(out["instrument_id"], 1)
 
     def test_old_orders_csv_without_note_reads_as_empty_notes(self):
