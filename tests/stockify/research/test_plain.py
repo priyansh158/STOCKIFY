@@ -512,8 +512,12 @@ class OverviewSentenceTests(unittest.TestCase):
     def test_job_status_sentence_says_running_finished_or_why_it_failed(self):
         self.assertEqual(plain.job_status_sentence("running", None), "still running")
         self.assertEqual(plain.job_status_sentence("done", None), "finished")
-        self.assertEqual(plain.job_status_sentence("failed", "no data for that day."), "failed: no data for that day")
-        for raw in (None, "", "KeyError: run_id", "Traceback (most recent call last)"):
+        # only the code's own sentences and the class table's lines are shown (plain_reason); any other text is the generic line
+        self.assertEqual(plain.job_status_sentence("failed", "the holdout is locked."), "failed: the holdout is locked")
+        self.assertEqual(plain.job_status_sentence("failed", "HoldoutLocked: the span C:/x crosses it"), "failed: the holdout is locked")
+        for raw in ("no data for that day.", "KeyError: run_id", "Traceback (most recent call last)"):
+            self.assertEqual(plain.job_status_sentence("failed", raw), f"failed: {plain.GENERIC_FAILURE}")
+        for raw in (None, ""):
             self.assertEqual(plain.job_status_sentence("failed", raw), "failed, and no readable reason was saved")
         self.assertEqual(plain.job_status_sentence("running", "ignored"), "still running")
         self.assertEqual(plain.job_status_sentence("weird", None), "in an unrecognised state (weird)")

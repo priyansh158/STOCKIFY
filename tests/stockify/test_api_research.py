@@ -577,7 +577,7 @@ class WalkforwardApiTests(SandboxedDBTest):
         self.assertEqual([w["result"] for w in j["windows"]], ["tested"] * len(j["windows"]))
         self.assertIn(f"--walkforward {self.job} --sensitivity-run", j["plain"]["sensitivity"])
         self.assertIn("isn't stored", j["plain"]["sensitivity"])
-        self.assertEqual(j["plain"]["y_label"], "growth of 1 (capital = 1.0)")
+        self.assertEqual(j["plain"]["y_label"], "growth of 1 (dashed line = starting capital)")
         self.assertIn("left empty", j["plain"]["gaps"])
         for key in ("ratio_lead", "stability_lead", "pbo_lead"):
             self.assertTrue(j["plain"][key], key)
