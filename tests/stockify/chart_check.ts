@@ -171,6 +171,7 @@ out.shade = chart.shadeWindows([bar(50, "d"), bar(100, "d"), bar(199, "d"), bar(
 // The request for a range, as the API wants it.
 out.queryAll = chart.chartQuery({});
 out.queryFull = chart.chartQuery({ instrument: 3, from_ns: 5, to_ns: 9, trade_date: "2026-11-12" });
+out.queryInterval = chart.chartQuery({ interval_s: 300 });
 out.queryZero = chart.chartQuery({ instrument: 0 });
 
 // Settlements (C10 fix round): the price is "value at expiry" for an option, "settlement price" for a future.
@@ -258,8 +259,12 @@ out.view = [
 ];
 out.bandsEmpty = chart.windowBands([]);
 const wb = chart.windowBands(wfs);
-out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, false);
-out.shadeGapDaily = chart.shadePoints([], [wb[1]], true);
+out.shadeGap = chart.shadePoints([bar(W0 + 100, "d"), bar(W0 + 200, "d")], wb, false, 33300);
+// The session open is the server's, not a constant: a 09:30 open moves every gap point by 900 s.
+out.shadeGapOpen0930 = chart.shadePoints([], [wb[1]], false, 34200);
+out.shadeGapNoOpen = chart.shadePoints([], [wb[1]], false, null);
+out.notCharted = chart.windowLabel(wfw(4, { run_id: null, excluded: "not charted: different price basis or interval" }) as never);
+out.shadeGapDaily = chart.shadePoints([], [wb[1]], true, 33300);
 
 // The paper session page (CH 6.17): polling only while the day is live and the tab visible; the plain states.
 out.pollLive = chart.pollDelay(true, false, 5000);

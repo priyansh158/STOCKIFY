@@ -182,6 +182,7 @@ export type ChartModel = RunChartDTO & {
   days?: string[];
   paper?: boolean;
   windows?: WalkforwardChartWindowDTO[];
+  session_open_s?: number | null;
 };
 
 export type ChartViewState = "loading" | "error" | "pruned" | "empty" | "full";
@@ -258,7 +259,7 @@ export function shadeWindows(
   return out;
 }
 
-export type ChartOpts = { instrument?: number; from_ns?: number; to_ns?: number; trade_date?: string; signal?: AbortSignal };
+export type ChartOpts = { instrument?: number; from_ns?: number; to_ns?: number; interval_s?: number; trade_date?: string; signal?: AbortSignal };
 
 /** The query string for a chart request: only what is set (an instrument of 0 is set). */
 export function chartQuery(o: ChartOpts): string {
@@ -266,6 +267,7 @@ export function chartQuery(o: ChartOpts): string {
   if (o.instrument !== undefined) q.push(`instrument=${o.instrument}`);
   if (o.from_ns !== undefined) q.push(`from_ns=${o.from_ns}`);
   if (o.to_ns !== undefined) q.push(`to_ns=${o.to_ns}`);
+  if (o.interval_s !== undefined) q.push(`interval_s=${o.interval_s}`);
   if (o.trade_date !== undefined) q.push(`trade_date=${encodeURIComponent(o.trade_date)}`);
   return q.length ? `?${q.join("&")}` : "";
 }
@@ -388,7 +390,7 @@ const NO_CHART_WHY: Record<string, string> = {
 /** The band's words, plain: drawn windows say "out of sample"; the others say why nothing is drawn. The server's `excluded` text is used as it came. */
 export function windowLabel(w: WalkforwardChartWindowDTO): string {
   const head = `Window ${w.index + 1} (out of sample)`;
-  if (w.excluded) return `${head}, excluded: ${w.excluded}`;
+  if (w.excluded) return w.excluded.startsWith("not charted") ? `${head}, ${w.excluded}` : `${head}, excluded: ${w.excluded}`;
   if (w.status === "no_trades") return `${head}, no trades in this window`;
   if (w.status === "done") return head;
   return `${head}, no chart: ${NO_CHART_WHY[w.status] ?? "its state is not known"}`;
@@ -405,17 +407,18 @@ export function windowBands(windows: WalkforwardChartWindowDTO[]): ChartWindow[]
 }
 
 const GAP_DAYS_MAX = 400;
-const OPEN_AFTER_MIDNIGHT_S = 33300; // 09:15 IST
 
 /**
  * The shading for the histogram under the candles: every bar inside a window gets that window's position; a gap window has
- * no bars, so it gets one point on each weekday of its days (09:15 IST, or the date on a daily chart). Sorted, one per time.
+ * no bars, so it gets one point on each weekday of its days (at `openS` seconds after IST midnight, the session open the server
+ * reads from its dated config, or the date on a daily chart; with no open known, the day's start). Sorted, one per time.
  * A holiday inside a gap window still gets its point, which is why the shading is a band and never a claim about trading days.
  */
 export function shadePoints(
   bars: ChartBar[],
   windows: ChartWindow[],
   daily: boolean,
+  openS: number | null = null,
 ): { time: ChartTime; index: number; gap: boolean }[] {
   const byTime = new Map<ChartTime, { time: ChartTime; index: number; gap: boolean }>();
   for (const b of bars) {
@@ -429,7 +432,7 @@ export function shadePoints(
     for (let t = w.from_ns / 1e9, n = 0; t < end && n < GAP_DAYS_MAX; t += 86400, n++) {
       const weekday = new Date((t + istShift) * 1000).getUTCDay();
       if (weekday === 0 || weekday === 6) continue;
-      const time = daily ? istDate(t) : t + OPEN_AFTER_MIDNIGHT_S + istShift;
+      const time = daily ? istDate(t) : t + (openS ?? 0) + istShift;
       if (!byTime.has(time)) byTime.set(time, { time, index, gap: true });
     }
   });
