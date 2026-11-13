@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import stockify_paths
+from stockify import dbconn
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -57,22 +58,26 @@ def _db_path():
     return stockify_paths.state_dir() / "geo_alerts.sqlite"
 
 
+def _open() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _init(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA)
+    conn.commit()
+
+
+_pool = dbconn.Pool(__name__, _open, _init)
+
+
 def _connect() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        _conn = conn
-        return _conn
+    """This thread's connection (D-143); writers still take `_lock`."""
+    return _pool.get()
 
 
 def init_db() -> None:

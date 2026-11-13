@@ -21,6 +21,7 @@ import time
 from typing import Iterable, Optional
 
 import stockify_paths
+from stockify import dbconn
 
 
 _lock = threading.Lock()
@@ -51,22 +52,25 @@ def _db_path():
     return stockify_paths.state_dir() / "ticks.sqlite"
 
 
+def _open() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_db_path()), timeout=10.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def _init(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA)
+    conn.commit()
+
+
+_pool = dbconn.Pool(__name__, _open, _init)
+
+
 def _connect() -> sqlite3.Connection:
-    """Process-wide connection. SQLite is fine for one writer + many readers
-    under WAL mode."""
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        conn = sqlite3.connect(str(_db_path()), timeout=10.0, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        _conn = conn
-        return _conn
+    """This thread's connection (D-143): SQLite under WAL is fine for one writer + many readers, but not for
+    many threads sharing one handle. Writers still take `_lock`."""
+    return _pool.get()
 
 
 def init_db() -> None:
