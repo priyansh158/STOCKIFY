@@ -47,7 +47,7 @@ def _cell(v) -> str:  # noqa: ANN001
     if isinstance(v, float):
         raise TypeError("floats are not allowed in CSV artifacts (A4 §9.2)")
     s = str(v)
-    if any(c in s for c in ",\"\n"):
+    if any(c in s for c in ",\"\n\r"):
         s = '"' + s.replace('"', '""') + '"'
     return s
 
