@@ -66,9 +66,8 @@ Paise slipped(Side side, Paise price, Paise tick, const Json& slip, Pcg32& rng, 
     } else {
         throw RunError("slippage '" + kind + "'");
     }
-    if (slip.contains("extra_ticks")) {  // FW 6.2: after the kind's own draw, before the sign and the cap
-        move = checked_add(move, checked_mul(slip.at("extra_ticks").get<std::int64_t>(), tick));
-    }
+    // FW 6.2: after the kind's own draw, before the sign and the cap
+    move = checked_add(move, checked_mul(extra_ticks_of(slip), tick));
     Paise out = side == Side::Buy ? checked_add(price, move) : checked_sub(price, move);
     if (cap) {
         out = side == Side::Buy ? std::min(out, *cap) : std::max(out, *cap);
