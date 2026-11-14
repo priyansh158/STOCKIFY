@@ -219,7 +219,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                 <path d="M12 10v5M12 17.5v.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
               <p>
-                <strong>Costs ×{scale} — not real costs.</strong>{" "}
+                <strong>Costs ×{scale}: not real costs.</strong>{" "}
                 Every trading cost in this test was multiplied by {scale}, so its results are not what real costs would give.
               </p>
             </section>

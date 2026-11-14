@@ -18,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "STOCKIFY",
   description:
-    "NSE simulation lab — record Kite market data, backtest and paper-trade " +
+    "NSE simulation lab: record Kite market data, backtest and paper-trade " +
     "equity and F&O strategies.",
 };
 

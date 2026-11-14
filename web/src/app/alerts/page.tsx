@@ -60,7 +60,7 @@ export default async function AlertsPage() {
             No alerts yet.
             <br />
             The news monitor is its own background process, started together with STOCKIFY when you turn it on, and it
-            needs Gemini and email set up in <code>.env</code>.
+            needs Gemini and email set up in the settings file (.env).
           </p>
         </Panel>
       ) : (

@@ -41,8 +41,8 @@ export default async function PortfolioPage() {
         {status && !status.configured && (
           <Panel tone="amber">
             <p>
-              Kite Connect isn&apos;t configured. Set <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> in{" "}
-              <code>.env</code> and restart the server.
+              Kite Connect isn&apos;t set up: the Kite API key and secret are missing from the settings file (.env). Add
+              them there and restart STOCKIFY.
             </p>
           </Panel>
         )}
