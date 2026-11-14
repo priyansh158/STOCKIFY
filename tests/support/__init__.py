@@ -201,13 +201,17 @@ API_BASE_URL = "http://127.0.0.1:8001"
 # ── 3. SQLite singleton helpers ──────────────────────────────────────────────
 
 def reset_sqlite_singleton(module) -> None:
-    """Close and clear a module's cached `_conn`.
+    """Close and clear a module's cached `_conn` (and, for a `stockify.dbconn` pool, every per-thread connection).
 
     `tick_buffer`, `geo_alerts`, `stockify.store` and friends memoise one process-wide
     connection in a module global. Tests need a clean DB per case, so we close
     the old handle and nil the global; the next `_connect()` reopens against
     whatever `LOCALAPPDATA` currently points at.
     """
+    pool = getattr(module, "_pool", None)
+    if pool is not None:
+        pool.close_all()          # every per-thread connection (D-143), so no Windows file lock outlives the test
+        return
     conn = getattr(module, "_conn", None)
     if conn is not None:
         try:

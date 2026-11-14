@@ -73,8 +73,18 @@ class ExportLogicTests(ExportBase):
         self.assertEqual(self.names(out), sorted(self.names(out)))
         with zipfile.ZipFile(out) as z:
             s = json.loads(z.read("summary.json"))
-        self.assertEqual(set(s), {"run_id", "config", "metrics", "labels", "family_id", "role", "packs"})
+        self.assertEqual(set(s), {"run_id", "config", "metrics", "withheld", "labels", "family_id", "role",
+                          "packs"})
         self.assertEqual((s["run_id"], s["family_id"], s["role"]), ("r1", "fam", "trial"))
+
+    def test_summary_withholds_what_the_pages_withhold_and_the_bundle_metrics_stay_raw(self):
+        # r1 is a short run: its summary says "too short to say" like the API; the hashed metrics.json is untouched
+        with zipfile.ZipFile(export.build("r1")) as z:
+            s = json.loads(z.read("summary.json"))
+            raw = json.loads(z.read("metrics.json"))
+        self.assertIsNone(s["metrics"]["cagr"])
+        self.assertEqual(s["withheld"]["cagr"], "too short to say")
+        self.assertEqual(raw, json.loads((self.folder / "metrics.json").read_text(encoding="utf-8")))
 
     def test_packs_excluded_by_default_with_hashes_listed(self):
         with zipfile.ZipFile(export.build("r1")) as z:

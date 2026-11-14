@@ -11,8 +11,19 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.schemas import (CoverageMatrixDTO, DataQualityResponse, GapDTO, GapPageDTO, InstrumentQualityDTO,
                             RecorderStatusDTO, RecorderStatusResponse)
+from stockify.commands import stockify_command
 
 router = APIRouter(prefix="/api/data", tags=["data"])
+
+def _market_open() -> bool:
+    """True from the pre-open to the close on a trading day, by the dated session rules (the recorder reports only then)."""
+    from stockify import timeutil
+    from stockify.daemon.market_day import inside_market_hours
+
+    try:
+        return inside_market_hours(timeutil.now_ns())
+    except Exception:  # noqa: BLE001 — no session rule in force: say "closed" rather than fail the page
+        return False
 
 
 def _finite(x) -> float | None:  # noqa: ANN001
@@ -21,15 +32,18 @@ def _finite(x) -> float | None:  # noqa: ANN001
 
 def _recorder_dto(row: dict) -> RecorderStatusDTO:
     from stockify import timeutil
+    from stockify.daemon import recorder_health
 
     ages = json.loads(row.get("last_packet_age_ms_json") or "{}")
+    age_s = max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9)
+    stale = age_s > recorder_health.STALE_AFTER_S
     return RecorderStatusDTO(
-        wall_ns=row["wall_ns"], connected=bool(row["connected"]),
+        wall_ns=row["wall_ns"], connected=bool(row["connected"]) and not stale, stale=stale, market_open=_market_open(),
         subs_full=row["subs_full"] or 0, subs_quote=row["subs_quote"] or 0,
         packets_per_s=_finite(row["packets_per_s"]) or 0.0, queue_depth=row["queue_depth"] or 0,
         writer_lag_ms=_finite(row["writer_lag_ms"]), last_packet_age_ms=ages,
         bytes_today=row["bytes_today"] or 0,
-        age_s=max(0.0, (timeutil.now_ns() - row["wall_ns"]) / 1e9),
+        age_s=age_s,
     )
 
 
@@ -57,7 +71,7 @@ async def data_quality(date: str = Query(..., description="IST trade date YYYY-M
         # An unreadable store is named, not a 500; the sentence is fixed (no path, no exception text).
         return DataQualityResponse(date=day.isoformat(), errors=[str(e)], error_stores=[e.store_key])
     if not rows:
-        raise HTTPException(status_code=404, detail=f"no quality report for {day}; run `python -m stockify data report --date {day}`")
+        raise HTTPException(status_code=404, detail=f"no quality report for {day}; run `{stockify_command(f'data report --date {day}')}`")
     items = [InstrumentQualityDTO(instrument_id=iid, symbol=symbols.get(iid), metrics=metrics)
              for iid, metrics in sorted(rows.items()) if iid != 0]
     return DataQualityResponse(date=day.isoformat(), day=rows.get(0, {}), instruments=items)

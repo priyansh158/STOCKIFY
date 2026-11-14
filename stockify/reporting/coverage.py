@@ -176,8 +176,9 @@ def _bars(limit: int, errors: list[str]) -> list[dict]:
                  "ORDER BY b DESC, instrument_id, interval LIMIT ?", (int(limit),), errors=errors, store_key="bars")
     out = []
     ids = sorted({int(r["instrument_id"]) for r in rows})
-    names = {r["instrument_id"]: r["tradingsymbol"] for r in _rows(
-        paths.refdata_db(), f"SELECT instrument_id, tradingsymbol FROM instruments WHERE instrument_id IN "
+    from stockify.data.instruments import display_name
+    names = {r["instrument_id"]: display_name(dict(r)) for r in _rows(
+        paths.refdata_db(), f"SELECT instrument_id, tradingsymbol, underlying, kind, expiry, strike_paise FROM instruments WHERE instrument_id IN "
         f"({','.join('?' * len(ids))})", tuple(ids), errors=errors)} if ids else {}
     for r in rows:
         a, b = int(r["a"]), int(r["b"])

@@ -95,6 +95,8 @@ class RecorderStatusDTO(BaseModel):
     last_packet_age_ms: dict[str, int | None] = Field(default_factory=dict)
     bytes_today: int
     age_s: float = Field(..., description="seconds since this row was written")
+    stale: bool = Field(False, description="the row is older than the recorder's report interval allows (stockify.daemon.recorder_health); connected is then false")
+    market_open: bool = Field(False, description="now is inside market hours on a trading day (the recorder reports only then)")
 
 
 class RecorderStatusResponse(BaseModel):
@@ -169,6 +171,8 @@ class TestRunDetailDTO(BaseModel):
     manifest: dict[str, Any] | None = None
     fill_count: int | None = Field(None, description="all fills of the run (the /fills list is paged)")
     cost_totals: dict[str, int] = Field(default_factory=dict, description="paise per charge component, whole run")
+    withheld: dict[str, str] = Field(default_factory=dict,
+                                     description="metrics key -> plain reason the figure is not shown (null in metrics)")
 
 
 class TestFillDTO(BaseModel):
@@ -181,6 +185,11 @@ class TestFillDTO(BaseModel):
     side: str
     qty: int
     price_paise: int
+    note: str = Field("", description="the strategy's own note on the order this fill belongs to ('' when it gave none)")
+    tag: str = Field("", description="the strategy's tag on that order (a code label)")
+    evidence: str = Field("", description="how the engine priced the fill (A1 fills.csv: eod_close, bar_open, ltp, ...)")
+    at_close: bool = Field(False, description="True when the fill is the day's close (evidence eod_close): its time is "
+                                              "when the close is published, not when anything traded")
 
 
 class TestEquityDTO(BaseModel):
@@ -333,6 +342,7 @@ class SessionPositionDTO(BaseModel):
     mark_paise: int | None = None
     unrealised_paise: int | None = None
     source: Literal["eod", "fills"]
+    names_note: str | None = None
 
 
 class SessionTimelineDTO(BaseModel):
@@ -477,6 +487,7 @@ class RunResearchDTO(BaseModel):
     dsr: DsrDTO | None = None
     bootstrap: BootstrapDTO | None = None
     regimes: RegimeReportDTO | None = None
+    regimes_error: str | None = None
     holdout_unlocks: int
     plain: dict[str, str]
 
@@ -645,6 +656,7 @@ class CompareMetricDTO(BaseModel):
     values: list[float | int | None]
     kind: str
     plain: str
+    reasons: list[str | None] = Field(default_factory=list, description="per run: why the value is withheld, else null")
 
 
 class CompareDiffDTO(BaseModel):

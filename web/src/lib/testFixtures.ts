@@ -166,9 +166,9 @@ export const equity: TestEquity[] = Array.from({ length: 60 }, (_, i) => {
 
 export const fills: TestFill[] = [
   { fill_id: 1, order_id: 1, t_ns: 1_662_000_000_000_000_000, t_ist: "2022-03-14T15:30:00+05:30", instrument_id: 738561, tradingsymbol: "RELIANCE",
-    side: "BUY", qty: 410, price_paise: 239_105 },
+    side: "BUY", qty: 410, price_paise: 239_105, note: "SMA(20) crossed above SMA(50)", tag: "", evidence: "eod_close", at_close: true },
   { fill_id: 2, order_id: 2, t_ns: 1_668_000_000_000_000_000, t_ist: "2022-06-20T15:30:00+05:30", instrument_id: 738561, tradingsymbol: "RELIANCE",
-    side: "SELL", qty: 410, price_paise: 251_870 },
+    side: "SELL", qty: 410, price_paise: 251_870, note: "", tag: "exit", evidence: "eod_close", at_close: true },
 ];
 
 export const charges: TestCharge[] = [

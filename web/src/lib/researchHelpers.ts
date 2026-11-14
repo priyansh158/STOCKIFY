@@ -220,8 +220,15 @@ export function pboHowText(p: { n_days: number; slices: number; combinations: nu
 }
 
 /** The compare page takes two to six runs (the API's own limit, GET /api/tests/compare). */
+// <block name="compare-limits" same-as="stockify/reporting/compare.py:compare-limits" same-as-mode="sequence" same-as-pattern='= (?P<value>\d+)'>
 export const COMPARE_MIN = 2;
 export const COMPARE_MAX = 6;
+// </block>
+
+/** The compare button works only with two to six ticked tests. */
+export function compareReady(count: number): boolean {
+  return Number.isInteger(count) && count >= COMPARE_MIN && count <= COMPARE_MAX;
+}
 
 /** `/tests/compare?ids=a&ids=b…`: repeated `ids`, each encoded, cut at six. No ids gives the bare path. */
 export function compareHref(ids: string[]): string {

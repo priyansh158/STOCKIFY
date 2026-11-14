@@ -27,7 +27,7 @@ h3 { max-width: none; font-size: var(--text-md); font-weight: 600; }
 code, kbd { font-family: var(--font-outlier); }
 code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-paper-3); border-radius: var(--space-2xs); }
 
-/* Shell: the top bar, the page, the footer */
+/* Shell: the top bar, the page */
 .stk-topbar {
   position: sticky; top: 0; z-index: var(--z-sticky-nav);
   background: var(--color-paper); border-bottom: var(--rule-hair) solid var(--color-rule);
@@ -54,8 +54,6 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 .stk-page { width: 100%; max-width: var(--container); margin-inline: auto; padding: var(--space-lg) var(--gutter) var(--space-2xl); }
 .stk-page[data-narrow] { max-width: 60rem; }
 .stk-page[data-bar] { padding-bottom: 7rem; }
-.stk-foot { border-top: var(--rule-hair) solid var(--color-rule); color: var(--color-muted); font-size: var(--text-sm); }
-.stk-foot p { max-width: var(--container); margin-inline: auto; padding: var(--space-md) var(--gutter); }
 
 .stk-crumb {
   display: inline-flex; align-items: center; min-height: var(--hit); color: var(--color-muted); font-size: var(--text-sm);
@@ -131,7 +129,8 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 .stk-btn:active { transform: translateY(1px); background: var(--color-paper-3); }
 .stk-btn:disabled, .stk-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .stk-btn[data-tone="primary"] { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-ink); }
-.stk-btn[data-tone="primary"]:hover { background: color-mix(in oklab, var(--color-accent) 88%, var(--color-ink)); }
+.stk-btn[data-tone="primary"]:disabled { background: var(--color-paper-3); border-color: var(--color-edge); color: var(--color-ink-2); opacity: 0.6; }
+.stk-btn[data-tone="primary"]:not(:disabled):hover { background: color-mix(in oklab, var(--color-accent) 88%, var(--color-ink)); }
 .stk-btn[data-tone="danger"] { border-color: var(--color-down); color: var(--color-down); }
 .stk-btn[data-tone="danger"]:hover { background: var(--tint-down); }
 .stk-btn[data-tone="warn"] { border-color: var(--color-warn); color: var(--color-warn); }
@@ -265,6 +264,9 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-table th:last-child, .stk-table td:last-child { padding-right: var(--space-md); }
 .stk-table .stk-chip { white-space: normal; }
 .stk-gap-xs { margin-top: var(--space-xs); }
+/* The caveat chips of a run in the list: small, side by side, wrapping inside the cell (not one per line). */
+.stk-run-chips .stk-chips { gap: var(--space-2xs); }
+.stk-run-chips .stk-chip { min-height: 1.25rem; font-size: var(--text-xs); white-space: nowrap; }
 
 .stk-skip { position: absolute; left: var(--space-sm); top: var(--space-sm); z-index: var(--z-modal); padding: var(--space-xs) var(--space-md); border-radius: var(--radius-control); background: var(--color-accent); color: var(--color-accent-ink); font-size: var(--text-sm); font-weight: 600; transform: translateY(-200%); }
 .stk-skip:focus-visible { transform: none; }
@@ -418,7 +420,11 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
 .stk-pick-bar p { margin: 0; }
 .stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
-.stk-table td.stk-pick + td[data-wrap] { min-width: 16rem; }  /* the test name, after the checkbox column (was td:first-child) */
+.stk-table td.stk-pick + td[data-wrap] { min-width: 14rem; }  /* the test name, after the checkbox column (was td:first-child) */
+/* The tests list has 11 columns: let its headers and the start time wrap so the name column gets the width (no scroll at 1440 px). */
+.stk-table:has(td.stk-pick) th, .stk-table:has(td.stk-pick) th.num { white-space: normal; vertical-align: bottom; }
+.stk-table:has(td.stk-pick) th.stk-pick { white-space: nowrap; }
+.stk-table:has(td.stk-pick) td.stk-label:not([data-wrap]) { white-space: normal; min-width: 5.5rem; }
 .stk-cmp td[data-differs], .stk-cmp th[data-differs] { background: var(--tint-warn); }
 .stk-cmp td.stk-cmp-verdict { white-space: nowrap; color: var(--color-muted); }
 .stk-cmp td.stk-cmp-verdict[data-differs] { color: var(--color-warn); font-weight: 600; }

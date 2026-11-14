@@ -21,6 +21,7 @@ import time
 from typing import Iterable, Optional
 
 import stockify_paths
+from stockify import dbconn
 
 
 _lock = threading.Lock()
@@ -51,22 +52,25 @@ def _db_path():
     return stockify_paths.state_dir() / "ticks.sqlite"
 
 
+def _open() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_db_path()), timeout=10.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def _init(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA)
+    conn.commit()
+
+
+_pool = dbconn.Pool(__name__, _open, _init)
+
+
 def _connect() -> sqlite3.Connection:
-    """Process-wide connection. SQLite is fine for one writer + many readers
-    under WAL mode."""
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        conn = sqlite3.connect(str(_db_path()), timeout=10.0, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(_SCHEMA)
-        conn.commit()
-        _conn = conn
-        return _conn
+    """This thread's connection (D-143): SQLite under WAL is fine for one writer + many readers, but not for
+    many threads sharing one handle. Writers still take `_lock`."""
+    return _pool.get()
 
 
 def init_db() -> None:
@@ -108,7 +112,7 @@ def write_ticks(ticks: Iterable[dict]) -> int:
         return 0
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.executemany(
                 "INSERT OR REPLACE INTO ticks "
                 "(instrument_token, ts, ltp, volume, oi) VALUES (?,?,?,?,?)",
@@ -125,7 +129,7 @@ def trim_old(retention_seconds: int = _RETENTION_SECONDS) -> int:
     cutoff = int(time.time()) - retention_seconds
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             cur = conn.execute("DELETE FROM ticks WHERE ts < ?", (cutoff,))
             conn.commit()
             return cur.rowcount or 0
@@ -137,7 +141,7 @@ def checkpoint() -> None:
     """Truncate the WAL file. Call periodically (e.g. once an hour)."""
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
         pass
@@ -204,7 +208,7 @@ def add_subscription(instrument_token: int, kind: str = "analysis") -> None:
         return
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute(
                 "INSERT OR REPLACE INTO subscriptions "
                 "(instrument_token, kind, added_ts) VALUES (?, ?, ?)",
@@ -220,7 +224,7 @@ def remove_subscription(instrument_token: int) -> None:
         return
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute(
                 "DELETE FROM subscriptions WHERE instrument_token = ?",
                 (int(instrument_token),)
@@ -233,7 +237,7 @@ def remove_subscription(instrument_token: int) -> None:
 def remove_subscriptions_of_kind(kind: str) -> None:
     conn = _connect()
     try:
-        with _lock:
+        with dbconn.locked_write(_lock, conn):
             conn.execute("DELETE FROM subscriptions WHERE kind = ?", (kind,))
             conn.commit()
     except Exception:

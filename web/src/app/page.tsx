@@ -1,13 +1,8 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { SearchBox } from "@/components/SearchBox";
+import { DESTINATIONS } from "@/lib/nav";
 
-const NAV = [
-  { href: "/portfolio", label: "Portfolio", note: "Your Zerodha holdings, read-only." },
-  { href: "/alerts", label: "Geo alerts", note: "World events that could disrupt Indian stocks, found by the background news monitor." },
-  { href: "/tests", label: "Strategy tests", note: "Backtests on recorded and downloaded NSE data, with real costs." },
-  { href: "/trade", label: "Paper trading", note: "Strategies trade live prices with pretend money." },
-];
 
 export default function Home() {
   return (
@@ -28,7 +23,7 @@ export default function Home() {
 
         <nav aria-label="Where to go">
           <ul className="stk-dests">
-            {NAV.map((item) => (
+            {DESTINATIONS.map((item) => (
               <li key={item.href}>
                 <Link href={item.href}>
                   <strong>{item.label}</strong>

@@ -85,6 +85,8 @@ export interface RecorderStatus {
   last_packet_age_ms: Record<string, number | null>;
   bytes_today: number;
   age_s: number;
+  stale: boolean;
+  market_open: boolean;
 }
 
 export interface RecorderStatusResponse {
@@ -160,6 +162,8 @@ export interface TestRunDetail {
   manifest?: Record<string, unknown> | null;
   fill_count?: number | null;
   cost_totals: Record<string, number>;
+  /** metrics key -> plain reason the figure is not shown (its value in `metrics` is null) */
+  withheld?: Record<string, string>;
 }
 
 export interface TestFill {
@@ -172,6 +176,10 @@ export interface TestFill {
   side: string;
   qty: number;
   price_paise: number;
+  note: string;
+  tag: string;
+  evidence: string;
+  at_close: boolean;
 }
 
 export interface TestEquity {
@@ -313,6 +321,7 @@ export interface SessionPositionDTO {
   mark_paise?: number | null;
   unrealised_paise?: number | null;
   source: "eod" | "fills";
+  names_note?: string | null;
 }
 
 export interface SessionTimelineDTO {
@@ -449,6 +458,7 @@ export interface RunResearchDTO {
   dsr: DsrDTO | null;
   bootstrap: BootstrapDTO | null;
   regimes: RegimeReportDTO | null;
+  regimes_error: string | null;
   holdout_unlocks: number;
   plain: Record<string, string>;
 }
@@ -617,6 +627,7 @@ export interface CompareMetricDTO {
   values: (number | null)[];
   kind: string;
   plain: string;
+  reasons?: (string | null)[];
 }
 
 export interface CompareDiffDTO {

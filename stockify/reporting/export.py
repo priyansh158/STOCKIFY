@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from stockify import numerics, paths, research, store
+from stockify.reporting import figures
 from stockify.research import fileio
 
 ALLOWED = ("bundle.json", "run.json", "manifest.json", "metrics.json", "determinism.json", "orders.csv",
@@ -269,7 +270,10 @@ def build(run_id: str, *, with_packs: bool = False, out: Path | None = None) -> 
                 raise too_big
             members[f"packs/{sha}.evt"] = pack.read_bytes()
 
-    summary = {"run_id": run_id, "config": _json(row.get("config_json"), {}), "metrics": _json(row.get("metrics_json"), {}),
+    # the summary shows what the pages show (D-135): withheld figures are null with a reason; the run folder's own
+    # metrics.json in the bundle is the hashed artifact and stays raw
+    shown, withheld = figures.present(_json(row.get("metrics_json"), {}))
+    summary = {"run_id": run_id, "config": _json(row.get("config_json"), {}), "metrics": shown, "withheld": withheld,
                "labels": _json(row.get("labels_json"), []), "family_id": row.get("family_id"), "role": row.get("role"),
                "packs": pack_rows}
     members["summary.json"] = numerics.dumps_canonical(summary).encode("utf-8")

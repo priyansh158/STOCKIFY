@@ -60,7 +60,8 @@ offline by construction.
 
 | File | Covers |
 |---|---|
-| `support/` | sandbox, `SandboxedDBTest` base class |
+| `support/` | sandbox, `SandboxedDBTest` base class (resets each module's `_conn`, or its `_pool` of per-thread connections, `stockify/dbconn.py`) |
+| `stockify/test_dbconn.py` | one connection per thread; concurrent-read stress test of `refdata`, `history`, `tick_buffer`, `geo_alerts`; reset closes every connection |
 | `test_module_health.py` | every module imports; public symbols exist; sandbox intact |
 | `test_india_utils.py` | ₹ formatting, lakh/crore, Indian digit grouping, ticker suffixes |
 | `test_kite_client.py` | token lifecycle, **06:00 IST expiry boundary**, symbol resolution |

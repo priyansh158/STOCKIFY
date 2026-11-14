@@ -1,8 +1,8 @@
 """`refdata.sqlite`: instruments with history, NSE end-of-day tables, tick-day
 status and data quality (A1_schemas.md §1).
 
-Same connection pattern as `stockify.store` (one process-wide connection,
-WAL, `check_same_thread=False`, `sqlite3.Row`). The schema comes from
+One connection per thread (`stockify.dbconn`, D-143),
+WAL, `sqlite3.Row`. The schema comes from
 versioned migrations (`stockify/data/migrations/refdata/`), never from
 inline DDL (I-13).
 """
@@ -12,7 +12,7 @@ import sqlite3
 import threading
 from typing import Optional
 
-from stockify import paths
+from stockify import dbconn, paths
 from stockify.data import migrate
 
 STORE = "refdata"
@@ -25,23 +25,22 @@ def _db_path():
     return paths.refdata_db()
 
 
+def _open() -> sqlite3.Connection:
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=dbconn.BUSY_TIMEOUT_S, check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+_pool = dbconn.Pool(__name__, _open, lambda conn: migrate.apply(conn, STORE))
+
+
 def _connect() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is not None:
-            return _conn
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False,
-                               isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        migrate.apply(conn, STORE)
-        _conn = conn
-        return _conn
+    """This thread's connection (D-143: one per thread; the writers still take `_lock`)."""
+    return _pool.get()
 
 
 def init_db() -> None:

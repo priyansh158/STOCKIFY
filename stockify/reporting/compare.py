@@ -13,9 +13,13 @@ from typing import Any
 
 from stockify import paths, store
 from stockify.oracle.metrics import drawdown_series
+from stockify.reporting import figures
 from stockify.research import plain
 
-MIN_RUNS, MAX_RUNS = 2, 6
+# <block name="compare-limits" same-as="web/src/lib/researchHelpers.ts:compare-limits" same-as-mode="sequence" same-as-pattern='= (?P<value>\d+)'>
+MIN_RUNS = 2
+MAX_RUNS = 6
+# </block>
 FALLBACK_NOTE = "manifest not available (folder removed)"
 
 
@@ -26,6 +30,7 @@ class MetricRow:
     values: list[float | int | None]
     kind: str  # money | ratio | pct | count
     plain: str
+    reasons: list[str | None] = field(default_factory=list)   # per run: why the value is withheld (D-135), else None
 
 
 @dataclass
@@ -61,8 +66,13 @@ def _num(v: Any) -> float | int | None:
     return v if not isinstance(v, float) or math.isfinite(v) else None
 
 
-def _metric_values(rows: list[dict]) -> list[tuple[str, str, str, list]]:
-    ms = [_json(r.get("metrics_json"), {}) for r in rows]
+def _metric_values(rows: list[dict]) -> list[tuple[str, str, str, list, list]]:
+    """(key, label, kind, values, reasons) per row. A yearly figure of a run that is too short, and costs over a
+    gross profit that is not above zero, are None with their plain reason (stockify.reporting.figures, D-135)."""
+    raw = [_json(r.get("metrics_json"), {}) for r in rows]
+    shown = [figures.present(m) for m in raw]
+    ms = [s for s, _ in shown]
+    withheld = [w for _, w in shown]
 
     def net(m: dict) -> int | None:
         a, b = _num(m.get("nav_end_paise")), _num(m.get("nav_start_paise"))
@@ -72,18 +82,22 @@ def _metric_values(rows: list[dict]) -> list[tuple[str, str, str, list]]:
         n, b = net(m), _num(m.get("nav_start_paise"))
         return None if n is None or not b else n / b
 
+    def entry(key: str, label: str, kind: str, vals: list, mkey: str | None = None) -> tuple:
+        return (key, label, kind, vals, [w.get(mkey or key) if v is None else None for v, w in zip(vals, withheld)])
+
     return [
-        ("net_pnl", "Net profit (₹)", "money", [net(m) for m in ms]),
-        ("return", "Return", "pct", [ret(m) for m in ms]),
-        ("cagr", "CAGR", "pct", [_num(m.get("cagr")) for m in ms]),
-        ("sharpe", "Sharpe", "ratio", [_num(m.get("sharpe")) for m in ms]),
-        ("sortino", "Sortino", "ratio", [_num(m.get("sortino")) for m in ms]),
-        ("max_drawdown", "Max drawdown", "pct", [_num(m.get("max_drawdown")) for m in ms]),
-        ("calmar", "Calmar", "ratio", [_num(m.get("calmar")) for m in ms]),
-        ("trades", "Trades", "count", [_num(m.get("trades")) for m in ms]),
-        ("win_rate", "Win rate", "pct", [_num(m.get("win_rate")) for m in ms]),
-        ("costs", "Costs (₹)", "money", [_num(m.get("costs_total_paise")) for m in ms]),
-        ("cost_share", "Costs / gross profit", "pct", [_num(m.get("cost_share_of_gross")) for m in ms]),
+        entry("net_pnl", "Net profit (₹)", "money", [net(m) for m in ms]),
+        entry("return", "Return", "pct", [ret(m) for m in ms]),
+        entry("cagr", "CAGR", "pct", [_num(m.get("cagr")) for m in ms]),
+        entry("sharpe", "Sharpe", "ratio", [_num(m.get("sharpe")) for m in ms]),
+        entry("sortino", "Sortino", "ratio", [_num(m.get("sortino")) for m in ms]),
+        entry("max_drawdown", "Max drawdown", "pct", [_num(m.get("max_drawdown")) for m in ms]),
+        entry("calmar", "Calmar", "ratio", [_num(m.get("calmar")) for m in ms]),
+        entry("trades", "Trades", "count", [_num(m.get("trades")) for m in ms]),
+        entry("win_rate", "Win rate", "pct", [_num(m.get("win_rate")) for m in ms]),
+        entry("costs", "Costs (₹)", "money", [_num(m.get("costs_total_paise")) for m in ms]),
+        entry("cost_share", "Costs / gross profit", "pct", [_num(m.get("cost_share_of_gross")) for m in ms],
+              "cost_share_of_gross"),
     ]
 
 
@@ -135,7 +149,8 @@ def compare_runs(run_ids: list[str]) -> RunComparison:
     cfgs = [_json(r.get("config_json"), {}) for r in rows]
     names = [r.get("name") or r["run_id"] for r in rows]
 
-    metrics = [MetricRow(k, label, vals, kind, plain.meaning(k)) for k, label, kind, vals in _metric_values(rows)]
+    metrics = [MetricRow(k, label, vals, kind, plain.meaning(k), why)
+               for k, label, kind, vals, why in _metric_values(rows)]
 
     equity, drawdown = [], []
     no_capital: list[str] = []
@@ -215,7 +230,9 @@ def format_table(c: RunComparison) -> str:
     if c.names != c.run_ids:
         table.append(["name"] + list(c.names))
     for m in c.metrics:
-        table.append([m.key] + mark([_fmt(v, m.kind) for v in m.values], len(set(m.values)) > 1))
+        table.append([m.key] + mark([(why or "-") if v is None else _fmt(v, m.kind)
+                                         for v, why in zip(m.values, m.reasons or [None] * len(m.values))],
+                                        len(set(m.values)) > 1))
     for lab, present in c.labels.items():
         table.append([f"label {lab}"] + mark(["yes" if p else "no" for p in present], lab in c.differing_labels))
     for d in c.manifest_diff:

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { sensitivityCommand } from "@/lib/commands";
 import { pct, rupees } from "@/lib/format";
 import { bucketTone, getRunResearch, getSensitivity, sentenceOrDash } from "@/lib/research";
 import type { RegimeBucketDTO, RunResearchDTO, SensitivityDTO } from "@/lib/types";
@@ -165,7 +166,9 @@ function Regimes({ r }: { r: RunResearchDTO }) {
   return (
     <div className="stk-trust-block">
       <h3>Where the profit came from</h3>
-      {reg === null ? (
+      {reg === null && r.regimes_error ? (
+        <p className="stk-warn" role="status">{r.regimes_error}</p>
+      ) : reg === null ? (
         <p className="stk-muted">No split by month, weekday, expiry, volatility or opening gap for this run: it has no daily results.</p>
       ) : (
         <>
@@ -235,7 +238,7 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
         <p className="stk-fine">
           To run it, use this command in a terminal in the STOCKIFY folder. It re-runs the test with higher costs and worse fills.
         </p>
-        <code className="stk-mono stk-break">.\.venv\Scripts\python.exe -m stockify sensitivity --run {runId}</code>
+        <code className="stk-mono stk-break">{sensitivityCommand(runId)}</code>
       </div>
     );
   } else {

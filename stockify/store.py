@@ -329,6 +329,27 @@ def finish_run(run_id: str, fields: dict, *, orders: list[dict], fills: list[dic
             raise
 
 
+def order_reasons(run_id: str, order_ids: set[int]) -> dict[int, tuple[str, str]]:
+    """order id → (the strategy's note, its tag) for those orders of a run; "" for what the order does not carry, and
+    for an order whose stored row cannot be read (it never fails the whole list)."""
+    import json
+    ids = sorted(order_ids)
+    out: dict[int, tuple[str, str]] = {}
+    for k in range(0, len(ids), 500):
+        chunk = ids[k:k + 500]
+        for r in _all(f"SELECT order_id, row_json FROM run_orders WHERE run_id = ? AND order_id IN "
+                      f"({','.join('?' * len(chunk))})", (run_id, *chunk)):
+            try:
+                d = json.loads(r["row_json"])
+            except (TypeError, ValueError):
+                d = None
+            if not isinstance(d, dict):                      # one bad stored row costs only that order its note
+                out[r["order_id"]] = ("", "")
+                continue
+            out[r["order_id"]] = (str(d.get("note") or ""), str(d.get("tag") or ""))
+    return out
+
+
 def run_rows(run_id: str, table: str, *, offset: int = 0, limit: int = 500) -> list[dict]:
     """Child rows of a run in primary-key order; table is orders | fills | equity | charges. For orders the
     row_json is parsed into the dict."""

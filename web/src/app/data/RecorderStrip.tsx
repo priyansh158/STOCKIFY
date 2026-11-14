@@ -39,14 +39,14 @@ export default function RecorderStrip({ initial }: { initial: RecorderStatus | n
 
   const w = recorderWords(status);
   return (
-    <Panel tone={w.tone === "up" ? undefined : "amber"}>
+    <Panel tone={w.tone === "up" ? undefined : w.tone === "info" ? "info" : "amber"}>
       <div className="stk-strip">
         <h2 className="stk-strip-title">Recorder</h2>
         <Chip tone={w.tone}>
-          <span aria-hidden>{w.tone === "up" ? "✓" : w.tone === "down" ? "✕" : "~"}</span>&nbsp;{w.headline}
+          <span aria-hidden>{w.tone === "up" ? "✓" : w.tone === "down" ? "✕" : w.tone === "info" ? "–" : "~"}</span>&nbsp;{w.headline}
         </Chip>
-        <p>{w.rate}</p>
-        <p>{w.last}</p>
+        {w.rate && <p>{w.rate}</p>}
+        {w.last && <p>{w.last}</p>}
         {stale && <Chip tone="warn">Can&apos;t refresh right now</Chip>}
       </div>
       {w.note && <p className="stk-fine stk-gap-xs">{w.note}</p>}

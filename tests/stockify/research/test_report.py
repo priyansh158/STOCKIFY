@@ -89,6 +89,29 @@ class RunResearchTests(ReportTest):
         self.assertFalse([k for k in res.plain if k.startswith("regime_")])
         self.assertEqual(res.plain["holdout_unlocks"], plain.meaning("holdout_unlocks"))
 
+    def test_a_failed_regime_split_says_so_instead_of_claiming_no_daily_results(self):
+        # D-143: an unreadable refdata used to come back as regimes None, which the page words as "it has no daily
+        # results", a false statement about a run that has them.
+        import sqlite3
+        from stockify.research import regimes
+        family_of(3)
+        with mock.patch.object(regimes, "build", side_effect=sqlite3.InterfaceError("bad parameter or other API misuse")):
+            res = report.run_research("r00", use_cache=False)
+        self.assertIsNone(res.regimes)
+        self.assertEqual(res.regimes_error, report.REGIMES_UNAVAILABLE)
+        self.assertNotIn("no daily results", res.regimes_error)
+        self.assertIsNotNone(res.bootstrap)                       # the rest of the report is unaffected
+        self.assertFalse([k for k in res.plain if k.startswith("regime_")])
+        ok = report.run_research("r00", use_cache=False)          # and it recovers, nothing was cached
+        self.assertIsNotNone(ok.regimes)
+        self.assertIsNone(ok.regimes_error)
+
+    def test_a_run_without_daily_results_has_no_regimes_and_no_error(self):
+        store.create_run({"run_id": "bad2", "status": "failed", "family_id": FAM, "created_ns": 1})
+        res = report.run_research("bad2", use_cache=False)
+        self.assertIsNone(res.regimes)
+        self.assertIsNone(res.regimes_error)
+
     def test_rank_and_best_follow_the_objective(self):
         fam = "f/pnl/net_pnl"
         registry.ensure_family(fam, "net_pnl")
@@ -114,6 +137,50 @@ class RunResearchTests(ReportTest):
         self.assertEqual(res.picked_run_id, best.run_id)
         self.assertIn(best.name, res.plain["dsr"])
         self.assertIn("runner-up", res.plain["dsr"])
+
+    def _set_trades(self, run_id: str, trades: int, *, filled: bool | None = None) -> None:
+        """`trades` counts closed round trips; `filled` (default: trades > 0) says whether any order was filled, which
+        is what `turnover` records (0 when nothing was)."""
+        row = store.get_run(run_id)
+        m = json.loads(row["metrics_json"])
+        m["trades"] = trades
+        m["turnover"] = 5.0 if (trades > 0 if filled is None else filled) else 0.0
+        self.sql("UPDATE runs SET metrics_json=? WHERE run_id=?", (json.dumps(m), run_id))
+
+    def test_no_sharpe_says_why_and_a_run_that_traded_is_not_called_tradeless(self):
+        registry.ensure_family(FAM, "sharpe")
+        make_run("idle", FAM, daily_returns=[0.0] * 10, name="idle")              # never traded
+        make_run("oneday", FAM, daily_returns=[-0.0002], name="oneday")           # traded, 1 day
+        make_run("steady", FAM, daily_returns=[0.0] * 10, name="steady")          # traded, every day ended flat
+        self._set_trades("idle", 0)
+        self._set_trades("oneday", 1)
+        self._set_trades("steady", 4)
+        said = {r: report.run_research(r, use_cache=False).plain for r in ("idle", "oneday", "steady")}
+        self.assertEqual(said["idle"]["dsr"], plain.no_sharpe_sentence(plain.NO_TRADES))
+        self.assertEqual(said["oneday"]["dsr"], plain.no_sharpe_sentence(plain.ONE_DAY))
+        self.assertEqual(said["steady"]["dsr"], plain.no_sharpe_sentence(plain.NO_SWING))
+        self.assertEqual(said["oneday"]["psr"], said["oneday"]["dsr"])
+        for r in ("oneday", "steady"):
+            self.assertNotIn("no trades", said[r]["dsr"])
+
+    def test_a_run_that_only_opened_a_position_is_not_called_tradeless(self):
+        """trades counts round trips: an open position has trades == 0 but did fill (D-135, review I1)."""
+        registry.ensure_family(FAM, "sharpe")
+        make_run("open1", FAM, daily_returns=[-0.0002], name="open1")             # opened, 1 day
+        make_run("openflat", FAM, daily_returns=[0.0] * 10, name="openflat")      # opened, never closed, flat days
+        self._set_trades("open1", 0, filled=True)
+        self._set_trades("openflat", 0, filled=True)
+        said = {r: report.run_research(r, use_cache=False).plain for r in ("open1", "openflat")}
+        self.assertEqual(said["open1"]["dsr"], plain.no_sharpe_sentence(plain.ONE_DAY))
+        self.assertEqual(said["openflat"]["dsr"], plain.no_sharpe_sentence(plain.NO_SWING))
+
+    def test_family_report_says_why_the_best_try_has_no_sharpe(self):
+        fam = "strat/ds-1m-RELIANCE/net_pnl"          # ranked by profit, so a one-day try can still be the best
+        registry.ensure_family(fam, "net_pnl")
+        make_run("oneday", fam, daily_returns=[-0.0002], name="oneday")
+        self._set_trades("oneday", 1)
+        rep = report.family_report(fam)
+        self.assertEqual(rep.plain["dsr"], plain.no_sharpe_sentence(plain.ONE_DAY))
 
     def test_one_trial_family_reports_the_only_try(self):
         family_of(1)

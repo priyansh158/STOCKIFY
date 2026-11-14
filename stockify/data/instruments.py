@@ -418,3 +418,38 @@ def download_dumps(exchanges: tuple[str, ...] = DUMP_EXCHANGES) -> dict[str, str
     kite = kite_client.get_client()
     return {ex: kite._get("market.instruments", url_args={"exchange": ex}).decode("utf-8")
             for ex in exchanges}
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def display_name(info: dict | None) -> str | None:
+    """The name to show a person for an instrument row (refdata row or a bundle.json instrument row).
+
+    The Kite tradingsymbol when there is one. A contract first seen in a bhavcopy has none (A1 §1: tradingsymbol
+    is NULL for bhavcopy-only contracts, which is every historical F&O contract), so it is named from what the
+    row does hold: `NIFTY 24500 CE (9 Nov 2026)`, `NIFTY FUT (27 Nov 2026)`. Nothing is invented: no Kite-style
+    symbol is built. None only when the row says nothing usable (the caller then falls back to the id)."""
+    if not info:
+        return None
+    if info.get("tradingsymbol"):
+        return str(info["tradingsymbol"])
+    und = info.get("underlying")
+    if not und:
+        return None
+    parts = [str(und)]
+    strike = info.get("strike_paise")
+    if strike is not None:
+        rupees, paise = divmod(int(strike), 100)
+        parts.append(f"{rupees}" if paise == 0 else f"{rupees}.{paise:02d}")
+    if info.get("kind") and info["kind"] not in ("EQ", "ETF", "INDEX"):
+        parts.append(str(info["kind"]))
+    name = " ".join(parts)
+    exp = info.get("expiry")
+    if exp:
+        try:
+            y, m, d = (int(x) for x in str(exp).split("-"))
+            name += f" ({d} {_MONTHS[m - 1]} {y})"
+        except (ValueError, IndexError):
+            name += f" ({exp})"
+    return name

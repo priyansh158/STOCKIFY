@@ -186,11 +186,15 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(v[0], fit)
         self.assertEqual(v[1], fit)                       # a short chart fits everything
         self.assertEqual(v[2], fit)                       # exactly the near limit still fits
-        self.assertEqual(v[3], {"kind": "range", "from": 5 - 150, "to": 5 + 150})
-        self.assertEqual(v[4], {"kind": "range", "from": 10 - 150, "to": 10 + 150})
-        self.assertEqual(v[5], {"kind": "range", "from": 1000 - 1 - 150, "to": 1000 - 1 + 150})   # trade not in the bars: the end
+        # The window never reaches past the data: it is slid back inside, leaving only the small margin (4 bars) at the ends.
+        self.assertEqual(v[3], {"kind": "range", "from": -4, "to": 296})
+        self.assertEqual(v[4], {"kind": "range", "from": -4, "to": 296})
+        self.assertEqual(v[5], {"kind": "range", "from": 1000 - 1 + 4 - 300, "to": 1000 - 1 + 4})   # trade not in the bars: the end
         self.assertEqual(v[6], fit)                       # no trades: fit
-        self.assertEqual(v[7], {"kind": "range", "from": -150, "to": 150})
+        self.assertEqual(v[7], {"kind": "range", "from": -4, "to": 296})
+        self.assertEqual(v[8], {"kind": "range", "from": 350, "to": 650})                          # mid-chart: centred on the trade
+        # A first trade late in the run: the window ends at the last bar (plus the margin) instead of leaving the right side empty.
+        self.assertEqual(v[9], {"kind": "range", "from": 203, "to": 503})
 
     def test_gap_windows_are_shaded_by_day_without_bars(self):
         w0 = 1_762_885_800
@@ -239,15 +243,16 @@ class ChartHelperChecks(unittest.TestCase):
         rows = self.r["join"]
         self.assertEqual([r["fill"]["fill_id"] for r in rows], [1, 2, 3, 4])
         self.assertEqual([r["markerId"] for r in rows], [None, "f2", "f3", None])
-        self.assertIsNone(rows[0]["why"])
+        # the reason comes from the fill's own order, whether or not the chart has a marker for it
+        self.assertEqual(rows[0]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None})
         self.assertEqual(rows[1]["why"], {"text": "Range broke up", "tag": None})
         # no note: the same sentence as the chart card, with the tag beside it
-        self.assertEqual(rows[2]["why"], {"text": "Bought 50 (no note from the strategy)", "tag": "orb_exit"})
+        self.assertEqual(rows[2]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "orb_exit"})
         self.assertEqual(self.r["joinNone"][0]["markerId"], None)
         # any tag on a note-less fill is a code label, whether or not the API calls it a system tag
         strat, bare = self.r["joinStrategyTag"]
-        self.assertEqual(strat["why"], {"text": "Bought 50 (no note from the strategy)", "tag": "sma_exit"})
-        self.assertEqual(bare["why"], {"text": "Bought 50 (no note from the strategy)", "tag": None})
+        self.assertEqual(strat["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "sma_exit"})
+        self.assertEqual(bare["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None})
         tag = lambda lines: [x for x in lines if x["label"] == "Tag"]
         self.assertEqual(tag(self.r["cardStrategyTag"]), [{"label": "Tag", "value": "sma_exit", "code": True}])
         self.assertEqual(tag(self.r["cardNoteTag"]), [{"label": "Tag", "value": "orb_entry", "code": False}])

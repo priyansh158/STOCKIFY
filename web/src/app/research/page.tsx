@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
+import { SWEEP_COMMAND, WALKFORWARD_COMMAND } from "@/lib/commands";
 import { istWhenEpoch } from "@/lib/format";
 import { familyHref, getFamilies, getJobs, getResearchCounts, jobHref, listCapNote } from "@/lib/research";
 import type { FamilySummaryDTO, ResearchJobDTO } from "@/lib/types";
@@ -113,7 +114,7 @@ export default async function ResearchPage() {
             </ErrorPanel>
           ) : fams.value.length === 0 ? (
             <Empty>
-              No trial families yet. Run a parameter sweep with <code>python -m stockify sweep --config sweep.yaml</code> and its tries
+              No trial families yet. Run a parameter sweep with <code>{SWEEP_COMMAND}</code> (the example sweep file; copy and edit it for your own) and its tries
               will be counted here.
             </Empty>
           ) : (
@@ -142,7 +143,7 @@ export default async function ResearchPage() {
               <h2 id="sweep-h">Parameter sweeps</h2>
               {jobs.value.sweeps.length === 0 ? (
                 <Empty>
-                  No sweeps yet. Start one with <code>python -m stockify sweep --config sweep.yaml</code>.
+                  No sweeps yet. Start one with <code>{SWEEP_COMMAND}</code>.
                 </Empty>
               ) : (
                 <>
@@ -156,7 +157,7 @@ export default async function ResearchPage() {
               <h2 id="wf-h">Walk-forward runs</h2>
               {jobs.value.walkforwards.length === 0 ? (
                 <Empty>
-                  No walk-forward runs yet. Start one with <code>python -m stockify walkforward --sweep sweep.yaml</code>.
+                  No walk-forward runs yet. Start one with <code>{WALKFORWARD_COMMAND}</code>.
                 </Empty>
               ) : (
                 <>

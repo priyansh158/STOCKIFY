@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { canStopAll } from "@/lib/stopAll";
 import { useCallback, useEffect, useState } from "react";
 import { istWhen, pct, rupees } from "@/lib/format";
 import { listStrategies } from "@/lib/tests";
@@ -44,7 +45,7 @@ export default function TradePage() {
   const { watch, fail } = cmd;
 
   const anyRunning = sessions?.some((s) => s.status === "RUNNING") ?? false;
-  const anyLive = sessions?.some((s) => s.status !== "STOPPED") ?? false;
+  const anyLive = canStopAll(sessions);
 
   useEffect(() => {
     let stop = false;
@@ -96,7 +97,7 @@ export default function TradePage() {
   }, [watch, fail]);
 
   return (
-    <div className="stk-page" data-bar>
+    <div className="stk-page" data-bar={anyLive ? "" : undefined}>
       <PageHead
         title="Paper trading"
         lede="Strategies trade live prices with pretend money."
@@ -152,12 +153,13 @@ export default function TradePage() {
         </section>
       </div>
 
+      {anyLive && (
       <div className="stk-bar">
         <div className="stk-bar-in">
           <button
             type="button"
             onClick={() => setConfirm(true)}
-            disabled={!anyLive || sending || cmd.pending}
+            disabled={sending || cmd.pending}
             className="stk-btn"
             data-tone="danger"
           >
@@ -165,6 +167,7 @@ export default function TradePage() {
           </button>
         </div>
       </div>
+      )}
 
       <ConfirmDialog
         open={confirm}

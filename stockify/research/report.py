@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 from dataclasses import asdict, dataclass, field
@@ -24,10 +25,13 @@ from datetime import date
 from decimal import Decimal
 
 from stockify import paths, store
+from stockify.reporting import figures
 from stockify.research import bootstrap, fileio, pbo, plain, regimes, registry, settings, stats
 from stockify.research.bootstrap import BootstrapResult, Interval
 from stockify.research.pbo import PboResult
 from stockify.research.stats import DsrResult
+
+_log = logging.getLogger(__name__)
 
 CODE_VERSION = "1"        # bump when the bootstrap or the way its inputs are built changes: it invalidates the cache
 CACHE_NAME = "research.json"
@@ -49,6 +53,7 @@ class RunResearch:
     dsr: DsrResult | None
     bootstrap: BootstrapResult | None
     regimes: regimes.RegimeReport | None
+    regimes_error: str | None       # set only when the split could not be worked out (not when there is nothing to split)
     holdout_unlocks: int
     plain: dict[str, str]
 
@@ -128,6 +133,25 @@ def _series(dates, navs, capital: int, rf_rows: list[dict]) -> tuple[list[float]
         return [], []
     r = stats.returns_from_nav(capital, list(navs))
     return r, stats.excess_returns(list(dates), r, rf_rows)
+
+
+_PLAIN_REASON = {figures.NO_TRADES: plain.NO_TRADES, figures.FEW_DAYS: plain.ONE_DAY}
+
+
+def _flat_reason(x: list[float], row: dict | None) -> str:
+    """Why a daily-return series has no Sharpe (D-135): fewer than 2 days, nothing filled at all, or every day ended
+    the same. The decision is `figures.no_figure_reason`, the one the compare table and report.md use; a run that
+    traded is never called "no trades"."""
+    reason = figures.no_figure_reason("sharpe", len(x), _json_metrics(row))
+    return _PLAIN_REASON.get(reason, plain.NO_SWING)
+
+
+def _json_metrics(row: dict | None) -> dict:
+    try:
+        m = json.loads((row or {}).get("metrics_json") or "{}")
+    except ValueError:
+        return {}
+    return m if isinstance(m, dict) else {}
 
 
 def _trial_sharpe(t: registry.TrialRun, rf_rows: list[dict]) -> float | None:
@@ -280,24 +304,32 @@ def _bootstrap(run_id: str, row: dict, dates, navs, use_cache: bool, rf_rows: li
     return result
 
 
-def _regimes(run_id: str, dates, navs, capital: int, use_cache: bool) -> regimes.RegimeReport | None:
-    """The regime split, cached under its own key (NAV series, settings, refdata digest, code version): a late
-    bhavcopy recomputes only this, never the bootstrap. A refdata that cannot be read leaves it out."""
+REGIMES_UNAVAILABLE = ("The split could not be worked out just now (the market data could not be read). "
+                       "This is not a statement about the run: reload the page to try again.")
+
+
+def _regimes(run_id: str, dates, navs, capital: int,
+             use_cache: bool) -> tuple[regimes.RegimeReport | None, str | None]:
+    """The regime split and, if it failed, why, cached under its own key (NAV series, settings, refdata digest,
+    code version): a late bhavcopy recomputes only this, never the bootstrap. No daily results is `(None, None)`
+    (a true statement about the run); a refdata that cannot be read is `(None, REGIMES_UNAVAILABLE)` and is
+    logged, never reported as "no daily results" (D-143)."""
     if not navs:
-        return None
+        return None, None
     try:
         path = _cache_path(run_id) if use_cache else None
         key = regimes.cache_key(list(dates), list(navs), capital)
         if path is not None:
             hit = _read_regimes(path, key)
             if hit is not None:
-                return hit
+                return hit, None
         rep = regimes.build(list(dates), list(navs), capital)
         if path is not None:
             _write_regimes(path, key, rep)
-        return rep
+        return rep, None
     except (sqlite3.Error, OSError):
-        return None
+        _log.exception("regime split for %s could not be worked out", run_id)
+        return None, REGIMES_UNAVAILABLE
 
 
 # ── the run report ────────────────────────────────────────────────────────────────────────────
@@ -336,10 +368,11 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
 
     rf_rows = stats.risk_free_rows()
     usable = _usable(navs, capital)
-    res, flat = None, True
+    res, flat, flat_reason = None, True, plain.NO_TRADES
     if usable:
         _, x = _series(dates, navs, capital, rf_rows)
         flat = stats.sharpe_per_period(x) is None
+        flat_reason = _flat_reason(x, row)
         res = stats.deflated_sharpe(x, [_trial_sharpe(t, rf_rows) for t in tries], max(n, len(tries), 1))
 
     texts: dict[str, str] = {}
@@ -347,8 +380,9 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
         texts["psr"] = _NO_SERIES
         texts["dsr"] = _unfinished_try(row.get("status")) if role == "trial" and not is_try else _NO_SERIES
     elif flat:
-        texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True, n_finished=len(tries))
-        texts["psr"] = texts["dsr"]
+        texts["dsr"] = plain.dsr_sentence(max(n, 1), rank or 1, None, flat=True, flat_reason=flat_reason,
+                                          n_finished=len(tries))
+        texts["psr"] = plain.no_sharpe_sentence(flat_reason)
     else:
         if not is_try:
             texts["dsr"] = _NOT_A_TRY if role != "trial" else _unfinished_try(row.get("status"))
@@ -365,7 +399,7 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
         texts["bootstrap_mean_return"] = plain.interval_sentence("Mean daily return", boot.mean_daily_return, "%",
                                                                  ci=boot.ci)
         texts["bootstrap_max_drawdown"] = plain.interval_sentence("Max drawdown", boot.max_drawdown, "%", ci=boot.ci)
-    reg = _regimes(run_id, dates, navs, capital, use_cache)
+    reg, reg_error = _regimes(run_id, dates, navs, capital, use_cache)
     if reg is not None:
         texts["regimes_caveat"] = plain.REGIME_CAVEAT
         for dim in ("month", "weekday", "expiry", "vix", "gap"):
@@ -376,7 +410,7 @@ def run_research(run_id: str, *, use_cache: bool = True) -> RunResearch:
     return RunResearch(run_id=run_id, family_id=family_id, role=role, objective=objective, n_trials=n,
                        rank=rank, is_best=rank == 1, picked_run_id=picked.run_id if picked else None,
                        picked_name=picked.name if picked else None, dsr=res if is_try and not flat else None,
-                       bootstrap=boot, regimes=reg, holdout_unlocks=_unlock_count(family_id), plain=texts)
+                       bootstrap=boot, regimes=reg, regimes_error=reg_error, holdout_unlocks=_unlock_count(family_id), plain=texts)
 
 
 # ── the family report ─────────────────────────────────────────────────────────────────────────
@@ -423,8 +457,13 @@ def family_report(family_id: str) -> FamilyReport:
     rows = store.family_runs(family_id, roles=None, status=None)
     texts: dict[str, str] = {}
     if best is not None:
+        why, no_sharpe = plain.NO_TRADES, False
+        if dsr is None:
+            _, bx = _series(best.dates, best.navs, best.capital_paise, rf_rows)
+            no_sharpe = stats.sharpe_per_period(bx) is None      # else a Sharpe exists and only the DSR is missing
+            why = _flat_reason(bx, store.get_run(best.run_id))
         texts["dsr"] = plain.dsr_sentence(n, 1, dsr.dsr if dsr else None, objective=objective,
-                                          flat=dsr is None, n_finished=len(tries))
+                                          flat=no_sharpe, flat_reason=why, n_finished=len(tries))
     texts["objective"] = plain.OBJECTIVE_LABELS[objective]
     texts["trials"] = plain.meaning("trials")
     texts["scores_caveat"] = plain.SCORES_CAVEAT

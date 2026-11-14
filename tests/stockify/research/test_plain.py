@@ -8,6 +8,7 @@ import unittest
 import tests.support as support  # noqa: F401  — must precede project imports
 
 from stockify.research import bootstrap, plain, registry
+from stockify.commands import stockify_command
 
 RUPEE = "₹"
 BANNED_WORDS = ("ddof", "kurtosis", "skew", "skewness", "logit", "nan", "none", "null", "inf", "dsr", "psr", "pbo")
@@ -88,6 +89,15 @@ class DsrSentenceTests(unittest.TestCase):
 
     def test_dsr_sentence_for_a_flat_run(self):
         self.assertEqual(plain.dsr_sentence(12, 1, None, flat=True), "no trades, so no Sharpe to judge")
+
+    def test_dsr_sentence_names_the_real_reason_there_is_no_sharpe(self):
+        said = {r: plain.dsr_sentence(12, 1, None, flat=True, flat_reason=r) for r in plain.NO_SHARPE_REASONS}
+        self.assertEqual(len(set(said.values())), 3)
+        self.assertIn("too few days", said[plain.ONE_DAY])
+        self.assertIn("every day ended the same", said[plain.NO_SWING])
+        self.assertNotIn("no trades", said[plain.ONE_DAY] + said[plain.NO_SWING])
+        with self.assertRaises(ValueError):
+            plain.dsr_sentence(12, 1, None, flat=True, flat_reason="nonsense")
 
     def test_dsr_sentence_when_there_are_too_few_days(self):
         s = plain.dsr_sentence(12, 1, None)
@@ -315,7 +325,7 @@ class PlainReasonTests(unittest.TestCase):
         self.assertEqual(plain.plain_reason("RunConfigError: strategy.params.slow must be above fast"),
                          "the settings were not accepted")
         self.assertEqual(plain.plain_reason("SweepSpecError: the pool returned 2 outcomes for 3 runs"),
-                         "the sweep file has a problem; run `python -m stockify sweep --config FILE` to see it")
+                         f"the sweep file has a problem; run `{stockify_command("sweep --config FILE")}` to see it")
         self.assertEqual(plain.plain_reason("WalkforwardRunError: the pool returned 2 outcomes for 3 runs"),
                          "the run pool returned the wrong number of results")
         for text in set(dict(plain.PLAIN_FAILURES).values()):

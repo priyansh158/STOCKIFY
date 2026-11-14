@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from stockify import paths, runs, timeutil
+from stockify.data import instruments as instruments_mod
 from stockify.data import packs
 from stockify.oracle import metrics
 from stockify.oracle.orders import SYSTEM_TAGS
@@ -390,7 +391,7 @@ def run_chart(run_id: str, instrument_id: int | None = None, from_ns: int | None
     everything, skipped, delivered, idle = _markers(folder, bundle)
     traded = sorted({m["instrument_id"] for m in everything})
     listed = traded or sorted(inst)
-    instruments = [{"id": i, "symbol": (inst.get(i) or {}).get("tradingsymbol") or str(i),
+    instruments = [{"id": i, "symbol": instruments_mod.display_name(inst.get(i)) or f"instrument {i}",
                     "kind": _KINDS.get((inst.get(i) or {}).get("kind"))} for i in listed]
     if instrument_id is None:
         instrument_id = listed[0] if listed else None

@@ -10,4 +10,5 @@
   "sweep": {"max_workers": null, "max_trials": 1000},
   "coverage": {"ok_pct": "99", "default_days": 60, "max_days": 400},
   "export": {"max_total_mib": 1024},
-  "pool": {"max_run_hours": 6} }
+  "pool": {"max_run_hours": 6},
+  "reporting": {"min_days_yearly": 240} }

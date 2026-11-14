@@ -325,18 +325,26 @@ export type JoinedFill = {
   fill: TestFill;
   /** The chart marker for this fill, for the row click and the highlight; null when the chart has none (yet). */
   markerId: string | null;
-  /** The note, or the "no note" sentence with the strategy's tag (always a code label) beside it; null: no marker. */
-  why: { text: string; tag: string | null } | null;
+  /** The strategy's note, or the "no note" sentence with its tag (always a code label) beside it. From the fill's
+   * own order, so it never depends on what the chart has loaded. */
+  why: { text: string; tag: string | null };
 };
 
-/** One row per fill, in the fills' order, joined to the chart's markers by `fill_id`. */
+/** The reason for a fill: the note of its order, else the same "no note" sentence the chart card uses. */
+export function whyOf(fill: TestFill): { text: string; tag: string | null } {
+  if (fill.note !== "") return { text: fill.note, tag: null };
+  const verb = fill.side.toUpperCase() === "BUY" ? "Bought" : "Sold";
+  return { text: `${verb} ${fill.qty} (no note from the strategy)`, tag: fill.tag !== "" ? fill.tag : null };
+}
+
+/** One row per fill, in the fills' order; the chart marker with the same `fill_id` (if the chart has loaded it) is
+ * only for the row click and the highlight. */
 export function joinFillsAndMarkers(fills: TestFill[], markers: ChartMarker[]): JoinedFill[] {
   const byFill = new Map<number, ChartMarker>();
   for (const m of markers) if (m.fill_id !== null) byFill.set(m.fill_id, m);
   return fills.map((fill) => {
     const m = byFill.get(fill.fill_id);
-    if (!m) return { fill, markerId: null, why: null };
-    return { fill, markerId: m.id, why: { text: reasonOf(m), tag: m.note === "" && m.tag !== "" ? m.tag : null } };
+    return { fill, markerId: m ? m.id : null, why: whyOf(fill) };
   });
 }
 
@@ -440,6 +448,9 @@ export function shadePoints(
   return [...byTime.values()].sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 }
 
+/** Bars of empty space allowed past the first and last bar (the chart's `rightOffset` is the same). */
+export const VIEW_MARGIN = 4;
+
 export type FirstView = { kind: "fit" } | { kind: "range"; from: number; to: number };
 
 /**
@@ -450,7 +461,17 @@ export type FirstView = { kind: "fit" } | { kind: "range"; from: number; to: num
 export function initialView(barCount: number, at: number, markerCount: number, near: number): FirstView {
   if (barCount <= near || markerCount === 0) return { kind: "fit" };
   const i = at < 0 ? barCount - 1 : at;
-  return { kind: "range", from: i - near / 2, to: i + near / 2 };
+  // A window of `near` bars round the trade, slid back inside the data (with a small margin at each end) so that it never
+  // reaches past the first or last bar: a window that overshoots would leave part of the chart empty.
+  let from = i - near / 2;
+  if (from < -VIEW_MARGIN) from = -VIEW_MARGIN;
+  let to = from + near;
+  const last = barCount - 1 + VIEW_MARGIN;
+  if (to > last) {
+    to = last;
+    from = Math.max(-VIEW_MARGIN, to - near);
+  }
+  return { kind: "range", from, to };
 }
 
 /** Poll delay in ms for a live chart: only while the day is open and the tab is visible; null means do not poll. */
@@ -466,7 +487,9 @@ export function nextDelay(base: number, failures: number, cap = 30_000): number 
 }
 
 /** The plain sentence for a chart with no price data (state "pruned"). */
-export function prunedWords(dataState: ChartModel["data_state"], paper: boolean): string {
+export function prunedWords(dataState: ChartModel["data_state"], paper: boolean, live = false): string {
+  // a session still open (the server's `live` flag) has no recording yet because prices have not arrived, not because none was made
+  if (live && dataState === "no_pack") return "No prices have arrived yet. The chart appears here when they do; the trades are listed below.";
   if (dataState === "no_pack") {
     return paper
       ? "No price data was recorded for this day. The trades are listed below."

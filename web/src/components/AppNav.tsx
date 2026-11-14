@@ -2,15 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { DESTINATIONS } from "@/lib/nav";
 
-const NAV = [
-  { href: "/portfolio", label: "Portfolio" },
-  { href: "/alerts", label: "Geo alerts" },
-  { href: "/tests", label: "Strategy tests" },
-  { href: "/trade", label: "Paper trading" },
-  { href: "/research", label: "Research" },
-  { href: "/data", label: "Data coverage" },
-];
 
 /** The top bar: the wordmark (a link home; on the home page the page's own heading carries it) and the six destinations. */
 export function AppNav() {
@@ -24,7 +17,7 @@ export function AppNav() {
           </Link>
         )}
         <nav className="stk-nav" aria-label="Main">
-          {NAV.map((item) => {
+          {DESTINATIONS.map((item) => {
             const here = path === item.href || path.startsWith(`${item.href}/`);
             return (
               <Link key={item.href} href={item.href} aria-current={here ? "page" : undefined}>

@@ -269,7 +269,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       layout: { attributionLogo: true, background: { type: ColorType.Solid, color: "transparent" }, fontFamily: getComputedStyle(box).fontFamily, fontSize: 12 },
       localization: { locale: "en-IN", priceFormatter: (p: number) => PRICE.format(p) },
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 4 },
-      rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.18 } },
+      // entireTextOnly drops a tick label that would be cut off; the 12% top margin keeps the highest bar clear of the top label.
+      rightPriceScale: { scaleMargins: { top: 0.12, bottom: 0.18 }, entireTextOnly: true },
     });
     const shade = chart.addSeries(HistogramSeries, {
       priceScaleId: "stk-shade",
@@ -285,7 +286,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       priceLineVisible: false,
     });
     volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, visible: false });
-    const candles = chart.addSeries(CandlestickSeries, { borderVisible: false });
+    // The last-price label and line are for a live chart only (see the effect below); on a finished run they sit on top of the scale's own labels.
+    const candles = chart.addSeries(CandlestickSeries, { borderVisible: false, lastValueVisible: false, priceLineVisible: false });
     // With no price data the markers still need a time axis: a flat, invisible line whose only job is to hold the times.
     const axis = chart.addSeries(LineSeries, {
       priceScaleId: "stk-axis",
@@ -398,6 +400,12 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       markersRef.current = axisMarkersRef.current = axisRef.current = null;
     };
   }, []);
+
+  // --- the last-price label: only while the chart is live (polling) ---------------------------------------------
+  useEffect(() => {
+    const on = !!pollMs;
+    candlesRef.current?.applyOptions({ lastValueVisible: on, priceLineVisible: on });
+  }, [pollMs]);
 
   // --- colours from the tokens: at mount, and whenever the theme changes -----------------------------------------
   useEffect(() => {
@@ -552,7 +560,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const selIndex = selected === null ? -1 : rows.findIndex((r) => r.id === selected);
   const card = selIndex >= 0 ? cardModel(markers[selIndex], contract) : null;
   const listed = showAll ? rows : rows.slice(0, LIST_SHOWN);
-  const drawable = state === "empty" || state === "full" || (state === "pruned" && markers.length > 0);
+  // No price data means no canvas at all: one notice says so (below), and the trades stay in the lists. Never an empty axis.
+  const drawable = state === "empty" || state === "full";
   const summary = meta ? chartSummary({ ...meta, bars, markers }, symbol) : "Price chart";
 
   return (
@@ -567,7 +576,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         )}
         {ctrl && (
           <div className="stk-pricechart-controls">
-            {ctrl.instruments.length > 1 && (
+            {ctrl.instruments.length > 1 && state !== "pruned" && (
               <label className="stk-pricechart-pick">
                 <span>Instrument</span>
                 <select className="stk-field" data-fit
@@ -600,14 +609,16 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
                 </select>
               </label>
             )}
-            <label className="stk-pricechart-check">
-              <input type="checkbox" className="stk-check" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} />
-              <span>Volume</span>
-            </label>
+            {state !== "pruned" && (
+              <label className="stk-pricechart-check">
+                <input type="checkbox" className="stk-check" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} />
+                <span>Volume</span>
+              </label>
+            )}
           </div>
         )}
       </header>
-      {meta && (
+      {meta && state !== "pruned" && (
         <p className="stk-label">
           {intervalWords(meta.interval_s ?? DEFAULT_INTERVAL_S)} bars
           {meta.basis ? `, ${meta.basis} prices` : ""}
@@ -646,7 +657,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
       )}
       {state === "pruned" && (
         <p className="stk-pricechart-notice" role="note">
-          {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge))}
+          {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge), Boolean(meta?.live))}
         </p>
       )}
       {state === "empty" && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}
