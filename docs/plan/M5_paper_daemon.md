@@ -114,7 +114,7 @@ NSE trades 20:30–03:10 in Seattle (PDT; 19:30–02:10 PST), so the host must b
 
 - **A. The current Windows machine**: Task Scheduler starts `run.ps1 -Daemon` at logon; the power plan never sleeps between 19:00 and 04:30 local; Windows Update active hours avoid that window. Cheapest; most fragile.
 - Options B (Linux box) and C (cloud VM) are out of scope: STOCKIFY is Windows only (D-26). The Kite redirect stays on the loopback callback.
-- [ ] Whichever is chosen: nightly backup of `refdata.sqlite`, `lab.sqlite`, `journals/`, `ticks/archive/` and `nse/raw/` (packs and landing files are rebuildable or transient). Once backups have run for a week, the owner may set `storage.json` → `retention_days` (M1.7). (Code done, GK 5.7: nightly verified backup. Open, owner-only: the backup target, `retention_days`, the D-32 power settings and the Task Scheduler install, Task 26 step 6.)
+- [ ] Whichever is chosen: nightly backup of `refdata.sqlite`, `lab.sqlite`, `journals/`, `ticks/archive/` and `nse/raw/` (packs and landing files are rebuildable or transient). Once backups have run for a week, the owner may set `storage.json` → `retention_days` (M1.7). (Code done, GK 5.7: nightly verified backup; D-147: the target ships as `~/STOCKIFY-backup` (home-expanded) and only the newest `keep_snapshots` (7) daily `refdata`/`lab` snapshots are kept, so the ~2.5 GB/day snapshot no longer grows without bound. Open, owner-only: `retention_days`, the D-32 power settings and the Task Scheduler install, Task 26 step 6.)
 
 ## M5.14 Connection budget and development mode (S)
 

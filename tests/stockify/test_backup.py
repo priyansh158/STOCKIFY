@@ -88,7 +88,7 @@ class BackupCase(SandboxedDBTest):
         def fake(name, *a, **k):
             doc = real(name, *a, **k)
             if name == "storage.json":
-                doc = {**doc, "backup": {"target": None, "include_span": False, **cfg}}
+                doc = {**doc, "backup": {"target": None, "include_span": False, "keep_snapshots": 7, **cfg}}
             return doc
         with mock.patch.object(loader, "load_json", fake):
             return backup.run(self.target, day=DAY)
@@ -358,10 +358,97 @@ class TargetTests(BackupCase):
             backup.run(repo, day=DAY)
 
 
+class ExpandTargetTests(BackupCase):
+    def test_home_and_env_vars_expand(self):
+        home = Path(self.tmp.name) / "home"
+        with support.isolated_env({"USERPROFILE": str(home), "HOME": str(home), "BK_ROOT": str(home / "r")}):
+            self.assertEqual(backup.expand_target("~/STOCKIFY-backup"), home / "STOCKIFY-backup")
+            self.assertEqual(backup.expand_target("%BK_ROOT%/x"), home / "r" / "x")
+            self.assertEqual(backup.expand_target(r"D:\plain"), Path(r"D:\plain"))
+
+    def test_an_unset_variable_is_refused(self):
+        with support.isolated_env({}):
+            with self.assertRaises(backup.BackupRefused):
+                backup.expand_target("%STOCKIFY_NO_SUCH_VAR%/bk")
+
+    def test_the_lab_is_still_refused_after_expansion(self):
+        with support.isolated_env({"LABVAR": str(self.lab)}):
+            with self.assertRaisesRegex(backup.BackupRefused, "lab"):
+                backup.run("%LABVAR%/inner", day=DAY)
+        with support.isolated_env({"USERPROFILE": str(self.lab), "HOME": str(self.lab)}):
+            with self.assertRaisesRegex(backup.BackupRefused, "lab"):
+                backup.run("~/STOCKIFY-backup", day=DAY)
+
+    def test_run_accepts_a_variable_target(self):
+        with support.isolated_env({"BKT": str(self.target)}):
+            res = self.run_backup_to("%BKT%")
+        self.assertFalse(res.errors)
+        self.assertTrue((self.target / "snapshots" / f"{DAY:%Y-%m-%d}" / "lab.sqlite").is_file())
+
+    def run_backup_to(self, target):
+        return backup.run(target, day=DAY)
+
+
+class PruneTests(BackupCase):
+    def make(self, *names):
+        for n in names:
+            d = self.target / "snapshots" / n
+            d.mkdir(parents=True)
+            (d / "lab.sqlite").write_bytes(b"old")
+
+    def snaps(self):
+        return sorted(p.name for p in (self.target / "snapshots").iterdir())
+
+    def test_oldest_beyond_keep_are_removed(self):
+        self.make("2026-11-01", "2026-11-02", "2026-11-03", "2026-11-04")
+        res = self.run_backup(keep_snapshots=3)
+        self.assertEqual(res.pruned, ["2026-11-01", "2026-11-02"])
+        self.assertEqual(len(self.snaps()), 3)
+        self.assertIn(f"{DAY:%Y-%m-%d}", self.snaps())
+
+    def test_files_and_manifest_survive_and_others_untouched(self):
+        self.make("2026-10-01", "not-a-date", "2026-13-45")
+        (self.target / "snapshots" / "notes.txt").write_text("x", encoding="utf-8")
+        self.run_backup(keep_snapshots=1)
+        self.assertEqual(self.snaps(), [f"{DAY:%Y-%m-%d}", "2026-13-45", "not-a-date", "notes.txt"])
+        self.assertTrue((self.target / "manifest.json").is_file())
+        self.assertTrue((self.target / "files" / "nse/raw/fo_bhav/fo_20261111.csv").is_file())
+
+    def test_a_second_run_the_same_day_prunes_nothing_more(self):
+        self.make("2026-11-01")
+        self.run_backup(keep_snapshots=2)
+        res = self.run_backup(keep_snapshots=2)
+        self.assertEqual(res.pruned, [])
+
+    def test_nothing_is_pruned_when_a_snapshot_fails(self):
+        self.make("2026-11-01", "2026-11-02")
+        paths.lab_db().write_bytes(b"this is not a database" * 50)
+        res = self.run_backup(keep_snapshots=1)
+        self.assertTrue(res.errors)
+        self.assertEqual(res.pruned, [])
+        self.assertIn("2026-11-01", self.snaps())
+
+    def test_a_snapshot_dated_after_the_run_day_is_kept_as_newest(self):
+        self.make("2099-01-01", "2026-01-01")
+        res = self.run_backup(keep_snapshots=2)
+        self.assertEqual(res.pruned, ["2026-01-01"])
+        self.assertIn(f"{DAY:%Y-%m-%d}", self.snaps())
+
+
 class ConfigTests(unittest.TestCase):
-    def test_storage_ships_no_target(self):
+    def test_storage_ships_a_home_relative_target(self):
         doc = loader.load_json("storage.json")
-        self.assertEqual(doc["backup"], {"target": None, "include_span": False})
+        self.assertEqual(doc["backup"], {"target": "~/STOCKIFY-backup", "include_span": False, "keep_snapshots": 7})
+
+    def test_keep_snapshots_is_bounded(self):
+        for bad in (0, -1, 366, 1.5, "7", True, None):
+            with self.subTest(bad=bad):
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("storage.json", self.write(
+                        {"backup": {"target": None, "include_span": False, "keep_snapshots": bad}}))
+        for good in (1, 365):
+            loader.load_json("storage.json", self.write(
+                {"backup": {"target": None, "include_span": False, "keep_snapshots": good}}))
 
     def write(self, doc: dict) -> Path:
         tmp = tempfile.TemporaryDirectory(dir=support.SANDBOX_ROOT)
@@ -372,7 +459,7 @@ class ConfigTests(unittest.TestCase):
         return Path(tmp.name)
 
     def test_unknown_keys_are_refused(self):
-        for doc in ({"backup": {"target": None, "include_span": False, "extra": 1}},
+        for doc in ({"backup": {"target": None, "include_span": False, "keep_snapshots": 7, "extra": 1}},
                     {"backup": {"target": None, "include_spam": True}},
                     {"retention": 3}):
             with self.subTest(doc=doc):
@@ -380,14 +467,16 @@ class ConfigTests(unittest.TestCase):
                     loader.load_json("storage.json", self.write(doc))
 
     def test_wrong_types_are_refused(self):
-        for bad in ({"target": 5, "include_span": False}, {"target": "", "include_span": False},
-                    {"target": None, "include_span": "yes"}, {"target": None}, "x"):
+        for bad in ({"target": 5, "include_span": False, "keep_snapshots": 7},
+                    {"target": "", "include_span": False, "keep_snapshots": 7},
+                    {"target": None, "include_span": "yes", "keep_snapshots": 7}, {"target": None},
+                    {"target": None, "include_span": False}, "x"):
             with self.subTest(bad=bad):
                 with self.assertRaises(loader.ConfigError):
                     loader.load_json("storage.json", self.write({"backup": bad}))
 
     def test_a_target_and_the_span_switch_are_accepted(self):
-        doc = loader.load_json("storage.json", self.write({"backup": {"target": "D:\\bk", "include_span": True}}))
+        doc = loader.load_json("storage.json", self.write({"backup": {"target": "D:\\bk", "include_span": True, "keep_snapshots": 3}}))
         self.assertEqual(doc["backup"]["target"], "D:\\bk")
 
 
@@ -399,7 +488,13 @@ class CliTests(BackupCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_no_target_exits_with_a_clear_message(self):
-        code, out, err = self.cli()
+        real = loader.load_json
+
+        def null_target(name, *a, **k):
+            doc = real(name, *a, **k)
+            return {**doc, "backup": {**doc["backup"], "target": None}} if name == "storage.json" else doc
+        with mock.patch.object(loader, "load_json", null_target):
+            code, out, err = self.cli()
         self.assertEqual(code, 2)
         self.assertIn("backup.target", err)
         self.assertFalse(self.target.exists())
