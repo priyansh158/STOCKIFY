@@ -7,17 +7,36 @@ and is written nowhere. Outcomes come back in input order; a failed job is repor
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 _POLL_SECONDS = 0.2
+
+
+class Cancelled(RuntimeError):
+    """The owner stopped the job (the web's Stop button): live children were killed, none was started after."""
+
+
+# The web app's job thread sets an Event here (per thread context); `run_all` checks it between polls, so the sweep,
+# walk-forward and sensitivity functions need no extra argument. No event set: nothing changes (the command line).
+_cancel: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar("pool_cancel", default=None)
+
+
+def set_cancel(event: threading.Event | None) -> contextvars.Token:
+    return _cancel.set(event)
+
+
+def reset_cancel(token: contextvars.Token) -> None:
+    _cancel.reset(token)
 
 
 def _sleep() -> None:
@@ -40,7 +59,7 @@ def _timeout_reason(seconds: float) -> str:
     return f"stopped after {hours:g} {unit} (the pool.max_run_hours limit in research.json)"
 
 
-def _fail_started_run(job: "PoolJob", pid: object, reason: str) -> None:
+def _fail_started_run(job: "PoolJob", pid: object, reason: str, status: str = "failed") -> None:
     """The killed child may have left its `runs` row `running`: mark the one whose runner.pid is this child's pid
     failed. A best effort (a store or folder problem must not stop the pool); another process's run is never touched."""
     if not isinstance(pid, int):
@@ -57,7 +76,7 @@ def _fail_started_run(job: "PoolJob", pid: object, reason: str) -> None:
                     continue
                 held = proc.read_pidfile(paths.run_path(row["run_id"]))
                 if held is not None and held[0] == pid:
-                    store.update_run(row["run_id"], only_if_status="running", status="failed",
+                    store.update_run(row["run_id"], only_if_status="running", status=status,
                                      finished_ns=timeutil.now_ns(), error=reason)
             offset += len(page)
     except Exception:  # noqa: BLE001
@@ -182,6 +201,9 @@ def run_all(jobs: list[PoolJob], *, workers: int | None = None, popen=subprocess
     try:
         pending = list(range(len(jobs)))
         while pending or live:
+            stop = _cancel.get()
+            if stop is not None and stop.is_set():
+                raise Cancelled("stopped by the owner")
             while pending and len(live) < limit:
                 i = pending.pop(0)
                 job = jobs[i]
@@ -228,12 +250,15 @@ def run_all(jobs: list[PoolJob], *, workers: int | None = None, popen=subprocess
             if live or pending:
                 _sleep()
         return results  # type: ignore[return-value]
-    except BaseException:
+    except BaseException as stopped:
         for item in live:
+            pid = getattr(item.proc, "pid", None)
             try:                           # one child that will not die must not leave the others running
                 _kill(item.proc)
             except Exception:  # noqa: BLE001
                 pass
+            if isinstance(stopped, Cancelled):      # D-85: a cancelled run was not tried, so it does not count
+                _fail_started_run(jobs[item.index], pid, "cancelled by the user", status="cancelled")
             item.close()
         raise
     finally:

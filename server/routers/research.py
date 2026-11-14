@@ -136,6 +136,8 @@ def _stored_sweep(job_id: str) -> dict:
         detail = f"sweep not finished yet (status: {job.get('status')})"
         if job.get("status") == "interrupted":
             detail += ": it was stopped before it finished, because STOCKIFY was closed"
+        if job.get("status") == "cancelled":
+            detail += ": you stopped it before it finished"
         if job.get("status") == "failed" and job.get("error"):
             from stockify.research import plain
             detail += f": {plain.plain_reason(job['error'])}"          # a plain reason from the fixed table, never the raw text
@@ -313,9 +315,6 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
     d["summary"] = WalkforwardSummaryDTO(**s)
-    if "`" in d["plain"].get("sensitivity", ""):      # the report file names a command; the page does not (D-145)
-        d["plain"]["sensitivity"] = ("The cost check isn't stored with a walk-forward job. Open the page of one of its "
-                                     "tests and use \"Run sensitivity check\" to see how costs change a result.")
     d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None)}) for w in d["windows"]]
     return WalkforwardDTO(**d)
 

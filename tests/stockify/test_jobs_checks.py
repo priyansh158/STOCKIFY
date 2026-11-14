@@ -30,6 +30,10 @@ class SweepFormChecks(unittest.TestCase):
         text = (REPO / "server" / "schemas.py").read_text(encoding="utf-8")
         self.assertIn("Annotated[list[Any], Field(min_length=1, max_length=100)]", text)
 
+    def test_the_minimum_tries_is_the_apis(self):
+        from server.routers import jobs
+        self.assertEqual(self.a["minTries"], jobs.MIN_TRIES)
+
     def test_empty_text_keeps_the_setting(self):
         self.assertEqual(self.a["empty"], {"values": [], "problem": None})
 

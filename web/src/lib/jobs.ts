@@ -25,6 +25,7 @@ export const startWalkforward = (req: WalkforwardRequestDTO) => api<WebJobDTO>("
 export const startSensitivity = (runId: string) => api<WebJobDTO>(`/api/tests/${pathSegment(runId)}/sensitivity`, POST());
 export const startBackfill = (req: BackfillRequestDTO) => api<WebJobDTO>("/api/data/backfill", POST(req));
 export const startQualityReport = (req: QualityReportRequestDTO) => api<WebJobDTO>("/api/data/report", POST(req));
+export const cancelJob = (id: string) => api<WebJobDTO>(`/api/jobs/${pathSegment(id)}/cancel`, POST());
 export const getJob = (id: string) => api<WebJobDTO>(`/api/jobs/${pathSegment(id)}`);
 export const getResearchLimits = () => api<ResearchLimitsDTO>("/api/research/limits");
 
@@ -89,7 +90,14 @@ export function useJob(kind: WebJobKind, target: string | null, onEnd?: (job: We
         setError(null);
         if (next.status !== "running") endRef.current?.(next);
       } catch (e) {
-        if (!stop) setError(e instanceof ApiError && e.status === 404 ? "The app no longer knows this job." : "Could not read the progress just now; trying again.");
+        if (stop) return;
+        if (e instanceof ApiError && e.status === 404) {
+          // a download or report is kept in memory only: after the app restarted nothing is running any more
+          setJob((prev) => (prev ? { ...prev, status: "interrupted", plain: "This job is no longer known (the app was restarted). Start it again." } : prev));
+          setError(null);
+        } else {
+          setError("Could not read the progress just now; trying again.");
+        }
       }
     };
     const timer = setInterval(tick, POLL_MS);
@@ -104,5 +112,15 @@ export function useJob(kind: WebJobKind, target: string | null, onEnd?: (job: We
     setError(null);
   }, []);
 
-  return { job, error, begin: follow, clear, running: job?.status === "running" };
+  /** Ask the app to stop the job; it ends within a moment and the next poll shows it. */
+  const stop = useCallback(async () => {
+    if (!job) return;
+    try {
+      follow(await cancelJob(job.job_id));
+    } catch (e) {
+      setError(startFailure(e));
+    }
+  }, [job, follow]);
+
+  return { job, error, begin: follow, clear, stop, running: job?.status === "running" };
 }

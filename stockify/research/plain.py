@@ -469,6 +469,8 @@ def job_status_sentence(status: str, error: str | None) -> str:
         return "still running"
     if status == "interrupted":
         return "stopped before it finished, because STOCKIFY was closed; start it again"
+    if status == "cancelled":
+        return "stopped by you before it finished"
     if status == "done":
         return "finished"
     if status == "failed":

@@ -1,6 +1,6 @@
 // Runs the pure helpers of web/src/lib/sweepForm.ts on fixed inputs and prints one JSON object. Called by
 // tests/stockify/test_jobs_checks.py, which holds the hand-checked answers.
-import { MAX_VALUES, boolChoice, parseValues, planSweep, triesCount, triesWords, walkforwardRequest } from "../../web/src/lib/sweepForm.ts";
+import { MAX_VALUES, MIN_TRIES, boolChoice, parseValues, planSweep, triesCount, triesWords, walkforwardRequest } from "../../web/src/lib/sweepForm.ts";
 
 const p = (type: string, name = "x", label = "Opening range (minutes)") => ({ name, label, type, required: false, help: "" }) as never;
 const limits = { max_trials: 1000, confirm_above: 50 };
@@ -9,6 +9,7 @@ const wf = (over: object) => walkforwardRequest("sweep-1", { train: "120", test:
 
 const answers = {
   max: MAX_VALUES,
+  minTries: MIN_TRIES,
   empty: parseValues(p("int"), "   "),
   list: parseValues(p("int"), "5, 10 ,15,"),
   range: parseValues(p("int"), "5 to 30 by 5"),

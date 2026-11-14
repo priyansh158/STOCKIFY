@@ -18,7 +18,7 @@ export default function WalkforwardPanel({ sweepId }: { sweepId: string }) {
   const [f, setF] = useState({ train: "", test: "", step: "", objective: "sharpe", first: "", last: "" });
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const { job, error, begin, clear, running } = useJob("walkforward", sweepId);
+  const { job, error, begin, clear, stop, running } = useJob("walkforward", sweepId);
 
   useEffect(() => {
     getResearchLimits().then(
@@ -81,7 +81,7 @@ export default function WalkforwardPanel({ sweepId }: { sweepId: string }) {
               <input className="stk-field" value={f.last} placeholder="YYYY-MM-DD" onChange={(e) => setF({ ...f, last: e.target.value })} />
             </Field>
           </div>
-          {job && <JobStatus job={job} error={error} />}
+          {job && <JobStatus job={job} error={error} onStop={stop} />}
           {job?.status === "done" && (
             <p>
               <Link className="stk-link" href={jobHref("walkforward", job.job_id) ?? "/research"}>Open the walk-forward report</Link>
@@ -89,7 +89,7 @@ export default function WalkforwardPanel({ sweepId }: { sweepId: string }) {
           )}
           {problem && <p role="alert" className="stk-warn">{problem}</p>}
           <div className="stk-row">
-            <button type="submit" className="stk-btn" data-tone="primary" disabled={Boolean(reason) || starting || running} aria-describedby="wf-why">
+            <button type="submit" className="stk-btn" data-tone="primary" disabled={Boolean(reason) || starting || running} aria-describedby={reason && !running ? "wf-why" : undefined}>
               {starting ? "Starting…" : running ? "Walk-forward running…" : "Run walk-forward"}
             </button>
             {reason && !running && <span id="wf-why" className="stk-fine">{reason}</span>}

@@ -106,6 +106,8 @@ export default async function WalkforwardPage({ params }: { params: Promise<{ id
               <p>Still running. The report appears here once every window has finished.</p>
               <JobWatch jobId={id} />
             </div>
+          ) : load.status === "cancelled" ? (
+            <p>You stopped this job before it finished, so it has no report. Open its sweep and choose &ldquo;Walk forward&rdquo; to start it again.</p>
           ) : load.status === "interrupted" ? (
             <p>This job was stopped before it finished, because STOCKIFY was closed. Open its sweep and choose &ldquo;Walk forward&rdquo; to start it again.</p>
           ) : load.status === "failed" ? (

@@ -154,7 +154,7 @@ class SweepTests(JobsBase):
             ({"axes": {RANGE: ["abc"]}}, "Opening range (minutes)"),
             ({"axes": {EXIT: ["25:99"]}}, "Exit time (IST)"),
             ({"axes": {RANGE: [5, 5]}}, "listed twice"),
-            ({"axes": {RANGE: [5], "strategy.params.qty": [1]}, "name": "bad name!"}, "letters, digits"),
+            ({"axes": {RANGE: [5, 10]}, "name": "bad name!"}, "letters, digits"),
         ]
         for extra, words in cases:
             with self.subTest(extra=extra):

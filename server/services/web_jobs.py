@@ -50,7 +50,7 @@ class WebJob:
     ref: str
     kind: str
     target: str                         # what makes two jobs "the same": a run id, a sweep id, a date range
-    status: str = "running"             # running | done | failed
+    status: str = "running"             # running | done | failed | cancelled
     started_ns: int = 0
     finished_ns: int | None = None
     research_job_id: str | None = None
@@ -58,7 +58,12 @@ class WebJob:
     result: str | None = None           # a plain sentence about what it did
     done: int = 0                       # data jobs count their own steps; research jobs are counted from the runs
     total: int | None = None
+    cancel: threading.Event = field(default_factory=threading.Event, repr=False)     # the Stop button sets it
     _id_ready: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    @property
+    def stopping(self) -> bool:
+        return self.status == "running" and self.cancel.is_set()
 
     @property
     def job_id(self) -> str:
@@ -111,13 +116,15 @@ class WebJobs:
                 raise JobRefused(409, _SAME[kind])
             if len(running) >= limit:
                 raise JobRefused(409, _BUSY[_group(kind)])
+            if kind in RESEARCH_KINDS and outside_running({j.research_job_id for j in running}) + len(running) >= limit:
+                raise JobRefused(409, _OUTSIDE)
             job = WebJob(ref=f"wj-{secrets.token_hex(5)}", kind=kind, target=target, started_ns=timeutil.now_ns(),
                          total=total)
             self._jobs[job.ref] = job
             self._trim()
         t = threading.Thread(target=self._run, args=(job, work), name=f"web-job-{job.ref}", daemon=True)
         with self._lock:
-            self._threads.append(t)
+            self._threads = [x for x in self._threads if x.is_alive()] + [t]       # finished threads are not kept
         t.start()
         if wait_for_id:
             job._id_ready.wait(_ID_WAIT_S)
@@ -130,16 +137,48 @@ class WebJobs:
 
     def _run(self, job: WebJob, work: Callable[[WebJob], None]) -> None:
         from stockify import timeutil
+        from stockify.research import pool
+        token = pool.set_cancel(job.cancel)          # run_all checks it between polls and stops the live children
         try:
             work(job)
             status, error = "done", None
+        except pool.Cancelled:
+            status, error = "cancelled", "Stopped by you before it finished. The tries that had finished are kept."
+            self._mark_cancelled(job)
         except Exception as e:  # noqa: BLE001 — a job's failure is its status, never a crashed thread
             log.exception("web job %s (%s) failed", job.ref, job.kind)
             status, error = "failed", reason_of(e)
         finally:
-            job._id_ready.set()
+            pool.reset_cancel(token)
+        # The status is written BEFORE the id is published, so a request that wakes on the id never reads a stale
+        # "running" for a job that already ended (a start that failed answers 422, not 202).
         with self._lock:
             job.status, job.error, job.finished_ns = status, error, timeutil.now_ns()
+        job._id_ready.set()
+
+    @staticmethod
+    def _mark_cancelled(job: WebJob) -> None:
+        """The research function marked its row failed on the way out; the owner stopped it, so say that."""
+        if job.research_job_id is None:
+            return
+        try:
+            from stockify import store, timeutil
+            store.update_research_job(job.research_job_id, status="cancelled", finished_ns=timeutil.now_ns(),
+                                      error="cancelled by the user")
+        except Exception:  # noqa: BLE001
+            log.exception("could not mark research job %s cancelled", job.research_job_id)
+
+    def cancel(self, job_id: str) -> WebJob:
+        """Ask a running job to stop (it ends within a moment; live children are killed, finished tries are kept)."""
+        job = self.get(job_id)
+        if job is None:
+            raise JobRefused(404, "This job is not running in this app.")
+        if job.kind == "report":
+            raise JobRefused(409, "A quality report takes a few seconds and cannot be stopped.")
+        if job.status != "running":
+            raise JobRefused(409, "This job has already ended.")
+        job.cancel.set()
+        return job
 
     def set_research_job(self, job: WebJob, job_id: str) -> None:
         """Called by the research function once its row exists: record this process as the owner, then publish the id."""
@@ -168,12 +207,25 @@ _SAME = {
     "backfill": "A download of these days is already running. Its progress is on this page.",
     "report": "The quality report of this day is already being made.",
 }
+_OUTSIDE = ("A sweep, walk-forward or cost check started outside the app (from a terminal) is still running. Wait for "
+            "it to finish, or stop it where it was started.")
 _BUSY = {
     "research": "Another sweep, walk-forward or cost check is still running. Wait for it to finish; its progress is "
                 "on the Research page.",
     "backfill": "Another download from NSE is still running. Wait for it to finish.",
     "report": "Another quality report is still being made. Wait for it to finish.",
 }
+
+
+def outside_running(own_ids: set[str | None]) -> int:
+    """Research jobs the store says are running that this app did not start (the command line's). A row left
+    `running` by a crashed terminal would block for ever, so only a job created within `pool.max_run_hours` counts:
+    no run of the pool lives longer, and a job older than that with no news is taken as dead (D-145)."""
+    from stockify import research, store, timeutil
+    horizon = timeutil.now_ns() - int(research.settings()["pool"]["max_run_hours"]) * 3600 * 10**9
+    return sum(1 for r in store.list_research_jobs(None, 0, 200)
+               if r.get("status") == "running" and r.get("kind") in RESEARCH_KINDS and r["job_id"] not in own_ids
+               and (r.get("created_ns") or 0) >= horizon)
 
 
 def reason_of(e: BaseException) -> str:
@@ -185,6 +237,8 @@ def reason_of(e: BaseException) -> str:
         return str(e)
     if isinstance(e, quality.QualityError):
         return str(e)                                      # "no recording for 2026-11-04": a fixed sentence
+    if isinstance(e, nse_files.UnverifiedSource):
+        return "STOCKIFY does not read NSE's files for these days yet (their format is not verified); choose later days"
     if isinstance(e, nse_files.NseError):
         return "NSE did not give the files (the site was unreachable or refused the request); try again later"
     return walkforward.plain_failure(e)
@@ -275,10 +329,14 @@ def count_noun(n: int, one: str, many: str) -> str:
 
 
 def progress_words(kind: str, status: str, done: int | None, total: int | None, result: str | None,
-                   error: str | None) -> str:
+                   error: str | None, stopping: bool = False) -> str:
     """One plain sentence for the page: what the job is doing, did, or why it stopped."""
     if status == "failed":
         return f"Failed: {error}" if error else "Failed."
+    if status == "cancelled":
+        return error or "Stopped by you before it finished."
+    if status == "running" and stopping:
+        return "Stopping…"
     if status == "interrupted":
         return "Stopped before it finished, because STOCKIFY was closed. Start it again."
     if status == "done":

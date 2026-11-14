@@ -36,7 +36,7 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
-  const { job, error, begin, clear, running } = useJob("sweep", null, () => router.refresh());
+  const { job, error, begin, clear, stop, running } = useJob("sweep", null, () => router.refresh());
 
   useEffect(() => {
     getResearchLimits().then(setLimits, () => setLimitsError(true));
@@ -185,11 +185,12 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
                         className="stk-field"
                         value={texts[p.name] ?? ""}
                         aria-invalid={bad.has(p.name)}
+                        aria-describedby={bad.has(p.name) ? `err-${p.name}` : undefined}
                         placeholder="keep"
                         onChange={(e) => setTexts({ ...texts, [p.name]: e.target.value })}
                       />
                     </Field>
-                    {bad.get(p.name) && <span role="alert" className="stk-warn stk-fine">{bad.get(p.name)}</span>}
+                    {bad.get(p.name) && <span id={`err-${p.name}`} role="alert" className="stk-warn stk-fine">{bad.get(p.name)}</span>}
                   </div>
                 );
               })}
@@ -209,7 +210,7 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
           </label>
         )}
 
-        {job && <JobStatus job={job} error={error} />}
+        {job && <JobStatus job={job} error={error} onStop={stop} />}
         {job?.status === "done" && (
           <p>
             <Link className="stk-link" href={jobHref("sweep", job.job_id) ?? "/research"}>Open the sweep</Link>
@@ -218,7 +219,7 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
         {problem && <p role="alert" className="stk-warn">{problem}</p>}
 
         <div className="stk-row">
-          <button type="submit" className="stk-btn" data-tone="primary" disabled={Boolean(reason) || starting || running} aria-describedby="sweep-why">
+          <button type="submit" className="stk-btn" data-tone="primary" disabled={Boolean(reason) || starting || running} aria-describedby={reason && !running ? "sweep-why" : undefined}>
             {starting ? "Starting…" : running ? "Sweep running…" : "Run sweep"}
           </button>
           {reason && !running && <span id="sweep-why" className="stk-fine">{reason}</span>}

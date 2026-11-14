@@ -19,7 +19,7 @@ function Action({
   const router = useRouter();
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const { job, error, begin, clear, running } = useJob(kind, target, (j) => j.status === "done" && router.refresh());
+  const { job, error, begin, clear, stop, running } = useJob(kind, target, (j) => j.status === "done" && router.refresh());
   async function go() {
     setStarting(true);
     setProblem(null);
@@ -36,11 +36,11 @@ function Action({
     <div className="stk-stack-s">
       <div className="stk-row">
         <button type="button" className="stk-btn" data-tone="primary" disabled={starting || running} onClick={() => void go()}>
-          {starting ? "Starting…" : running ? busyLabel : job?.status === "failed" ? `${label} again` : label}
+          {starting ? "Starting…" : running ? busyLabel : job && job.status !== "done" ? `${label} again` : label}
         </button>
         {!job && !problem && <span className="stk-fine">{hint}</span>}
       </div>
-      {job && <JobStatus job={job} error={error} />}
+      {job && <JobStatus job={job} error={error} onStop={stop} />}
       {problem && <p role="alert" className="stk-warn">{problem}</p>}
     </div>
   );

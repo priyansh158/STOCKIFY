@@ -235,7 +235,7 @@ function RegimeTable({ rows, first, caption }: { rows: RegimeBucketDTO[]; first:
 function RunCheck({ runId, onDone }: { runId: string; onDone: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const { job, error, begin, clear, running } = useJob("sensitivity", runId, (j) => j.status === "done" && onDone());
+  const { job, error, begin, clear, stop, running } = useJob("sensitivity", runId, (j) => j.status === "done" && onDone());
   async function run() {
     setStarting(true);
     setProblem(null);
@@ -251,12 +251,12 @@ function RunCheck({ runId, onDone }: { runId: string; onDone: () => void }) {
     <div className="stk-stack-s">
       <p>No sensitivity check for this run yet.</p>
       <p className="stk-fine">It re-runs the test several times with higher costs and worse fills, to see whether the result still holds. It takes a few minutes.</p>
-      {job && <JobStatus job={job} error={error} />}
+      {job && <JobStatus job={job} error={error} onStop={stop} />}
       {problem && <p role="alert" className="stk-warn">{problem}</p>}
       <div>
         <button type="button" className="stk-btn" data-tone="primary" disabled={starting || running}
           onClick={() => { clear(); void run(); }}>
-          {starting ? "Starting…" : running ? "Running the check…" : job?.status === "failed" || job?.status === "interrupted" ? "Run the check again" : "Run sensitivity check"}
+          {starting ? "Starting…" : running ? "Running the check…" : job && job.status !== "done" ? "Run the check again" : "Run sensitivity check"}
         </button>
       </div>
     </div>

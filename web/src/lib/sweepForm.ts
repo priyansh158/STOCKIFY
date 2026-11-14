@@ -10,6 +10,8 @@ import type { AxisValue, ResearchLimitsDTO, StrategyParam } from "./types";
 /** At most this many values for one setting; the API's `SweepRequestDTO.axes` allows the same. */
 export const MAX_VALUES = 100;
 export const PARAM_PREFIX = "strategy.params.";
+/** The fewest tries a sweep may have; the API's `MIN_TRIES` (server/routers/jobs.py) says the same, checked by a test. */
+export const MIN_TRIES = 2;
 
 const ZERO = BigInt(0);
 const ONE = BigInt(1);
@@ -127,7 +129,7 @@ export function planSweep(
   if (!hasRun) reason = "Choose a finished test to start from.";
   else if (problems.length > 0) reason = "Fix the settings marked above first.";
   else if (Object.keys(axes).length === 0) reason = "Give at least one setting more than one value to try.";
-  else if (tries < 2) reason = "That is a single try. List two or more values for a setting.";
+  else if (tries < MIN_TRIES) reason = "That is a single try. List two or more values for a setting.";
   else if (tries > limits.max_trials) reason = `That is ${tries.toLocaleString("en-IN")} tries and the most is ${limits.max_trials.toLocaleString("en-IN")}. Offer fewer values.`;
   else if (needsConfirm && !confirmed) reason = `Tick the box to confirm that you want to run ${tries.toLocaleString("en-IN")} tries.`;
   return { axes, tries, problems, reason, needsConfirm };

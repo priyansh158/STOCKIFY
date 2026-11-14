@@ -918,12 +918,13 @@ class WebJobDTO(BaseModel):
     reason, never exception text."""
     job_id: str
     kind: Literal["sweep", "walkforward", "sensitivity", "backfill", "report"]
-    status: Literal["running", "done", "failed", "interrupted"]
+    status: Literal["running", "done", "failed", "interrupted", "cancelled"]
     target: str
     done: int | None = None
     total: int | None = None
     plain: str
     error: str | None = None
+    stopping: bool = False
 
 
 class SweepRequestDTO(BaseModel):

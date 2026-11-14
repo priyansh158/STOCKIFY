@@ -14,19 +14,23 @@ export default function JobWatch({ jobId }: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let stop = false;
-    const tick = async () => {
+    const timer = setInterval(() => void tick(), 2000);
+    async function tick() {
       try {
         const next = await getJob(jobId);
         if (stop) return;
         setJob(next);
         setError(null);
-        if (next.status !== "running") router.refresh();
+        if (next.status !== "running") {
+          stop = true;                       // one last refresh, then no more polling
+          clearInterval(timer);
+          router.refresh();
+        }
       } catch {
         if (!stop) setError("Could not read the progress just now; trying again.");
       }
-    };
+    }
     void tick();
-    const timer = setInterval(tick, 2000);
     return () => {
       stop = true;
       clearInterval(timer);

@@ -27,6 +27,7 @@ from server.services.web_jobs import JobRefused, WebJob
 router = APIRouter(tags=["jobs"])
 
 _PARAM_PREFIX = "strategy.params."
+MIN_TRIES = 2          # a sweep compares tries; web/src/lib/sweepForm.ts `MIN_TRIES` says the same (tested)
 _ISO_DAY = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _NAME_OK = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -75,6 +76,7 @@ def _locked(cfg: dict) -> None:
 def _dto_of_web(j: WebJob) -> WebJobDTO:
     from stockify import store
     done, total, status = j.done, j.total, j.status
+    stopping = j.stopping
     if j.research_job_id:
         row = store.get_research_job(j.research_job_id)
         if row is not None:
@@ -84,14 +86,15 @@ def _dto_of_web(j: WebJob) -> WebJobDTO:
     if status == "done" and total is not None:
         done = total
     return WebJobDTO(job_id=j.job_id, kind=j.kind, status=status, target=j.target, done=done, total=total,
-                     plain=web_jobs.progress_words(j.kind, status, done, total, j.result, j.error), error=j.error)
+                     plain=web_jobs.progress_words(j.kind, status, done, total, j.result, j.error, stopping), error=j.error,
+                     stopping=stopping)
 
 
 def _dto_of_row(row: dict) -> WebJobDTO:
     """A research job this process did not start in this run (the command line, or before a restart)."""
     from stockify.research import walkforward
     kind = row["kind"]
-    status = row["status"] if row["status"] in ("running", "done", "failed", "interrupted") else "failed"
+    status = row["status"] if row["status"] in ("running", "done", "failed", "interrupted", "cancelled") else "failed"
     done, total = web_jobs.research_progress(row)
     error = walkforward.plain_error(row) if status == "failed" else None
     try:
@@ -121,6 +124,24 @@ def get_job(job_id: str) -> WebJobDTO:
     if row is not None and row.get("kind") in web_jobs.RESEARCH_KINDS:
         return _dto_of_row(row)
     raise HTTPException(status_code=404, detail="no such job")
+
+
+@router.post("/api/jobs/{job_id}/cancel", response_model=WebJobDTO)
+@router.post("/api/research/jobs/{job_id}/cancel", response_model=WebJobDTO)
+def cancel_job(job_id: str) -> WebJobDTO:
+    """Stop a job started from the app: its live children are killed and no new try starts; the tries that had
+    finished are kept and the job ends `cancelled` (D-145). 404 when this app is not running it, 409 when it ended,
+    is a report (a few seconds) or was started outside the app (stop it where it was started)."""
+    from stockify import store
+    try:
+        job = web_jobs.get_jobs().cancel(job_id)
+    except JobRefused as e:
+        if e.status == 404 and 0 < len(job_id) <= 64:
+            row = store.get_research_job(job_id)
+            if row is not None and row.get("status") == "running":
+                raise HTTPException(status_code=409, detail="This job was started outside the app; stop it where it was started.") from None
+        raise _refuse(e) from None
+    return _dto_of_web(job)
 
 
 @router.get("/api/research/limits", response_model=ResearchLimitsDTO)
@@ -216,6 +237,8 @@ def start_sweep(req: SweepRequestDTO) -> WebJobDTO:
     cap = sweep.max_trials()
     if tries > cap:
         raise _422(f"That is {tries:,} tries, and the most one sweep may have is {cap:,}. Offer fewer values.")
+    if tries < MIN_TRIES:
+        raise _422(f"That is a single try. List at least {MIN_TRIES} values for one setting, so there is something to compare.")
     if tries > sweep.CONFIRM_ABOVE and not req.confirm:
         raise _422(f"That is {tries:,} tries, which will take a while. Tick the box to confirm that you want to run them.")
     _locked(base)
@@ -345,6 +368,7 @@ BACKFILL_DATASETS = ("fo", "cm", "idx")           # the command's own default (`
 def start_backfill(req: BackfillRequestDTO) -> WebJobDTO:
     from stockify import research
     from stockify.data import calendar, nse_files
+    from stockify.research import pool
     first, last = _day(req.first_day, "The first day"), _day(req.last_day, "The last day")
     if first > last:
         raise _422("The first day is after the last day.")
@@ -360,6 +384,8 @@ def start_backfill(req: BackfillRequestDTO) -> WebJobDTO:
     def work(job: WebJob) -> None:
         def step(_res) -> None:  # noqa: ANN001
             job.done += 1
+            if job.cancel.is_set():
+                raise pool.Cancelled("stopped by the owner")
         totals = nse_files.backfill(first, last, BACKFILL_DATASETS, progress=step)
         sentence = web_jobs.backfill_sentence(totals)
         if totals.get("error"):
