@@ -137,8 +137,8 @@ export function bytesWords(n: number | null | undefined): string {
 
 /** The recorder is a separate background service: STOCKIFY starts it only when it is started with recording turned on
  * (D-146). The page cannot start it, so it says how it gets started, in words. */
-export const RECORDER_HOW_SHORT = "STOCKIFY was probably started without recording turned on: close it and start it again with recording turned on.";
-export const RECORDER_HOW = `The recorder is the background service that saves live prices. It runs only when STOCKIFY is started with recording turned on, so close STOCKIFY and start it again that way to see live figures here.`;
+export const RECORDER_HOW_SHORT = "STOCKIFY was probably started without recording turned on: close it and start it again with recording turned on (the Daemon option of the launcher).";
+export const RECORDER_HOW = `The recorder is the background service that saves live prices. It runs only when STOCKIFY is started with recording turned on, so close STOCKIFY and start it again that way (the Daemon option of the launcher) to see live figures here.`;
 
 /** "3 min", "5 h 2 min", "8 days": how long ago, coarse enough to read at a glance. */
 function agoWords(seconds: number): string {

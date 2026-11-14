@@ -229,6 +229,11 @@ def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     from stockify.research import holdout
     from stockify.strategies import _catalogue
     from server.services.test_queue import get_queue
+    if config.get("unlock_holdout") not in (None, ""):
+        # D-145: the held-back days are never unlocked from the app; the reason is written in a config file and the
+        # unlock is logged, which is the command line's job.
+        raise HTTPException(status_code=422, detail=[
+            "unlock_holdout: the days held back for the final check cannot be unlocked from the app"])
     try:
         cfg = runconfig.load(config)
     except runconfig.RunConfigError as e:

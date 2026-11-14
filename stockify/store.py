@@ -18,7 +18,7 @@ from typing import Optional
 from stockify import paths
 from stockify.data import migrate
 
-SCHEMA_VERSION = 5  # = the number of files in stockify/data/migrations/lab
+SCHEMA_VERSION = 6  # = the number of files in stockify/data/migrations/lab
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None

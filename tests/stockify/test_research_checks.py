@@ -106,13 +106,13 @@ class ResearchHelperChecks(unittest.TestCase):
         self.assertEqual(self.answers["durations"], ["still open", "still open", "0 s", "12 s", "1 min", "2 min 5 s", "1 h", "1 h 2 min", "—"])
         self.assertEqual(self.answers["bytes"], ["—", "0 B", "999 B", "1.5 kB", "2.5 MB", "12.3 GB", "3 TB", "—"])
         how = ("STOCKIFY was probably started without recording turned on: close it and start it again with recording "
-               "turned on.")
+               "turned on (the Daemon option of the launcher).")
         old = "Its last report was {} ago, so nothing is being recorded now. " + how
         closed = ("The last report was {} ago. The recorder reports only while the market is open. If it should have run, "
                   + how)
         none = {"headline": "The recorder has not reported yet", "tone": "warn", "rate": None, "last": None,
                 "note": ("The recorder is the background service that saves live prices. It runs only when STOCKIFY is "
-                         "started with recording turned on, so close STOCKIFY and start it again that way to see live "
+                         "started with recording turned on, so close STOCKIFY and start it again that way (the Daemon option of the launcher) to see live "
                          "figures here.")}
         self.assertEqual(self.answers["recorder"], [
             none,

@@ -51,6 +51,10 @@ class NseError(RuntimeError):
     pass
 
 
+class UnverifiedSource(NseError):
+    """The dataset's file format for that date is not verified in sources.json (the site was not asked)."""
+
+
 # ── Sources ──────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -514,7 +518,7 @@ def fetch_one(dataset: str, day: date, http: Http, *, allow_unverified: bool = F
         # The file only describes "now": it is stored under the day it was fetched.
         day = today or timeutil.ist_today()
     if not src.verified and not allow_unverified:
-        raise NseError(f"{dataset} ({src.parser}) is not verified in sources.json; pass --allow-unverified")
+        raise UnverifiedSource(f"{dataset} ({src.parser}) is not verified in sources.json; pass --allow-unverified")
     d = day.isoformat()
     prev = logged(dataset, day)
     if (not force and prev and prev["outcome"] == "ok" and prev["parsed_ok"] == 1

@@ -25,7 +25,7 @@ class ResearchStoreTests(SandboxedDBTest):
         conn.execute("INSERT INTO holdout_unlocks (unlock_ns, run_id, family_id, reason) VALUES (5, 'r1', 'f', 'x')")
         conn.commit()
         conn.close()
-        self.assertEqual(store.schema_version(), 5)
+        self.assertEqual(store.schema_version(), 6)
         self.assertEqual(store.get_run("r1")["role"], "trial")
         self.assertIsNone(store.get_run("r1")["job_id"])
         self.assertEqual(len(store.session_days("s1")), 1)
