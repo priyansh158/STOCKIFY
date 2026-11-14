@@ -162,6 +162,7 @@ export interface TestRunDetail {
   config: Record<string, unknown>;
   metrics: Record<string, unknown>;
   manifest?: Record<string, unknown> | null;
+  manifest_labels: Record<string, string>;
   fill_count?: number | null;
   cost_totals: Record<string, number>;
   /** metrics key -> plain reason the figure is not shown (its value in `metrics` is null) */

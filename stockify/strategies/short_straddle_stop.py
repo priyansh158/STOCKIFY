@@ -17,6 +17,7 @@ from stockify.strategies._option_legs import OptionLegs
 
 class ShortStraddleStop(OptionLegs):
     DISPLAY_NAME = "Short Straddle with Stop"   # what the UI shows (stockify.display); the catalogue test fails without one
+    DESCRIPTION = 'Sells the at-the-money call and put at a set time, buys a leg back if it rises too far, and closes everything at the exit time.'   # one plain sentence for the New test form (the module docstring is for developers)
     PARAMS = [
         {'name': 'underlying', 'label': 'Index for the options', 'type': 'underlying', 'default': 'NIFTY', 'required': False, 'help': 'the index whose options are sold'},
         {'name': 'entry_hhmm', 'label': 'Entry time (IST)', 'type': 'hhmm', 'default': '09:30', 'required': False, 'help': 'when to sell the at-the-money call and put'},

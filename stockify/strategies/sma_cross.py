@@ -12,6 +12,7 @@ from stockify.strategy import Strategy, fmt_price, fmt_qty
 
 class SmaCross(Strategy):
     DISPLAY_NAME = "SMA Crossover"   # what the UI shows (stockify.display); the catalogue test fails without one
+    DESCRIPTION = 'Holds the stock while the fast moving average is above the slow one.'   # one plain sentence for the New test form (the module docstring is for developers)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
         {'name': 'symbol', 'label': 'Stock or future', 'type': 'symbol', 'default': None, 'required': True, 'help': 'what to trade, e.g. NSE:RELIANCE'},

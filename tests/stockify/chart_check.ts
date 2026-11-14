@@ -24,7 +24,7 @@ const bar = (t: number, d: string, close = "2418.40") => ({
 const fill = (over: Record<string, unknown>) => ({
   id: `f${(over.fill_id as number | undefined) ?? 11}`, kind: "fill", t: 1_762_913_100, bar_t: 1_762_913_100,
   bar_d: "2025-11-12", side: "BUY", qty: 50, price: "2418.40", price_paise: 241840, fsp_paise: null,
-  order_id: 7, fill_id: 11, note: "", tag: "", tag_is_code: false, charges_paise: null, trade_pnl_paise: null,
+  order_id: 7, fill_id: 11, note: "", tag: "", tag_label: "", tag_is_code: false, charges_paise: null, trade_pnl_paise: null,
   chunks: [], ...over,
 });
 
@@ -44,7 +44,7 @@ out.markerWithNote = chart.toMarker(fill({ note: "Range broke up <b>now</b>" }),
 
 const NOTE = "<img src=x onerror=alert(1)>";
 out.cardNote = chart.cardModel(fill({ note: "Opening range broke up", charges_paise: 2145, trade_pnl_paise: 125000 }));
-out.cardNoNote = chart.cardModel(fill({ side: "SELL", note: "", tag: "orb_exit", tag_is_code: true }));
+out.cardNoNote = chart.cardModel(fill({ side: "SELL", note: "", tag: "orb_exit", tag_label: "Exit", tag_is_code: true }));
 out.cardOpening = chart.cardModel(fill({ note: "Open long", trade_pnl_paise: null }));
 out.cardLoss = chart.cardModel(fill({ side: "SELL", note: "Stop hit", trade_pnl_paise: -53050 }));
 out.cardFlat = chart.cardModel(fill({ side: "SELL", note: "Flat exit", trade_pnl_paise: 0 }));
@@ -207,16 +207,16 @@ out.tipMore = chart.tipModel([fill({ note: "one" }), fill({ fill_id: 2, note: "t
 out.tipNone = chart.tipModel([], "future");
 
 // The run page's Why column: one row per fill, in the fills' order, the note from the chart marker with the same fill_id.
-const fl = (fill_id: number, note = "", tag = "") => ({ fill_id, order_id: fill_id, t_ns: 1, t_ist: "x", instrument_id: 1, side: "BUY", qty: 1, price_paise: 100, note, tag, evidence: "", at_close: false });
+const fl = (fill_id: number, note = "", tag = "") => ({ fill_id, order_id: fill_id, t_ns: 1, t_ist: "x", instrument_id: 1, side: "BUY", qty: 1, price_paise: 100, note, tag, tag_label: ({ orb_exit: "Exit", sma_exit: "Sma exit" } as Record<string, string>)[tag] ?? "", evidence: "", at_close: false });
 const mk = (fill_id: number | null, note: string, tag = "", tag_is_code = false, id = `f${fill_id}`) =>
-  fill({ id, fill_id, note, tag, tag_is_code });
+  fill({ id, fill_id, note, tag, tag_label: tag ? "Plain " + tag : "", tag_is_code });
 out.join = chart.joinFillsAndMarkers(
   [fl(1), fl(2, "Range broke up"), fl(3, "", "orb_exit"), fl(4)],
   [mk(2, "Range broke up"), mk(3, "", "orb_exit", true), mk(null, "Settled", "", false, "x9-1-0")],
 );
 out.joinStrategyTag = chart.joinFillsAndMarkers([fl(5, "", "sma_exit"), fl(6)], [mk(5, "", "sma_exit", false), mk(6, "", "", false)]);
-out.cardStrategyTag = chart.cardModel(fill({ side: "SELL", note: "", tag: "sma_exit", tag_is_code: false })).lines;
-out.cardNoteTag = chart.cardModel(fill({ note: "Range broke up", tag: "orb_entry", tag_is_code: false })).lines;
+out.cardStrategyTag = chart.cardModel(fill({ side: "SELL", note: "", tag: "sma_exit", tag_label: "Sma exit", tag_is_code: false })).lines;
+out.cardNoteTag = chart.cardModel(fill({ note: "Range broke up", tag: "orb_entry", tag_label: "Entry", tag_is_code: false })).lines;
 out.joinNone = chart.joinFillsAndMarkers([fl(5)], []);
 out.joinEmpty = chart.joinFillsAndMarkers([], [mk(1, "n")]);
 out.joinOrder = chart.joinFillsAndMarkers([fl(9), fl(3)], [mk(3, "c"), mk(9, "n")]).map((r: { fill: { fill_id: number } }) => r.fill.fill_id);

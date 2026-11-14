@@ -124,9 +124,6 @@ class RunViewHelperChecks(unittest.TestCase):
             raise AssertionError("run_view_check.ts failed: " + out.stderr)
         cls.r = json.loads(out.stdout)
 
-    def test_strategy_name_drops_the_underscore_of_an_internal_module(self):
-        self.assertEqual(self.r["names"], ["margin_watch", "sma_cross", "sma_cross", "Odd", "—", "—"])
-
     def test_a_close_fill_reads_as_the_close_and_explains_its_stamp(self):
         c = self.r["close"]
         self.assertEqual(c["text"], "5 Oct 2026, at the close")

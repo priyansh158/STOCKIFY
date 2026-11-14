@@ -171,6 +171,7 @@ class TestRunDetailDTO(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
     manifest: dict[str, Any] | None = None
+    manifest_labels: dict[str, str] = Field(default_factory=dict, description="each manifest key in plain words")
     fill_count: int | None = Field(None, description="all fills of the run (the /fills list is paged)")
     cost_totals: dict[str, int] = Field(default_factory=dict, description="paise per charge component, whole run")
     withheld: dict[str, str] = Field(default_factory=dict,

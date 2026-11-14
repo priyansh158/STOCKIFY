@@ -12,7 +12,7 @@ import {
   COMPARE_MAX, COMPARE_MIN, compareIds, dayNumber, getComparison, runLabels, sentenceOrDash, valuesDiffer,
 } from "@/lib/research";
 import type { CompareDiffDTO, CompareMetricDTO, CompareSeriesDTO, ComparisonDTO } from "@/lib/types";
-import { strategyName } from "@/lib/runView";
+import { nameWords } from "@/lib/names";
 import { labelText } from "../ui";
 import CompareCharts from "./Charts";
 
@@ -39,38 +39,8 @@ function num(v: number | null, kind: string, signed = false): string {
   return Math.round(v).toLocaleString("en-IN");
 }
 
-/** Raw field names of the manifest diff, in the words of the screen. */
-function fieldWords(field: string): string {
-  const fixed: Record<string, string> = {
-    "strategy.ref": "Strategy",
-    fill_model: "Fill model",
-    "margin.model": "Margin model",
-    config_sha256: "All settings, fingerprint",
-    bundle_sha256: "Data bundle, fingerprint",
-    packs_sha256: "Event packs, fingerprint",
-    engine_build_id: "Engine build",
-  };
-  if (fixed[field]) return fixed[field];
-  if (field.startsWith("strategy.params.")) return `Setting: ${field.slice("strategy.params.".length)}`;
-  return field;
-}
-
-/** A stored setting such as {"kind":"bar"} in words: just the kind when that is all there is, else key = value pairs. Not JSON: as it came. */
-function settingWords(v: string): string {
-  if (!v.startsWith("{")) return v;
-  try {
-    const o: unknown = JSON.parse(v);
-    if (o === null || typeof o !== "object" || Array.isArray(o)) return v;
-    const e = Object.entries(o as Record<string, unknown>);
-    if (e.length === 1 && e[0][0] === "kind") return String(e[0][1]);
-    return e.map(([k, x]) => `${k} = ${typeof x === "string" ? x : JSON.stringify(x)}`).join(", ");
-  } catch {
-    return v;
-  }
-}
-
 /** A long hex fingerprint is cut to its first 12 characters (the whole one is the hover text); anything else in words. */
-function Value({ v, field }: { v: string | null; field?: string }) {
+function Value({ v, shown, field }: { v: string | null; shown: string | null; field?: string }) {
   if (v === null || v === "") return <span className="stk-label">not recorded</span>;
   if (/^[0-9a-f]{32,}$/i.test(v)) {
     // the short form is for the eye; the whole value is in the text for screen readers, selection and copy
@@ -81,10 +51,10 @@ function Value({ v, field }: { v: string | null; field?: string }) {
       </span>
     );
   }
-  // the strategy is shown by its name, as the run page and the list do, not by its import path
+  // the server's words for the value (a strategy by its name, a setting in plain words); the stored value is the hover
   return (
-    <span className="stk-cmp-mono" title={field === "strategy.ref" ? v : undefined}>
-      {field === "strategy.ref" ? strategyName(v) : settingWords(v)}
+    <span title={shown !== null && shown !== v ? `Saved as ${v}` : undefined} data-field={field}>
+      {shown ?? v}
     </span>
   );
 }
@@ -142,11 +112,11 @@ function DiffTable({ rows, labels, caption }: { rows: CompareDiffDTO[]; labels: 
     <Table caption={caption} head={[{ label: "What" }, { label: "Across the runs" }, ...labels.map((l) => ({ label: l }))]}>
       {rows.map((r) => (
         <tr key={r.field}>
-          <td data-wrap>{fieldWords(r.field)}</td>
+          <td data-wrap title={r.field}>{r.label || r.field}</td>
           <Verdict differs={r.differs} />
           {r.values.map((v, i) => (
             <td key={labels[i]} data-wrap data-differs={r.differs ? "" : undefined}>
-              <Value v={v} field={r.field} />
+              <Value v={v} shown={r.shown?.[i] ?? null} field={r.field} />
             </td>
           ))}
         </tr>
@@ -210,7 +180,7 @@ export default async function ComparePage({ searchParams }: { searchParams: Prom
   }
 
   const c = got.data;
-  const labels = runLabels(c.names, c.run_ids);
+  const labels = runLabels(c.names.map((n, i) => (n === c.run_ids[i] ? n : nameWords(n))), c.run_ids);
   const diffs = c.manifest_diff.filter((d) => d.differs);
   const same = c.manifest_diff.filter((d) => !d.differs);
   const labelRows = Object.entries(c.labels);

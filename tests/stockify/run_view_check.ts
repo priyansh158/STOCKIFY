@@ -18,10 +18,6 @@ const chart = await import(pathToFileURL(resolve(root, "chart.ts")).href);
 const fill = (o: object) => ({ fill_id: 1, order_id: 1, t_ns: 1, t_ist: "2026-10-05T19:00:00+05:30", instrument_id: 1, side: "SELL", qty: 65,
   price_paise: 100, note: "", tag: "", evidence: "", at_close: false, ...o });
 const out: Record<string, unknown> = {};
-out.names = [
-  "stockify.strategies._margin_watch:MarginWatch", "stockify.strategies.sma_cross:SmaCross", "sma_cross:SmaCross",
-  "stockify.strategies.__:Odd", null, "",
-].map((r) => v.strategyName(r as string | null));
 out.close = v.fillWhen(fill({ at_close: true }));
 // the same stamp on a fill that is not a close model reads as a time, whatever the clock says
 out.intraday = v.fillWhen(fill({ at_close: false }));

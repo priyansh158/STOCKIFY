@@ -16,6 +16,7 @@ from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 class OpeningRangeBreakout(Strategy):
     DISPLAY_NAME = "Opening Range Breakout"   # what the UI shows (stockify.display); the catalogue test fails without one
+    DESCRIPTION = 'Buys when price breaks above the high of the first minutes of the day (or sells short below the low), with a stop on the other side, and exits at a set time.'   # one plain sentence for the New test form (the module docstring is for developers)
     BAR_INTERVAL_S = 60              # the one bar interval it subscribes to (the chart reads it; the C++ twin orb_cpp uses 60 too)
     closed = False                      # the day's position is closed (or the time exit passed): no more range lines
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).

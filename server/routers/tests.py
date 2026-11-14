@@ -299,6 +299,7 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     metrics, withheld = figures.present(_json(row.get("metrics_json"), {}))    # one rule for what may be shown (D-135)
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
                             metrics=metrics, manifest=manifest,
+                            manifest_labels={k: display.field_label(k) for k in (manifest or {})},
                             fill_count=fill_count, cost_totals=cost_totals, withheld=withheld)
 
 

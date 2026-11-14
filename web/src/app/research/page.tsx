@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { SWEEP_COMMAND, WALKFORWARD_COMMAND } from "@/lib/commands";
 import { istWhenEpoch } from "@/lib/format";
+import { nameWords } from "@/lib/names";
 import { familyHref, getFamilies, getJobs, getResearchCounts, jobHref, listCapNote } from "@/lib/research";
 import type { FamilySummaryDTO, ResearchJobDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Table } from "@/components/ui";
@@ -48,8 +49,7 @@ function Families({ rows }: { rows: FamilySummaryDTO[] }) {
       {rows.map((f) => (
         <tr key={f.family_id}>
           <th scope="row" data-wrap>
-            <Link href={familyHref(f.family_id)}>{f.description?.trim() || f.family_id}</Link>
-            {f.description?.trim() && <div className="stk-label">{f.family_id}</div>}
+            <Link href={familyHref(f.family_id)} title={f.family_id}>{f.title || f.description?.trim() || nameWords(f.family_id)}</Link>
             {f.n_other_runs > 0 && <div className="stk-label">and {plural(f.n_other_runs, "other run", "other runs")}</div>}
           </th>
           <td className="num">{f.n_trials.toLocaleString("en-IN")}</td>
@@ -73,11 +73,11 @@ function Jobs({ caption, rows }: { caption: string; rows: ResearchJobDTO[] }) {
     <Table caption={caption} head={[{ label: "Name" }, { label: "State" }, { label: "Started (IST)" }]}>
       {rows.map((j) => {
         const href = jobHref(j.kind, j.job_id);
-        const name = j.name?.trim() || j.job_id;
+        const name = nameWords(j.name) || j.job_id;
         return (
           <tr key={j.job_id}>
             <th scope="row" data-wrap>
-              {href ? <Link href={href}>{name}</Link> : name}
+              {href ? <Link href={href} title={j.name ? `Saved as ${j.name}` : undefined}>{name}</Link> : name}
             </th>
             <td data-wrap>
               <Chip tone={statusTone(j.status)}>{j.plain}</Chip>

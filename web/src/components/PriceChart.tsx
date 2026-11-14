@@ -682,7 +682,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
                 style={{ borderTopColor: `var(${lineToken(i)})`, borderTopStyle: DASH_CSS[lineDash(i)] }}
                 aria-hidden
               />
-              {p.name}
+              {p.label || p.name}
               {p.kind === "level" ? " (drawn in a pane below)" : ""}
             </li>
           ))}
@@ -702,7 +702,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
             {card.lines.map((l) => (
               <div key={l.label}>
                 <dt>{l.label}</dt>
-                <dd className="num">{l.code ? <code>{l.value}</code> : l.value}</dd>
+                <dd className="num" title={l.hint}>{l.code ? <code>{l.value}</code> : l.value}</dd>
               </div>
             ))}
             {card.pnl && (

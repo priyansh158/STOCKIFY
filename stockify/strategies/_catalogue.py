@@ -40,6 +40,10 @@ _REF = re.compile(r"^stockify\.strategies\.(?!_)\w+:\w+$")     # a non-underscor
 CPP_DISPLAY_NAMES = {"sma_cross_cpp": "SMA Crossover (C++)", "orb_cpp": "Opening Range Breakout (C++)"}
 
 
+_PY_TWIN = {"sma_cross_cpp": "stockify.strategies.sma_cross:SmaCross",
+            "orb_cpp": "stockify.strategies.opening_range_breakout:OpeningRangeBreakout"}
+
+
 def _cpp_params() -> dict[str, list[dict]]:
     from stockify.strategies.opening_range_breakout import OpeningRangeBreakout
     from stockify.strategies.sma_cross import SmaCross
@@ -65,7 +69,7 @@ def python_strategies() -> list[dict]:
             ref = f"{module.__name__}:{cls_name}"
             S.load(ref)  # the A2 §4.4 source check
             out.append({"kind": "python", "ref": ref, "name": info.name, "display_name": display_name_of("python", ref),
-                        "doc": _first_line(module.__doc__) or _first_line(cls.__doc__),
+                        "doc": getattr(cls, "DESCRIPTION", "") or _first_line(module.__doc__) or _first_line(cls.__doc__),
                         "params": list(getattr(cls, "PARAMS", []))})
     return sorted(out, key=lambda s: s["ref"])
 
@@ -79,7 +83,8 @@ def cpp_strategies() -> list[dict]:
         return []
     known = _cpp_params()
     return [{"kind": "cpp", "ref": name, "name": name, "display_name": display_name_of("cpp", name),
-             "doc": "C++ port", "params": list(known[name])}
+             "doc": f"The same strategy as {display_name_of('python', _PY_TWIN[name])}, run by the C++ engine.",
+             "params": list(known[name])}
             for name in engine.load().strategies() if name in known]
 
 

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { parseRupeesToPaise } from "@/lib/format";
+import { suggestedName, runNameSlug, wordsOf, RUN_NAME_MAX } from "@/lib/names";
 import { coerceParam, validateParams } from "@/lib/params";
 import { createTest } from "@/lib/tests";
 import type { Strategy, StrategyParam } from "@/lib/types";
@@ -48,10 +49,13 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
   const [basis, setBasis] = useState<"raw" | "adjusted">("adjusted");
   const [capital, setCapital] = useState("10,00,000");
   const [seed, setSeed] = useState("42");
+  const [name, setName] = useState("");
   const [allowUnverified, setAllowUnverified] = useState(true);
   const [problems, setProblems] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const bad = useMemo(() => new Set(problems.map((p) => p.split(": ")[0].replace(/^strategy\.params\./, ""))), [problems]);
+
+  const suggested = suggestedName(strategy?.display_name ?? "", symbols.trim() ? symbols : `NSE:${chainUnderlying.trim().toUpperCase()}`, from) || "Test";
 
   const params = useMemo(() => {
     const out: Record<string, unknown> = {};
@@ -99,11 +103,11 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
     if (source === "day") spec.interval = "day";
     if (source === "minute") spec.interval = "minute";
     if (instruments.length) spec.instruments = instruments;
-    const first = symbols.split(",")[0]?.trim().split(":").pop()?.toLowerCase() || chainUnderlying.toLowerCase() || "test";
+    // Any text may be typed as the name; the lab keeps it as a safe folder name (letters, digits, "_"), and the pages show it as words.
     return {
       config: {
         schema: "stockify.run/1",
-        name: `${strategy.name}_${first}`.replace(/[^a-z0-9_]+/gi, "_"),
+        name: runNameSlug(name.trim() || suggested),
         strategy: { kind: strategy.kind, ref: strategy.ref, params },
         data: { packs: [{ spec }] },
         price_basis: basis,
@@ -158,7 +162,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
             <select className={inputClass} value={ref} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
               {strategies.map((s) => (
                 <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
-                  {s.name}{s.kind === "cpp" ? " (C++)" : ""}
+                  {s.display_name}
                 </option>
               ))}
             </select>
@@ -166,7 +170,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
 
           {(strategy?.params ?? []).map((p) => {
             const v = values[p.name] ?? defaultText(p);
-            const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
+            const label = `${p.label || wordsOf(p.name)}${p.required ? " *" : ""}`;
             if (p.type === "bool") {
               return (
                 <label key={p.name} className="stk-checkrow">
@@ -188,6 +192,9 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
         </div>
 
         <div className="stk-form">
+          <Field label="Name" help={`Optional. Any text; it is saved with spaces and marks turned into underscores, up to ${RUN_NAME_MAX} characters.`}>
+            <input className={inputClass} value={name} maxLength={RUN_NAME_MAX * 2} placeholder={suggested} aria-label="Name of the test" onChange={(e) => setName(e.target.value)} />
+          </Field>
           <Field label="Market data">
             <select className={inputClass} value={source} onChange={(e) => pickSource(e.target.value as Source)}>
               {SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}

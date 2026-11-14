@@ -12,6 +12,7 @@ from stockify.strategy import Strategy, fmt_qty
 
 class BuyAndHold(Strategy):
     DISPLAY_NAME = "Buy and Hold"   # what the UI shows (stockify.display); the catalogue test fails without one
+    DESCRIPTION = 'Buys once with most of the cash on the first day and holds. The benchmark to compare every other strategy against.'   # one plain sentence for the New test form (the module docstring is for developers)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
         {'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to buy, e.g. NSE:RELIANCE'},

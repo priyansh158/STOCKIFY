@@ -4,18 +4,6 @@
  */
 import type { TestFill } from "./types";
 
-/**
- * The strategy's short name from its ref: "stockify.strategies.sma_cross:SmaCross" gives "sma_cross", the module's name as
- * the strategy catalogue lists it. Leading underscores (a module kept out of the catalogue, such as "_margin_watch") are
- * not part of the name. A ref with nothing usable in the module falls back to the class name, then to the whole ref.
- */
-export function strategyName(ref?: string | null): string {
-  if (!ref) return "—";
-  const [mod, cls] = ref.split(":");
-  const last = (mod.includes(".") ? mod.split(".").pop() : mod) ?? "";
-  return last.replace(/^_+/, "") || cls || ref;
-}
-
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** "2026-10-05" as "5 Oct 2026". */

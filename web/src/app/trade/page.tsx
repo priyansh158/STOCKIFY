@@ -4,6 +4,7 @@ import Link from "next/link";
 import { canStopAll } from "@/lib/stopAll";
 import { useCallback, useEffect, useState } from "react";
 import { istWhen, pct, rupees } from "@/lib/format";
+import { nameWords } from "@/lib/names";
 import { listStrategies } from "@/lib/tests";
 import { getKiteStatus, listSessions, PARITY_HELP, parityText, signedRupees, stopAll, tone } from "@/lib/trade";
 import type { SessionDTO, Strategy } from "@/lib/types";
@@ -19,8 +20,8 @@ function SessionRow({ s }: { s: SessionDTO }) {
   return (
     <tr>
       <td data-wrap>
-        <Link href={`/trade/${encodeURIComponent(s.session_id)}`}>{s.name || s.session_id}</Link>
-        <div className="stk-label">{istWhen(s.created_ist)}</div>
+        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} title={s.name ? `Saved as ${s.name}` : undefined}>{nameWords(s.name) || s.session_id}</Link>
+        <div className="stk-label">{[s.strategy_name, istWhen(s.created_ist)].filter(Boolean).join(" · ")}</div>
       </td>
       <td data-wrap>
         <StatusChip status={s.status} />

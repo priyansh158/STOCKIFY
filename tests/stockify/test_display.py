@@ -97,6 +97,13 @@ class CatalogueNameTests(unittest.TestCase):
             for p in e["params"]:
                 self.assertTrue(p.get("label", "").strip() and "_" not in p["label"], f"{e['ref']}.{p['name']}")
 
+    def test_every_description_is_a_plain_sentence(self):
+        for e in _catalogue.catalogue():
+            doc = e["doc"]
+            self.assertTrue(doc.endswith("."), e["ref"])
+            for bad in ("`", "_", "(M", "bhavcopy", "C++ port"):
+                self.assertNotIn(bad, doc, e["ref"])
+
     def test_the_agreed_names(self):
         by_ref = {e["ref"].split(":")[1]: e["display_name"] for e in _catalogue.python_strategies()}
         self.assertEqual(by_ref, {
