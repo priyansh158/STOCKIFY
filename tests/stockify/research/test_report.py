@@ -13,6 +13,7 @@ from unittest import mock
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
+from stockify import display
 import stockify.store as store
 from stockify import __main__ as cli
 from stockify import paths
@@ -125,7 +126,7 @@ class RunResearchTests(ReportTest):
         self.assertEqual(steady.picked_run_id, "wild")
         self.assertIn(plain.OBJECTIVE_LABELS["net_pnl"], wild.plain["dsr"])
         self.assertIn(plain.OBJECTIVE_LABELS["net_pnl"], steady.plain["dsr"])
-        self.assertIn("wild", steady.plain["dsr"])
+        self.assertIn("Wild", steady.plain["dsr"])
 
     def test_a_runner_up_says_which_run_the_job_picked(self):
         ids = family_of(5)
@@ -135,8 +136,8 @@ class RunResearchTests(ReportTest):
         self.assertGreater(res.rank, 1)
         self.assertFalse(res.is_best)
         self.assertEqual(res.picked_run_id, best.run_id)
-        self.assertIn(best.name, res.plain["dsr"])
         self.assertIn("runner-up", res.plain["dsr"])
+        self.assertIn(display.name_label(best.name), res.plain["dsr"])
 
     def _set_trades(self, run_id: str, trades: int, *, filled: bool | None = None) -> None:
         """`trades` counts closed round trips; `filled` (default: trades > 0) says whether any order was filled, which

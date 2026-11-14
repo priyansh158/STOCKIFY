@@ -18,6 +18,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
+from stockify import display
 from stockify.research import registry
 
 if TYPE_CHECKING:
@@ -225,7 +226,8 @@ def dsr_sentence(n_trials: int, rank: int, dsr: float | None, *, objective: str 
         return f"best of {tries} by {label}, after allowing for luck{scope}: {verdict}{note}"
     head = f"{ordinal(rank)} best of {tries} by {label}"
     if picked_name:
-        name = picked_name if len(picked_name) <= _NAME_LIMIT else picked_name[:_NAME_LIMIT - 3] + "..."
+        words = display.name_label(picked_name) or picked_name      # a name in words, never the stored identifier
+        name = words if len(words) <= _NAME_LIMIT else words[:_NAME_LIMIT - 3] + "..."
         return f"{head}; the job picked {name}, so this is a runner-up"
     return f"{head}, so this is a runner-up"
 

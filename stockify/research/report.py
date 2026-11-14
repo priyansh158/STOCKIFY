@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from decimal import Decimal
 
-from stockify import paths, store
+from stockify import display, paths, store
 from stockify.reporting import figures
 from stockify.research import bootstrap, fileio, pbo, plain, regimes, registry, settings, stats
 from stockify.research.bootstrap import BootstrapResult, Interval
@@ -523,7 +523,7 @@ def run_text(res: RunResearch) -> str:
                      f"{d.n_trials} tries {_annual(d.sr0)}")
     lines.append(f"on its own: {res.plain.get('psr', '-')}")
     if res.picked_name is not None and not res.is_best:
-        lines.append(f"picked by the family's objective ({res.objective}): {res.picked_name} ({res.picked_run_id})")
+        lines.append(f"picked by the family's objective ({res.objective}): {display.name_label(res.picked_name) or res.picked_name} ({res.picked_run_id})")
     for key, label in (("bootstrap_sharpe", "Sharpe a year"), ("bootstrap_mean_return", "mean daily return"),
                        ("bootstrap_max_drawdown", "biggest fall")):
         if key in res.plain:

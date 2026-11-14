@@ -74,9 +74,18 @@ class DsrSentenceTests(unittest.TestCase):
     def test_dsr_sentence_names_the_objective_and_the_picked_run_for_a_runner_up(self):
         s = plain.dsr_sentence(12, 4, 0.4, objective="net_pnl", picked_name="orb-fast")
         self.assertIn("4th best of 12 tries by profit after costs", s)
-        self.assertIn("the job picked orb-fast", s)
+        self.assertIn("the job picked Orb-fast", s)
         self.assertIn("runner-up", s)
         self.assertNotIn("after allowing for luck", s)
+
+    def test_the_picked_run_is_named_in_words_not_as_its_stored_name(self):
+        """RW 7.1: a person never sees cmp_eod_straddle_flat in a sentence."""
+        s = plain.dsr_sentence(2, 2, 0.4, picked_name="cmp_eod_straddle_flat")
+        self.assertIn("the job picked Cmp eod straddle flat,", s.replace("EOD", "eod"))
+        self.assertNotIn("_", s)
+        long = plain.dsr_sentence(5, 2, 0.4, picked_name="orb_" + "x" * 80)
+        self.assertNotIn("_", long)
+        self.assertIn("...", long)
 
     def test_runner_up_without_a_picked_name(self):
         s = plain.dsr_sentence(12, 2, 0.4)
