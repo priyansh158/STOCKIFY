@@ -13,6 +13,6 @@ registerHooks({
 });
 const L = await import(pathToFileURL(resolve(import.meta.dirname, "..", "..", "web", "src", "lib", "labels.ts")).href);
 const labels: string[] = JSON.parse(process.argv[2]);
-const out: Record<string, { text: string; warn: boolean; meaning: string }> = {};
-for (const l of labels) out[l] = { ...L.labelText(l), meaning: L.labelMeaning(l) };
+const out: Record<string, { text: string; warn: boolean; meaning: string; known: boolean }> = {};
+for (const l of labels) out[l] = { ...L.labelText(l), known: L.labelKnown(l), meaning: L.labelMeaning(l) };
 process.stdout.write(JSON.stringify({ labels: out, step: L.marginStep("B1_span_nse_elm"), weird: L.marginStep("B9_new_step") }));

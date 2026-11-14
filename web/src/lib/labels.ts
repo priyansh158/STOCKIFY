@@ -105,7 +105,12 @@ function otherLabel(label: string): { text: string; warn: boolean; detail: strin
   return null;
 }
 
-function labelTextRaw(label: string): { text: string; warn: boolean } {
+/** True when the label has its own wording here; false when it would only get the generic words-from-the-code fallback. */
+export function labelKnown(label: string): boolean {
+  return labelTextRaw(label).known;
+}
+
+function labelTextRaw(label: string): { text: string; warn: boolean; known: boolean } {
   const fixed: Record<string, { text: string; warn: boolean }> = {
     "fill:approximate": { text: FILL_WORDS.approximate, warn: true },
     eod_approx: { text: "fills at the day's close, approximate", warn: true },
@@ -119,22 +124,22 @@ function labelTextRaw(label: string): { text: string; warn: boolean } {
     delivery_margin_approx: { text: "delivery margin approximate", warn: true },
     short_delivery: { text: "short stock delivered", warn: true },
   };
-  if (fixed[label]) return fixed[label];
+  if (fixed[label]) return { ...fixed[label], known: true };
   const ml = marginLabel(label);
-  if (ml) return { text: ml.text, warn: ml.warn };
+  if (ml) return { text: ml.text, warn: ml.warn, known: true };
   if (label.startsWith("margin_spanlite:")) {
     const calib = label.slice("margin_spanlite:".length);
-    if (calib === "none") return { text: "no SPAN-like settings needed", warn: false };
+    if (calib === "none") return { text: "no SPAN-like settings needed", warn: false, known: true };
     return { text: calib.includes("placeholder") ? "margin settings not yet calibrated" : `margin settings: ${wordsOf(calib).toLowerCase()}`,
-             warn: calib.includes("placeholder") };
+             warn: calib.includes("placeholder"), known: true };
   }
   if (label.startsWith("fill:")) {
     const model = label.slice(5);
-    return { text: FILL_WORDS[model] ?? `fills: ${wordsOf(model).toLowerCase()}`, warn: false };
+    return { text: FILL_WORDS[model] ?? `fills: ${wordsOf(model).toLowerCase()}`, warn: false, known: model in FILL_WORDS };
   }
   const other = otherLabel(label);
-  if (other) return { text: other.text, warn: other.warn };
-  return { text: wordsOf(label), warn: false };
+  if (other) return { text: other.text, warn: other.warn, known: true };
+  return { text: wordsOf(label), warn: false, known: false };
 }
 
 const FILL_MEANING: Record<string, string> = {
