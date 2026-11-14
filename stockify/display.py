@@ -120,7 +120,7 @@ VALUE_WORDS: dict[str, dict[str, str]] = {
     "fill_model.kind": {"bar": "From bars", "eod_close": "At the day's close (end-of-day files)",
                         "snapshot_quote": "From quotes (ticks)", "snapshot_ltp": "From the last price (ticks, approximate)"},
     "fill_model.limit_touch_policy": {"through": "trades through the limit", "touch": "touches the limit"},
-    "fill_model.slippage.kind": {"none": "None", "fixed_ticks": "A fixed number of ticks", "random_ticks": "A random number of ticks",
+    "fill_model.slippage.kind": {"none": "none", "fixed_ticks": "A fixed number of ticks", "random_ticks": "A random number of ticks",
                                  "bps": "Basis points"},
     "margin.model": {"flat": "Flat percentage (approximate)", "spanlite": "SPAN-like estimate",
                      "span_exact": "NSE SPAN files only", "staircase": "Best available, SPAN files first",
@@ -131,6 +131,8 @@ VALUE_WORDS: dict[str, dict[str, str]] = {
     "policies.cas": {"none": "Not used"},
 }
 _CODE_WORD = re.compile(r"[a-z][a-z0-9_]*")
+# a hash or a build id (hex with a digit in it): an identifier, never sentence-cased or humanized
+_HEX_ID = re.compile(r"(?=[0-9a-f]*[0-9])[0-9a-f]{7,}")
 
 
 def field_label(field: str, param_labels: dict[str, str] | None = None) -> str:
@@ -151,6 +153,8 @@ def _scalar_text(field: str, v: object) -> str:
             return words[v]
         if v in ("true", "false"):
             return "Yes" if v == "true" else "No"
+        if _HEX_ID.fullmatch(v):
+            return v
         if _CODE_WORD.fullmatch(v) and not v.isdigit():
             return humanize(v)
         return v
@@ -196,9 +200,14 @@ def setting_text(field: str, raw: object) -> str | None:
     if isinstance(raw, dict):
         if list(raw) == ["kind"]:
             return _scalar_text(f"{field}.kind", raw["kind"])
+        if field.endswith("slippage") and raw.get("kind") == "bps" and raw.get("bp") is not None:
+            return f"{raw['bp']} basis points"          # the bp and its decimal twin say the same thing once
         parts = []
         for k, v in raw.items():
             sub = f"{field}.{k}"
+            if k.endswith("_ppm") and k[:-4] in raw:
+                continue                                 # the same share again in parts per million: shown once
+
             if k == "kind":
                 parts.insert(0, _scalar_text(sub, v))
                 continue

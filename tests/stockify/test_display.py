@@ -74,7 +74,20 @@ class SettingsAndFamilyTests(unittest.TestCase):
         self.assertEqual(display.setting_text("strategy.params.short", "true"), "Yes")
         self.assertIsNone(display.setting_text("seed", None))
         self.assertEqual(display.setting_text("fill_model", '{"kind": "bar", "half_spread_ticks": 1, "slippage": {"kind": "none"}}'),
-                         "From bars; Half the spread (ticks): 1; Slippage: None")
+                         "From bars; Half the spread (ticks): 1; Slippage: none")
+
+    def test_settings_read_as_words_not_code(self):
+        """D-148 finish review: the integer duplicates (_ppm) are not shown, bps slippage reads as its basis points,
+        and a hash or build id is never sentence-cased."""
+        fm = ('{"depth_take":"0.50","depth_take_ppm":500000,"kind":"bar","participation":"0.10",'
+              '"participation_ppm":100000,"slippage":{"bp":5,"kind":"bps","x":"0.0005"}}')
+        text = display.setting_text("fill_model", fm)
+        self.assertNotIn("ppm", text)
+        self.assertIn("Slippage: 5 basis points", text)
+        self.assertNotIn("Bp:", text)
+        for v in ("afe96bec51461c745d242e264beadd5b96745bb6b85cc4524cdfde1bc77d97cf", "ad489cb04eaf"):
+            self.assertEqual(display.setting_text("engine_build_id", v), v)
+        self.assertEqual(display.setting_text("costs.broker", "zerodha"), "Zerodha")   # a real word still reads as one
 
     def test_family_titles(self):
         self.assertEqual(display.family_title("sma_cross/bars-day-RELIANCE/sharpe"),

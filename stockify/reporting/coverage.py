@@ -85,8 +85,8 @@ def _ok_pct() -> float:
 
 def datasets() -> list[dict[str, str]]:
     known = loader.load_json("sources.json")["datasets"]
-    out = [{"key": "recorder_full", "label": "Recorder, FULL mode coverage (%)"},
-           {"key": "recorder_quote", "label": "Recorder, QUOTE mode coverage (%)"},
+    out = [{"key": "recorder_full", "label": "Recorder coverage, full mode (%)"},
+           {"key": "recorder_quote", "label": "Recorder coverage, quote mode (%)"},
            {"key": "archive", "label": "Tick archive"}]
     out += [{"key": key, "label": label} for name, (key, label, _seg) in NSE_LABELS.items() if name in known]
     return out

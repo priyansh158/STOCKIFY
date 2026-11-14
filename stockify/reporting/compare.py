@@ -144,6 +144,11 @@ def _param_labels(cfgs: list[dict]) -> dict[str, str]:
     for c in cfgs:
         s = c.get("strategy") if isinstance(c.get("strategy"), dict) else {}
         schema = _catalogue.schema_of(s.get("kind"), s.get("ref")) if s else None
+        inner = (s.get("params") or {}).get("inner_ref") if isinstance(s.get("params"), dict) else None
+        if isinstance(inner, str) and inner:
+            # a wrapper (Margin Watch) passes its strategy's own params through: label them from that strategy
+            out.setdefault("inner_ref", "Strategy it runs")
+            schema = (schema or []) + (_catalogue.schema_of("python", inner) or [])
         for p in schema or []:
             if isinstance(p, dict) and p.get("label"):
                 out.setdefault(p["name"], p["label"])
@@ -160,6 +165,9 @@ def _shown(name: str, values: list[str | None], cfgs: list[dict]) -> list[str | 
             kind = (c.get("strategy") or {}).get("kind") if isinstance(c.get("strategy"), dict) else None
             out.append(None if v is None else _catalogue.display_name_of(kind or "python", v))
         return out
+    if name == "strategy.params.inner_ref":                   # the strategy a wrapper runs, by its name
+        from stockify.strategies import _catalogue
+        return [None if v is None else _catalogue.display_name_of("python", v) for v in values]
     return [display.setting_text(name, v) for v in values]
 
 

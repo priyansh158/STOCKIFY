@@ -43,6 +43,17 @@ class CompareBase(SandboxedDBTest):
 
 
 class CompareLogicTests(CompareBase):
+    def test_a_wrapped_strategy_reads_by_its_name_and_its_params_by_their_labels(self):
+        """D-148: Margin Watch's inner_ref is shown as the strategy's display name (the raw ref stays in `values`),
+        and the params it passes through are labelled from that strategy's own schema."""
+        ref = "stockify.strategies.eod_short_straddle:EodShortStraddle"
+        cfgs = [{"strategy": {"kind": "python", "ref": "stockify.strategies._margin_watch:MarginWatch",
+                              "params": {"inner_ref": ref, "protection_bp": 5000}}}, {"strategy": {}}]
+        self.assertEqual(rc._shown("strategy.params.inner_ref", [ref, None], cfgs), ["End-of-Day Short Straddle", None])
+        labels = rc._param_labels(cfgs)
+        self.assertEqual(labels["inner_ref"], "Strategy it runs")
+        self.assertEqual(labels["protection_bp"], "Price band (basis points)")
+
     def test_two_to_six_runs_only(self):
         for ids in (["a"], [], ["a", "a"], list("abcdefg")):
             with self.assertRaisesRegex(ValueError, "compare 2 to 6 runs"):
