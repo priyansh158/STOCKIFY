@@ -215,8 +215,8 @@ class ResearchHelperChecks(unittest.TestCase):
             {"when_ns": 1_700_000_000_000_000_000, "run_id": "r1", "reason": "<b>final</b> check"},
             {"when_ns": None, "run_id": None, "reason": ""}])
         self.assertEqual(self.answers["sessions"], [
-            {"session_id": "s1", "name": "n", "status": "RUNNING", "created_ns": 5},
-            {"session_id": "s2", "name": None, "status": None, "created_ns": None}])
+            {"session_id": "s1", "name": "n", "name_label": None, "status": "RUNNING", "created_ns": 5},
+            {"session_id": "s2", "name": None, "name_label": None, "status": None, "created_ns": None}])
 
     def test_the_family_fetch_path_keeps_slashes_and_encodes_everything_else(self):
         self.assertEqual(self.answers["apiPath"], [
