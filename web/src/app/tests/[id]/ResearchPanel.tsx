@@ -136,6 +136,8 @@ function Headline({ r }: { r: RunResearchDTO }) {
 function Swing({ r }: { r: RunResearchDTO }) {
   const p = r.plain;
   const b = r.bootstrap;
+  const known = (iv: { point: number | null; lo: number | null; hi: number | null }) => iv.point !== null && iv.lo !== null && iv.hi !== null;
+  const anyKnown = b !== null && [b.sharpe, b.mean_daily_return, b.max_drawdown].some(known);
   return (
     <div className="stk-trust-block">
       <h3>How far the numbers could swing</h3>
@@ -144,11 +146,13 @@ function Swing({ r }: { r: RunResearchDTO }) {
       ) : (
         <>
           {!b.enough_days && <p className="stk-warn">This run has only {b.n_days === 1 ? "1 day" : `${b.n_days} days`}, too few for a reliable range.</p>}
-          <div className="stk-trust-intervals">
+          {/* no interval could be estimated: the line above says why once, instead of three empty charts saying it again */}
+          {!anyKnown && b.enough_days && <p className="stk-muted">No range could be estimated for this run.</p>}
+          {anyKnown && <div className="stk-trust-intervals">
             <IntervalRow name="Sharpe" iv={b.sharpe} format={(n) => n.toFixed(2)} text={p.bootstrap_sharpe} />
             <IntervalRow name="Average day" iv={b.mean_daily_return} format={(n) => pct(n, true)} text={p.bootstrap_mean_return} />
             <IntervalRow name="Worst drop" iv={b.max_drawdown} format={(n) => pct(n)} text={p.bootstrap_max_drawdown} />
-          </div>
+          </div>}
         </>
       )}
     </div>
