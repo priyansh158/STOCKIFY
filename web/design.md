@@ -32,10 +32,15 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 - Money is the API's paise shown as rupees by `src/lib/format.ts` (`Intl.NumberFormat("en-IN")`, ₹). Plain words everywhere: no raw codes
   (a status, a parity result, a margin step) reach the screen; map them in `src/lib/trade.ts` or `src/app/tests/ui.tsx`.
 - Gains are `--color-up`, losses `--color-down`; colour is never the only signal (the sign or a word is shown too).
-- Tables before cards. One container (`--container`, 1360 px), one gap scale. A card never sits inside a card.
-- Every region that loads data has four states: loading (a `Skeleton` in the shape of what comes), empty (`Empty`, with the next action),
-  error (a red `Panel`), full. Show only real API data; no placeholder numbers.
-- No control anywhere places a real order. The footer says so on every page.
+- Tables before cards. One container (`--container`, 1360 px), one gap scale. A card never sits inside a card: a table frame, chart
+  stage, notice or panel placed inside a `Panel` drops its own border (globals.css does this; a notice keeps its tint as a well).
+- Every region that loads data has four states: loading (a `Skeleton` in the shape of what comes), empty (`Empty`: one left-aligned
+  line at the reading measure, with the next action), error (a red `Panel`), full. Show only real API data; no placeholder numbers.
+- Long state grids (data coverage) and caveat lists in a table are a ledger, not a wall of boxes: the state is its glyph and word in
+  the state's colour, with no frame or fill. The full chip (frame and tint) is for a page's own head and single states.
+- Mono is for figures: a value that has no digit in it ("too short to say") is set in the body face, and so are the words under a figure.
+- No control anywhere places a real order. There is no site footer (owner, D-141); the paper-trading pages say "no real orders" where
+  orders appear, and the chart keeps the TradingView attribution logo.
 
 ## Controls
 - Primary: filled accent, accent-ink text, 6 px radius, 36 px high with a 44 px hit target. One primary per screen region.
