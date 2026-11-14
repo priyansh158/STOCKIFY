@@ -138,6 +138,10 @@ class RunDaemonTests(unittest.TestCase):
         patcher = patch.object(nse_files, "fetch", side_effect=RuntimeError("offline"))
         patcher.start()
         self.addCleanup(patcher.stop)                                # nse_fetch is a job boundary too
+        from stockify import backup
+        patcher = patch.object(backup, "run", side_effect=AssertionError("a test must never back up to the real home"))
+        patcher.start()
+        self.addCleanup(patcher.stop)           # catch-up runs the nightly backup: storage.json's target is ~/STOCKIFY-backup
 
     def run_from(self, start_ns: int, record_code: int = exitcodes.OK):
         clock = ManualClock(start_ns)
