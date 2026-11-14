@@ -112,6 +112,11 @@ export interface DataQualityResponse {
 
 export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" | "underlying";
 
+export interface ParamChoice {
+  value: unknown;
+  label: string;
+}
+
 export interface StrategyParam {
   name: string;
   label: string;
@@ -119,6 +124,8 @@ export interface StrategyParam {
   default?: unknown;
   required: boolean;
   help: string;
+  choices: ParamChoice[];
+  percent: boolean;
 }
 
 export interface Strategy {

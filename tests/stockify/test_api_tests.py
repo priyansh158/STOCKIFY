@@ -104,7 +104,11 @@ class CatalogueAndRoutesTests(ApiTestBase):
         sma = next(s for s in r.json() if s["ref"] == "stockify.strategies.sma_cross:SmaCross")
         self.assertEqual(sma["params"][0], {"name": "symbol", "label": "Stock or future", "type": "symbol",
                                             "default": None, "required": True,
-                                            "help": "what to trade, e.g. NSE:RELIANCE"})
+                                            "help": "What to trade, e.g. NSE:RELIANCE.",
+                                            "choices": [], "percent": False})
+        bar = next(p for p in sma["params"] if p["name"] == "interval_s")
+        self.assertEqual((bar["label"], bar["choices"][0], bar["choices"][-1]),
+                         ("Bar length", {"value": 60, "label": "1 minute"}, {"value": 86400, "label": "1 day"}))
 
     def test_fixed_paths_are_not_ids(self):
         r = self.client.get("/api/tests/compare")

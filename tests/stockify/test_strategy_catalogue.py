@@ -28,7 +28,7 @@ class CatalogueTests(unittest.TestCase):
             names = [p["name"] for p in s["params"]]
             self.assertEqual(len(names), len(set(names)), s["ref"])
             for p in s["params"]:
-                self.assertEqual(set(p) - {"min", "max", "unit"}, {"name", "label", "type", "default", "required", "help"},
+                self.assertEqual(set(p) - {"min", "max", "unit", "choices", "percent"}, {"name", "label", "type", "default", "required", "help"},
                                  (s["ref"], p))
                 self.assertIn(p["type"], C.PARAM_TYPES)
                 for bound in ("min", "max"):           # REG 5.3: a bound is a decimal string and says its unit
@@ -132,6 +132,43 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(C.validate_params(whole, {"n": "10"}), [])
         self.assertEqual(C.validate_params(whole, {"n": True}), [])
         self.assertEqual(C.validate_params(whole, {"n": 11.0}), ["n: 11.0 is above 10: it is a count"])
+
+    def test_help_texts_are_sentences(self):
+        """RW 7.2: a help line starts with a capital letter and ends with a full stop, whatever the strategy."""
+        for s in C.python_strategies():
+            for p in s["params"]:
+                h = p["help"]
+                self.assertTrue(h[:1].isupper() or h[:1].isdigit(), (s["ref"], p["name"], h))
+                self.assertTrue(h.endswith("."), (s["ref"], p["name"], h))
+
+    def test_bar_length_is_a_choice_list_of_the_supported_intervals(self):
+        """RW 7.2: `interval_s` offers plain labels; the stored value stays seconds and only the data layer's
+        intervals are offered."""
+        from stockify.data.packs import INTERVAL_S
+        seen = 0
+        for s in C.python_strategies():
+            for p in s["params"]:
+                if p["name"] != "interval_s":
+                    continue
+                seen += 1
+                self.assertEqual(p["label"], "Bar length", s["ref"])
+                values = [c["value"] for c in p["choices"]]
+                self.assertEqual(values, sorted(INTERVAL_S.values()))
+                self.assertIn(p["default"], values)
+                labels = {c["value"]: c["label"] for c in p["choices"]}
+                self.assertEqual((labels[60], labels[300], labels[3600], labels[86400]),
+                                 ("1 minute", "5 minutes", "1 hour", "1 day"))
+                self.assertEqual(C.validate_params(s["params"] if False else [p], {"interval_s": 300}), [])
+                self.assertEqual(C.validate_params([p], {"interval_s": "900"}), [])
+                self.assertEqual(C.validate_params([p], {"interval_s": 7}),
+                                 ["interval_s: 7 is not one of 60, 180, 300, 600, 900, 1800, 3600, 86400"])
+        self.assertGreaterEqual(seen, 2)
+
+    def test_invest_is_shown_as_a_percentage_but_stored_as_a_fraction(self):
+        from stockify.strategies.buy_and_hold import BuyAndHold
+        p = {q["name"]: q for q in BuyAndHold.PARAMS}["invest"]
+        self.assertTrue(p["percent"])
+        self.assertEqual(p["default"], "0.95")
 
     def test_schema_of_finds_a_catalogue_strategy_without_listing_the_catalogue(self):
         """REG 5.3: the lookup every run config passes through; it never loads the engine."""

@@ -6,7 +6,9 @@ import { useEffect, useMemo, useState } from "react";
 import JobStatus from "@/components/JobStatus";
 import { Field, Panel } from "@/components/ui";
 import { getResearchLimits, startFailure, startSweep, useJob } from "@/lib/jobs";
+import { wordsOf } from "@/lib/names";
 import { jobHref } from "@/lib/researchHelpers";
+import { fractionToPercentText } from "@/lib/params";
 import { OBJECTIVE_CHOICES, boolChoice, parseValues, planSweep, triesWords } from "@/lib/sweepForm";
 import { getTest } from "@/lib/tests";
 import type { ResearchLimitsDTO, Strategy, TestRun, TestRunDetail } from "@/lib/types";
@@ -163,8 +165,9 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
             <div className="stk-sweep-grid">
               {strategy.params.map((p) => {
                 const now = current[p.name];
-                const nowText = now === undefined || now === null ? "not set" : String(now);
-                const label = p.label || p.name;
+                const nowChoice = p.choices?.find((c) => String(c.value) === String(now ?? p.default));
+                const nowText = now === undefined || now === null ? "not set" : nowChoice ? nowChoice.label : p.percent ? `${now} (${fractionToPercentText(String(now))} %)` : String(now);
+                const label = p.label || wordsOf(p.name);
                 if (p.type === "bool") {
                   return (
                     <Field key={p.name} label={label} help={`Now: ${now === undefined ? (p.default ? "yes" : "no") : now ? "yes" : "no"}.`}>
@@ -177,7 +180,13 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
                     </Field>
                   );
                 }
-                const hint = p.type === "int" || p.type === "decimal" ? "Now: " + nowText + ". Try values like 5, 10, 15 or a range like 5 to 30 by 5." : `Now: ${nowText}. Try values separated by commas.`;
+                const hint = p.choices?.length
+                  ? `Now: ${nowText}. Try several, separated by commas: ${p.choices.map((c) => `${String(c.value)} (${c.label})`).join(", ")}.`
+                  : p.percent
+                    ? `Now: ${nowText}. Type fractions such as 0.5, 0.75, 0.95 (0.95 is 95 %).`
+                    : p.type === "int" || p.type === "decimal"
+                      ? `Now: ${nowText}. Try values like 5, 10, 15 or a range like 5 to 30 by 5.`
+                      : `Now: ${nowText}. Try values separated by commas.`;
                 return (
                   <div key={p.name} className="stk-fieldwrap">
                     <Field label={label} help={bad.get(p.name) ? undefined : hint}>
@@ -186,7 +195,7 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
                         value={texts[p.name] ?? ""}
                         aria-invalid={bad.has(p.name)}
                         aria-describedby={bad.has(p.name) ? `err-${p.name}` : undefined}
-                        placeholder="keep"
+                        placeholder="Keep as it is"
                         onChange={(e) => setTexts({ ...texts, [p.name]: e.target.value })}
                       />
                     </Field>

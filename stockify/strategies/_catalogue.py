@@ -13,6 +13,9 @@ form's plain name for it), with `type` one of
 PARAM_TYPES. Values are checked the way the strategies read them (`int(...)`, `bool(...)`, `Decimal(str(...))`).
 An `int` or `decimal` entry may also carry `"min"` and/or `"max"` (decimal strings: the smallest and largest value accepted) together with
 `"unit"` (what the number is, with an example); a value outside the bounds is refused and the error states the unit.
+An entry may carry `"choices"`, a list of `{"value", "label"}`: the form shows a list of the labels and stores the
+value, and any other value is refused. A decimal entry may carry `"percent": True`: the form shows the fraction as a
+percentage (0.95 as 95) and stores it unchanged.
 
 `schema_of` is the lookup every run config passes through (stockify.runconfig, REG 5.3): one strategy by its
 ref, without listing the catalogue or loading the engine.
@@ -183,6 +186,19 @@ def _bound_problem(p: dict, v) -> str | None:  # noqa: ANN001
     return None
 
 
+def _choice_problem(p: dict, v) -> str | None:  # noqa: ANN001
+    """A value that is not one of the entry's `choices` (the value already passed `_type_problem`)."""
+    if not p.get("choices"):
+        return None
+    values = [c["value"] for c in p["choices"]]
+    numeric = p["type"] in ("int", "decimal")
+    try:
+        ok = any((Decimal(str(c)) == Decimal(str(v).strip())) if numeric else str(c) == str(v).strip() for c in values)
+    except InvalidOperation:
+        ok = False
+    return None if ok else f"{v!r} is not one of {', '.join(str(c) for c in values)}"
+
+
 def _type_problem(t: str, v) -> str | None:  # noqa: ANN001
     if t == "int":
         if isinstance(v, bool):
@@ -237,7 +253,8 @@ def validate_params(schema: list[dict], params: dict) -> list[str]:
             if p.get("required"):
                 problems.append(f"{p['name']}: required")
             continue
-        why = _type_problem(p["type"], params[p["name"]]) or _bound_problem(p, params[p["name"]])
+        why = (_type_problem(p["type"], params[p["name"]]) or _bound_problem(p, params[p["name"]])
+               or _choice_problem(p, params[p["name"]]))
         if why:
             problems.append(f"{p['name']}: {why}")
     return problems

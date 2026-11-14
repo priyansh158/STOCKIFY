@@ -15,13 +15,13 @@ class SmaCross(Strategy):
     DESCRIPTION = 'Holds the stock while the fast moving average is above the slow one.'   # one plain sentence for the New test form (the module docstring is for developers)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
-        {'name': 'symbol', 'label': 'Stock or future', 'type': 'symbol', 'default': None, 'required': True, 'help': 'what to trade, e.g. NSE:RELIANCE'},
-        {'name': 'fast', 'label': 'Fast average (bars)', 'type': 'int', 'default': None, 'required': True, 'help': 'bars in the fast moving average'},
-        {'name': 'slow', 'label': 'Slow average (bars)', 'type': 'int', 'default': None, 'required': True, 'help': 'bars in the slow moving average'},
-        {'name': 'interval_s', 'label': 'Bar length (seconds)', 'type': 'int', 'default': 86400, 'required': False, 'help': 'bar length in seconds: 86400 daily, 60 minute'},
-        {'name': 'long_short', 'label': 'Also go short', 'type': 'bool', 'default': False, 'required': False, 'help': 'go short when fast < slow (needs a future traded NRML)'},
-        {'name': 'product', 'label': 'Product (CNC or NRML)', 'type': 'str', 'default': 'CNC', 'required': False, 'help': 'CNC for stocks, NRML for futures'},
-        {'name': 'lots', 'label': 'Lots per position', 'type': 'int', 'default': 1, 'required': False, 'help': 'futures only: lots per position'},
+        {'name': 'symbol', 'label': 'Stock or future', 'type': 'symbol', 'default': None, 'required': True, 'help': 'What to trade, e.g. NSE:RELIANCE.'},
+        {'name': 'fast', 'label': 'Fast average (bars)', 'type': 'int', 'default': None, 'required': True, 'help': 'Bars in the fast moving average.'},
+        {'name': 'slow', 'label': 'Slow average (bars)', 'type': 'int', 'default': None, 'required': True, 'help': 'Bars in the slow moving average.'},
+        {'name': 'interval_s', 'label': 'Bar length', 'type': 'int', 'default': 86400, 'required': False, 'help': 'How long each price bar covers.', 'choices': [{'value': 60, 'label': '1 minute'}, {'value': 180, 'label': '3 minutes'}, {'value': 300, 'label': '5 minutes'}, {'value': 600, 'label': '10 minutes'}, {'value': 900, 'label': '15 minutes'}, {'value': 1800, 'label': '30 minutes'}, {'value': 3600, 'label': '1 hour'}, {'value': 86400, 'label': '1 day'}]},
+        {'name': 'long_short', 'label': 'Also go short', 'type': 'bool', 'default': False, 'required': False, 'help': 'Go short when fast < slow (needs a future traded NRML).'},
+        {'name': 'product', 'label': 'Product (CNC or NRML)', 'type': 'str', 'default': 'CNC', 'required': False, 'help': 'CNC for stocks, NRML for futures.'},
+        {'name': 'lots', 'label': 'Lots per position', 'type': 'int', 'default': 1, 'required': False, 'help': 'Futures only: lots per position.'},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001

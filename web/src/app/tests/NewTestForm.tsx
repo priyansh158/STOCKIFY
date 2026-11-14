@@ -4,10 +4,11 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { parseRupeesToPaise } from "@/lib/format";
-import { suggestedName, runNameSlug, slugNote, wordsOf, RUN_NAME_MAX } from "@/lib/names";
-import { coerceParam, validateParams } from "@/lib/params";
+import { suggestedName, runNameSlug, slugNote, RUN_NAME_MAX } from "@/lib/names";
+import { coerceParamText, paramText, validateParams } from "@/lib/params";
 import { createTest } from "@/lib/tests";
-import type { Strategy, StrategyParam } from "@/lib/types";
+import type { Strategy } from "@/lib/types";
+import ParamField from "@/components/ParamField";
 import { Field, Panel } from "@/components/ui";
 
 type Source = "day" | "minute" | "bhav" | "ticks";
@@ -27,11 +28,6 @@ const FILLS: { value: string; label: string }[] = [
 ];
 
 const inputClass = "stk-field";
-
-function defaultText(p: StrategyParam): string | boolean {
-  if (p.type === "bool") return Boolean(p.default);
-  return p.default === null || p.default === undefined ? "" : String(p.default);
-}
 
 export default function NewTestForm({ strategies, startOpen = false }: { strategies: Strategy[]; startOpen?: boolean }) {
   const router = useRouter();
@@ -60,7 +56,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
   const params = useMemo(() => {
     const out: Record<string, unknown> = {};
     for (const p of strategy?.params ?? []) {
-      const v = coerceParam(p.type, values[p.name] ?? defaultText(p));
+      const v = coerceParamText(p, values[p.name] ?? paramText(p));
       if (v !== undefined && !(p.type === "bool" && v === p.default && !p.required)) out[p.name] = v;
     }
     return out;
@@ -86,7 +82,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
       found.push("strikes: a whole number of strikes each side, 1 to 999");
     }
     if ((fill === "eod_close") !== (source === "bhav")) found.push("fills: next-day-close fills go with NSE end-of-day files only");
-    if (fill === "eod_close" && basis !== "raw") found.push("prices: end-of-day files need actual (raw) prices");
+    if (fill === "eod_close" && basis !== "raw") found.push("prices: end-of-day files need actual (as traded) prices");
     const instruments: unknown[] = symbols.split(",").map((s) => s.trim()).filter(Boolean);
     if (chainUnderlying.trim()) {
       for (const expiry of ["nearest", "next"]) {
@@ -168,27 +164,10 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
             </select>
           </Field>
 
-          {(strategy?.params ?? []).map((p) => {
-            const v = values[p.name] ?? defaultText(p);
-            const label = `${p.label || wordsOf(p.name)}${p.required ? " *" : ""}`;
-            if (p.type === "bool") {
-              return (
-                <label key={p.name} className="stk-checkrow">
-                  <input type="checkbox" className="stk-check" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
-                    onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
-                  <span>{label}<span className="stk-label stk-block">{p.help}</span></span>
-                </label>
-              );
-            }
-            return (
-              <Field key={p.name} label={label} help={p.help}>
-                <input className={inputClass} value={String(v)} aria-invalid={bad.has(p.name)}
-                  inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
-                  placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
-                  onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
-              </Field>
-            );
-          })}
+          {(strategy?.params ?? []).map((p) => (
+            <ParamField key={p.name} param={p} value={values[p.name] ?? paramText(p)} invalid={bad.has(p.name)}
+              onChange={(next) => setValues({ ...values, [p.name]: next })} />
+          ))}
         </div>
 
         <div className="stk-form">
@@ -200,7 +179,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
               {SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
           </Field>
-          <Field label="Symbols" help="comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
+          <Field label="Symbols" help="Separate several with commas, e.g. NSE:RELIANCE, NSE:NIFTY 50.">
             <input className={inputClass} value={symbols} aria-invalid={bad.has("instruments")} onChange={(e) => setSymbols(e.target.value)} />
           </Field>
           <Field label="How orders fill">
@@ -208,16 +187,16 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
               {FILLS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
             </select>
           </Field>
-          <Field label="Option chain of" help="e.g. NIFTY (optional)">
+          <Field label="Option chain of" help="Optional, e.g. NIFTY.">
             <input className={inputClass} value={chainUnderlying} onChange={(e) => setChainUnderlying(e.target.value)} />
           </Field>
           <Field label="Strikes each side">
             <input className={inputClass} inputMode="numeric" value={chainStrikes} aria-invalid={bad.has("strikes")} onChange={(e) => setChainStrikes(e.target.value)} />
           </Field>
-          <Field label="Prices" help="adjusted: corrected for splits and bonuses; actual: as traded">
+          <Field label="Prices" help="Adjusted prices are corrected for splits and bonuses; actual prices are as traded.">
             <select className={inputClass} value={basis} aria-invalid={bad.has("prices")} onChange={(e) => setBasis(e.target.value as "raw" | "adjusted")}>
               <option value="adjusted">Adjusted</option>
-              <option value="raw">Actual (raw)</option>
+              <option value="raw">Actual, as traded</option>
             </select>
           </Field>
           <Field label="First day">
@@ -229,7 +208,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
           <Field label="Starting money (₹)">
             <input className={inputClass} data-fig inputMode="decimal" value={capital} aria-invalid={bad.has("capital")} onChange={(e) => setCapital(e.target.value)} />
           </Field>
-          <Field label="Seed" help="same seed, same result">
+          <Field label="Seed" help="The same seed always gives the same result.">
             <input className={inputClass} data-fig inputMode="numeric" value={seed} aria-invalid={bad.has("seed")} onChange={(e) => setSeed(e.target.value)} />
           </Field>
           <label className="stk-checkrow stk-form-wide">

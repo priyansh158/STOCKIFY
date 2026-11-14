@@ -43,6 +43,19 @@ class ParamCheckTests(unittest.TestCase):
         disagree = [(c["type"], c["value"], c["problem"], a) for c, a in zip(cases, answers) if a != c["problem"]]
         self.assertEqual(disagree, [], "(type, value, server, form)")
 
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_percent_and_choice_helpers(self):
+        """RW 7.2/7.3: a fraction is shown as a percentage and stored unchanged; a choice list refuses other values."""
+        out = subprocess.run(["node", str(Path(__file__).with_name("params_form_check.ts"))], capture_output=True,
+                             text=True, timeout=60, cwd=REPO)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        a = json.loads(out.stdout)
+        self.assertEqual(a["toPercent"], ["95", "100", "0", "7.5", "50", "100", "0.1", "abc", ""])
+        self.assertEqual(a["toFraction"], ["0.95", "0.095", "1", "0", "0.001", "0.95", "0.075", "10", "abc", ""])
+        self.assertEqual((a["startText"], a["stored"], a["storedInt"]), ("95", "0.95", 300))
+        self.assertEqual((a["okChoice"], a["okChoiceText"]), ([], []))
+        self.assertEqual(a["badChoice"], ["interval_s: 7 is not one of 60, 86400"])
+
     def test_the_fixture_covers_the_tricky_cases(self):
         values = {(c["type"], json.dumps(c["value"])) for c in _cases()}
         for kind, value in (("int", "1_000"), ("int", "1__0"), ("decimal", "1_000.5"), ("decimal", "NaN"),
