@@ -480,6 +480,7 @@ def test_greeks(run_id: str) -> list[TestGreekDTO]:
     synthetic forward); strike, expiry and last trading moment from bundle.json; time from that day's end; the
     run's dated risk-free rate. Black-76 (stockify.fno.black76). No IV → the reason, no numbers."""
     from stockify import runs
+    from stockify.data.instruments import display_name       # a bhavcopy-only contract has no Kite symbol: named from its row
     from stockify.fno import black76 as B
     row = _row_or_404(run_id)
     folder = _folder(row)
@@ -497,7 +498,7 @@ def test_greeks(run_id: str) -> list[TestGreekDTO]:
         qty = int(p["qty"])
         under = p.get("underlying_mark_paise")
         under = int(under) if under not in (None, "") else None
-        item = TestGreekDTO(trade_date=p["trade_date"], instrument_id=r["id"], tradingsymbol=r.get("tradingsymbol"),
+        item = TestGreekDTO(trade_date=p["trade_date"], instrument_id=r["id"], tradingsymbol=display_name(r),
                             underlying=r.get("underlying"), kind=r["kind"], strike_paise=r.get("strike_paise"), expiry=r.get("expiry"), qty=qty,
                             mark_paise=int(p["mark_paise"]), underlying_paise=under)
         if r["kind"] == "FUT":

@@ -74,6 +74,17 @@ class GreeksApiTests(SandboxedDBTest):
         self.assertEqual((ce["iv"], ce["delta_units"], ce["vega_rupees_per_point"]), (None, None, None))
         self.assertEqual(ce["iv_reason"], B.BELOW_INTRINSIC)
 
+    def test_a_contract_without_a_kite_symbol_is_named_from_what_the_row_holds(self):
+        """A bhavcopy-only contract has no tradingsymbol; the page must not fall back to "instrument 4"."""
+        g = world()
+        g["bundle"]["instruments"][3]["tradingsymbol"] = None
+        self._run("nosym", g)
+        rows = self.client.get("/api/tests/nosym/greeks").json()
+        ce = next(r for r in rows if r["kind"] == "CE" and r["trade_date"] == "2026-03-03")
+        self.assertEqual(ce["tradingsymbol"], "NIFTY 25000 CE (30 Mar 2026)")
+        fut = next(r for r in rows if r["kind"] == "FUT" and r["trade_date"] == "2026-03-03")
+        self.assertEqual(fut["tradingsymbol"], "NFUT")                      # a Kite symbol is shown as it is
+
     def test_unknown_run_404(self):
         self.assertEqual(self.client.get("/api/tests/nope/greeks").status_code, 404)
 
