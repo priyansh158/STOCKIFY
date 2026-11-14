@@ -25,6 +25,6 @@ out.closeOther = v.fillWhen(fill({ at_close: true, t_ist: "2026-10-12T20:30:00+0
 out.pruned = [chart.prunedWords("no_pack", true, true), chart.prunedWords("no_pack", true, false), chart.prunedWords("pruned", true, true)];
 out.hints = [v.chartHint(false, null), v.chartHint(true, null), v.chartHint(true, "f1"), v.chartHint(false, "f1")];
 out.whyNote = chart.whyOf(fill({ note: "Range broke up", tag: "orb" }));
-out.whyNone = chart.whyOf(fill({ tag: "entry" }));
+out.whyNone = chart.whyOf(fill({ tag: "entry", tag_label: "Entry" }));
 out.whyBare = chart.whyOf(fill({ side: "BUY", qty: 3 }));
 process.stdout.write(JSON.stringify(out));

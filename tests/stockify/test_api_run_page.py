@@ -134,9 +134,9 @@ class RunViewHelperChecks(unittest.TestCase):
         self.assertEqual(self.r["intraday"], {"text": "2026-10-05 19:00", "hint": None})
 
     def test_why_is_always_the_reason_never_the_chart_hint(self):
-        self.assertEqual(self.r["whyNote"], {"text": "Range broke up", "tag": None})
-        self.assertEqual(self.r["whyNone"], {"text": "Sold 65 (no note from the strategy)", "tag": "entry"})
-        self.assertEqual(self.r["whyBare"], {"text": "Bought 3 (no note from the strategy)", "tag": None})
+        self.assertEqual(self.r["whyNote"], {"text": "Range broke up", "tag": None, "raw": None})
+        self.assertEqual(self.r["whyNone"], {"text": "Sold 65 (no note from the strategy)", "tag": "Entry", "raw": "entry"})
+        self.assertEqual(self.r["whyBare"], {"text": "Bought 3 (no note from the strategy)", "tag": None, "raw": None})
 
     def test_live_session_without_prices_says_they_have_not_arrived(self):
         live, past, pruned = self.r["pruned"]
