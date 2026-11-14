@@ -19,8 +19,8 @@ function SessionRow({ s }: { s: SessionDTO }) {
   return (
     <tr>
       <td data-wrap>
-        <Link href={`/trade/${encodeURIComponent(s.session_id)}`}>{s.name || s.session_id}</Link>
-        <div className="stk-label">{istWhen(s.created_ist)}</div>
+        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} title={s.name ? `Saved as ${s.name}` : undefined}>{s.name_label || s.name || s.session_id}</Link>
+        <div className="stk-label">{[s.strategy_name, istWhen(s.created_ist)].filter(Boolean).join(" · ")}</div>
       </td>
       <td data-wrap>
         <StatusChip status={s.status} />

@@ -26,14 +26,14 @@ function RunRow({ run }: { run: TestRun }) {
     <tr>
       <td className="stk-pick">
         {done ? (
-          <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${run.name ?? run.run_id}`} />
+          <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${run.name_label || run.name || run.run_id}`} />
         ) : null}
       </td>
       <td data-wrap>
-        <Link href={`/tests/${encodeURIComponent(run.run_id)}`}>{run.name ?? run.run_id}</Link>
-        {run.name && <div className="stk-label stk-mono" title={run.run_id}>run {runIdTail(run.run_id, run.name)}</div>}
+        <Link href={`/tests/${encodeURIComponent(run.run_id)}`} title={run.name ? `Saved as ${run.name}` : undefined}>{run.name_label || run.name || run.run_id}</Link>
+        {run.name && <div className="stk-label" title={run.run_id}>Run {runIdTail(run.run_id, run.name)}</div>}
         {runSummary(run) && <div className="stk-label">{runSummary(run)}</div>}
-        {run.status === "failed" && run.error && <div className="stk-mono stk-down stk-label">{run.error}</div>}
+        {run.status === "failed" && run.error && <div className="stk-down stk-label">{run.error}</div>}
         <div className="stk-gap-xs stk-run-chips">
           <LabelChips run={run} />
         </div>

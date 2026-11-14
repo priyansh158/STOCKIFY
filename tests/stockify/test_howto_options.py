@@ -62,7 +62,7 @@ class HowtoOptionsTests(unittest.TestCase):
             self.assertIn(reason, doc)
 
     def test_every_label_the_ui_explains_is_explained_here_or_in_the_basics(self):
-        ui = (REPO / "web" / "src" / "app" / "tests" / "ui.tsx").read_text(encoding="utf-8")
+        ui = (REPO / "web" / "src" / "lib" / "labels.ts").read_text(encoding="utf-8")
         meaning = ui[ui.index("export function labelMeaning"):]
         meaning = meaning[:meaning.index("if (fixed[label])")]
         labels = re.findall(r'^\s*"?([\w:()]+)"?: "', meaning, flags=re.M)

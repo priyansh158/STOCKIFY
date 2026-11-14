@@ -39,8 +39,9 @@ export type CardModel = {
   title: string;
   /** The note verbatim, or the "no note" sentence. Plain prose either way, never code. */
   reason: string;
-  /** `code` is true when the value is a code label (a strategy tag) the UI shows in the code style. */
-  lines: { label: string; value: string; code: boolean }[];
+  /** `code` is true when the value should be shown in the code style (none now: tags arrive in plain words). `hint` is the
+   * stored word behind a plain value, for a hover. */
+  lines: { label: string; value: string; code: boolean; hint?: string }[];
   pnl: { label: string; value: string; tone: "up" | "down" | "flat" } | null;
   /** One row per chunk of an earlier position this fill closed, with that chunk's profit or loss. */
   chunks: { label: string; value: string; tone: "up" | "down" | "flat" }[];
@@ -113,9 +114,8 @@ export function cardModel(m: ChartMarker, contract?: "option" | "future"): CardM
     lines.push({ label: m.kind === "settlement" ? "Settlement price" : "Price", value: rupees(m.price_paise), code: false });
   }
   if (m.charges_paise !== null) lines.push({ label: "Costs", value: rupees(m.charges_paise), code: false });
-  // A note-less fill's tag is all the strategy said, so it is shown as a code label whatever the API's flag says.
-  const noNote = m.note === "";
-  if (m.tag) lines.push({ label: "Tag", value: m.tag, code: m.tag_is_code || noNote });
+  // The strategy's tag, in the server's plain words ("Long entry"); the stored tag is the hover.
+  if (m.tag) lines.push({ label: "Kind", value: m.tag_label || m.tag, code: false, hint: m.tag });
 
   let pnl: CardModel["pnl"] = null;
   if (m.trade_pnl_paise !== null) {
@@ -325,16 +325,20 @@ export type JoinedFill = {
   fill: TestFill;
   /** The chart marker for this fill, for the row click and the highlight; null when the chart has none (yet). */
   markerId: string | null;
-  /** The strategy's note, or the "no note" sentence with its tag (always a code label) beside it. From the fill's
-   * own order, so it never depends on what the chart has loaded. */
-  why: { text: string; tag: string | null };
+  /** The strategy's note, or the "no note" sentence with its tag in plain words beside it (`raw` is the stored tag, for a
+   * hover). From the fill's own order, so it never depends on what the chart has loaded. */
+  why: { text: string; tag: string | null; raw: string | null };
 };
 
 /** The reason for a fill: the note of its order, else the same "no note" sentence the chart card uses. */
-export function whyOf(fill: TestFill): { text: string; tag: string | null } {
-  if (fill.note !== "") return { text: fill.note, tag: null };
+export function whyOf(fill: TestFill): { text: string; tag: string | null; raw: string | null } {
+  if (fill.note !== "") return { text: fill.note, tag: null, raw: null };
   const verb = fill.side.toUpperCase() === "BUY" ? "Bought" : "Sold";
-  return { text: `${verb} ${fill.qty} (no note from the strategy)`, tag: fill.tag !== "" ? fill.tag : null };
+  return {
+    text: `${verb} ${fill.qty} (no note from the strategy)`,
+    tag: fill.tag !== "" ? fill.tag_label || fill.tag : null,
+    raw: fill.tag !== "" ? fill.tag : null,
+  };
 }
 
 /** One row per fill, in the fills' order; the chart marker with the same `fill_id` (if the chart has loaded it) is

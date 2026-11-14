@@ -4,6 +4,7 @@
  * With NEXT_PUBLIC_STOCKIFY_FIXTURES=1 the list page answers from small fixtures so it can be built without the API.
  */
 import { api } from "./api";
+import { wordsOf } from "./names";
 import { pathSegment } from "./pathSeg";
 import type {
   CommandStatusDTO,
@@ -25,12 +26,12 @@ const sid = pathSegment;
 
 const FIXTURE_SESSIONS: SessionDTO[] = [
   {
-    session_id: "paper-20261111-a1b2c3", name: "orb_nifty", status: "RUNNING", pause_reasons: [],
+    session_id: "paper-20261111-a1b2c3", name: "orb_nifty", name_label: "ORB NIFTY", status: "RUNNING", pause_reasons: [],
     today_pnl_paise: 125_050, open_positions: 2, coverage_today: 0.998, parity_last: "pass", labels: [],
     created_ist: "2026-11-09T09:00:00+05:30",
   },
   {
-    session_id: "paper-20261110-d4e5f6", name: "sma_reliance", status: "PAUSED", pause_reasons: ["owner", "token_expired"],
+    session_id: "paper-20261110-d4e5f6", name: "sma_reliance", name_label: "SMA reliance", status: "PAUSED", pause_reasons: ["owner", "token_expired"],
     today_pnl_paise: null, open_positions: 0, coverage_today: null, parity_last: null, labels: [],
     created_ist: "2026-11-08T09:00:00+05:30",
   },
@@ -107,7 +108,7 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 export function statusText(status: string): string {
-  return STATUS_TEXT[status] ?? status;
+  return STATUS_TEXT[status] ?? wordsOf(status);
 }
 
 /** Why a session is paused, as a sentence an owner can act on. An unknown code is shown unchanged. */
@@ -122,7 +123,7 @@ const PAUSE_TEXT: Record<string, string> = {
 };
 
 export function pauseReasonText(reason: string): string {
-  return PAUSE_TEXT[reason] ?? reason;
+  return PAUSE_TEXT[reason] ?? `${wordsOf(reason)}.`;
 }
 
 /** The result of the replay check, in two or three words. */
@@ -130,7 +131,7 @@ export function parityText(parity: string | null | undefined): string {
   if (parity === "pass") return "Matched";
   if (parity === "fail") return "Did not match";
   if (!parity) return "Not run yet";
-  return parity;
+  return wordsOf(parity);
 }
 
 /** What the replay check is, once per page. A mismatch pauses the session (parity.py `_pause`). */
@@ -159,7 +160,31 @@ const ORDER_STATUS_TEXT: Record<string, string> = {
 
 export function orderStatusText(status: string | null | undefined): string {
   if (!status) return "Unknown";
-  return ORDER_STATUS_TEXT[status] ?? status;
+  return ORDER_STATUS_TEXT[status] ?? wordsOf(status);
+}
+
+/** Why an order was refused or ended, in plain words (the oracle's reason codes); an unknown one is shown as words. */
+const ORDER_REASON_TEXT: Record<string, string> = {
+  R_INSTRUMENT: "This instrument cannot be traded.",
+  R_PRODUCT: "This product is not allowed for the instrument.",
+  R_SESSION: "The market is not open for this order.",
+  R_CAS: "Not allowed during the closing auction.",
+  R_QTY_LOT: "The quantity is not a whole number of lots.",
+  R_TICK: "The price is not a multiple of the tick size.",
+  R_BAND: "The price is outside the allowed band.",
+  R_FREEZE: "The quantity is above the exchange's freeze limit.",
+  R_HOLDINGS: "Not enough shares held to sell.",
+  R_NO_REFERENCE: "There is no reference price yet.",
+  R_MARGIN: "Not enough margin.",
+  EOD: "Cancelled at the end of the day.",
+  IOC: "Not filled at once, so it was cancelled.",
+  USER: "Cancelled by you.",
+  RMS: "Closed by the risk system.",
+};
+
+export function orderReasonText(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return ORDER_REASON_TEXT[reason] ?? `${wordsOf(reason)}.`;
 }
 
 /** What a timeline entry says, in plain words; an unknown kind is shown with underscores as spaces. */

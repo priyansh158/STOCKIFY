@@ -62,8 +62,21 @@ def run_research_dto(run_id: str) -> RunResearchDTO:
 def list_families(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500)) -> list[FamilySummaryDTO]:
     from stockify.research import plain, report
     rows = [_clean(f) for f in report.list_families()[offset:offset + limit]]
-    return [FamilySummaryDTO(**r, best_plain=plain.family_best_sentence(r["n_trials"], r["best_dsr"], r["objective"], r["n_finished"]))
+    return [FamilySummaryDTO(**r, title=_family_title(r["family_id"], r.get("description")), best_plain=plain.family_best_sentence(r["n_trials"], r["best_dsr"], r["objective"], r["n_finished"]))
             for r in rows]
+
+
+def _family_title(family_id: str, description: str | None) -> str:
+    """The family's name on a page (stockify.display.family_title); a sweep's or walk-forward's own job name for its family."""
+    from stockify import display, store
+    job_name = None
+    kind, _, job_id = family_id.partition("/")
+    if kind in ("sweep", "walkforward") and job_id:
+        try:
+            job_name = (store.get_research_job(job_id) or {}).get("name")
+        except Exception:  # noqa: BLE001 — a title is a nicety
+            job_name = None
+    return display.family_title(family_id, description, job_name)
 
 
 @router.get("/api/research/families/{family_id:path}", response_model=FamilyDetailDTO)
@@ -77,9 +90,11 @@ def family_detail(family_id: str) -> FamilyDetailDTO:
         d["best"] = DsrDTO(**d["best"])
     if d["pbo"] is not None:
         d["pbo"] = PboDTO(**d["pbo"])
-    d["trials"] = [TrialRowDTO(**t) for t in d["trials"]]
-    d["others"] = [TrialRowDTO(**t) for t in d["others"]]
-    return FamilyDetailDTO(**d)
+    from stockify import display
+    d["trials"] = [TrialRowDTO(**t, name_label=display.name_label(t.get("name"))) for t in d["trials"]]
+    d["others"] = [TrialRowDTO(**t, name_label=display.name_label(t.get("name"))) for t in d["others"]]
+    d["sessions"] = [{**s, "name_label": display.name_label(s.get("name"))} for s in d["sessions"]]
+    return FamilyDetailDTO(**d, title=_family_title(family_id, d.get("description")))
 
 
 # ── Parameter sweeps (WF 6.3) ─────────────────────────────────────────────────
@@ -99,8 +114,10 @@ def list_jobs(kind: str | None = Query(None, pattern=_KIND), offset: int = Query
     from stockify.research import plain, walkforward
 
     def _row(j: dict) -> ResearchJobDTO:
+        from stockify import display
         shown = walkforward.plain_error(j)                      # a plain reason, never the raw error
-        return ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"} | {"error": shown},
+        return ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"}
+                              | {"error": shown, "name_label": display.name_label(j.get("name"))},
                               plain=plain.job_status_sentence(j["status"], None if shown == "Failed" else shown))
 
     return [_row(j)
@@ -244,7 +261,8 @@ def _row_reason(r: dict) -> str | None:
 def _axis_labels(job_id: str, paths: list[str]) -> dict[str, str]:
     """A plain label for each `strategy.params.<name>` axis from the sweep's strategy (its params schema); every other
     axis, or a sweep whose strategy is unknown, is labelled by its path."""
-    labels = {p: p for p in paths}
+    from stockify import display
+    labels = {p: display.field_label(p) for p in paths}     # never a path: an unknown setting is still in words
     try:
         from stockify import store
         from stockify.strategies import _catalogue
@@ -269,8 +287,9 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
     chosen_x, chosen_y = _pick_axes(list(doc["axes"]), x, y)
     h = _heatmap(doc, chosen_x, chosen_y)
     labels = _axis_labels(job_id, list(doc["axes"]))
+    from stockify import display
     return SweepDTO(
-        job_id=job_id, name=str(doc.get("name", "")), family_id=str(doc.get("family_id", "")),
+        job_id=job_id, name=str(doc.get("name", "")), name_label=display.name_label(doc.get("name")), family_id=str(doc.get("family_id", "")),
         objective=doc["objective"], objective_label=_objective_label(doc["objective"]),
         axes=[SweepAxisDTO(path=a, label=labels[a], labels=[_label(v) for v in vs], values=vs)
               for a, vs in doc["axes"].items()],
@@ -294,6 +313,33 @@ def _not_done(job_id: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": message, "status": status, "reason": reason})
 
 
+def _window_labels(windows: list[dict]) -> dict[str, str]:
+    """Plain label of each strategy param a walk-forward's windows chose, from the params schema of the strategy of
+    the first window run that can be read; empty when none can (the labels then come from the key)."""
+    try:
+        from stockify import store
+        from stockify.strategies import _catalogue
+        for w in windows:
+            for key in ("chosen_run_id", "test_run_id"):
+                row = store.get_run(w[key]) if w.get(key) else None
+                strat = (json.loads(row["config_json"]) if row and row.get("config_json") else {}).get("strategy")
+                schema = _catalogue.schema_of(strat["kind"], strat["ref"]) if isinstance(strat, dict) else None
+                if schema:
+                    return {p["name"]: p["label"] for p in schema if isinstance(p, dict) and p.get("label")}
+    except Exception:  # noqa: BLE001 — a label is a nicety: any trouble means the key's own words
+        pass
+    return {}
+
+
+def _chosen_text(params: dict | None, labels: dict[str, str]) -> str:
+    """The settings a window chose in plain words ("Opening range (minutes) = 15, Also sell short = No")."""
+    from stockify import display
+    if not params:
+        return "None chosen"
+    return ", ".join(f"{display.field_label(k, labels)} = {"none" if v is None else display.setting_text(k, v)}"
+                     for k, v in params.items())
+
+
 @router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO,
             responses={409: {"description": "Not finished (the body has `status` and, for a failed job, a plain "
                                             "`reason`), or finished with its result file gone (`detail` only)."}})
@@ -311,8 +357,12 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
     d["summary"] = WalkforwardSummaryDTO(**s)
-    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None)}) for w in d["windows"]]
-    return WalkforwardDTO(**d)
+    labels = _window_labels(d["windows"])
+    d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None),
+                                            "chosen_text": _chosen_text(w.get("chosen_params"), labels)})
+                    for w in d["windows"]]
+    from stockify import display
+    return WalkforwardDTO(**d, name_label=display.name_label(d.get("name")))
 
 
 _INT64 = 2**63 - 1

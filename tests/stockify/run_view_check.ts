@@ -18,10 +18,6 @@ const chart = await import(pathToFileURL(resolve(root, "chart.ts")).href);
 const fill = (o: object) => ({ fill_id: 1, order_id: 1, t_ns: 1, t_ist: "2026-10-05T19:00:00+05:30", instrument_id: 1, side: "SELL", qty: 65,
   price_paise: 100, note: "", tag: "", evidence: "", at_close: false, ...o });
 const out: Record<string, unknown> = {};
-out.names = [
-  "stockify.strategies._margin_watch:MarginWatch", "stockify.strategies.sma_cross:SmaCross", "sma_cross:SmaCross",
-  "stockify.strategies.__:Odd", null, "",
-].map((r) => v.strategyName(r as string | null));
 out.close = v.fillWhen(fill({ at_close: true }));
 // the same stamp on a fill that is not a close model reads as a time, whatever the clock says
 out.intraday = v.fillWhen(fill({ at_close: false }));
@@ -29,6 +25,6 @@ out.closeOther = v.fillWhen(fill({ at_close: true, t_ist: "2026-10-12T20:30:00+0
 out.pruned = [chart.prunedWords("no_pack", true, true), chart.prunedWords("no_pack", true, false), chart.prunedWords("pruned", true, true)];
 out.hints = [v.chartHint(false, null), v.chartHint(true, null), v.chartHint(true, "f1"), v.chartHint(false, "f1")];
 out.whyNote = chart.whyOf(fill({ note: "Range broke up", tag: "orb" }));
-out.whyNone = chart.whyOf(fill({ tag: "entry" }));
+out.whyNone = chart.whyOf(fill({ tag: "entry", tag_label: "Entry" }));
 out.whyBare = chart.whyOf(fill({ side: "BUY", qty: 3 }));
 process.stdout.write(JSON.stringify(out));

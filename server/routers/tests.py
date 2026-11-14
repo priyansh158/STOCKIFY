@@ -18,6 +18,7 @@ from server.routers.research import _clean, run_research_dto
 from server.schemas import (ChartBarDTO, ChartChunkDTO, ChartInstrumentDTO, ChartMarkerDTO, ChartPlotDTO, ChartPointDTO,
                             ComparisonDTO, RunChartDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
+from stockify import display
 from stockify.reporting import figures
 from stockify.commands import stockify_command
 from stockify.reporting.settlements import DELIVERED as _DELIVERED  # noqa: F401  (still importable from here)
@@ -53,14 +54,24 @@ def _dates(cfg: dict) -> tuple[str | None, str | None]:
     return (min(froms) if froms else None, max(tos) if tos else None)
 
 
+def _strategy_name(strategy: dict) -> str | None:
+    """The display name of a run's strategy (stockify.strategies._catalogue.display_name_of); None when it names none."""
+    ref = strategy.get("ref") if isinstance(strategy, dict) else None
+    if not isinstance(ref, str) or not ref:
+        return None
+    from stockify.strategies import _catalogue
+    return _catalogue.display_name_of(strategy.get("kind") or "python", ref)
+
+
 def run_dto(row: dict) -> TestRunDTO:
     cfg = _json(row.get("config_json"), {})
     metrics = _json(row.get("metrics_json"), {})
     start, end = _dates(cfg)
     strategy = cfg.get("strategy") or {}
     return TestRunDTO(
-        run_id=row["run_id"], name=row.get("name"), family_id=row.get("family_id"), status=row["status"],
-        impl=row.get("impl"), strategy_ref=strategy.get("ref"), start_date=start, end_date=end,
+        run_id=row["run_id"], name=row.get("name"), name_label=display.name_label(row.get("name")), family_id=row.get("family_id"), status=row["status"],
+        impl=row.get("impl"), strategy_ref=strategy.get("ref"),
+        strategy_name=_strategy_name(strategy), start_date=start, end_date=end,
         price_basis=cfg.get("price_basis"), capital_paise=cfg.get("capital_paise"),
         created_ns=row.get("created_ns"), created_ist=_ist(row.get("created_ns")),
         finished_ns=row.get("finished_ns"), finished_ist=_ist(row.get("finished_ns")),
@@ -288,6 +299,7 @@ def get_test(run_id: str) -> TestRunDetailDTO:
     metrics, withheld = figures.present(_json(row.get("metrics_json"), {}))    # one rule for what may be shown (D-135)
     return TestRunDetailDTO(run=run_dto(row), config=_json(row.get("config_json"), {}),
                             metrics=metrics, manifest=manifest,
+                            manifest_labels={k: display.field_label(k) for k in (manifest or {})},
                             fill_count=fill_count, cost_totals=cost_totals, withheld=withheld)
 
 
@@ -370,6 +382,7 @@ def test_fills(run_id: str, offset: int = Query(0, ge=0),
                         instrument_id=r["instrument_id"], tradingsymbol=symbols.get(r["instrument_id"]),
                         side=r["side"], qty=r["qty"], price_paise=r["price_paise"],
                         note=why.get(r["order_id"], ("", ""))[0], tag=why.get(r["order_id"], ("", ""))[1],
+                        tag_label=display.tag_label(why.get(r["order_id"], ("", ""))[1]),
                         evidence=evidence.get(r["fill_id"], ""), at_close=evidence.get(r["fill_id"]) == "eod_close")
             for r in fills]
 
@@ -573,12 +586,12 @@ def _chart_dto(m: dict) -> RunChartDTO:
             id=mid, kind=k["kind"], t=k["t_ns"] // _NS, bar_t=k["bar_start_ns"] // _NS, bar_d=day(k["bar_start_ns"]),
             side=k["side"], qty=k["qty"], price=_rupees(k["price_paise"]), price_paise=k["price_paise"],
             fsp_paise=k["fsp_paise"], order_id=k["order_id"], fill_id=k["fill_id"], note=k["note"], tag=k["tag"],
-            tag_is_code=k["tag_is_code"], charges_paise=k["charges_paise"], trade_pnl_paise=k["trade_pnl_paise"],
+            tag_label=display.tag_label(k["tag"]), tag_is_code=k["tag_is_code"], charges_paise=k["charges_paise"], trade_pnl_paise=k["trade_pnl_paise"],
             chunks=[ChartChunkDTO(**c) for c in k["chunks"]]))
     plots = []
     for p in m["plots"]:
         fmt = _rupees if p["kind"] == "price" else _level
-        plots.append(ChartPlotDTO(name=p["name"], kind=p["kind"], instrument_id=p["instrument_id"],
+        plots.append(ChartPlotDTO(name=p["name"], label=display.sentence(p["name"]), kind=p["kind"], instrument_id=p["instrument_id"],
                                   points=[ChartPointDTO(t=t // _NS, value=fmt(v)) for t, v in p["points"]]))
     bars = [ChartBarDTO(t=b["start_ns"] // _NS, d=day(b["start_ns"]), open=_rupees(b["open"]), high=_rupees(b["high"]),
                         low=_rupees(b["low"]), close=_rupees(b["close"]), volume=b["volume"]) for b in m["bars"]]

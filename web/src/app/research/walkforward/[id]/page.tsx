@@ -11,7 +11,7 @@ import { rupees } from "@/lib/format";
 import { dayNumber, getWalkforward, sentenceOrDash, wfCurve, type WalkforwardLoad } from "@/lib/research";
 import Curve from "./Curve";
 import WfChart from "./WfChart";
-import type { WalkforwardDTO, WalkforwardWindowDTO } from "@/lib/types";
+import type { WalkforwardDTO } from "@/lib/types";
 
 const DAY = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 
@@ -50,13 +50,6 @@ function clause(s: string | null | undefined): string {
 function sentence(s: string | null | undefined): string {
   const t = clause(s);
   return t === "—" ? t : t[0].toUpperCase() + t.slice(1);
-}
-
-function settings(params: WalkforwardWindowDTO["chosen_params"], short: boolean): string {
-  if (!params || Object.keys(params).length === 0) return "none chosen";
-  return Object.entries(params)
-    .map(([k, v]) => `${short ? k.split(".").pop() : k} = ${typeof v === "string" ? v : JSON.stringify(v)}`)
-    .join(", ");
 }
 
 export default async function WalkforwardPage({ params }: { params: Promise<{ id: string }> }) {
@@ -128,14 +121,12 @@ function Report({ r, id }: { r: WalkforwardDTO; id: string }) {
   const s = r.summary;
   const tested = r.windows.filter((w) => w.test).length;
   const curve = wfCurve(r.stitched_dates, r.stitched_index, r.windows);
-  const keys = new Set(r.windows.flatMap((w) => Object.keys(w.chosen_params ?? {})));
-  const short = new Set([...keys].map((k) => k.split(".").pop())).size === keys.size;
   const familyHref = `/research/family?id=${encodeURIComponent(r.family_id)}`;
 
   return (
     <div className="stk-stack">
       <PageHead
-        title={`Walk-forward: ${r.name}`}
+        title={`Walk-forward: ${r.name_label || r.name}`}
         lede={clause(p.setup)}
         actions={<Link href={familyHref} className="stk-btn">See the whole family of tries</Link>}
       />
@@ -214,7 +205,7 @@ function Report({ r, id }: { r: WalkforwardDTO; id: string }) {
                 <th scope="row" className="num">{w.index + 1}</th>
                 <td>{isoText(w.train_from)} to {isoText(w.train_to)}</td>
                 <td>{isoText(w.test_from)} to {isoText(w.test_to)}</td>
-                <td className="stk-mono">{settings(w.chosen_params, short)}</td>
+                <td data-wrap>{w.chosen_text || "None chosen"}</td>
                 <td className="num">{sharpeCell(w.train, w.no_sharpe)}</td>
                 <td className="num">{sharpeCell(w.test, w.no_sharpe)}</td>
                 <td className="num">{w.test ? signedRupees(w.test.net_pnl_paise) : "not run"}</td>

@@ -14,6 +14,7 @@ import {
   getPositions,
   getSession,
   getTimeline,
+  orderReasonText,
   orderStatusText,
   PARITY_HELP,
   parityText,
@@ -132,7 +133,7 @@ function OrdersTable({ rows, name }: { rows: SessionOrderDTO[]; name: (id: numbe
           <td className="num">{rupees(o.avg_price_paise)}</td>
           <td data-wrap>
             {orderStatusText(o.status)}
-            {o.reason && <div className="stk-warn">{o.reason}</div>}
+            {o.reason && <div className="stk-warn" title={o.reason}>{orderReasonText(o.reason)}</div>}
           </td>
         </tr>
       ))}
@@ -383,7 +384,8 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                   {running ? ". Live, updating." : ""}
                 </span>
               </div>
-              <h1 className="stk-gap-s">{detail.session.name || detail.session.session_id}</h1>
+              <h1 className="stk-gap-s" title={detail.session.name ? `Saved as ${detail.session.name}` : undefined}>{detail.session.name_label || detail.session.name || detail.session.session_id}</h1>
+              {detail.session.strategy_name && <p className="stk-lede">{detail.session.strategy_name}</p>}
               <PauseReasons reasons={detail.session.pause_reasons} />
             </div>
             {detail.session.status !== "STOPPED" && (

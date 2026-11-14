@@ -21,6 +21,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
+from stockify import display
+
 from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionFillDTO,
                             SessionChartDTO, SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
 
@@ -276,6 +278,13 @@ def _open_positions(session_id: str, day: str) -> int | None:
         return None
 
 
+def _strategy_name(config: object) -> str | None:
+    """The display name of a session's strategy, from its stored config; None when the config names none."""
+    from server.routers.tests import _strategy_name as name_of
+    s = config.get("strategy") if isinstance(config, dict) else None
+    return name_of(s) if isinstance(s, dict) else None
+
+
 def _session_dto(session: dict) -> SessionDTO:
     import json
     from stockify import store
@@ -290,8 +299,9 @@ def _session_dto(session: dict) -> SessionDTO:
         labels = json.loads(latest["labels_json"] or "[]") if latest else []
     except ValueError:
         labels = []
-    return SessionDTO(session_id=sid, name=session["name"] or "", status=session["status"],
-                      pause_reasons=session["pause_reasons"], today_pnl_paise=pnl,
+    return SessionDTO(session_id=sid, name=session["name"] or "", name_label=display.name_label(session["name"]), status=session["status"],
+                      pause_reasons=session["pause_reasons"], strategy_name=_strategy_name(session.get("config")),
+                      today_pnl_paise=pnl,
                       open_positions=_open_positions(sid, latest["trade_date"]) if latest else None,
                       coverage_today=latest.get("coverage") if latest else None, parity_last=parity,
                       labels=[str(x) for x in labels], created_ist=_ist(session["created_ns"]) or "")

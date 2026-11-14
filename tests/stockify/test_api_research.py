@@ -329,7 +329,7 @@ class SweepApiTests(SandboxedDBTest):
         add_sweep_job(None, "wf-1", kind="walkforward", status="running", created_ns=3)
         r = self.client.get("/api/research/jobs")
         self.assertEqual([j["job_id"] for j in r.json()], ["wf-1", "sweep-b", "sweep-a"])
-        self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "family_id", "status", "created_ns",
+        self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "name_label", "family_id", "status", "created_ns",
                                              "finished_ns", "error", "plain"])
         self.assertEqual([j["plain"] for j in r.json()], ["still running", "finished", "finished"])
         r = self.client.get("/api/research/jobs", params={"kind": "sweep"})
@@ -345,7 +345,7 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/sweeps/sweep-t-1")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "objective_label", "axes", "rows",
+        self.assertEqual(list(j), ["job_id", "name", "name_label", "family_id", "objective", "objective_label", "axes", "rows",
                                    "best_run_id", "cells", "plain"])
         self.assertEqual((j["objective"], j["best_run_id"]), ("sharpe", "run2"))
         self.assertEqual([a["path"] for a in j["axes"]], [self.X, self.Y])
@@ -380,7 +380,7 @@ class SweepApiTests(SandboxedDBTest):
         self.assertEqual(c["run_ids"], [["r1", "r5"], ["r2", "r7"]])
         self.assertIn("best", j["plain"])
         self.assertIn("c", j["plain"])
-        self.assertIn("Each square is the best steadiness of returns (Sharpe) over every setting of c", j["plain"])
+        self.assertIn("Each square is the best steadiness of returns (Sharpe) over every setting of C", j["plain"])
         self.assertNotIn("sharpe ", j["plain"])                 # the objective's code never reaches the sentence
         picked = self.client.get("/api/research/sweeps/sweep-t-1", params={"x": "c", "y": "a"}).json()["cells"]
         self.assertEqual(picked["xs"], ["true", "false"])
@@ -466,15 +466,17 @@ class SweepApiTests(SandboxedDBTest):
             {"base": {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold"}}}))
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
         self.assertEqual([(a["path"], a["label"]) for a in j["axes"]],
-                         [("strategy.params.interval_s", "Bar length (seconds)"), (self.X, self.X)])   # no label known: the path
+                         [("strategy.params.interval_s", "Bar length (seconds)"), (self.X, "Fast")])   # no label known: its words, never the path
         self.assertEqual(j["objective_label"], "steadiness of returns (Sharpe)")
         self.assertIn("Bar length (seconds) = ", j["plain"])                  # the sentence names the settings as the page does
         self.assertNotIn("interval_s", j["plain"])
 
-    def test_a_sweep_without_a_stored_spec_labels_every_axis_by_its_path(self):
+    def test_a_sweep_without_a_stored_spec_labels_every_axis_in_words_not_by_its_path(self):
         add_sweep_job(sweep_doc())
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
-        self.assertEqual([a["label"] for a in j["axes"]], [a["path"] for a in j["axes"]])
+        self.assertEqual([a["label"] for a in j["axes"]], [a["path"].rsplit(".", 1)[-1].capitalize() for a in j["axes"]])
+        for a in j["axes"]:
+            self.assertNotIn("strategy.params", a["label"])
 
     def test_net_pnl_plain_sentence_is_in_rupees(self):
         axes = {self.X: [5, 10]}
@@ -482,7 +484,7 @@ class SweepApiTests(SandboxedDBTest):
                                 rows=[_row(0, {self.X: 5}, 412_000.0), _row(1, {self.X: 10}, -31_000.0)]))
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
         self.assertEqual(j["plain"], f"Each square is the profit after costs of one trial. The best of all 2 trials "
-                                     f"has {self.X} = 5, with profit after costs ₹4,120.")
+                                     f"has Fast = 5, with profit after costs ₹4,120.")
         self.assertNotIn("412000", j["plain"])
 
     def test_sweep_response_has_no_nan(self):
@@ -547,7 +549,7 @@ class WalkforwardApiTests(SandboxedDBTest):
         r = self.client.get(f"/api/research/walkforward/{self.job}")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "train", "test", "step", "summary",
+        self.assertEqual(list(j), ["job_id", "name", "name_label", "family_id", "objective", "train", "test", "step", "summary",
                                    "windows", "stitched_dates", "stitched_index", "plain"])
         self.assertEqual((j["job_id"], j["train"], j["test"], j["step"], j["objective"]),
                          (self.job, 120, 30, 30, "sharpe"))
@@ -561,7 +563,7 @@ class WalkforwardApiTests(SandboxedDBTest):
                                                      "dsr", "psr"])
         self.assertEqual(len(j["windows"]), 2)
         self.assertEqual(list(j["windows"][0]), ["index", "train_from", "train_to", "test_from", "test_to",
-                                                 "chosen_params", "chosen_run_id", "test_run_id", "test_status", "result", "no_sharpe",
+                                                 "chosen_params", "chosen_text", "chosen_run_id", "test_run_id", "test_status", "result", "no_sharpe",
                                                  "error", "train", "test"])
         self.assertIsInstance(j["windows"][0]["test"]["net_pnl_paise"], int)
         self.assertEqual((len(j["stitched_dates"]), len(j["stitched_index"])), (12, 12))

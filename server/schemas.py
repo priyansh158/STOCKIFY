@@ -135,6 +135,7 @@ class StrategyDTO(BaseModel):
     kind: Literal["python", "cpp"]
     ref: str = Field(..., description="'module:Class' for python, the registered name for cpp")
     name: str
+    display_name: str = Field("", description="the strategy's name for a person ('Opening Range Breakout'); never a code")
     doc: str = ""
     params: list[StrategyParamDTO] = Field(default_factory=list)
 
@@ -143,10 +144,12 @@ class TestRunDTO(BaseModel):
     """One run as a list card shows it (lab.sqlite runs row plus its headline metrics)."""
     run_id: str
     name: str | None = None
+    name_label: str = Field("", description="the name as words (stockify.display.name_label); the page shows this")
     family_id: str | None = None
     status: Literal["queued", "running", "done", "failed", "cancelled"]
     impl: str | None = None
     strategy_ref: str | None = None
+    strategy_name: str | None = Field(None, description="the strategy's display name (the page shows this, never the ref)")
     start_date: str | None = None
     end_date: str | None = None
     price_basis: str | None = None
@@ -169,6 +172,7 @@ class TestRunDetailDTO(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
     manifest: dict[str, Any] | None = None
+    manifest_labels: dict[str, str] = Field(default_factory=dict, description="each manifest key in plain words")
     fill_count: int | None = Field(None, description="all fills of the run (the /fills list is paged)")
     cost_totals: dict[str, int] = Field(default_factory=dict, description="paise per charge component, whole run")
     withheld: dict[str, str] = Field(default_factory=dict,
@@ -186,7 +190,8 @@ class TestFillDTO(BaseModel):
     qty: int
     price_paise: int
     note: str = Field("", description="the strategy's own note on the order this fill belongs to ('' when it gave none)")
-    tag: str = Field("", description="the strategy's tag on that order (a code label)")
+    tag: str = Field("", description="the strategy's tag on that order, as stored (a code label)")
+    tag_label: str = Field("", description="the tag in plain words ('Long entry'); the page shows this, with `tag` as its hover")
     evidence: str = Field("", description="how the engine priced the fill (A1 fills.csv: eod_close, bar_open, ltp, ...)")
     at_close: bool = Field(False, description="True when the fill is the day's close (evidence eod_close): its time is "
                                               "when the close is published, not when anything traded")
@@ -278,8 +283,10 @@ class SessionDTO(BaseModel):
     capital for a first day); None until that day has an equity row. `coverage_today` is 0..1."""
     session_id: str
     name: str
+    name_label: str = ""
     status: str
     pause_reasons: list[str] = Field(default_factory=list)
+    strategy_name: str | None = Field(None, description="the strategy's display name")
     today_pnl_paise: int | None = None
     open_positions: int | None = None
     coverage_today: float | None = None
@@ -518,6 +525,7 @@ class SensitivityDTO(BaseModel):
 class TrialRowDTO(BaseModel):
     run_id: str
     name: str | None = None
+    name_label: str = ""
     role: str
     status: str
     objective_value: float | None = None
@@ -540,6 +548,7 @@ class PboDTO(BaseModel):
 
 class FamilySummaryDTO(BaseModel):
     family_id: str
+    title: str = ""                 # what the page calls the family: its description, else its id read as words
     description: str | None = None
     named: bool
     objective: str
@@ -555,6 +564,7 @@ class FamilySummaryDTO(BaseModel):
 
 class FamilyDetailDTO(BaseModel):
     family_id: str
+    title: str = ""
     description: str | None = None
     objective: str
     named: bool
@@ -579,6 +589,7 @@ class ResearchJobDTO(BaseModel):
     job_id: str
     kind: str
     name: str | None = None
+    name_label: str = ""
     family_id: str | None = None
     status: str
     created_ns: int
@@ -640,6 +651,7 @@ class SweepHeatmapDTO(BaseModel):
 class SweepDTO(BaseModel):
     job_id: str
     name: str
+    name_label: str = ""
     family_id: str
     objective: str
     objective_label: str            # the one name for the objective, as the plain sentence uses it
@@ -660,9 +672,11 @@ class CompareMetricDTO(BaseModel):
 
 
 class CompareDiffDTO(BaseModel):
-    field: str
-    values: list[str | None]
+    field: str                      # the stored key: a hover for the plain `label`
+    values: list[str | None]        # as stored
     differs: bool
+    label: str = ""                 # the field in plain words
+    shown: list[str | None] = Field(default_factory=list, description="each value in plain words; the page shows these")
 
 
 class CompareSeriesDTO(BaseModel):
@@ -674,6 +688,7 @@ class CompareSeriesDTO(BaseModel):
 class ComparisonDTO(BaseModel):
     run_ids: list[str]
     names: list[str]
+    name_labels: list[str] = Field(default_factory=list, description="each name as words, same order as `names`")
     metrics: list[CompareMetricDTO]
     equity: list[CompareSeriesDTO]
     drawdown: list[CompareSeriesDTO]
@@ -776,6 +791,7 @@ class WalkforwardWindowDTO(BaseModel):
     test_from: str
     test_to: str
     chosen_params: dict[str, Any] | None = None
+    chosen_text: str = ""           # the chosen settings in plain words
     chosen_run_id: str | None = None
     test_run_id: str | None = None
     test_status: str
@@ -789,6 +805,7 @@ class WalkforwardWindowDTO(BaseModel):
 class WalkforwardDTO(BaseModel):
     job_id: str
     name: str
+    name_label: str = ""
     family_id: str
     objective: str
     train: int
@@ -840,6 +857,7 @@ class ChartMarkerDTO(BaseModel):
     fill_id: int | None = None
     note: str
     tag: str
+    tag_label: str = ""
     tag_is_code: bool
     charges_paise: int | None = None
     trade_pnl_paise: int | None = None
@@ -853,6 +871,7 @@ class ChartPointDTO(BaseModel):
 
 class ChartPlotDTO(BaseModel):
     name: str
+    label: str = ""                 # the line's name in plain words, for a legend
     kind: Literal["price", "level"]
     instrument_id: int
     points: list[ChartPointDTO]

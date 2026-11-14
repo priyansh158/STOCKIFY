@@ -4,6 +4,10 @@ Python strategies are discovered from this package (non-underscore modules) and 
 `strategy.load`, so the A2 §4.4 source check runs on each. C++ strategies are the names the engine module
 registers (STOCKSIM_STRATEGY); their params mirror the Python originals they port.
 
+Every entry carries `display_name`, the strategy's name for a person ("Opening Range Breakout"; a class declares it as
+`DISPLAY_NAME`, a C++ strategy has it in CPP_DISPLAY_NAMES). `display_name_of` is the one lookup for it: a ref that
+declares none (a user's own script) is made readable by `stockify.display.humanize`.
+
 A params schema is a list of `{"name", "label", "type", "default", "required", "help"}` (`label` is the
 form's plain name for it), with `type` one of
 PARAM_TYPES. Values are checked the way the strategies read them (`int(...)`, `bool(...)`, `Decimal(str(...))`).
@@ -22,6 +26,7 @@ import re
 import sys
 from decimal import Decimal, InvalidOperation
 
+from stockify import display
 from stockify import strategy as S
 
 PARAM_TYPES = ("int", "bool", "str", "decimal", "symbol", "hhmm", "underlying")
@@ -29,6 +34,14 @@ PARAM_TYPES = ("int", "bool", "str", "decimal", "symbol", "hhmm", "underlying")
 _HHMM = re.compile(r"^\s*\d{1,2}:\d{1,2}(:\d{1,2})?\s*$")
 _SYMBOL = re.compile(r"^([A-Z]+:)?\S.*$")
 _REF = re.compile(r"^stockify\.strategies\.(?!_)\w+:\w+$")     # a non-underscore module of this package
+
+
+# The C++ strategies' names (their Python originals' names, marked).
+CPP_DISPLAY_NAMES = {"sma_cross_cpp": "SMA Crossover (C++)", "orb_cpp": "Opening Range Breakout (C++)"}
+
+
+_PY_TWIN = {"sma_cross_cpp": "stockify.strategies.sma_cross:SmaCross",
+            "orb_cpp": "stockify.strategies.opening_range_breakout:OpeningRangeBreakout"}
 
 
 def _cpp_params() -> dict[str, list[dict]]:
@@ -55,8 +68,8 @@ def python_strategies() -> list[dict]:
                 continue
             ref = f"{module.__name__}:{cls_name}"
             S.load(ref)  # the A2 §4.4 source check
-            out.append({"kind": "python", "ref": ref, "name": info.name,
-                        "doc": _first_line(module.__doc__) or _first_line(cls.__doc__),
+            out.append({"kind": "python", "ref": ref, "name": info.name, "display_name": display_name_of("python", ref),
+                        "doc": getattr(cls, "DESCRIPTION", "") or _first_line(module.__doc__) or _first_line(cls.__doc__),
                         "params": list(getattr(cls, "PARAMS", []))})
     return sorted(out, key=lambda s: s["ref"])
 
@@ -69,7 +82,9 @@ def cpp_strategies() -> list[dict]:
     if not engine.available():
         return []
     known = _cpp_params()
-    return [{"kind": "cpp", "ref": name, "name": name, "doc": "C++ port", "params": list(known[name])}
+    return [{"kind": "cpp", "ref": name, "name": name, "display_name": display_name_of("cpp", name),
+             "doc": f"The same strategy as {display_name_of('python', _PY_TWIN[name])}, run by the C++ engine.",
+             "params": list(known[name])}
             for name in engine.load().strategies() if name in known]
 
 
@@ -114,6 +129,28 @@ def _class_of(kind: str, ref: str) -> type | None:
     if not isinstance(cls, type) or cls is S.Strategy or not issubclass(cls, S.Strategy)             or cls.__module__ != module.__name__:
         return None
     return cls
+
+
+def display_name_of(kind: str, ref: object) -> str:
+    """The strategy's name as a person reads it: the class's `DISPLAY_NAME` (found for a catalogue strategy and for
+    the wrapper tools), the C++ table, else the class name of the ref made readable. Never empty, never raises, and
+    imports nothing that is not already loaded or a checked catalogue module."""
+    if not isinstance(ref, str) or not ref.strip():
+        return "Unnamed"
+    if kind == "cpp":
+        return CPP_DISPLAY_NAMES.get(ref) or display.strategy_ref_words(kind, ref)
+    cls = _class_of(kind, ref)
+    if cls is None and isinstance(ref, str) and ref.startswith("stockify.strategies._"):
+        mod = sys.modules.get(ref.split(":")[0])        # a tool such as _margin_watch: not a catalogue strategy, but ours
+        cls = getattr(mod, ref.split(":")[-1], None) if mod is not None else None
+        if cls is None:
+            try:
+                S.check_module(ref.split(":")[0])
+                cls = getattr(importlib.import_module(ref.split(":")[0]), ref.split(":")[-1], None)
+            except Exception:  # noqa: BLE001 — a name is a nicety
+                cls = None
+    declared = getattr(cls, "DISPLAY_NAME", "") if isinstance(cls, type) else ""
+    return declared if isinstance(declared, str) and declared.strip() else display.strategy_ref_words(kind, ref)
 
 
 def schema_of(kind: str, ref: str) -> list[dict] | None:

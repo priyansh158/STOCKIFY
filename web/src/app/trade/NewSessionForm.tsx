@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { parseRupeesToPaise } from "@/lib/format";
+import { suggestedName, wordsOf } from "@/lib/names";
 import { coerceParam, validateParams } from "@/lib/params";
 import { createSession } from "@/lib/trade";
 import type { Strategy, StrategyParam } from "@/lib/types";
@@ -50,8 +51,8 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
     const universe = symbols.split(",").map((s) => s.trim()).filter(Boolean);
     if (universe.length === 0) found.push("symbols: name at least one symbol, e.g. NSE:RELIANCE");
     if (found.length) return setProblems(found);
-    const first = universe[0].split(":").pop()?.toLowerCase() ?? "session";
-    const label = (name.trim() || `${strategy.name}_${first}`).replace(/[^a-z0-9_ -]+/gi, "_");
+    // A session's name is free text (its id is made separately), so the friendly suggestion is kept as it reads.
+    const label = (name.trim() || suggestedName(strategy.display_name, symbols)).replace(/[^\p{L}\p{N} _·,.&()+-]+/gu, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "Session";
     setProblems([]);
     setBusy(true);
     try {
@@ -101,7 +102,7 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
             <select className={inputClass} value={chosen} onChange={(e) => { setRef(e.target.value); setValues({}); }}>
               {strategies.map((s) => (
                 <option key={`${s.kind}|${s.ref}`} value={`${s.kind}|${s.ref}`}>
-                  {s.name}{s.kind === "cpp" ? " (C++)" : ""}
+                  {s.display_name}
                 </option>
               ))}
             </select>
@@ -109,7 +110,7 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
 
           {(strategy?.params ?? []).map((p) => {
             const v = values[p.name] ?? defaultText(p);
-            const label = `${p.label || p.name.replace(/_/g, " ")}${p.required ? " *" : ""}`;
+            const label = `${p.label || wordsOf(p.name)}${p.required ? " *" : ""}`;
             if (p.type === "bool") {
               return (
                 <label key={p.name} className="stk-checkrow">
@@ -129,8 +130,8 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
             );
           })}
 
-          <Field label="Name (optional)" help="A short name to tell sessions apart.">
-            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
+          <Field label="Name (optional)" help="Any text, to tell sessions apart.">
+            <input className={inputClass} value={name} placeholder={suggestedName(strategy?.display_name ?? "", symbols)} aria-label="Name of the session" onChange={(e) => setName(e.target.value)} />
           </Field>
           <Field label="Symbols to follow" help="Comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
             <input className={inputClass} value={symbols} aria-invalid={bad.has("symbols")} onChange={(e) => setSymbols(e.target.value)} />

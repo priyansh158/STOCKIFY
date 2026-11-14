@@ -125,6 +125,7 @@ export interface Strategy {
   kind: "python" | "cpp";
   ref: string;
   name: string;
+  display_name: string;
   doc: string;
   params: StrategyParam[];
 }
@@ -134,10 +135,12 @@ export type TestStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export interface TestRun {
   run_id: string;
   name?: string | null;
+  name_label: string;
   family_id?: string | null;
   status: TestStatus;
   impl?: string | null;
   strategy_ref?: string | null;
+  strategy_name?: string | null;
   start_date?: string | null;
   end_date?: string | null;
   price_basis?: string | null;
@@ -160,6 +163,7 @@ export interface TestRunDetail {
   config: Record<string, unknown>;
   metrics: Record<string, unknown>;
   manifest?: Record<string, unknown> | null;
+  manifest_labels: Record<string, string>;
   fill_count?: number | null;
   cost_totals: Record<string, number>;
   /** metrics key -> plain reason the figure is not shown (its value in `metrics` is null) */
@@ -178,6 +182,7 @@ export interface TestFill {
   price_paise: number;
   note: string;
   tag: string;
+  tag_label: string;
   evidence: string;
   at_close: boolean;
 }
@@ -260,8 +265,10 @@ export interface TestCreated {
 export interface SessionDTO {
   session_id: string;
   name: string;
+  name_label: string;
   status: string;
   pause_reasons: string[];
+  strategy_name?: string | null;
   today_pnl_paise?: number | null;
   open_positions?: number | null;
   coverage_today?: number | null;
@@ -489,6 +496,7 @@ export interface SensitivityDTO {
 export interface TrialRowDTO {
   run_id: string;
   name: string | null;
+  name_label: string;
   role: string;
   status: string;
   objective_value: number | null;
@@ -511,6 +519,7 @@ export interface PboDTO {
 
 export interface FamilySummaryDTO {
   family_id: string;
+  title: string;
   description: string | null;
   named: boolean;
   objective: string;
@@ -526,6 +535,7 @@ export interface FamilySummaryDTO {
 
 export interface FamilyDetailDTO {
   family_id: string;
+  title: string;
   description: string | null;
   objective: string;
   named: boolean;
@@ -550,6 +560,7 @@ export interface ResearchJobDTO {
   job_id: string;
   kind: string;
   name: string | null;
+  name_label: string;
   family_id: string | null;
   status: string;
   created_ns: number;
@@ -611,6 +622,7 @@ export interface SweepHeatmapDTO {
 export interface SweepDTO {
   job_id: string;
   name: string;
+  name_label: string;
   family_id: string;
   objective: string;
   objective_label: string;
@@ -634,6 +646,8 @@ export interface CompareDiffDTO {
   field: string;
   values: (string | null)[];
   differs: boolean;
+  label: string;
+  shown: (string | null)[];
 }
 
 export interface CompareSeriesDTO {
@@ -645,6 +659,7 @@ export interface CompareSeriesDTO {
 export interface ComparisonDTO {
   run_ids: string[];
   names: string[];
+  name_labels: string[];
   metrics: CompareMetricDTO[];
   equity: CompareSeriesDTO[];
   drawdown: CompareSeriesDTO[];
@@ -743,6 +758,7 @@ export interface WalkforwardWindowDTO {
   test_from: string;
   test_to: string;
   chosen_params?: Record<string, unknown> | null;
+  chosen_text: string;
   chosen_run_id?: string | null;
   test_run_id?: string | null;
   test_status: string;
@@ -756,6 +772,7 @@ export interface WalkforwardWindowDTO {
 export interface WalkforwardDTO {
   job_id: string;
   name: string;
+  name_label: string;
   family_id: string;
   objective: string;
   train: number;
@@ -808,6 +825,7 @@ export interface ChartMarkerDTO {
   fill_id: number | null;
   note: string;
   tag: string;
+  tag_label: string;
   tag_is_code: boolean;
   charges_paise: number | null;
   trade_pnl_paise: number | null;
@@ -821,6 +839,7 @@ export interface ChartPointDTO {
 
 export interface ChartPlotDTO {
   name: string;
+  label: string;
   kind: "price" | "level";
   instrument_id: number;
   points: ChartPointDTO[];

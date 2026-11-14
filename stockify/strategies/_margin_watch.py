@@ -23,6 +23,7 @@ class _InnerParams:
 
 
 class MarginWatch(S.Strategy):
+    DISPLAY_NAME = "Margin Watch"   # what the UI shows (stockify.display); the catalogue test fails without one
     def on_start(self, ctx):  # noqa: ANN001
         params = dict(ctx.params)
         self.inner_ref = params.pop("inner_ref")

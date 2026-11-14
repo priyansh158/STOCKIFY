@@ -17,7 +17,8 @@ export const strategies: Strategy[] = [
     kind: "python",
     ref: "stockify.strategies.sma_cross:SmaCross",
     name: "sma_cross",
-    doc: "SMA crossover (M2.4): long when the fast SMA is above the slow one.",
+    display_name: "SMA Crossover",
+    doc: "Holds the stock while the fast moving average is above the slow one.",
     params: [
       { name: "symbol", label: "Stock", type: "symbol", default: null, required: true, help: "what to trade, e.g. NSE:RELIANCE" },
       { name: "fast", label: "Fast average (bars)", type: "int", default: null, required: true, help: "bars in the fast moving average" },
@@ -32,7 +33,8 @@ export const strategies: Strategy[] = [
     kind: "python",
     ref: "stockify.strategies.opening_range_breakout:OpeningRangeBreakout",
     name: "opening_range_breakout",
-    doc: "Opening-range breakout on minute bars, MIS (M2.4).",
+    display_name: "Opening Range Breakout",
+    doc: "Buys when price breaks above the high of the first minutes of the day, with a stop on the other side, and exits at a set time.",
     params: [
       { name: "symbol", label: "Stock", type: "symbol", default: null, required: true, help: "the stock to trade intraday, e.g. NSE:RELIANCE" },
       { name: "qty", label: "Shares per trade", type: "int", default: null, required: true, help: "shares per trade" },
@@ -45,7 +47,8 @@ export const strategies: Strategy[] = [
     kind: "python",
     ref: "stockify.strategies.eod_short_straddle:EodShortStraddle",
     name: "eod_short_straddle",
-    doc: "End-of-day NIFTY short straddle on NSE bhavcopy data (M2.4; label `eod_approx`).",
+    display_name: "End-of-Day Short Straddle",
+    doc: "Each evening, sells a NIFTY call and put at the same strike from NSE's end-of-day files, with a stop. Fills are approximate.",
     params: [
       { name: "underlying", label: "Index for the options", type: "underlying", default: "NIFTY", required: false, help: "the index whose options are sold" },
       { name: "lots", label: "Lots per position", type: "int", default: 1, required: false, help: "lots of each option sold" },
@@ -56,11 +59,12 @@ export const strategies: Strategy[] = [
 
 const base: TestRun = {
   run_id: "sma_reliance_daily-20261106T051500-3fa9c1",
-  name: "sma_reliance_daily",
+  name: "sma_reliance_daily", name_label: "SMA reliance daily",
   family_id: "sma_cross/RELIANCE/daily",
   status: "done",
   impl: "engine",
   strategy_ref: "stockify.strategies.sma_cross:SmaCross",
+  strategy_name: "SMA Crossover",
   start_date: "2022-01-03",
   end_date: "2026-09-30",
   price_basis: "adjusted",
@@ -80,24 +84,24 @@ const base: TestRun = {
 
 export const runs: TestRun[] = [
   base,
-  { ...base, run_id: "orb_infy-20261106T060000-a1b2c3", name: "orb_infy", status: "running",
-    strategy_ref: "stockify.strategies.opening_range_breakout:OpeningRangeBreakout", start_date: "2026-08-03",
+  { ...base, run_id: "orb_infy-20261106T060000-a1b2c3", name: "orb_infy", name_label: "ORB infy", status: "running",
+    strategy_ref: "stockify.strategies.opening_range_breakout:OpeningRangeBreakout", strategy_name: "Opening Range Breakout", start_date: "2026-08-03",
     end_date: "2026-10-30", price_basis: "raw", nav_end_paise: null, max_drawdown: null, trades: null,
     costs_total_paise: null, finished_ns: null, finished_ist: null, labels: [] },
-  { ...base, run_id: "eod_straddle_nifty-20261106T061500-0d0e0f", name: "eod_straddle_nifty", status: "queued",
-    strategy_ref: "stockify.strategies.eod_short_straddle:EodShortStraddle", price_basis: "raw",
+  { ...base, run_id: "eod_straddle_nifty-20261106T061500-0d0e0f", name: "eod_straddle_nifty", name_label: "EOD straddle NIFTY", status: "queued",
+    strategy_ref: "stockify.strategies.eod_short_straddle:EodShortStraddle", strategy_name: "End-of-Day Short Straddle", price_basis: "raw",
     nav_end_paise: null, max_drawdown: null, trades: null, costs_total_paise: null, finished_ns: null,
     finished_ist: null, labels: [] },
-  { ...base, run_id: "sma_tcs_daily-20261106T043000-777777", name: "sma_tcs_daily", status: "failed",
+  { ...base, run_id: "sma_tcs_daily-20261106T043000-777777", name: "sma_tcs_daily", name_label: "SMA tcs daily", status: "failed",
     nav_end_paise: null, max_drawdown: null, trades: null, costs_total_paise: null,
     labels: ["fill:bar", "margin:flat(approx)"],
     error: "ZeroDivisionError: integer division or modulo by zero" },
-  { ...base, run_id: "eod_straddle_banknifty-20261105T190000-abcdef", name: "eod_straddle_banknifty",
-    strategy_ref: "stockify.strategies.eod_short_straddle:EodShortStraddle", price_basis: "raw",
+  { ...base, run_id: "eod_straddle_banknifty-20261105T190000-abcdef", name: "eod_straddle_banknifty", name_label: "EOD straddle banknifty",
+    strategy_ref: "stockify.strategies.eod_short_straddle:EodShortStraddle", strategy_name: "End-of-Day Short Straddle", price_basis: "raw",
     nav_end_paise: 96_120_000, max_drawdown: 0.0712, trades: 31, costs_total_paise: 3_420_118,
     labels: ["fill:eod_close", "margin:flat(approx)", "eod_approx", "settlement_fallback"] },
-  { ...base, run_id: "iron_fly_nifty-20261108T040000-a1b2c3", name: "iron_fly_nifty",
-    strategy_ref: "stockify.strategies.iron_fly:IronFly", price_basis: "raw",
+  { ...base, run_id: "iron_fly_nifty-20261108T040000-a1b2c3", name: "iron_fly_nifty", name_label: "Iron fly NIFTY",
+    strategy_ref: "stockify.strategies.iron_fly:IronFly", strategy_name: "Iron Fly", price_basis: "raw",
     nav_end_paise: 101_840_000, max_drawdown: 0.0231, trades: 12, costs_total_paise: 412_660,
     labels: ["fill:snapshot_quote", "margin:staircase", "margin:B1_span_nse_elm", "margin:B4_spanlite_placeholder",
              "margin_steps:B1_span_nse_elm=1", "margin_steps:B4_spanlite_placeholder=1", "margin_spanlite:placeholder",
@@ -166,9 +170,9 @@ export const equity: TestEquity[] = Array.from({ length: 60 }, (_, i) => {
 
 export const fills: TestFill[] = [
   { fill_id: 1, order_id: 1, t_ns: 1_662_000_000_000_000_000, t_ist: "2022-03-14T15:30:00+05:30", instrument_id: 738561, tradingsymbol: "RELIANCE",
-    side: "BUY", qty: 410, price_paise: 239_105, note: "SMA(20) crossed above SMA(50)", tag: "", evidence: "eod_close", at_close: true },
+    side: "BUY", qty: 410, price_paise: 239_105, note: "SMA(20) crossed above SMA(50)", tag: "", tag_label: "", evidence: "eod_close", at_close: true },
   { fill_id: 2, order_id: 2, t_ns: 1_668_000_000_000_000_000, t_ist: "2022-06-20T15:30:00+05:30", instrument_id: 738561, tradingsymbol: "RELIANCE",
-    side: "SELL", qty: 410, price_paise: 251_870, note: "", tag: "exit", evidence: "eod_close", at_close: true },
+    side: "SELL", qty: 410, price_paise: 251_870, note: "", tag: "exit", tag_label: "Exit", evidence: "eod_close", at_close: true },
 ];
 
 export const charges: TestCharge[] = [
@@ -211,6 +215,7 @@ export function detail(id: string): TestRunDetail {
     manifest: run.status === "done"
       ? { engine_build_id: "2c5ed577b5ab", bundle_sha256: "9f2c…", packs: ["41ab…"], duration_ms: 812 }
       : null,
+    manifest_labels: { engine_build_id: "Engine build", bundle_sha256: "Data bundle (fingerprint)", packs: "Event packs", duration_ms: "Time taken (ms)" },
     fill_count: run.status === "done" ? fills.length : null,
     cost_totals: run.status === "done" ? { stt: 98_033, exchange: 3_111, sebi: 98, stamp: 14_700, gst: 3_242, dp: 1_480 } : {},
   };

@@ -81,12 +81,12 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertTrue(c["pnl"]["value"].startswith("+"), c["pnl"])
         self.assertIn("₹1,250.00", c["pnl"]["value"])
 
-    def test_card_with_no_note_says_so_and_only_the_tag_line_is_code(self):
+    def test_card_with_no_note_says_so_and_shows_the_tag_in_plain_words_with_the_stored_one_as_hover(self):
         c = self.r["cardNoNote"]
         self.assertEqual(c["reason"], "Sold 50 (no note from the strategy)")
         self.assertNotIn("reasonIsCode", c)
-        self.assertIn({"label": "Tag", "value": "orb_exit", "code": True}, c["lines"])
-        self.assertEqual([x["label"] for x in c["lines"] if x["code"]], ["Tag"])
+        self.assertIn({"label": "Kind", "value": "Exit", "code": False, "hint": "orb_exit"}, c["lines"])
+        self.assertFalse(any(x["code"] for x in c["lines"]), "no line is shown as code")
         self.assertFalse(any(x["code"] for x in self.r["cardNote"]["lines"]))
 
     def test_an_opening_fill_has_no_profit_line(self):
@@ -244,18 +244,18 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual([r["fill"]["fill_id"] for r in rows], [1, 2, 3, 4])
         self.assertEqual([r["markerId"] for r in rows], [None, "f2", "f3", None])
         # the reason comes from the fill's own order, whether or not the chart has a marker for it
-        self.assertEqual(rows[0]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None})
-        self.assertEqual(rows[1]["why"], {"text": "Range broke up", "tag": None})
+        self.assertEqual(rows[0]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None, "raw": None})
+        self.assertEqual(rows[1]["why"], {"text": "Range broke up", "tag": None, "raw": None})
         # no note: the same sentence as the chart card, with the tag beside it
-        self.assertEqual(rows[2]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "orb_exit"})
+        self.assertEqual(rows[2]["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "Exit", "raw": "orb_exit"})
         self.assertEqual(self.r["joinNone"][0]["markerId"], None)
-        # any tag on a note-less fill is a code label, whether or not the API calls it a system tag
+        # a tag on a note-less fill is shown in the server's plain words, with the stored tag as raw
         strat, bare = self.r["joinStrategyTag"]
-        self.assertEqual(strat["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "sma_exit"})
-        self.assertEqual(bare["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None})
-        tag = lambda lines: [x for x in lines if x["label"] == "Tag"]
-        self.assertEqual(tag(self.r["cardStrategyTag"]), [{"label": "Tag", "value": "sma_exit", "code": True}])
-        self.assertEqual(tag(self.r["cardNoteTag"]), [{"label": "Tag", "value": "orb_entry", "code": False}])
+        self.assertEqual(strat["why"], {"text": "Bought 1 (no note from the strategy)", "tag": "Sma exit", "raw": "sma_exit"})
+        self.assertEqual(bare["why"], {"text": "Bought 1 (no note from the strategy)", "tag": None, "raw": None})
+        tag = lambda lines: [x for x in lines if x["label"] == "Kind"]
+        self.assertEqual(tag(self.r["cardStrategyTag"]), [{"label": "Kind", "value": "Sma exit", "code": False, "hint": "sma_exit"}])
+        self.assertEqual(tag(self.r["cardNoteTag"]), [{"label": "Kind", "value": "Entry", "code": False, "hint": "orb_entry"}])
         self.assertEqual(self.r["joinEmpty"], [])
         self.assertEqual(self.r["joinOrder"], [9, 3])
 

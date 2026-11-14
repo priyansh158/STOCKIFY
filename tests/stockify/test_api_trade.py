@@ -160,7 +160,7 @@ class ReadTests(TradeBase):
         store.upsert_session_day("a", DAY, labels_json=json.dumps(["refdata_stale"]))
         store.put_parity_result("a", DAY, "journal", "pass", {}, created_ns=5)
         (row,) = self.client.get("/api/trade/sessions").json()
-        self.assertEqual(set(row), {"session_id", "name", "status", "pause_reasons", "today_pnl_paise",
+        self.assertEqual(set(row), {"session_id", "name", "name_label", "status", "pause_reasons", "strategy_name", "today_pnl_paise",
                                     "open_positions", "coverage_today", "parity_last", "labels", "created_ist"})
         self.assertEqual((row["status"], row["pause_reasons"], row["parity_last"]), ("PAUSED", ["owner"], "pass"))
         self.assertEqual(row["today_pnl_paise"], -50_000)          # that day's NAV less the day before's

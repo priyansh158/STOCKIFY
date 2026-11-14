@@ -3,6 +3,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { istWhenEpoch, rupees } from "@/lib/format";
+import { runIdTail } from "@/lib/runid";
+import { statusWords, wordsOf } from "@/lib/names";
 import { familyIdParam, getFamily, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sessionRows, unlockRows } from "@/lib/research";
 import type { FamilyDetailDTO, TrialRowDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Table, toneClass } from "@/components/ui";
@@ -38,11 +40,11 @@ function runStatusTone(status: string): "up" | "down" | "warn" | undefined {
 }
 
 function RunName({ t }: { t: TrialRowDTO }) {
-  const name = t.name?.trim() || t.run_id;
+  const name = t.name_label || t.name || t.run_id;
   return (
     <>
-      <Link href={`/tests/${encodeURIComponent(t.run_id)}`}>{name}</Link>
-      {t.name?.trim() && <div className="stk-label">{t.run_id}</div>}
+      <Link href={`/tests/${encodeURIComponent(t.run_id)}`} title={t.name ? `Saved as ${t.name} (run ${t.run_id})` : undefined}>{name}</Link>
+      {t.name && <div className="stk-label">Run {runIdTail(t.run_id, t.name)}</div>}
     </>
   );
 }
@@ -71,7 +73,7 @@ function Tries({ fam }: { fam: FamilyDetailDTO }) {
             )}
           </th>
           <td>
-            <Chip tone={runStatusTone(t.status)}>{t.status}</Chip>
+            <Chip tone={runStatusTone(t.status)}>{statusWords(t.status)}</Chip>
           </td>
           <td className="num">
             {objectiveText(t.objective_value, fam.objective)}
@@ -98,7 +100,7 @@ function Others({ rows }: { rows: TrialRowDTO[] }) {
           </th>
           <td data-wrap>{roleWords(t.role)}</td>
           <td>
-            <Chip tone={runStatusTone(t.status)}>{t.status}</Chip>
+            <Chip tone={runStatusTone(t.status)}>{statusWords(t.status)}</Chip>
           </td>
           <Net paise={t.net_pnl_paise} />
           <td className="num">{t.days.toLocaleString("en-IN")}</td>
@@ -121,13 +123,8 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
   return (
     <>
       <PageHead
-        title={named || fam.family_id}
-        lede={
-          <>
-            {named ? <span className="stk-label">{fam.family_id}. </span> : null}
-            Every try of this idea, which one was picked, and how often the held-back days were looked at.
-          </>
-        }
+        title={fam.title || named || fam.family_id}
+        lede="Every try of this idea, which one was picked, and how often the held-back days were looked at."
       />
       <div className="stk-stack">
         <section className="stk-section" aria-labelledby="tries-h">
@@ -179,7 +176,7 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
                 {unlocks.map((u, i) => (
                   <tr key={`${i}-${u.when_ns}`}>
                     <td>{when(u.when_ns)}</td>
-                    <td data-wrap>{u.run_id ? <Link href={`/tests/${encodeURIComponent(u.run_id)}`}>{u.run_id}</Link> : "—"}</td>
+                    <td data-wrap>{u.run_id ? <Link href={`/tests/${encodeURIComponent(u.run_id)}`}>Open the run</Link> : "—"}</td>
                     <td data-wrap>{u.reason || "—"}</td>
                   </tr>
                 ))}
@@ -212,9 +209,9 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
                   {sessions.map((s) => (
                     <tr key={s.session_id}>
                       <th scope="row" data-wrap>
-                        <Link href={`/trade/${encodeURIComponent(s.session_id)}`}>{s.name?.trim() || s.session_id}</Link>
+                        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} title={s.name ? `Saved as ${s.name}` : undefined}>{s.name_label || s.name || s.session_id}</Link>
                       </th>
-                      <td>{s.status ? s.status.toLowerCase() : "—"}</td>
+                      <td>{s.status ? wordsOf(s.status) : "—"}</td>
                       <td>{when(s.created_ns)}</td>
                     </tr>
                   ))}

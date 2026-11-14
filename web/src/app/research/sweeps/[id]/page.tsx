@@ -23,7 +23,7 @@ function plural(n: number, one: string, many: string): string {
 
 /** A setting's value as the API labels it (none, true, false, or the text). */
 function valueLabel(v: unknown): string {
-  return v === null || v === undefined ? "none" : typeof v === "boolean" ? (v ? "true" : "false") : String(v);
+  return v === null || v === undefined ? "None" : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v);
 }
 
 function Page({ title, lede, children }: { title: ReactNode; lede?: ReactNode; children?: ReactNode }) {
@@ -61,14 +61,7 @@ function Pick({ sweep, x, y }: { sweep: SweepDTO; x: string; y: string | null })
     const a = sweep.axes[0];
     return (
       <p className="stk-fine">
-        This sweep changes one setting, {a.label}
-        {a.label !== a.path && (
-          <>
-            {" "}
-            (<span className="stk-mono">{a.path}</span>)
-          </>
-        )}
-        , so the grid is a single row.
+        This sweep changes one setting, {a.label.toLowerCase()}, so the grid is a single row.
       </p>
     );
   }
@@ -91,7 +84,7 @@ function Results({ sweep, scored, pickedRunId }: { sweep: SweepDTO; scored: stri
         <Table
           caption="Every trial of this sweep: its settings, its score and what it did"
           head={[
-            ...axes.map((a) => ({ label: a.label, sub: a.label === a.path ? undefined : a.path })),
+            ...axes.map((a) => ({ label: a.label })),
             { label: upperFirst(scored), num: true },
             ...(sweep.objective === "sharpe" ? [] : [{ label: "Sharpe ratio", num: true }]),
             ...(sweep.objective === "net_pnl" ? [] : [{ label: "Net profit or loss", num: true }]),
@@ -179,7 +172,7 @@ function Full({ sweep, warning, trialParam }: { sweep: SweepDTO; warning: boolea
   const none = c.cells.flat().every((v) => v === null);
   const caption = `${upperFirst(scored)}${c.hidden_axes.length > 0 ? ", best over the other settings" : ""}`;
   return (
-    <Page title={sweep.name || "Parameter sweep"} lede={`${c.y === null ? "Each square is one setting" : "Each square is one pair of settings"}. Scored by: ${scored}.`}>
+    <Page title={sweep.name_label || sweep.name || "Parameter sweep"} lede={`${c.y === null ? "Each square is one setting" : "Each square is one pair of settings"}. Scored by: ${scored}.`}>
       {warning && (
         <Notice tone="amber" title="That choice of settings was not used.">
           Either this sweep has no setting by that name, or the same setting was chosen for both columns and rows. The grid below shows
