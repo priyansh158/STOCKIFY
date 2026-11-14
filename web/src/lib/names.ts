@@ -40,10 +40,14 @@ export function monthYear(iso: string): string {
   return m && Number(m[2]) >= 1 && Number(m[2]) <= 12 ? `${MONTHS[Number(m[2]) - 1]} ${m[1]}` : "";
 }
 
-/** The name the forms suggest: "Opening Range Breakout · RELIANCE · Jun 2026" (whatever parts are known). */
+/**
+ * The name the forms suggest, in plain words: "Opening Range Breakout on RELIANCE from Jun 2026" (whatever parts are
+ * known). Only letters, digits and spaces, so the lab keeps it as the run name and shows it back unchanged.
+ */
 export function suggestedName(strategyName: string, symbolsText: string, from?: string): string {
   const first = symbolsText.split(",")[0]?.trim().split(":").pop()?.trim() ?? "";
-  return [strategyName, first, from ? monthYear(from) : ""].filter(Boolean).join(" · ");
+  const month = from ? monthYear(from) : "";
+  return [strategyName, first && `on ${first}`, month && `from ${month}`].filter(Boolean).join(" ");
 }
 
 /** The longest run name the lab accepts (stockify.runconfig). */
@@ -51,8 +55,8 @@ export const RUN_NAME_MAX = 64;
 
 /**
  * A run's name as a safe folder-name segment, which is what the lab requires of a run name (letters, digits, "." "_" "-",
- * starting with a letter or digit, 64 at most): spaces and other marks become "_". "Opening Range Breakout · RELIANCE · Jun 2026"
- * gives "Opening_Range_Breakout_RELIANCE_Jun_2026". Never empty ("test" when nothing is left).
+ * starting with a letter or digit, 64 at most): spaces and other marks become "_". "Opening Range Breakout on RELIANCE from Jun 2026"
+ * gives "Opening_Range_Breakout_on_RELIANCE_from_Jun_2026". Never empty ("test" when nothing is left).
  */
 export function runNameSlug(text: string): string {
   const s = text.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[^A-Za-z0-9]+/, "").replace(/[_.-]+$/, "");

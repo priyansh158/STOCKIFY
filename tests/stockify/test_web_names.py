@@ -44,12 +44,13 @@ class NamesHelperChecks(unittest.TestCase):
 
     def test_the_forms_suggest_a_friendly_name_and_the_lab_gets_a_safe_one(self):
         self.assertEqual(self.r["month"], ["Jun 2026", "", ""])
-        self.assertEqual(self.r["suggested"], ["Opening Range Breakout · RELIANCE · Jun 2026", "Buy and Hold",
-                                               "X · NIFTY 50 · Jan 2024"])
+        self.assertEqual(self.r["suggested"], ["Opening Range Breakout on RELIANCE from Jun 2026",
+                                               "Buy and Hold", "X on NIFTY 50 from Jan 2024"])
+        self.assertNotIn("·", "".join(self.r["suggested"]))        # no dot-joined names (Hallmark gate 63)
         from stockify import paths
         for slug in self.r["slug"]:
             self.assertTrue(paths.safe_segment(slug, 64), slug)     # exactly the lab's rule for a run name
-        self.assertEqual(self.r["slug"][0], "Opening_Range_Breakout_RELIANCE_Jun_2026")
+        self.assertEqual(self.r["slug"][0], "Opening_Range_Breakout_on_RELIANCE_from_Jun_2026")
         self.assertEqual(self.r["slug"][1], "test")
         self.assertEqual(self.r["slug"][4], "run_CON")
 
