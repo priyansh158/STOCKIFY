@@ -489,7 +489,7 @@ class SweepApiTests(SandboxedDBTest):
         from server.routers.research import _chosen_text
         from stockify.strategies import _catalogue
         schema = {p["name"]: p for p in _catalogue.schema_of("python", "stockify.strategies.buy_and_hold:BuyAndHold")}
-        self.assertEqual(_chosen_text({"interval_s": 300, "invest": "0.95"}, schema),
+        self.assertEqual(_chosen_text({"strategy.params.interval_s": 300, "strategy.params.invest": "0.95"}, schema),
                          "Bar length = 5 minutes, Share of cash to invest (%) = 95%")
         self.assertEqual(_chosen_text({"fast": 5, "ok": True}, {}), "Fast = 5, Ok = Yes")
 

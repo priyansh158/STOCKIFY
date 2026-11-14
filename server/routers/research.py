@@ -350,7 +350,7 @@ def _chosen_text(params: dict | None, schema: dict[str, dict]) -> str:
     labels = {n: p["label"] for n, p in schema.items() if p.get("label")}
     out = []
     for k, v in params.items():
-        param = schema.get(k)
+        param = schema.get(k.removeprefix("strategy.params."))
         shown = display.param_value_text(param, v) if param and (param.get("choices") or param.get("percent"))             else ("none" if v is None else display.setting_text(k, v))
         out.append(f"{display.field_label(k, labels)} = {shown}")
     return ", ".join(out)
