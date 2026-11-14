@@ -417,6 +417,8 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
   // shares it, under each amount only when the rows differ
   const scanKinds = Array.from(new Set(rows.map((r) => scanLabel(r.step))));
   const oneKind = scanKinds.length === 1 ? scanKinds[0] : undefined;
+  // "How it was priced" only when some row has a step to name (a column of dashes says nothing)
+  const anyStep = rows.some((r) => marginStep(r.step)?.text);
   if (days.length === 0 && held.length === 0) return null;
   return (
     <section className="stk-section">
@@ -443,7 +445,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
           head={[
             { label: "Day" },
             { label: "Underlying" },
-            { label: "How it was priced" },
+            ...(anyStep ? [{ label: "How it was priced" }] : []),
             { label: "Main amount", sub: oneKind, num: true },
             { label: "Short-option minimum", num: true },
             { label: "Extreme-loss margin", num: true },
@@ -460,12 +462,12 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
                   <tr key={`${d}-${r.underlying_id}`}>
                     <td className="stk-nowrap">{dayWords(d)}</td>
                     <td>{r.underlying ?? `underlying ${r.underlying_id}`}</td>
-                    <td data-wrap title={marginStep(r.step)?.detail}>
+                    {anyStep && <td data-wrap title={marginStep(r.step)?.detail}>
                       {marginStep(r.step)?.text ?? "—"}
                       {r.step && marginStep(r.step)!.text !== r.step && (
                         <span className="sr-only"> ({marginStep(r.step)!.detail})</span>
                       )}
-                    </td>
+                    </td>}
                     <td className="num">
                       {rupees(r.scan_paise)}
                       {!oneKind && <div className="stk-label">{scanLabel(r.step)}</div>}
@@ -478,7 +480,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
                 ))}
                 {today.length > 1 && (
                   <tr className="sub">
-                    <td colSpan={7}>Total for {dayWords(d)}</td>
+                    <td colSpan={anyStep ? 7 : 6}>Total for {dayWords(d)}</td>
                     <td className="num">{rupees(total)}</td>
                   </tr>
                 )}

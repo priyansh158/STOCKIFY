@@ -175,7 +175,9 @@ export function LineChart({
           </g>
         ))}
         {xTicks.map((t) => (
-          <text key={t} x={px(t)} y={H - 8} className="stk-lc-tick" textAnchor="middle">{xFormat(t)}</text>
+          // a date near the right edge ends there instead of being cut off
+          <text key={t} x={px(t) > W - PAD.r - 48 ? W - 2 : px(t)} y={H - 8} className="stk-lc-tick"
+            textAnchor={px(t) > W - PAD.r - 48 ? "end" : "middle"}>{xFormat(t)}</text>
         ))}
         {baseline !== undefined && (
           <line x1={PAD.l} x2={W - PAD.r} y1={py(baseline)} y2={py(baseline)} className="stk-lc-base" />
