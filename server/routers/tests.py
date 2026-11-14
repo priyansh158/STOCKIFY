@@ -19,7 +19,6 @@ from server.schemas import (ChartBarDTO, ChartChunkDTO, ChartInstrumentDTO, Char
                             ComparisonDTO, RunChartDTO, RunResearchDTO, SensitivityDTO, SensitivityRowDTO, StrategyDTO, TestChargeDTO, TestCreatedDTO, TestEquityDTO, TestFillDTO, TestLogsDTO,
                             TestGreekDTO, TestMarginDTO, TestRunDTO, TestRunDetailDTO, TestSettlementDTO)
 from stockify.reporting import figures
-from stockify.commands import stockify_command
 from stockify.reporting.settlements import DELIVERED as _DELIVERED  # noqa: F401  (still importable from here)
 from stockify.reporting.settlements import SETTLED as _SETTLED  # noqa: F401
 from stockify.reporting.settlements import read_settlements
@@ -227,6 +226,7 @@ def list_tests(status: str | None = Query(None), family: str | None = Query(None
 @router.post("/api/tests", response_model=TestCreatedDTO, status_code=201)
 def create_test(config: dict = Body(...)) -> TestCreatedDTO:
     from stockify import runconfig, runs
+    from stockify.research import holdout
     from stockify.strategies import _catalogue
     from server.services.test_queue import get_queue
     try:
@@ -244,7 +244,14 @@ def create_test(config: dict = Body(...)) -> TestCreatedDTO:
         raise HTTPException(status_code=422, detail=[f"strategy.params.{p}" for p in problems])
     try:
         run_id = runs.queue(config)
-    except runconfig.RunConfigError as e:                           # the locked holdout (M6.6): 422, no traceback
+    except holdout.HoldoutLocked:                                   # the locked holdout (M6.6): 422, no traceback
+        # The page cannot unlock it (the reason must be written in the config), so it is told in plain words and
+        # no terminal command (D-145); the command line keeps the full text with how to unlock.
+        hold = holdout.holdout_from()
+        since = f" (from {hold.isoformat()})" if hold else ""
+        raise HTTPException(status_code=422, detail=[
+            f"data: this test reaches into the days held back for the final check{since}; choose dates that end before then"])
+    except runconfig.RunConfigError as e:
         raise HTTPException(status_code=422, detail=e.problems)
     get_queue().submit(run_id)
     return TestCreatedDTO(run_id=run_id)
@@ -324,7 +331,7 @@ def test_sensitivity(run_id: str) -> SensitivityDTO:
         raise HTTPException(status_code=404, detail=f"no test run {run_id!r}")
     _row_or_404(run_id)
     not_run = HTTPException(status_code=404,
-                            detail=f"not run yet; run `{stockify_command(f'sensitivity --run {run_id}')}`")
+                            detail="the cost check has not been run for this test yet")
     try:
         d = _clean(json.loads((folder / "sensitivity.json").read_text(encoding="utf-8")))
         if d["run_id"] != run_id or d["verdict"] not in sensitivity.VERDICTS:
@@ -647,8 +654,8 @@ def cancel_test(run_id: str) -> TestRunDTO:
         latest = store.get_run(run_id) or row
         if latest["status"] == "running" and run_id not in queue.running():
             raise HTTPException(status_code=409, detail=(
-                f"test run {run_id} is running but was not started by this API (for example by "
-                f"`{stockify_command('run')}` in a terminal); stop it where it was started"))
+                f"test run {run_id} is running but was not started by this app (it was started from outside it); "
+                "stop it where it was started"))
         raise HTTPException(status_code=409, detail=f"test run {run_id} is {latest['status']}; only waiting or "
                                                     "running tests can be cancelled")
     return run_dto(store.get_run(run_id) or row)

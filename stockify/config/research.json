@@ -11,4 +11,5 @@
   "coverage": {"ok_pct": "99", "default_days": 60, "max_days": 400},
   "export": {"max_total_mib": 1024},
   "pool": {"max_run_hours": 6},
-  "reporting": {"min_days_yearly": 240} }
+  "reporting": {"min_days_yearly": 240},
+  "web_jobs": {"max_research_jobs": 1, "max_data_jobs": 1} }

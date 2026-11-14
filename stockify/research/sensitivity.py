@@ -221,7 +221,7 @@ def _money(paise: int) -> str:
 # ---- the suite ----------------------------------------------------------------------------------------------------
 
 def run_suite(run_id: str, *, workers: int | None = None, unlock_reason: str | None = None,
-              pool_run=None, now_ns: int | None = None) -> SensitivityResult:  # noqa: ANN001
+              pool_run=None, now_ns: int | None = None, on_job=None) -> SensitivityResult:  # noqa: ANN001
     """Run every variant of a finished run through `pool_run`. SensitivityError for an unknown or unfinished run;
     HoldoutLocked (a RunConfigError) when the run reaches the locked holdout and no reason is given."""
     from stockify import timeutil
@@ -252,6 +252,8 @@ def run_suite(run_id: str, *, workers: int | None = None, unlock_reason: str | N
                                "spec_json": json.dumps({"run_id": run_id, "variants": [v.key for v in planned[1:]]},
                                                        sort_keys=True)})
     try:                                    # from here on a failure closes the job as failed, never leaves it running
+        if on_job is not None:
+            on_job(job_id)                  # the web app learns the id here
         fills = applicable_fill_models(cfg)
         rows: dict[str, SensitivityRow] = {}
         runnable: list[Variant] = []

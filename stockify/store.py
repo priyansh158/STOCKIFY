@@ -498,6 +498,12 @@ def list_research_jobs(kind: str | None = None, offset: int = 0, limit: int = 50
     return [dict(r) for r in _all(sql, (*args, limit, offset))]
 
 
+def run_status_counts(job_id: str) -> dict[str, int]:
+    """How many of a research job's runs are in each status (the pool's children carry the job id): the progress
+    of a sweep, a walk-forward or a sensitivity check while it runs."""
+    return {r[0]: r[1] for r in _all("SELECT status, COUNT(*) FROM runs WHERE job_id = ? GROUP BY status", (job_id,))}
+
+
 def count_research_jobs(kind: str | None = None) -> int:
     """How many research_jobs rows there are (of one kind, when given)."""
     sql, args = "SELECT COUNT(*) FROM research_jobs", ()

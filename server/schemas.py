@@ -7,7 +7,7 @@ files list the same field names in the same order.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -908,4 +908,63 @@ class SessionChartDTO(RunChartDTO):
     days: list[str]
     paper: bool
     live: bool
+
+# ── Jobs the web app starts (D-145): a sweep, a walk-forward, a cost check, an NSE download, a quality report ──
+
+class WebJobDTO(BaseModel):
+    """A job's state. `job_id` is the research job's id once it has one (the sweep's own page is named by it), else a
+    temporary id; `target` is what it works on (a run id, a sweep id, a date range, a date). `done` and `total` count
+    runs, or files for a download (None when not known); `plain` is the one sentence the page shows; `error` is a plain
+    reason, never exception text."""
+    job_id: str
+    kind: Literal["sweep", "walkforward", "sensitivity", "backfill", "report"]
+    status: Literal["running", "done", "failed", "interrupted"]
+    target: str
+    done: int | None = None
+    total: int | None = None
+    plain: str
+    error: str | None = None
+
+
+class SweepRequestDTO(BaseModel):
+    """Start a sweep from a finished test: `axes` maps `strategy.params.<name>` to the values to try. Decimals are
+    strings ('0.05'); a list may hold at most 100 values and there may be at most 8 axes."""
+    base_run_id: str = Field(..., max_length=128)
+    name: str | None = Field(None, max_length=40)
+    axes: dict[str, Annotated[list[Any], Field(min_length=1, max_length=100)]] = Field(..., min_length=1, max_length=8)
+    objective: Literal["sharpe", "sortino", "calmar", "cagr", "net_pnl"] = "sharpe"
+    confirm: bool = Field(False, description="required to run more tries than the limit that asks first")
+
+
+class WalkforwardRequestDTO(BaseModel):
+    """Walk a finished sweep forward. Unset sizes and objective come from research.json; the span defaults to the
+    sweep's own dates."""
+    sweep_job_id: str = Field(..., max_length=64)
+    train_days: int | None = Field(None, ge=1, le=10000)
+    test_days: int | None = Field(None, ge=1, le=10000)
+    step_days: int | None = Field(None, ge=1, le=10000)
+    objective: Literal["sharpe", "sortino", "calmar", "cagr", "net_pnl"] | None = None
+    first_day: str | None = Field(None, max_length=10)
+    last_day: str | None = Field(None, max_length=10)
+
+
+class BackfillRequestDTO(BaseModel):
+    first_day: str = Field(..., max_length=10, description="IST date YYYY-MM-DD")
+    last_day: str = Field(..., max_length=10, description="IST date YYYY-MM-DD")
+
+
+class QualityReportRequestDTO(BaseModel):
+    day: str = Field(..., max_length=10, description="IST date YYYY-MM-DD")
+
+
+class ResearchLimitsDTO(BaseModel):
+    """What the sweep and walk-forward forms need from research.json: the most tries one sweep may have, the count
+    above which the form asks for a tick, the walk-forward defaults, and the first day that is held back."""
+    max_trials: int
+    confirm_above: int
+    train_days: int
+    test_days: int
+    step_days: int
+    wf_objective: str
+    holdout_from: str | None = None
 # </block>

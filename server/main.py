@@ -31,6 +31,7 @@ from server.routers import (
     kite as kite_router,
     portfolio,
     research as research_router,
+    jobs as jobs_router,
     search,
     tests as tests_router,
     trade as trade_router,
@@ -69,6 +70,8 @@ async def lifespan(app: FastAPI):
 
         store.init_db()
         get_queue().recover()
+        from server.services import web_jobs
+        web_jobs.recover()          # a sweep this API started and a restart cut short is marked interrupted
     except Exception:
         import logging
 
@@ -124,4 +127,5 @@ app.include_router(alerts.router)
 app.include_router(data_router.router)
 app.include_router(tests_router.router)
 app.include_router(research_router.router)
+app.include_router(jobs_router.router)
 app.include_router(trade_router.router)

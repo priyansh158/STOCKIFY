@@ -311,6 +311,9 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
     d["summary"] = WalkforwardSummaryDTO(**s)
+    if "`" in d["plain"].get("sensitivity", ""):      # the report file names a command; the page does not (D-145)
+        d["plain"]["sensitivity"] = ("The cost check isn't stored with a walk-forward job. Open the page of one of its "
+                                     "tests and use \"Run sensitivity check\" to see how costs change a result.")
     d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None)}) for w in d["windows"]]
     return WalkforwardDTO(**d)
 
