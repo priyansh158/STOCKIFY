@@ -7,6 +7,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Empty, PageHead, Panel, Stat, StatGrid, Table } from "@/components/ui";
+import JobWatch from "@/components/JobWatch";
 import { rupees } from "@/lib/format";
 import { dayNumber, getWalkforward, sentenceOrDash, wfCurve, type WalkforwardLoad } from "@/lib/research";
 import Curve from "./Curve";
@@ -101,7 +102,12 @@ export default async function WalkforwardPage({ params }: { params: Promise<{ id
       <Shell title="Walk-forward report" lede={`Job ${id}`}>
         <Panel tone={running ? "info" : load.status === "failed" ? "red" : "amber"}>
           {running ? (
-            <p role="status">Still running. The report appears here once every window has finished; reload to check.</p>
+            <div className="stk-stack-s">
+              <p>Still running. The report appears here once every window has finished.</p>
+              <JobWatch jobId={id} />
+            </div>
+          ) : load.status === "interrupted" ? (
+            <p>This job was stopped before it finished, because STOCKIFY was closed. Open its sweep and choose &ldquo;Walk forward&rdquo; to start it again.</p>
           ) : load.status === "failed" ? (
             <p>Failed{load.reason ? `: ${load.reason}` : ""}. A failed job has no report.</p>
           ) : (

@@ -368,7 +368,7 @@ const NOT_FINISHED = /^sweep not finished yet \(status: ([a-z_]+)\)(?:: ([\s\S]*
 /** Which plain state a sweep's 404 detail from the server stands for (see sweep_detail in server/routers/research.py). */
 export function sweepMissingKind(detail: string): SweepGone {
   const m = NOT_FINISHED.exec(detail.trim());
-  if (m) return m[1] === "failed" ? "failed" : "running";
+  if (m) return m[1] === "failed" || m[1] === "interrupted" ? "failed" : "running";
   if (detail.trim() === "the sweep has no readable stored result") return "unreadable";
   return "missing";
 }
@@ -376,5 +376,5 @@ export function sweepMissingKind(detail: string): SweepGone {
 /** The plain reason a failed sweep carries in its 404 detail (a sentence from the server's fixed table), or null. */
 export function sweepFailureReason(detail: string): string | null {
   const m = NOT_FINISHED.exec(detail.trim());
-  return m && m[1] === "failed" && m[2]?.trim() ? m[2].trim() : null;
+  return m && (m[1] === "failed" || m[1] === "interrupted") && m[2]?.trim() ? m[2].trim() : null;
 }

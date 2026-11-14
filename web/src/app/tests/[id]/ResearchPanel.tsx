@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
-import { sensitivityCommand } from "@/lib/commands";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { startFailure, startSensitivity, useJob } from "@/lib/jobs";
 import { pct, rupees } from "@/lib/format";
 import { bucketTone, getRunResearch, getSensitivity, sentenceOrDash } from "@/lib/research";
 import type { RegimeBucketDTO, RunResearchDTO, SensitivityDTO } from "@/lib/types";
 import { IntervalBar } from "@/components/charts";
+import JobStatus from "@/components/JobStatus";
 import { Chip, Loading, Panel, Skeleton, Table } from "@/components/ui";
 
 /** The five regime splits: key in the DTO, its heading and the first column's name. What each split is for comes from
@@ -49,6 +50,13 @@ export default function ResearchPanel({ runId }: { runId: string }) {
   const [research, setResearch] = useState<Load<RunResearchDTO>>({ state: "loading" });
   const [sens, setSens] = useState<Load<SensitivityDTO | null>>({ state: "loading" });
 
+  const loadSens = useCallback(() => {
+    getSensitivity(runId).then(
+      (value) => setSens({ state: "ready", value }),
+      (e) => setSens({ state: "error", message: e instanceof Error ? e.message : String(e) }),
+    );
+  }, [runId]);
+
   useEffect(() => {
     let stop = false;
     const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -56,14 +64,11 @@ export default function ResearchPanel({ runId }: { runId: string }) {
       (value) => !stop && setResearch({ state: "ready", value }),
       (e) => !stop && setResearch({ state: "error", message: msg(e) }),
     );
-    getSensitivity(runId).then(
-      (value) => !stop && setSens({ state: "ready", value }),
-      (e) => !stop && setSens({ state: "error", message: msg(e) }),
-    );
+    loadSens();
     return () => {
       stop = true;
     };
-  }, [runId]);
+  }, [runId, loadSens]);
 
   return (
     <section className="stk-section stk-trust" aria-labelledby="trust-h">
@@ -80,7 +85,7 @@ export default function ResearchPanel({ runId }: { runId: string }) {
         )}
         {research.state === "error" && <LoadError what="the research for this run" detail={research.message} />}
         {research.state === "ready" && <Headline r={research.value} />}
-        <Sensitivity runId={runId} load={sens} />
+        <Sensitivity runId={runId} load={sens} onDone={loadSens} />
         {research.state === "ready" && <Swing r={research.value} />}
         {research.state === "ready" && <Regimes r={research.value} />}
       </div>
@@ -225,7 +230,40 @@ function RegimeTable({ rows, first, caption }: { rows: RegimeBucketDTO[]; first:
   );
 }
 
-function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO | null> }) {
+/** No check yet: a button that runs it on the server. It re-runs the test several times with higher costs and worse
+ * fills, so it takes a few minutes; the progress is shown here and the result replaces this block when it ends. */
+function RunCheck({ runId, onDone }: { runId: string; onDone: () => void }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const { job, error, begin, clear, running } = useJob("sensitivity", runId, (j) => j.status === "done" && onDone());
+  async function run() {
+    setStarting(true);
+    setProblem(null);
+    try {
+      begin(await startSensitivity(runId));
+    } catch (e) {
+      setProblem(startFailure(e));
+    } finally {
+      setStarting(false);
+    }
+  }
+  return (
+    <div className="stk-stack-s">
+      <p>No sensitivity check for this run yet.</p>
+      <p className="stk-fine">It re-runs the test several times with higher costs and worse fills, to see whether the result still holds. It takes a few minutes.</p>
+      {job && <JobStatus job={job} error={error} />}
+      {problem && <p role="alert" className="stk-warn">{problem}</p>}
+      <div>
+        <button type="button" className="stk-btn" data-tone="primary" disabled={starting || running}
+          onClick={() => { clear(); void run(); }}>
+          {starting ? "Starting…" : running ? "Running the check…" : job?.status === "failed" || job?.status === "interrupted" ? "Run the check again" : "Run sensitivity check"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Sensitivity({ runId, load, onDone }: { runId: string; load: Load<SensitivityDTO | null>; onDone: () => void }) {
   let body: ReactNode;
   if (load.state === "loading") {
     body = <Loading label="Loading the sensitivity check"><Skeleton size="l" /></Loading>;
@@ -233,13 +271,7 @@ function Sensitivity({ runId, load }: { runId: string; load: Load<SensitivityDTO
     body = <LoadError what="the sensitivity check" detail={load.message} />;
   } else if (load.value === null) {
     body = (
-      <div className="stk-stack-s">
-        <p>No sensitivity check for this run yet.</p>
-        <p className="stk-fine">
-          To run it, use this command in a terminal in the STOCKIFY folder. It re-runs the test with higher costs and worse fills.
-        </p>
-        <code className="stk-mono stk-break">{sensitivityCommand(runId)}</code>
-      </div>
+      <RunCheck runId={runId} onDone={onDone} />
     );
   } else {
     const s = load.value;

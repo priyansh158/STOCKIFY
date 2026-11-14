@@ -2,7 +2,6 @@
 // runs this file directly (type stripping); called by tests/stockify/test_research_checks.py, which holds the
 // hand-checked answers. The helpers live apart from research.ts because that file imports the fetch wrapper.
 import { canStopAll } from "../../web/src/lib/stopAll.ts";
-import { START_RECORDER, SWEEP_COMMAND, WALKFORWARD_COMMAND, nseFetchCommand, sensitivityCommand, stockifyCommand } from "../../web/src/lib/commands.ts";
 import { readFileSync } from "node:fs";
 import { pathSegment } from "../../web/src/lib/pathSeg.ts";
 import { COMPARE_MAX, COMPARE_MIN, DIVERGING, compareReady, SERIES_TOKENS, bucketTone, compareHref, compareIds, costScale, divergingStep, endLabelText, familyApiPath, familyHref, familyIdParam, heatColourStep, heatFormat, heatGridProps, heatMoreWord, jobHref, listCapNote, markerIndexes, objectiveText, pboHowText, pboNoteLine, roleWords, runLabels, scoreRanks, sentenceOrDash, sessionRows, splitSegments, spreadLabels, sweepFailureReason, sweepMissingKind, unlockRows, valuesDiffer, wfCurve } from "../../web/src/lib/researchHelpers.ts";
@@ -156,9 +155,7 @@ const out = {
   },
   capNote: [[50, 50, "families", "first"], [50, 130, "sweeps", "latest"], [3, 3, "sweeps", "latest"], [50, 51, "walk-forward runs", "latest"], [0, 0, "sweeps", "latest"], [50, null, "sweeps", "latest"]]
     .map(([n, t, w, o]) => listCapNote(n as number, t as number | null, w as string, o as "first" | "latest")),
-  // the commands the UI prints, from the one helper (a corrupted backslash shows up here)
-  dataPageCommands: [START_RECORDER, nseFetchCommand("YYYY-MM-DD"), SWEEP_COMMAND, WALKFORWARD_COMMAND, sensitivityCommand(12), stockifyCommand("x")],
-  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/app/research/family/page.tsx", "web/src/lib/researchHelpers.ts", "web/src/lib/commands.ts"]
+  webSourceHasStrayCR: ["web/src/app/data/page.tsx", "web/src/app/research/page.tsx", "web/src/app/research/family/page.tsx", "web/src/lib/researchHelpers.ts", "web/src/lib/sweepForm.ts"]
     .map((f) => /\r(?!\n)/.test(readFileSync(new URL(`../../${f}`, import.meta.url), "utf-8"))),
   // the family page's id: encoded once into the link, read once by the page (URLSearchParams decodes as Next does)
   familyRoundTrip: ["sweep/ab12/sharpe", "a b&c=d?e#f", "100%", "100%25", "strat/ds-1m-RELIANCE/sharpe", "ü/x+y"]

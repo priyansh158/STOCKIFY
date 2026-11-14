@@ -134,6 +134,8 @@ def _stored_sweep(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail="no such sweep")
     if job.get("status") != "done":
         detail = f"sweep not finished yet (status: {job.get('status')})"
+        if job.get("status") == "interrupted":
+            detail += ": it was stopped before it finished, because STOCKIFY was closed"
         if job.get("status") == "failed" and job.get("error"):
             from stockify.research import plain
             detail += f": {plain.plain_reason(job['error'])}"          # a plain reason from the fixed table, never the raw text

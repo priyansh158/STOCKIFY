@@ -43,7 +43,7 @@ export default async function AlertsPage() {
         title="Geo alerts"
         lede={
           <>
-            The always-on monitor (<code>python -m geo_monitor</code>) reads Google News for world events that could
+            The always-on news monitor reads Google News for world events that could
             disrupt Indian stocks. It emails you High and Critical alerts.
             {items.length > 0 && ` ${items.length} shown.`}
           </>
@@ -59,7 +59,8 @@ export default async function AlertsPage() {
           <p className="stk-empty">
             No alerts yet.
             <br />
-            Run the monitor with Gemini + email configured in <code>.env</code>.
+            The news monitor is its own background process, started together with STOCKIFY when you turn it on, and it
+            needs Gemini and email set up in <code>.env</code>.
           </p>
         </Panel>
       ) : (
