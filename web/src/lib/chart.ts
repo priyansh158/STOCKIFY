@@ -196,6 +196,15 @@ export function chartViewState(model: ChartModel | null | "error"): ChartViewSta
   return model.markers.length === 0 ? "empty" : "full";
 }
 
+/**
+ * What a paper session's chart area says when the server has no chart for it yet (its chart answers 404 until the session
+ * has recorded a day). A session that is created or armed has simply not started, which is not an error; any other state
+ * returns null, and the chart keeps its generic "not found" message.
+ */
+export function sessionNotStartedNote(status: string | null | undefined): string | null {
+  return status === "CREATED" || status === "ARMED" ? "This session has not started yet; prices appear once it is running." : null;
+}
+
 /** The interval the API leaves null when there are no bars (no recording); a minute, the runner's default. */
 export const DEFAULT_INTERVAL_S = 60;
 

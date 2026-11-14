@@ -76,6 +76,8 @@ export type PriceChartProps = {
   headingLevel?: 2 | 3;
   /** Hide the "Trades on this chart" list when the page already has its own table of the same trades. */
   hideTradesList?: boolean;
+  /** Said, as a plain note and not an error, when the server has no chart yet (it answers "not found"): a session that has not started. */
+  notFoundNote?: string;
 };
 
 const PAGE_BARS = 2000;
@@ -118,7 +120,7 @@ function visibleSeconds(t: Time): number {
   return Date.UTC(t.year, t.month - 1, t.day) / 1000 - istShift;
 }
 
-export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false }: PriceChartProps) {
+export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false, notFoundNote }: PriceChartProps) {
   const Heading = headingLevel === 2 ? "h2" : "h3";
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -140,6 +142,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
 
   const [model, setModel] = useState<ChartModel | null | "error">(null);
   const [problem, setProblem] = useState("");
+  const [waiting, setWaiting] = useState(false); // the server has no chart yet and the page said why (notFoundNote)
   const [bars, setBars] = useState<ChartBar[]>([]);
   const [markers, setMarkers] = useState<ChartMarker[]>([]);
   const [instrument, setInstrument] = useState<number | undefined>(undefined);
@@ -164,9 +167,9 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
   const contract = contractOf(picked?.kind);
 
   // The latest values for handlers the library holds; set after render, read only from events and timers.
-  const live = useRef({ load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract: undefined as "option" | "future" | undefined });
+  const live = useRef({ load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, notFoundNote, contract: undefined as "option" | "future" | undefined });
   useEffect(() => {
-    live.current = { load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, contract };
+    live.current = { load, bars, model, instrument, tradeDate, pollMs, onMarkerClick, notFoundNote, contract };
   });
   const exhausted = useRef({ before: false, after: false });
   const paging = useRef(false);
@@ -180,10 +183,12 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
         if (cancelled) return;
         setBusy(false);
         if (res === null) {
+          setWaiting(Boolean(live.current.notFoundNote));
           setProblem("This chart is not available: the run or session was not found.");
           setModel("error");
           return;
         }
+        setWaiting(false);
         exhausted.current = { before: false, after: false };
         fitRef.current = true;
         setBars(res.bars);
@@ -642,7 +647,8 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
           <Skeleton size="l" />
         </Loading>
       )}
-      {state === "error" && (
+      {state === "error" && waiting && <p className="stk-pricechart-notice" role="note">{notFoundNote}</p>}
+      {state === "error" && !waiting && (
         <Panel tone="red">
           <div className="stk-pricechart-error" role="alert">
             <p>{problem || "The chart could not be loaded. Check that the API is running, then try again."}</p>

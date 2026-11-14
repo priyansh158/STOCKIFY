@@ -4,7 +4,7 @@ import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { getSessionChart } from "@/lib/chart_api";
-import { pollDelay } from "@/lib/chart";
+import { pollDelay, sessionNotStartedNote } from "@/lib/chart";
 import { istWhen, pct, rupees } from "@/lib/format";
 import {
   getFills,
@@ -244,6 +244,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
 
   const status = detail?.session.status ?? null;
   const running = status === "RUNNING";
+  const notStartedNote = sessionNotStartedNote(status);   // the chart stays a plain note until a day is recorded
 
   useEffect(() => {
     let stop = false;
@@ -429,6 +430,8 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
               title="Price and trades"
               headingLevel={2}
               paperBadge
+              key={notStartedNote ? "waiting" : "chart"}
+              notFoundNote={notStartedNote ?? undefined}
               pollMs={pollDelay(chartLive, tabHidden, CHART_POLL_MS) ?? undefined}
             />
           </Panel>

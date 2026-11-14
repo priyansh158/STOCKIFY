@@ -318,6 +318,10 @@ class ChartHelperChecks(unittest.TestCase):
         # no interval means no polling; a negative count counts as none; the cap never goes below the base
         self.assertEqual(self.r["backoffOdd"], [0, 5000, 40000, 30000])
 
+    def test_a_session_that_has_not_started_says_so_instead_of_not_found(self):
+        note = "This session has not started yet; prices appear once it is running."
+        self.assertEqual(self.r["notStarted"], [note, note, None, None, None])
+
     def test_a_day_with_no_recording_or_an_unreadable_one_is_a_plain_state_not_no_trades(self):
         r = self.r
         self.assertEqual(r["viewNoPack"], "pruned")
