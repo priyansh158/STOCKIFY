@@ -39,6 +39,9 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 - Long state grids (data coverage) and caveat lists in a table are a ledger, not a wall of boxes: the state is its glyph and word in
   the state's colour, with no frame or fill. The full chip (frame and tint) is for a page's own head and single states.
 - Mono is for figures: a value that has no digit in it ("too short to say") is set in the body face, and so are the words under a figure.
+- One date format wherever a person reads a date: "5 Oct 2026", with ", 14:45" or ", 14:45 IST" where the time matters (`dayWords`,
+  `istWhen` in `src/lib/format.ts`). ISO stays only where the date is an identifier. A fact shared by every row goes in the column head,
+  once; a column that is empty in every row is not drawn; hashes and build ids keep their own case in the figure face.
 - No control anywhere places a real order. There is no site footer (owner, D-141); the paper-trading pages say "no real orders" where
   orders appear, and the chart keeps the TradingView attribution logo.
 
