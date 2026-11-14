@@ -27,8 +27,10 @@ export function PageHead({ title, lede, actions }: { title: ReactNode; lede?: Re
 
 /** A figure with its label. Put several inside a StatGrid. */
 export function Stat({ label, value, tone, size, plain }: { label: string; value: string; tone?: Tone; size?: "s"; plain?: boolean }) {
+  // a value with no digit in it ("too short to say", "Not run yet") is words: the body face, not the figure face
+  const words = plain || !/\d/.test(value);
   return (
-    <div className="stk-stat" data-size={size} data-plain={plain ? "" : undefined}>
+    <div className="stk-stat" data-size={size} data-plain={words ? "" : undefined}>
       <dt>{label}</dt>
       <dd className={tone === "up" ? "stk-up" : tone === "down" ? "stk-down" : undefined}>{value}</dd>
     </div>

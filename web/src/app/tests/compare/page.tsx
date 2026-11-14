@@ -95,7 +95,7 @@ function Metrics({ rows, labels }: { rows: CompareMetricDTO[]; labels: string[] 
             {m.values.map((v, i) => (
               <td key={labels[i]} className="num" data-differs={differs ? "" : undefined}>
                 {v === null
-                  ? (m.reasons?.[i] ? <span title="not shown for this run">{m.reasons[i]}</span> : <abbr title="not available">n/a</abbr>)
+                  ? (m.reasons?.[i] ? <span className="stk-cmp-words" title="not shown for this run">{m.reasons[i]}</span> : <abbr className="stk-cmp-words" title="not available">n/a</abbr>)
                   : num(v, m.kind, m.key === "net_pnl" || m.key === "return")}
               </td>
             ))}

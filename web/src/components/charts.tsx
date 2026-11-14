@@ -262,7 +262,7 @@ function Marker({ x, y, i }: { x: number; y: number; i: number }) {
   return <polygon points={`${x},${y - 5} ${x + 5},${y + 4} ${x - 5},${y + 4}`} className="stk-lc-dot" data-c={c} />;
 }
 
-const IW = 560;
+const IW = 400;  // shown at most 25rem wide (globals.css), so the zero label keeps about its token size
 const IH = 64;
 
 /** One estimate with its interval: a bar from `lo` to `hi` and a marker at `point`. Any missing number gives words, not a bar. */

@@ -178,7 +178,7 @@ function Regimes({ r }: { r: RunResearchDTO }) {
       ) : (
         <>
           {r.plain.regimes_caveat && <p className="stk-fine">{r.plain.regimes_caveat}</p>}
-          <div className="stk-stack">
+          <div className="stk-regimes">
             {REGIMES.map(({ key, title, first }) => (
               <details key={key} className="stk-regime">
                 <summary>
