@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Fragment, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { growth, pct, rupees, rupeesWhole } from "@/lib/format";
+import { dayWords, growth, pct, rupees, rupeesWhole } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { getRunChart } from "@/lib/chart_api";
 import { chartViewState, joinFillsAndMarkers, type ChartMarker } from "@/lib/chart";
@@ -411,6 +411,10 @@ function scanLabel(step?: string): string {
 function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[] }) {
   const days = Array.from(new Set(rows.map((r) => r.trade_date)));
   const held = equity.filter((e) => (e.margin_paise ?? 0) > 0);
+  // what the main amount is (SPAN, price-and-volatility scenarios, flat): said once in the column head when every row
+  // shares it, under each amount only when the rows differ
+  const scanKinds = Array.from(new Set(rows.map((r) => scanLabel(r.step))));
+  const oneKind = scanKinds.length === 1 ? scanKinds[0] : undefined;
   if (days.length === 0 && held.length === 0) return null;
   return (
     <section className="stk-section">
@@ -424,7 +428,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
           <Table caption="Margin held at the end of each day" head={[{ label: "Day" }, { label: "Margin held", num: true }]}>
             {held.slice(-30).map((e) => (
               <tr key={e.trade_date}>
-                <td>{e.trade_date}</td>
+                <td>{dayWords(e.trade_date)}</td>
                 <td className="num">{rupees(e.margin_paise)}</td>
               </tr>
             ))}
@@ -438,7 +442,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
             { label: "Day" },
             { label: "Underlying" },
             { label: "How it was priced" },
-            { label: "Main amount", num: true },
+            { label: "Main amount", sub: oneKind, num: true },
             { label: "Short-option minimum", num: true },
             { label: "Extreme-loss margin", num: true },
             { label: "Expiry-day and other add-ons", num: true },
@@ -452,7 +456,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
               <Fragment key={d}>
                 {today.map((r) => (
                   <tr key={`${d}-${r.underlying_id}`}>
-                    <td>{d}</td>
+                    <td className="stk-nowrap">{dayWords(d)}</td>
                     <td>{r.underlying ?? `underlying ${r.underlying_id}`}</td>
                     <td data-wrap title={marginStep(r.step)?.detail}>
                       {marginStep(r.step)?.text ?? "—"}
@@ -462,7 +466,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
                     </td>
                     <td className="num">
                       {rupees(r.scan_paise)}
-                      <div className="stk-label">{scanLabel(r.step)}</div>
+                      {!oneKind && <div className="stk-label">{scanLabel(r.step)}</div>}
                     </td>
                     <td className="num">{rupees(r.somc_paise)}</td>
                     <td className="num">{rupees(r.elm_paise)}</td>
@@ -472,7 +476,7 @@ function MarginByDay({ rows, equity }: { rows: TestMargin[]; equity: TestEquity[
                 ))}
                 {today.length > 1 && (
                   <tr className="sub">
-                    <td colSpan={7}>Total for {d}</td>
+                    <td colSpan={7}>Total for {dayWords(d)}</td>
                     <td className="num">{rupees(total)}</td>
                   </tr>
                 )}
@@ -520,7 +524,7 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
         <h2>Greeks at day end</h2>
         {days.length > 1 && (
           <select aria-label="Day" value={day} onChange={(e) => setPicked(e.target.value)} className="stk-field" data-fit data-fig>
-            {days.map((d) => <option key={d} value={d}>{d}</option>)}
+            {days.map((d) => <option key={d} value={d}>{dayWords(d)}</option>)}
           </select>
         )}
       </div>
@@ -629,7 +633,7 @@ function Settlements({ rows }: { rows: TestSettlement[] }) {
             : `${s.side === "BUY" ? "Took" : "Gave"} delivery of ${(s.qty ?? 0).toLocaleString("en-IN")} ${name}`;
           return (
             <tr key={`${s.t_ns}-${s.instrument_id}-${i}`}>
-              <td>{s.trade_date}</td>
+              <td>{dayWords(s.trade_date)}</td>
               <td data-wrap>{what}</td>
               <td className="num">{rupees(s.price_paise)}</td>
               <td className={s.source === "fallback" ? "stk-warn" : "stk-label"} data-wrap>

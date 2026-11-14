@@ -1,5 +1,6 @@
 /** Small presentational pieces shared by /tests and /tests/[id]. The label wording itself is in lib/labels.ts. */
 import { Chip } from "@/components/ui";
+import { dayWords } from "@/lib/format";
 import { labelMeaning, labelText, marginStep } from "@/lib/labels";
 import { statusWords } from "@/lib/names";
 import type { TestRun, TestStatus } from "@/lib/types";
@@ -38,6 +39,6 @@ export function runSummary(run: Pick<TestRun, "strategy_name" | "start_date" | "
                            to?: string | null): string {
   const a = run.start_date ?? from;
   const b = run.end_date ?? to;
-  const parts = [run.strategy_name || null, a && b ? `${a} to ${b}` : null];
+  const parts = [run.strategy_name || null, a && b ? `${dayWords(a)} to ${dayWords(b)}` : null];
   return parts.filter(Boolean).join(", ");
 }

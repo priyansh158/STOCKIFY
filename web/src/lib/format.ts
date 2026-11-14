@@ -38,6 +38,16 @@ export function growth(start?: number | null, end?: number | null): number | nul
   return end / start - 1;
 }
 
+/** A day ("2026-10-05", or a timestamp that starts with one) as "5 Oct 2026", the one way a person reads a date in the
+ *  app; anything that is not a day comes back unchanged. ISO stays only where the date is an identifier. */
+export function dayWords(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) return iso;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${Number(m[3])} ${months[Number(m[2]) - 1]} ${m[1]}`;
+}
+
 /** An ISO IST timestamp ("2026-11-06T10:15:00+05:30") as "6 Nov 2026, 10:15 IST". */
 export function istWhen(iso: string | null | undefined): string {
   if (!iso) return "—";

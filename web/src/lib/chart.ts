@@ -4,7 +4,7 @@
  * Text: every string returned here is plain text; the note is passed through verbatim and the page must render
  * it as text (React escapes it), never as markup.
  */
-import { rupees } from "./format";
+import { dayWords, rupees } from "./format";
 import type {
   ChartBarDTO,
   ChartInstrumentDTO,
@@ -213,7 +213,7 @@ export const isDaily = (interval_s: number): boolean => interval_s >= 86400;
 
 function istStamp(t: number, daily: boolean): string {
   const iso = new Date((t + istShift) * 1000).toISOString();
-  return daily ? iso.slice(0, 10) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+  return daily ? dayWords(iso) : `${dayWords(iso)}, ${iso.slice(11, 16)}`;
 }
 
 export type MarkerRow = { id: string; when: string; title: string; reason: string };

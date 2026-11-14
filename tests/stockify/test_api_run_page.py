@@ -131,7 +131,7 @@ class RunViewHelperChecks(unittest.TestCase):
         # driven by the server's flag, not by the clock text: another stamp reads the same, and 19:00 alone proves nothing
         self.assertEqual(self.r["closeOther"]["text"], "12 Oct 2026, at the close")
         self.assertIn("20:30 IST", self.r["closeOther"]["hint"])
-        self.assertEqual(self.r["intraday"], {"text": "2026-10-05 19:00", "hint": None})
+        self.assertEqual(self.r["intraday"], {"text": "5 Oct 2026, 19:00", "hint": None})  # the one date format people read (D-148)
 
     def test_why_is_always_the_reason_never_the_chart_hint(self):
         self.assertEqual(self.r["whyNote"], {"text": "Range broke up", "tag": None, "raw": None})

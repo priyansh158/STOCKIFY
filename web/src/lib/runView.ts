@@ -27,7 +27,7 @@ export function fillWhen(f: Pick<TestFill, "t_ist" | "at_close">): { text: strin
         `so the simulator stamps it ${f.t_ist.slice(11, 16)} IST, the publication time. Nothing traded at that minute.`,
     };
   }
-  return { text: f.t_ist.slice(0, 16).replace("T", " "), hint: null };
+  return { text: `${dayWords(f.t_ist)}, ${f.t_ist.slice(11, 16)}`, hint: null };
 }
 
 /**

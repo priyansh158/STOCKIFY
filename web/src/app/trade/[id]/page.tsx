@@ -5,7 +5,7 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { getSessionChart } from "@/lib/chart_api";
 import { pollDelay, sessionNotStartedNote } from "@/lib/chart";
-import { istWhen, pct, rupees } from "@/lib/format";
+import { dayWords, istWhen, pct, rupees } from "@/lib/format";
 import {
   getFills,
   getLogin,
@@ -340,7 +340,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
   const threshold = detail ? Number(detail.coverage_threshold) : NaN;
   const login = extra.login;
   const loginDetail = login
-    ? `Log in between ${login.window_local[0]} and ${login.window_local[1]} on ${login.day} (your time). ` +
+    ? `Log in between ${login.window_local[0]} and ${login.window_local[1]} on ${dayWords(login.day)} (your time). ` +
       `The last usable login is ${login.last_usable_local}; the market opens at ${login.market_open_local}.`
     : undefined;
 

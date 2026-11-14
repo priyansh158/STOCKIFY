@@ -149,8 +149,8 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(self.r["listEmpty"], [])
         self.assertEqual(rows[0]["title"], "Bought 50 at ₹2,418.40")
         self.assertEqual(rows[0]["reason"], "one")
-        self.assertEqual(rows[0]["when"], "2025-11-12 07:35")
-        self.assertEqual(self.r["listDaily"], "2025-11-12")
+        self.assertEqual(rows[0]["when"], "12 Nov 2025, 07:35")  # the one date format people read (D-148)
+        self.assertEqual(self.r["listDaily"], "12 Nov 2025")
 
     def test_plot_points_follow_the_candle_time_rule(self):
         self.assertEqual(self.r["plotIntraday"], {"time": 1_762_913_100 + 19800, "value": 2412.5})

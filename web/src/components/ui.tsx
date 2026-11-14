@@ -86,7 +86,7 @@ export function Table({
             {head.map((h, i) => (
               <th key={`${i}-${h.label}`} scope="col" className={h.num ? "num" : undefined}>
                 {h.label}
-                {h.sub && <div className="stk-label stk-mono stk-break">{h.sub}</div>}
+                {h.sub && <div className="stk-label">{h.sub}</div>}
               </th>
             ))}
           </tr>
