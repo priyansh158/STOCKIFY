@@ -421,7 +421,10 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
               <Stat label="Market data received today" value={detail.session.coverage_today == null ? "—" : pct(detail.session.coverage_today)} />
               <Stat size="s" plain label="Last replay check" value={parityText(detail.session.parity_last)} />
             </StatGrid>
-            <p className="stk-fine stk-gap-s">Last replay check: {PARITY_HELP}</p>
+            {/* the explanation sits under its own tile, the fourth */}
+            <div className="stk-stat-grid stk-gap-xs">
+              <p className="stk-fine stk-stat-note">{PARITY_HELP}</p>
+            </div>
           </Panel>
 
           <Panel>

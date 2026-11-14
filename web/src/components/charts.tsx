@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  DIVERGING, SERIES_TOKENS, divergingStep, endLabelText, heatColourStep, heatMoreWord, markerIndexes, spreadLabels, splitSegments,
+  DIVERGING, SERIES_TOKENS, divergingStep, heatColourStep, heatMoreWord, markerIndexes, splitSegments,
 } from "@/lib/researchHelpers";
 
 const MAX_SERIES = 6;
@@ -45,8 +45,6 @@ const W0 = 720;
 const H = 280;
 const PAD0 = { l: 76, r: 16, t: 12, b: 28 };
 /** Room to the right of the plot for the name at the end of each line, when there is more than one line. */
-const END_W = 132;
-const END_GAP = 14;
 
 /** Up to six series over a shared x. Series are told apart by colour, dash and marker shape, in a fixed order (the fourth to sixth reuse the three colours), and a legend always names them. */
 export function LineChart({
@@ -98,7 +96,8 @@ export function LineChart({
     ro.observe(el);
     return () => ro.disconnect();
   }, [shown.length]);
-  const PAD = { ...PAD0, r: shown.length > 1 ? END_W : PAD0.r };
+  // the legend above names every series (with its colour, dash and marker), so the lines carry no cut-off end labels
+  const PAD = PAD0;
   if (shown.length === 0 || shown.every((s) => s.points.length < 2)) {
     return <p className="stk-label">Not enough data to draw this chart: it needs at least two points.</p>;
   }
@@ -116,10 +115,6 @@ export function LineChart({
   yHi += yPad;
   const px = (x: number) => PAD.l + (xHi === xLo ? 0 : ((x - xLo) / (xHi - xLo)) * (W - PAD.l - PAD.r));
   const py = (y: number) => PAD.t + (1 - (y - yLo) / (yHi - yLo)) * (H - PAD.t - PAD.b);
-  const lastOf = (s: LineSeries) => [...s.points].sort((a, b) => a[0] - b[0])[s.points.length - 1];
-  const endPoints = shown.length > 1 ? shown.map((s, i) => ({ i, label: s.label, x: lastOf(s)[0], y: lastOf(s)[1] })) : [];
-  const endYs = spreadLabels(endPoints.map((e) => py(e.y)), END_GAP, PAD.t + 6, H - PAD.b);
-  const ends = endPoints.map((e, k) => ({ ...e, ty: endYs[k] }));
   const yTicks = niceTicks(yLo, yHi, 5);
   // as many date labels as fit without touching (about 90 px each), never fewer than two
   const maxTicks = Math.max(2, Math.min(6, Math.floor((W - PAD.l - PAD.r) / 90)));
@@ -199,13 +194,6 @@ export function LineChart({
             <Marker key={`${s.label}-m${k}`} x={px(sorted[k][0])} y={py(sorted[k][1])} i={i} />
           ));
         })}
-        {ends.map((e) => (
-          <g key={`end-${e.label}`}>
-            <line x1={px(e.x) + 6} x2={W - PAD.r + 6} y1={py(e.y)} y2={e.ty} className="stk-lc-lead" />
-            <Marker x={W - PAD.r + 14} y={e.ty} i={e.i} />
-            <text x={W - PAD.r + 24} y={e.ty} className="stk-lc-end" dominantBaseline="middle">{endLabelText(e.label)}</text>
-          </g>
-        ))}
         {at !== null && (
           <g>
             <line x1={px(at)} x2={px(at)} y1={PAD.t} y2={H - PAD.b} className="stk-lc-cursor" />

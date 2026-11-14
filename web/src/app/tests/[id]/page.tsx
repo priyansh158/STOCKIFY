@@ -381,6 +381,9 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
             <Panel>
               <h2>For reproducing this run</h2>
               <dl className="stk-kv">
+                {/* the run's id first: the one value needed to find or re-run this exact run */}
+                <dt>Run id</dt>
+                <dd className="stk-break stk-mono">{run.run_id}</dd>
                 {Object.entries(detail.manifest)
                   .filter(([k]) => ["engine_build_id", "bundle_sha256", "packs", "duration_ms", "python", "os"].includes(k))
                   .map(([k, v]) => (
@@ -390,7 +393,6 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                     </Fragment>
                   ))}
               </dl>
-              <p className="stk-fine stk-break stk-gap-s">Run id {run.run_id}</p>
             </Panel>
           )}
         </div>

@@ -38,22 +38,29 @@ function num(v: number | null, kind: string, signed = false): string {
   return Math.round(v).toLocaleString("en-IN");
 }
 
-/** A long hex fingerprint is cut to its first 12 characters (the whole one is the hover text); anything else in words. */
+/** Every fingerprint (one hash, or a list of them) is cut to its first 12 characters, the whole value in the hover and
+ *  for screen readers; a short build id stays whole, in the figure face; a setting made of parts ("a; b; c") reads one
+ *  part a line; anything else in the server's words. */
 function Value({ v, shown, field }: { v: string | null; shown: string | null; field?: string }) {
   if (v === null || v === "") return <span className="stk-label">not recorded</span>;
-  if (/^[0-9a-f]{32,}$/i.test(v)) {
+  const hashes = (shown ?? v).replace(/[\[\]"\s]/g, "").split(",").filter(Boolean);
+  if (hashes.length > 0 && hashes.every((h) => /^[0-9a-f]{32,}$/i.test(h))) {
+    const whole = hashes.join(", ");
     // the short form is for the eye; the whole value is in the text for screen readers, selection and copy
     return (
       <span className="stk-cmp-mono">
-        <span aria-hidden="true" title={v}>{v.slice(0, 12)}…</span>
-        <span className="sr-only">{v}</span>
+        <span aria-hidden="true" title={whole}>{hashes.map((h) => `${h.slice(0, 12)}…`).join(", ")}</span>
+        <span className="sr-only">{whole}</span>
       </span>
     );
   }
+  if (/^(?=[0-9a-f]*\d)[0-9a-f]{7,31}$/i.test(v)) return <span className="stk-cmp-mono">{v}</span>;
+  const text = shown ?? v;
+  const parts = text.split("; ");
   // the server's words for the value (a strategy by its name, a setting in plain words); the stored value is the hover
   return (
     <span title={shown !== null && shown !== v ? `Saved as ${v}` : undefined} data-field={field}>
-      {shown ?? v}
+      {parts.length > 1 ? parts.map((part, i) => <span key={i} className="stk-block">{part}</span>) : text}
     </span>
   );
 }
