@@ -23,6 +23,7 @@ from stockify.daemon import exitcodes, journal, lifecycle, market_day, session_d
 from stockify.daemon.dispatcher import Dispatcher
 from stockify.daemon.landing import LandingDB
 from stockify.daemon.recorder import Recorder
+from stockify.daemon import replay_ticker
 from stockify.daemon.replay_ticker import ReplayTicker
 from stockify.daemon.ticker import RecorderSession
 from stockify.data import packs
@@ -384,6 +385,9 @@ class MarketDayTest(pf.PaperDayTest):
         sandbox = tempfile.mkdtemp(prefix="stockify-replay-")
         self.addCleanup(shutil.rmtree, sandbox, True)
         base = ["daemon", "--ticker", SPEC, "--sessions", "s1"]
+        self.addCleanup(replay_ticker.set_source_lab, None)             # the flag points replays at the real lab (RW 7.3)
+        mock.patch.object(replay_ticker, "seed_refdata_from", lambda *a: False).start()
+        self.addCleanup(mock.patch.stopall)
         with mock.patch.object(market_day, "run_market_day", lambda **kw: calls.append(kw) or 0),                 mock.patch.dict(os.environ, {}):
             self.assertEqual(cli.main([*base, "--replay-sandbox", sandbox]), 0)
             self.assertEqual(os.environ["LOCALAPPDATA"], str(Path(sandbox).resolve()))
