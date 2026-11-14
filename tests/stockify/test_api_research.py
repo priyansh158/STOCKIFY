@@ -470,6 +470,29 @@ class SweepApiTests(SandboxedDBTest):
         self.assertIn("Bar length = ", j["plain"])                  # the sentence names the settings as the page does
         self.assertNotIn("interval_s", j["plain"])
 
+    def test_the_sentence_and_axes_use_a_setting_s_choice_labels_and_percentages_not_raw_values(self):
+        iv, inv = "strategy.params.interval_s", "strategy.params.invest"
+        axes = {iv: [60, 300], inv: ["0.5", "0.95"]}
+        rows = [_row(i, {iv: a, inv: b}, float(i)) for i, (a, b) in enumerate((a, b) for a in axes[iv] for b in axes[inv])]
+        add_sweep_job(sweep_doc(axes=axes, rows=rows))
+        store.update_research_job("sweep-t-1", spec_json=json.dumps(
+            {"base": {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold"}}}))
+        j = self.client.get("/api/research/sweeps/sweep-t-1").json()
+        self.assertIn("Bar length = 5 minutes and Share of cash to invest (%) = 95%", j["plain"])
+        self.assertNotIn("= 300", j["plain"])
+        self.assertEqual(j["cells"]["xs"], ["1 minute", "5 minutes"])
+        self.assertEqual(j["cells"]["ys"], ["50%", "95%"])
+        self.assertEqual([a["labels"] for a in j["axes"]], [["1 minute", "5 minutes"], ["50%", "95%"]])
+        self.assertEqual([a["values"] for a in j["axes"]], [[60, 300], ["0.5", "0.95"]])    # the raw values stay as data
+
+    def test_a_walk_forward_window_s_chosen_settings_use_choice_labels_and_percentages_too(self):
+        from server.routers.research import _chosen_text
+        from stockify.strategies import _catalogue
+        schema = {p["name"]: p for p in _catalogue.schema_of("python", "stockify.strategies.buy_and_hold:BuyAndHold")}
+        self.assertEqual(_chosen_text({"interval_s": 300, "invest": "0.95"}, schema),
+                         "Bar length = 5 minutes, Share of cash to invest (%) = 95%")
+        self.assertEqual(_chosen_text({"fast": 5, "ok": True}, {}), "Fast = 5, Ok = Yes")
+
     def test_a_sweep_without_a_stored_spec_labels_every_axis_in_words_not_by_its_path(self):
         add_sweep_job(sweep_doc())
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()

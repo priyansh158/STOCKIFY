@@ -157,6 +157,31 @@ def _scalar_text(field: str, v: object) -> str:
     return str(v)
 
 
+def param_value_text(param: dict | None, value: object) -> str:
+    """One value of a strategy setting as the form shows it, given the setting's entry in the strategy's params schema:
+    a setting with `choices` shows the chosen one's label (300 as "5 minutes"), a `percent` setting shows its fraction as
+    a percentage ("0.95" as "95%"), None is "none", and anything else is plain text (true/false as "Yes"/"No" is left to
+    the caller's own words: a bool is "true"/"false" here, as on the sweep's axes)."""
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(param, dict):
+        for c in param.get("choices") or []:
+            if isinstance(c, dict) and (c.get("value") == value or str(c.get("value")) == str(value)) and c.get("label"):
+                return str(c["label"])
+        if param.get("percent"):
+            from decimal import Decimal, InvalidOperation
+            try:
+                pct = Decimal(str(value)) * 100
+            except InvalidOperation:
+                return str(value)
+            if pct.is_finite():
+                text = format(pct.normalize(), "f")
+                return f"{text}%"
+    return str(value)
+
+
 def setting_text(field: str, raw: object) -> str | None:
     """A stored setting's value in plain words: a JSON object becomes "Label: value" pairs (a lone `kind` is just its
     words), a code-like word is humanized, a number or a symbol stays as it is. None stays None."""

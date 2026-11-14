@@ -131,14 +131,6 @@ def research_counts() -> ResearchCountsDTO:
                              walkforwards=store.count_research_jobs("walkforward"))
 
 
-def _label(v: Any) -> str:
-    if v is None:
-        return "none"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
-
-
 def _key(v: Any) -> str:
     return json.dumps(v, sort_keys=True)
 
@@ -200,7 +192,9 @@ def _best_of(rows: list[dict]) -> dict | None:
     return best
 
 
-def _heatmap(doc: dict, x: str, y: str | None) -> SweepHeatmapDTO:
+def _heatmap(doc: dict, x: str, y: str | None, params: dict[str, dict] | None = None) -> SweepHeatmapDTO:
+    from stockify import display
+    params = params or {}
     axes = doc["axes"]
     xv = axes[x]
     yv = axes[y] if y is not None else [None]
@@ -225,7 +219,8 @@ def _heatmap(doc: dict, x: str, y: str | None) -> SweepHeatmapDTO:
             if rid is not None and rid == doc.get("best_run_id"):
                 best = SweepBestCellDTO(xi=xi, yi=yi, run_id=rid, value=cells[yi][xi])
     obj = doc["objective"]
-    return SweepHeatmapDTO(x=x, y=y, xs=[_label(v) for v in xv], ys=[_label(v) for v in yv] if y is not None
+    return SweepHeatmapDTO(x=x, y=y, xs=[display.param_value_text(params.get(x), v) for v in xv],
+                           ys=[display.param_value_text(params.get(y), v) for v in yv] if y is not None
                            else [obj], x_values=xv, y_values=yv if y is not None else [None], cells=cells,
                            run_ids=run_ids, best=best, signed=obj in _SIGNED, format=_OBJECTIVE_FORMAT[obj],
                            hidden_axes=[a for a in axes if a not in (x, y)])
@@ -262,11 +257,9 @@ def _row_reason(r: dict) -> str | None:
     return plain.plain_reason(r.get("error")) if r.get("status") != "done" else None
 
 
-def _axis_labels(job_id: str, paths: list[str]) -> dict[str, str]:
-    """A plain label for each `strategy.params.<name>` axis from the sweep's strategy (its params schema); every other
-    axis, or a sweep whose strategy is unknown, is labelled by its path."""
-    from stockify import display
-    labels = {p: display.field_label(p) for p in paths}     # never a path: an unknown setting is still in words
+def _axis_params(job_id: str, paths: list[str]) -> dict[str, dict]:
+    """The params-schema entry of each `strategy.params.<name>` axis, from the sweep's strategy; empty for every other
+    axis, or when the strategy is unknown."""
     try:
         from stockify import store
         from stockify.strategies import _catalogue
@@ -274,11 +267,23 @@ def _axis_labels(job_id: str, paths: list[str]) -> dict[str, str]:
         strat = spec["base"]["strategy"]
         schema = _catalogue.schema_of(strat["kind"], strat["ref"]) or []
     except Exception:  # noqa: BLE001 — a label is a nicety: any trouble means the path
-        return labels
-    names = {p.get("name"): p.get("label") for p in schema if isinstance(p, dict)}
+        return {}
+    by_name = {p.get("name"): p for p in schema if isinstance(p, dict)}
+    out = {}
     for path in paths:
         name = path.removeprefix("strategy.params.") if path.startswith("strategy.params.") else None
-        label = names.get(name) if name else None
+        if name and name in by_name:
+            out[path] = by_name[name]
+    return out
+
+
+def _axis_labels(job_id: str, paths: list[str], params: dict[str, dict] | None = None) -> dict[str, str]:
+    """A plain label for each `strategy.params.<name>` axis from the sweep's strategy (its params schema); every other
+    axis, or a sweep whose strategy is unknown, is labelled by its path."""
+    from stockify import display
+    labels = {p: display.field_label(p) for p in paths}     # never a path: an unknown setting is still in words
+    for path, param in (_axis_params(job_id, paths) if params is None else params).items():
+        label = param.get("label")
         if isinstance(label, str) and label.strip():
             labels[path] = label.strip()
     return labels
@@ -289,13 +294,14 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
                  y: str | None = Query(None, max_length=200)) -> SweepDTO:
     doc = _stored_sweep(job_id)
     chosen_x, chosen_y = _pick_axes(list(doc["axes"]), x, y)
-    h = _heatmap(doc, chosen_x, chosen_y)
-    labels = _axis_labels(job_id, list(doc["axes"]))
+    params = _axis_params(job_id, list(doc["axes"]))
+    h = _heatmap(doc, chosen_x, chosen_y, params)
+    labels = _axis_labels(job_id, list(doc["axes"]), params)
     from stockify import display
     return SweepDTO(
         job_id=job_id, name=str(doc.get("name", "")), name_label=display.name_label(doc.get("name")), family_id=str(doc.get("family_id", "")),
         objective=doc["objective"], objective_label=_objective_label(doc["objective"]),
-        axes=[SweepAxisDTO(path=a, label=labels[a], labels=[_label(v) for v in vs], values=vs)
+        axes=[SweepAxisDTO(path=a, label=labels[a], labels=[display.param_value_text(params.get(a), v) for v in vs], values=vs)
               for a, vs in doc["axes"].items()],
         rows=[SweepRowDTO(**{**{k: r.get(k) for k in SweepRowDTO.model_fields}, "error": _row_reason(r)})
               for r in doc["rows"]],
@@ -317,9 +323,9 @@ def _not_done(job_id: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": message, "status": status, "reason": reason})
 
 
-def _window_labels(windows: list[dict]) -> dict[str, str]:
-    """Plain label of each strategy param a walk-forward's windows chose, from the params schema of the strategy of
-    the first window run that can be read; empty when none can (the labels then come from the key)."""
+def _window_params(windows: list[dict]) -> dict[str, dict]:
+    """The params-schema entry (name to entry) of the strategy of the first window run that can be read, for the plain
+    labels and values of the settings a walk-forward's windows chose; empty when none can (the key's own words then)."""
     try:
         from stockify import store
         from stockify.strategies import _catalogue
@@ -329,19 +335,25 @@ def _window_labels(windows: list[dict]) -> dict[str, str]:
                 strat = (json.loads(row["config_json"]) if row and row.get("config_json") else {}).get("strategy")
                 schema = _catalogue.schema_of(strat["kind"], strat["ref"]) if isinstance(strat, dict) else None
                 if schema:
-                    return {p["name"]: p["label"] for p in schema if isinstance(p, dict) and p.get("label")}
+                    return {p["name"]: p for p in schema if isinstance(p, dict) and p.get("name")}
     except Exception:  # noqa: BLE001 — a label is a nicety: any trouble means the key's own words
         pass
     return {}
 
 
-def _chosen_text(params: dict | None, labels: dict[str, str]) -> str:
-    """The settings a window chose in plain words ("Opening range (minutes) = 15, Also sell short = No")."""
+def _chosen_text(params: dict | None, schema: dict[str, dict]) -> str:
+    """The settings a window chose in plain words ("Opening range (minutes) = 15, Also sell short = No"; a setting with
+    choices or a percentage reads as the form shows it: "Bar length = 5 minutes")."""
     from stockify import display
     if not params:
         return "None chosen"
-    return ", ".join(f"{display.field_label(k, labels)} = {"none" if v is None else display.setting_text(k, v)}"
-                     for k, v in params.items())
+    labels = {n: p["label"] for n, p in schema.items() if p.get("label")}
+    out = []
+    for k, v in params.items():
+        param = schema.get(k)
+        shown = display.param_value_text(param, v) if param and (param.get("choices") or param.get("percent"))             else ("none" if v is None else display.setting_text(k, v))
+        out.append(f"{display.field_label(k, labels)} = {shown}")
+    return ", ".join(out)
 
 
 @router.get("/api/research/walkforward/{job_id}", response_model=WalkforwardDTO,
@@ -361,9 +373,9 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     s = d["summary"]
     s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
     d["summary"] = WalkforwardSummaryDTO(**s)
-    labels = _window_labels(d["windows"])
+    schema = _window_params(d["windows"])
     d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None),
-                                            "chosen_text": _chosen_text(w.get("chosen_params"), labels)})
+                                            "chosen_text": _chosen_text(w.get("chosen_params"), schema)})
                     for w in d["windows"]]
     from stockify import display
     return WalkforwardDTO(**d, name_label=display.name_label(d.get("name")))
