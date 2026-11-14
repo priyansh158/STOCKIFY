@@ -5,13 +5,13 @@ import { ApiError } from "@/lib/api";
 import {
   RANGE_CHOICES, bytesWords, cellNote, cellSymbol, cellTone, cellWords, dayLabel, durationWords, gapReasonWords,
   earlierEnd, gapScopeWords, istToday, laterEnd, parseDay, qualityNotice, rangeDays, silenceSentence, silenceSince, windowBounds, windowEnd, windowLinkLabel,
-  worstCoverage,
+  worstCoverage, RECORDER_HOW_SHORT,
 } from "@/lib/data";
-import { START_RECORDER, nseBackfillCommand, nseFetchCommand } from "@/lib/commands";
 import { istWhen } from "@/lib/format";
 import { getCoverage, getGaps, getQuality } from "@/lib/research";
 import type { BarRangeDTO, CoverageCellDTO, CoverageDayDTO, CoverageMatrixDTO, GapPageDTO, StorageDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Stat, StatGrid, Table } from "@/components/ui";
+import { DownloadDays, QualityReportButton } from "./DataActions";
 import RecorderStrip from "./RecorderStrip";
 
 export const metadata: Metadata = { title: "Data coverage - STOCKIFY" };
@@ -32,7 +32,7 @@ const STATE_LEGEND: { state: string; detail?: string; means: string }[] = [
   { state: "ok", detail: "complete", means: "recorded, archived or downloaded, and complete enough" },
   { state: "partial", detail: "partly there", means: "something is there, but not all of it" },
   { state: "missing", means: "nothing was recorded or downloaded" },
-  { state: "not_reported", means: "recorded, but its quality report has not run: open the day for the command" },
+  { state: "not_reported", means: "recorded, but its quality report has not been made: open the day to make it" },
   { state: "closed", means: "weekend or exchange holiday" },
 ];
 
@@ -169,11 +169,6 @@ function Storage({ s, breakdown }: { s: StorageDTO; breakdown: boolean }) {
   );
 }
 
-/** The server's sentences quote commands in backticks; show those parts as code. */
-function withCode(text: string): ReactNode[] {
-  return text.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part));
-}
-
 function num(v: number | undefined, digits: number): string {
   return typeof v === "number" && Number.isFinite(v)
     ? v.toLocaleString("en-IN", { minimumFractionDigits: digits, maximumFractionDigits: digits })
@@ -215,7 +210,7 @@ function GapsBlock({ gaps }: { gaps: Settled<GapPageDTO | null> }) {
   );
 }
 
-function WorstBlock({ quality }: { quality: Settled<Awaited<ReturnType<typeof getQuality>>> }) {
+function WorstBlock({ quality, day }: { quality: Settled<Awaited<ReturnType<typeof getQuality>>>; day: string }) {
   if (!quality.ok) {
     return (
       <ErrorPanel>
@@ -223,7 +218,14 @@ function WorstBlock({ quality }: { quality: Settled<Awaited<ReturnType<typeof ge
       </ErrorPanel>
     );
   }
-  if (!quality.value.report) return <Empty>{withCode(quality.value.reason ?? "There is no quality report for this day yet.")}</Empty>;
+  if (!quality.value.report) {
+    return (
+      <div className="stk-stack-s">
+        <Empty>{quality.value.reason ?? "There is no quality report for this day yet."}</Empty>
+        <QualityReportButton day={day} />
+      </div>
+    );
+  }
   const notice = qualityNotice(quality.value.report);
   if (notice) {
     return (
@@ -285,7 +287,7 @@ async function DayDetail({ day, days, matrix, hideNse, to }: { day: string; days
       <GapsBlock gaps={gaps} />
 
       <h3 className="stk-gap-top">Instruments with the least coverage</h3>
-      <WorstBlock quality={quality} />
+      <WorstBlock quality={quality} day={day} />
 
       <h3 className="stk-gap-top">NSE files for this day</h3>
       {hideNse ? (
@@ -311,9 +313,9 @@ async function DayDetail({ day, days, matrix, hideNse, to }: { day: string; days
         </Table>
       )}
       {!hideNse && cells && files.some((f) => cells[f.key]?.state === "missing") && (
-        <p className="stk-fine stk-gap-xs">
-          To download what is missing, run <code>{nseFetchCommand(day)}</code>.
-        </p>
+        <div className="stk-gap-xs">
+          <DownloadDays from={day} to={day} label="Download this day" />
+        </div>
       )}
     </section>
   );
@@ -330,13 +332,14 @@ function SilenceNote({ matrix, today }: { matrix: CoverageMatrixDTO; today: stri
     <Panel tone="amber">
       {recText && (
         <p>
-          {recText} The recorder runs inside the daemon: start it with <code>{START_RECORDER}</code>.
+          {recText} {RECORDER_HOW_SHORT}
         </p>
       )}
       {nseText && nse && (
-        <p>
-          {nseText} Download the missing days with <code>{nseBackfillCommand(nse.firstMissed, nse.latestMissed)}</code>.
-        </p>
+        <div className="stk-stack-s">
+          <p>{nseText}</p>
+          <DownloadDays from={nse.firstMissed} to={nse.latestMissed} />
+        </div>
       )}
     </Panel>
   );
@@ -440,10 +443,12 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               <section className="stk-section">
                 <h2>Day by day</h2>
                 {stores.length === 0 && nothingStored(matrix) ? (
-                  <Empty>
-                    Nothing has been recorded or downloaded in this range. Start the recorder with <code>{START_RECORDER}</code>, or download
-                    NSE files with <code>{nseFetchCommand("YYYY-MM-DD")}</code>.
-                  </Empty>
+                  <div className="stk-stack-s">
+                    <Empty>
+                      Nothing has been recorded or downloaded in this range. {RECORDER_HOW_SHORT} You can download the NSE files for these days instead.
+                    </Empty>
+                    <DownloadDays from={win.from} to={win.to} label="Download NSE files for these days" />
+                  </div>
                 ) : (
                   <div className="stk-stack-s">
                     {to === undefined && <SilenceNote matrix={matrix} today={today} />}

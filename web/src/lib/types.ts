@@ -888,4 +888,59 @@ export interface SessionChartDTO extends RunChartDTO {
   paper: boolean;
   live: boolean;
 }
+
+// Jobs the web app starts (D-145): a sweep, a walk-forward, a cost check, an NSE download, a quality report.
+export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report";
+export type WebJobStatus = "running" | "done" | "failed" | "interrupted" | "cancelled";
+export type Objective = "sharpe" | "sortino" | "calmar" | "cagr" | "net_pnl";
+export type AxisValue = string | number | boolean | null;
+
+export interface WebJobDTO {
+  job_id: string;
+  kind: WebJobKind;
+  status: WebJobStatus;
+  target: string;
+  done?: number | null;
+  total?: number | null;
+  plain: string;
+  error?: string | null;
+  stopping?: boolean;
+}
+
+export interface SweepRequestDTO {
+  base_run_id: string;
+  name?: string | null;
+  axes: Record<string, AxisValue[]>;
+  objective?: Objective;
+  confirm?: boolean;
+}
+
+export interface WalkforwardRequestDTO {
+  sweep_job_id: string;
+  train_days?: number | null;
+  test_days?: number | null;
+  step_days?: number | null;
+  objective?: Objective | null;
+  first_day?: string | null;
+  last_day?: string | null;
+}
+
+export interface BackfillRequestDTO {
+  first_day: string;
+  last_day: string;
+}
+
+export interface QualityReportRequestDTO {
+  day: string;
+}
+
+export interface ResearchLimitsDTO {
+  max_trials: number;
+  confirm_above: number;
+  train_days: number;
+  test_days: number;
+  step_days: number;
+  wf_objective: string;
+  holdout_from?: string | null;
+}
 // </block>

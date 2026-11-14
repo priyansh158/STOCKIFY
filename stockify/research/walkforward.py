@@ -180,13 +180,11 @@ def _state(results: list[dict]) -> str:
     return json.dumps({"windows": results}, sort_keys=True, allow_nan=False)
 
 
-def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, objective: str,
-                start: date | None = None, end: date | None = None, unlock_reason: str | None = None,
-                workers: int | None = None, pool_run=pool.run_all,  # noqa: ANN001
-                now_ns: int | None = None) -> WalkforwardResult:
-    """Walk `spec` forward. WalkforwardError / ValueError before a job exists (bad sizes, no window fits, an
-    unknown objective); from then on any failure (a locked holdout, a pool that raises) marks the job `failed`
-    with the message and is re-raised."""
+def plan(spec: sweep.SweepSpec, *, train: int, test: int, step: int, objective: str, start: date | None = None,
+         end: date | None = None) -> tuple[list[Window], int, date, date]:
+    """Everything a walk-forward checks before a job exists: the objective, the span (from the base config's pack dates
+    unless given), the windows, and the number of training runs against `sweep.max_trials`. Returns (windows, grid
+    size, start, end); WalkforwardError / ValueError for anything refused. The command and the web form both call it."""
     if objective not in registry.OBJECTIVES:
         raise ValueError(f"objective must be one of {list(registry.OBJECTIVES)}, not {objective!r}")
     if start is None or end is None:
@@ -208,6 +206,18 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
         raise WalkforwardError(f"{len(wins)} windows x {grid} grid points is {runs} training runs, above "
                                f"research.json sweep.max_trials ({sweep.max_trials()}): narrow the grid, lengthen "
                                "the windows or shorten the span")
+    return wins, grid, start, end
+
+
+
+def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, objective: str,
+                start: date | None = None, end: date | None = None, unlock_reason: str | None = None,
+                workers: int | None = None, pool_run=pool.run_all,  # noqa: ANN001
+                now_ns: int | None = None, on_job=None) -> WalkforwardResult:
+    """Walk `spec` forward. WalkforwardError / ValueError before a job exists (bad sizes, no window fits, an
+    unknown objective); from then on any failure (a locked holdout, a pool that raises) marks the job `failed`
+    with the message and is re-raised."""
+    wins, grid, start, end = plan(spec, train=train, test=test, step=step, objective=objective, start=start, end=end)
     points = sweep.expand(spec)
     now = timeutil.now_ns() if now_ns is None else now_ns
     job_id = _job_id(spec.name, now)
@@ -222,6 +232,9 @@ def run_windows(spec: sweep.SweepSpec, *, train: int, test: int, step: int, obje
                                  "windows": len(wins), "unlock_given": unlock_reason is not None}, sort_keys=True)})
     state: list[dict] = []
     try:
+        if on_job is not None:
+            on_job(job_id)                                       # the web app learns the id here
+
         def cfg_for(point, frm, to, name):  # noqa: ANN001, ANN202
             cfg = window_config(point.config, frm, to)
             cfg["name"], cfg["family_id"] = name, family

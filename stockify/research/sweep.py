@@ -210,14 +210,31 @@ def load_spec(path: Path) -> SweepSpec:
         base = runconfig.validate(base)       # normalised, so an axis can reach a defaulted section (policies, costs)
     except runconfig.RunConfigError as e:
         raise SweepSpecError(f"base: {e}") from e
-    objective = raw.get("objective", "sharpe")
+    return build_spec(name, base, raw.get("axes"), objective=raw.get("objective", "sharpe"),
+                      search=raw.get("search"), workers=raw.get("workers"), source=path, normalise_base=False)
+
+
+def build_spec(name, base, axes, *, objective="sharpe", search=None, workers=None,  # noqa: ANN001
+               source: Path | None = None, normalise_base: bool = True) -> SweepSpec:
+    """The one validation of a sweep's parts, for a file (`load_spec`) and for the web form (a spec built from a
+    finished run and the axes the owner chose): name, base, axes, search, objective, workers, the grid's size and
+    every expanded trial config. `base` is validated and normalised here unless the caller already did."""
+    if not paths.safe_segment(name, NAME_MAX):
+        raise SweepSpecError(f"name: must be 1-{NAME_MAX} letters, digits, '.', '_' or '-' (a safe path segment)")
+    if not isinstance(base, dict):
+        raise SweepSpecError("base: must be a path to a run.json or an inline run config")
+    if normalise_base:
+        _plain(base, "base")
+        try:
+            base = runconfig.validate(base)
+        except runconfig.RunConfigError as e:
+            raise SweepSpecError(f"base: {e}") from e
     if objective not in registry.OBJECTIVES:
         raise SweepSpecError(f"objective: must be one of {list(registry.OBJECTIVES)}, not {objective!r}")
-    workers = raw.get("workers")
     if workers is not None and (isinstance(workers, bool) or not isinstance(workers, int) or workers < 1):
         raise SweepSpecError("workers: null or a whole number >= 1")
-    spec = SweepSpec(name=name, base=base, axes=_axes(raw.get("axes")), search=_search(raw.get("search")),
-                     objective=objective, workers=workers, source=path)
+    spec = SweepSpec(name=name, base=base, axes=_axes(axes), search=_search(search),
+                     objective=objective, workers=workers, source=source)
     size = math.prod(len(v) for v in spec.axes.values())
     if size >= _U32:
         raise SweepSpecError(f"the grid has {size} points; the search space is too large to sample")
@@ -326,10 +343,11 @@ def _csv(axes: dict, rows: list[dict]) -> str:
 
 
 def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int | None = None,
-              pool_run=None, now_ns: int | None = None) -> SweepResult:  # noqa: ANN001
+              pool_run=None, now_ns: int | None = None, on_job=None) -> SweepResult:  # noqa: ANN001
     """Run every grid point through the pool (role `trial`) as one job and one family of its own. A locked holdout
     (no `unlock_reason`) or a pool that raises marks the job `failed` with the message and re-raises; a trial that
-    fails is a row with its error, not an exception. `pool_run` is looked up late (pool.run_all) so tests can patch."""
+    fails is a row with its error, not an exception. `pool_run` is looked up late (pool.run_all) so tests can patch.
+    `on_job(job_id)` is called once the job row exists (the web app learns the id there)."""
     points = expand(spec)
     now = timeutil.now_ns() if now_ns is None else now_ns
     job_id = _job_id(spec.name, now)
@@ -345,6 +363,8 @@ def run_sweep(spec: SweepSpec, *, unlock_reason: str | None = None, workers: int
                                  "unlock_given": unlock_reason is not None},
                                 sort_keys=True, allow_nan=False)})
     try:
+        if on_job is not None:
+            on_job(job_id)
         jobs = []
         for p in points:
             cfg = copy.deepcopy(p.config)

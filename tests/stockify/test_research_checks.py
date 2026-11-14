@@ -105,12 +105,15 @@ class ResearchHelperChecks(unittest.TestCase):
     def test_durations_bytes_and_the_recorder_strip_are_in_words(self):
         self.assertEqual(self.answers["durations"], ["still open", "still open", "0 s", "12 s", "1 min", "2 min 5 s", "1 h", "1 h 2 min", "—"])
         self.assertEqual(self.answers["bytes"], ["—", "0 B", "999 B", "1.5 kB", "2.5 MB", "12.3 GB", "3 TB", "—"])
-        old = ("Its last report was {} ago, so nothing is being recorded now. Start it with .\\run.ps1 -DaemonOnly "
-               "in a terminal in the STOCKIFY folder.")
+        how = ("STOCKIFY was probably started without recording turned on: close it and start it again with recording "
+               "turned on (the Daemon option of the launcher).")
+        old = "Its last report was {} ago, so nothing is being recorded now. " + how
         closed = ("The last report was {} ago. The recorder reports only while the market is open. If it should have run, "
-                  "start it with .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder.")
+                  + how)
         none = {"headline": "The recorder has not reported yet", "tone": "warn", "rate": None, "last": None,
-                "note": "Start the recorder to see live figures: run .\\run.ps1 -DaemonOnly in a terminal in the STOCKIFY folder."}
+                "note": ("The recorder is the background service that saves live prices. It runs only when STOCKIFY is "
+                         "started with recording turned on, so close STOCKIFY and start it again that way (the Daemon option of the launcher) to see live "
+                         "figures here.")}
         self.assertEqual(self.answers["recorder"], [
             none,
             {"headline": "Connected", "tone": "up", "rate": "12.3 packets a second", "last": "last packet 340 ms ago", "note": None},
@@ -255,12 +258,7 @@ class ResearchHelperChecks(unittest.TestCase):
             None,
             None])
 
-    def test_the_data_page_prints_the_launcher_command_with_its_backslash_and_no_stray_carriage_return(self):
-        py = ".\\.venv\\Scripts\\python.exe -m stockify"
-        self.assertEqual(self.answers["dataPageCommands"], [
-            ".\\run.ps1 -DaemonOnly", f"{py} nse fetch --date YYYY-MM-DD",
-            f"{py} sweep --config examples/sweeps/orb_grid.yaml", f"{py} walkforward --sweep examples/sweeps/orb_grid.yaml",
-            f"{py} sensitivity --run 12", f"{py} x"])
+    def test_web_sources_have_no_stray_carriage_return(self):
         self.assertEqual(self.answers["webSourceHasStrayCR"], [False] * 5)
 
     def test_compare_link_keeps_two_to_six_encoded_ids(self):

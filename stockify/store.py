@@ -18,7 +18,7 @@ from typing import Optional
 from stockify import paths
 from stockify.data import migrate
 
-SCHEMA_VERSION = 5  # = the number of files in stockify/data/migrations/lab
+SCHEMA_VERSION = 6  # = the number of files in stockify/data/migrations/lab
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -496,6 +496,12 @@ def list_research_jobs(kind: str | None = None, offset: int = 0, limit: int = 50
         args.append(kind)
     sql += " ORDER BY created_ns DESC, job_id LIMIT ? OFFSET ?"
     return [dict(r) for r in _all(sql, (*args, limit, offset))]
+
+
+def run_status_counts(job_id: str) -> dict[str, int]:
+    """How many of a research job's runs are in each status (the pool's children carry the job id): the progress
+    of a sweep, a walk-forward or a sensitivity check while it runs."""
+    return {r[0]: r[1] for r in _all("SELECT status, COUNT(*) FROM runs WHERE job_id = ? GROUP BY status", (job_id,))}
 
 
 def count_research_jobs(kind: str | None = None) -> int:

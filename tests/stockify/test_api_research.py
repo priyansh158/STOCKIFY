@@ -13,7 +13,6 @@ from tests.support import SandboxedDBTest
 
 import stockify.store as store
 from stockify import paths
-from stockify.commands import stockify_command
 from stockify.data import refdata
 from stockify.research import report
 from tests.stockify.research.fixtures import make_run
@@ -184,13 +183,13 @@ class SensitivityApiTests(SandboxedDBTest):
     def test_api_returns_404_until_run(self):
         r = self.client.get("/api/tests/s0/sensitivity")
         self.assertEqual(r.status_code, 404)
-        self.assertEqual(r.json()["detail"], f"not run yet; run `{stockify_command("sensitivity --run s0")}`")
+        self.assertEqual(r.json()["detail"], "the cost check has not been run for this test yet")
         self.assertEqual(self.client.get("/api/tests/nope/sensitivity").status_code, 404)
         for bad in ("{not json", "[]", json.dumps({"rows": 3}), self._doc(verdict="maybe"), self._doc(run_id="other"), self._doc(verdict="robust", fragile=False)):
             self._write(bad)
             r = self.client.get("/api/tests/s0/sensitivity")
             self.assertEqual(r.status_code, 404, bad)
-            self.assertIn("not run yet", r.json()["detail"])
+            self.assertIn("has not been run", r.json()["detail"])
 
     def test_api_returns_the_stored_result_without_nan(self):
         self._write(self._doc())
@@ -589,7 +588,8 @@ class WalkforwardApiTests(SandboxedDBTest):
         for key in ("setup", "flatter", "ratio_caveat", "coverage", "n_note"):
             self.assertIn(j["plain"][key], report, key)
         self.assertEqual([w["result"] for w in j["windows"]], ["tested"] * len(j["windows"]))
-        self.assertIn(f"--walkforward {self.job} --sensitivity-run", j["plain"]["sensitivity"])
+        self.assertNotIn("--walkforward", j["plain"]["sensitivity"])           # the page names no command (D-145)
+        self.assertIn("Run sensitivity check", j["plain"]["sensitivity"])
         self.assertIn("isn't stored", j["plain"]["sensitivity"])
         self.assertEqual(j["plain"]["y_label"], "growth of 1 (dashed line = starting capital)")
         self.assertIn("left empty", j["plain"]["gaps"])

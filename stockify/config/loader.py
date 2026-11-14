@@ -359,7 +359,7 @@ def _check_research(doc: dict) -> None:
     and scales decimal strings, counts whole numbers within sanity bounds, edge lists strictly increasing.
     `holdout_from` is null (no holdout) or an ISO date; `sweep.max_workers` is null (cpu_count - 1) or >= 1; `sweep.max_trials` is the most trials one sweep may expand to."""
     top = ("holdout_from", "walk_forward", "bootstrap", "sensitivity", "regimes", "pbo", "sweep", "coverage", "export", "pool",
-           "reporting")
+           "reporting", "web_jobs")
     extra = set(doc) - set(top) - {"schema"}
     if extra:
         raise ConfigError(f"research.json: unknown keys {sorted(extra)}; known: {list(top)}")
@@ -425,6 +425,10 @@ def _check_research(doc: dict) -> None:
 
     rep = _research_section(doc, "reporting", ("min_days_yearly",))   # D-135: shorter runs show no yearly figure
     _research_int(rep["min_days_yearly"], "reporting.min_days_yearly", 2, 100_000)
+
+    web = _research_section(doc, "web_jobs", ("max_research_jobs", "max_data_jobs"))   # D-145: jobs the web app starts
+    _research_int(web["max_research_jobs"], "web_jobs.max_research_jobs", 1, 8)
+    _research_int(web["max_data_jobs"], "web_jobs.max_data_jobs", 1, 8)
 
     cov = _research_section(doc, "coverage", ("ok_pct", "default_days", "max_days"))
     if not 0 < _research_decimal(cov["ok_pct"], "coverage.ok_pct") <= 100:

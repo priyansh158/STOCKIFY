@@ -2,15 +2,16 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
-import { stockifyCommand } from "@/lib/commands";
 import { pct } from "@/lib/format";
 import { getSweep, heatFormat, heatGridProps } from "@/lib/research";
 import type { SweepDTO, SweepRowDTO } from "@/lib/types";
 import { resolveTrial, trialHref, trialWords } from "@/lib/chart";
 import { Chip, Empty, PageHead, Panel, Table } from "@/components/ui";
+import JobWatch from "@/components/JobWatch";
 import AxisPicker from "./AxisPicker";
 import SweepGrid from "./SweepGrid";
 import TrialChart from "./TrialChart";
+import WalkforwardPanel from "./WalkforwardPanel";
 
 export const metadata: Metadata = { title: "Sweep - STOCKIFY" };
 export const dynamic = "force-dynamic";
@@ -195,6 +196,7 @@ function Full({ sweep, warning, trialParam }: { sweep: SweepDTO; warning: boolea
       </section>
       <TrialSection sweep={sweep} trial={trial} />
       <Results sweep={sweep} scored={scored} pickedRunId={pickedRunId} />
+      <WalkforwardPanel sweepId={sweep.job_id} />
     </Page>
   );
 }
@@ -234,17 +236,17 @@ export default async function SweepPage({
       return (
         <Page title="This sweep is still running">
           <Notice tone="info" title="There is no grid yet.">
-            The trials have not all finished. Reload this page in a little while.
+            The trials have not all finished. The grid appears here when they have.
           </Notice>
+          <JobWatch jobId={id} />
         </Page>
       );
     case "failed":
       return (
         <Page title="This sweep failed">
           <Notice tone="red" title="It stopped before it finished, so there is no grid to show.">
-            {res.reason ? `Why: ${res.reason}. ` : ""}Run it again with{" "}
-            <code className="stk-mono">{stockifyCommand("sweep --config <your sweep.yaml>")}</code>, or open All research to see
-            your other sweeps.
+            {res.reason ? `Why: ${res.reason}. ` : ""}Start a new sweep from All research, where it is one button, or open
+            your other sweeps there.
           </Notice>
         </Page>
       );

@@ -84,6 +84,25 @@ class PoolTestBase(unittest.TestCase):
     def jobs(self, n, **kw):
         return [PoolJob({"name": f"c{i}"}, job_id=f"j{i}", **kw) for i in range(n)]
 
+class PoolCancelTests(PoolTestBase):
+    """DM 7.4 (I2): a job started from the web can be stopped: the live children are killed, no pending one starts."""
+
+    def test_a_set_event_kills_the_live_children_starts_no_more_and_raises_cancelled(self):
+        import threading
+        ev = threading.Event()
+        FakePopen.script = {"j0": {"polls": 99}, "j1": {"polls": 99}, "j2": {"polls": 99}}
+        token = pool.set_cancel(ev)
+        self.addCleanup(pool.reset_cancel, token)
+        with mock.patch.object(pool, "_sleep", side_effect=ev.set), self.assertRaises(pool.Cancelled):
+            pool.run_all(self.jobs(3), workers=1, popen=FakePopen)
+        self.assertEqual(FakePopen.calls, ["j0"])                 # j1 and j2 never started
+        self.assertTrue(FakePopen.instances[0].killed)
+
+    def test_without_an_event_nothing_changes(self):
+        FakePopen.script = {"j0": {"out": rp("r0")}}
+        (o,) = pool.run_all(self.jobs(1), popen=FakePopen)
+        self.assertEqual(o.status, "done")
+
 
 class PoolBehaviourTests(PoolTestBase):
     def test_at_most_workers_run_at_once(self):
@@ -482,3 +501,34 @@ class RealProcessTests(BundleTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CancelMarksRunRows(WallTimeLimitTests.__bases__[0]):
+    def setUp(self):
+        super().setUp()
+        support.reset_sqlite_singleton(store)
+        self.addCleanup(support.reset_sqlite_singleton, store)
+        FakePopen.live = FakePopen.peak = 0
+        FakePopen.calls, FakePopen.script, FakePopen.instances = [], {}, []
+        p = mock.patch.object(pool, "_POLL_SECONDS", 0)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_killed_childs_run_row_is_cancelled_not_failed(self):
+        import threading
+        ev = threading.Event()
+        store.create_run({"run_id": "kid", "name": "c0", "status": "running", "job_id": "j0", "started_ns": 1,
+                          "role": "trial"})
+        (paths.run_dir("kid") / "runner.pid").write_text("999999 123\n", encoding="utf-8")
+        FakePopen.script = {"j0": {"polls": 10 ** 9}}
+
+        class WithPid(FakePopen):
+            pid = 999999
+        token = pool.set_cancel(ev)
+        self.addCleanup(pool.reset_cancel, token)
+        with mock.patch.object(pool, "_sleep", side_effect=ev.set), \
+                mock.patch.object(pool, "_kill", side_effect=lambda proc: proc.kill()), self.assertRaises(pool.Cancelled):
+            pool.run_all([PoolJob({"name": "c0"}, job_id="j0")], popen=WithPid)
+        row = store.get_run("kid")
+        self.assertEqual(row["status"], "cancelled")
+        self.assertEqual(row["error"], "cancelled by the user")

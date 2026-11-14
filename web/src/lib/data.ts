@@ -4,7 +4,6 @@
  * Sentences the API already carries (a cell's detail, the storage warnings, the store errors) are shown as they come;
  * these helpers only shorten a cell for its chip and name the codes the API gives as codes.
  */
-import { START_RECORDER } from "./commands";
 import type { CoverageCellDTO, CoverageDayDTO, InstrumentQuality, RecorderStatus } from "./types";
 
 export type CellTone = "up" | "down" | "warn" | "info";
@@ -136,6 +135,11 @@ export function bytesWords(n: number | null | undefined): string {
   return `${Number(v.toFixed(1))} ${units[u]}`;
 }
 
+/** The recorder is a separate background service: STOCKIFY starts it only when it is started with recording turned on
+ * (D-146). The page cannot start it, so it says how it gets started, in words. */
+export const RECORDER_HOW_SHORT = "STOCKIFY was probably started without recording turned on: close it and start it again with recording turned on (the Daemon option of the launcher).";
+export const RECORDER_HOW = `The recorder is the background service that saves live prices. It runs only when STOCKIFY is started with recording turned on, so close STOCKIFY and start it again that way (the Daemon option of the launcher) to see live figures here.`;
+
 /** "3 min", "5 h 2 min", "8 days": how long ago, coarse enough to read at a glance. */
 function agoWords(seconds: number): string {
   if (seconds >= 2 * 86400) return `${Math.floor(seconds / 86400)} days`;
@@ -152,20 +156,20 @@ export function recorderWords(
   if (!s) {
     return {
       headline: "The recorder has not reported yet", tone: "warn", rate: null, last: null,
-      note: `Start the recorder to see live figures: run ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
+      note: RECORDER_HOW,
     };
   }
   if (s.stale && !s.market_open) {
     // outside market hours the recorder writes nothing, running or not: say what is known, not that it is broken
     return {
       headline: "No report while the market is closed", tone: "info", rate: null, last: null,
-      note: `The last report was ${agoWords(s.age_s)} ago. The recorder reports only while the market is open. If it should have run, start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
+      note: `The last report was ${agoWords(s.age_s)} ago. The recorder reports only while the market is open. If it should have run, ${RECORDER_HOW_SHORT}`,
     };
   }
   if (s.stale) {
     return {
       headline: "The recorder is not running", tone: "warn", rate: null, last: null,
-      note: `Its last report was ${agoWords(s.age_s)} ago, so nothing is being recorded now. Start it with ${START_RECORDER} in a terminal in the STOCKIFY folder.`,
+      note: `Its last report was ${agoWords(s.age_s)} ago, so nothing is being recorded now. ${RECORDER_HOW_SHORT}`,
     };
   }
   const ages = Object.values(s.last_packet_age_ms ?? {}).filter((a): a is number => typeof a === "number" && Number.isFinite(a));

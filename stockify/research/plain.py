@@ -19,7 +19,6 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING
 
 from stockify.research import registry
-from stockify.commands import stockify_command
 
 if TYPE_CHECKING:
     from stockify.research.regimes import Bucket
@@ -387,7 +386,7 @@ GENERIC_FAILURE = "the run failed; see the log"
 PLAIN_FAILURES: tuple[tuple[str, str], ...] = (
     ("HoldoutLocked", "the holdout is locked"),
     ("RunConfigError", "the settings were not accepted"),
-    ("SweepSpecError", "the sweep file has a problem; run `" + stockify_command("sweep --config FILE") + "` to see it"),
+    ("SweepSpecError", "the sweep settings had a problem; check them and start the sweep again"),
     ("WalkforwardRunError", "the run pool returned the wrong number of results"),
     ("SensitivityRunError", "the run pool returned the wrong number of results"),
 )
@@ -468,6 +467,10 @@ def job_status_sentence(status: str, error: str | None) -> str:
     """A research job's state in words: running, finished, or failed with its readable reason."""
     if status == "running":
         return "still running"
+    if status == "interrupted":
+        return "stopped before it finished, because STOCKIFY was closed; start it again"
+    if status == "cancelled":
+        return "stopped by you before it finished"
     if status == "done":
         return "finished"
     if status == "failed":

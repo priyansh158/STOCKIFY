@@ -493,8 +493,9 @@ class ApiTests(test_api_tests.ApiTestBase):
         self.assertEqual(store.list_runs(), [])
         with holding():
             r = self.post({**body, "unlock_holdout": "final check"})
-        self.assertEqual(r.status_code, 201, r.text)
-        self.assertEqual(len(store.holdout_unlock_rows()), 1)
+        self.assertEqual(r.status_code, 422, r.text)          # D-145: the app never unlocks the holdout
+        self.assertIn("cannot be unlocked from the app", r.text)
+        self.assertEqual(store.holdout_unlock_rows(), [])
 
 
 if __name__ == "__main__":

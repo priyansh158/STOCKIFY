@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
-import { SWEEP_COMMAND, WALKFORWARD_COMMAND } from "@/lib/commands";
 import { istWhenEpoch } from "@/lib/format";
 import { runIdTail } from "@/lib/runid";
+import { listStrategies, listTests } from "@/lib/tests";
 import { familyHref, getFamilies, getJobs, getResearchCounts, jobHref, listCapNote } from "@/lib/research";
 import type { FamilySummaryDTO, ResearchJobDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Table } from "@/components/ui";
+import NewSweep from "./NewSweep";
 
 export const metadata: Metadata = { title: "Research - STOCKIFY" };
 export const dynamic = "force-dynamic";
@@ -63,7 +64,7 @@ function Families({ rows }: { rows: FamilySummaryDTO[] }) {
 
 function statusTone(status: string): "up" | "down" | "warn" | undefined {
   if (status === "done") return "up";
-  if (status === "failed") return "down";
+  if (status === "failed" || status === "interrupted") return "down";
   if (status === "running") return "warn";
   return undefined;
 }
@@ -92,7 +93,10 @@ function Jobs({ caption, rows }: { caption: string; rows: ResearchJobDTO[] }) {
 }
 
 export default async function ResearchPage() {
-  const [fams, jobs, counts] = await Promise.all([settle(getFamilies()), settle(getJobs()), settle(getResearchCounts())]);
+  const [fams, jobs, counts, tests, strategies] = await Promise.all([
+    settle(getFamilies()), settle(getJobs()), settle(getResearchCounts()), settle(listTests(200)), settle(listStrategies()),
+  ]);
+  const finished = tests.ok ? tests.value.filter((t) => t.status === "done") : [];
   const total = counts.ok ? counts.value : null;
 
   return (
@@ -115,8 +119,7 @@ export default async function ResearchPage() {
             </ErrorPanel>
           ) : fams.value.length === 0 ? (
             <Empty>
-              No trial families yet. Run a parameter sweep with <code>{SWEEP_COMMAND}</code> (the example sweep file; copy and edit it for your own) and its tries
-              will be counted here.
+              No trial families yet. Start a parameter sweep under &ldquo;Parameter sweeps&rdquo; below and its tries will be counted here.
             </Empty>
           ) : (
             <>
@@ -142,15 +145,20 @@ export default async function ResearchPage() {
           <>
             <section className="stk-section" aria-labelledby="sweep-h">
               <h2 id="sweep-h">Parameter sweeps</h2>
-              {jobs.value.sweeps.length === 0 ? (
-                <Empty>
-                  No sweeps yet. Start one with <code>{SWEEP_COMMAND}</code>.
-                </Empty>
+              {tests.ok && strategies.ok ? (
+                <NewSweep runs={finished} strategies={strategies.value} />
               ) : (
-                <>
+                <ErrorPanel>
+                  <p>Couldn&apos;t load what a new sweep needs: {tests.ok ? (strategies.ok ? "" : strategies.message) : tests.message}. Reload the page to try again.</p>
+                </ErrorPanel>
+              )}
+              {jobs.value.sweeps.length === 0 ? (
+                <p className="stk-fine stk-gap-top">No sweeps yet. The ones you run will be listed here.</p>
+              ) : (
+                <div className="stk-gap-top">
                   <Jobs caption="Parameter sweeps, newest first" rows={jobs.value.sweeps} />
                   <CapNote note={listCapNote(jobs.value.sweeps.length, total?.sweeps ?? null, "sweeps", "latest")} />
-                </>
+                </div>
               )}
             </section>
 
@@ -158,7 +166,10 @@ export default async function ResearchPage() {
               <h2 id="wf-h">Walk-forward runs</h2>
               {jobs.value.walkforwards.length === 0 ? (
                 <Empty>
-                  No walk-forward runs yet. Start one with <code>{WALKFORWARD_COMMAND}</code>.
+                  No walk-forward runs yet.{" "}
+                  {jobs.value.sweeps.some((s) => s.status === "done")
+                    ? "Open a finished sweep above and choose “Walk forward”."
+                    : "Run a sweep first; when it has finished, open it and choose “Walk forward”."}
                 </Empty>
               ) : (
                 <>

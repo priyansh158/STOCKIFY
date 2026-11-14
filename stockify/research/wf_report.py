@@ -135,7 +135,7 @@ def detail(job_id: str) -> dict:
             "train": doc["train_days"], "test": doc["test_days"], "step": doc["step_days"], "summary": summary,
             "windows": [{**w, "result": _result_word(w), "no_sharpe": _no_sharpe(w)} for w in windows],
             "stitched_dates": doc["dates"], "stitched_index": doc["index"],
-            "plain": {**plain_lines(doc, job["family_id"]), **notes(doc)}}
+            "plain": {**plain_lines(doc, job["family_id"]), **notes(doc, command=False)}}
 
 
 def summary_text(job_id: str) -> str:
@@ -258,11 +258,12 @@ def _paragraph_for_days(s: walkforward.WalkforwardSummary) -> str | None:
     return None
 
 
-def notes(doc: dict) -> dict[str, str]:
+def notes(doc: dict, *, command: bool = True) -> dict[str, str]:
     """The report's fixed explanatory lines written once for the report and the page:
     `objective` (how settings were chosen), `setup` (the window lengths, in calendar days), `flatter`,
     `ratio_caveat`, `coverage`, `n_note`, `curve` (the chart's caption), `y_label`, `gaps`, the three lead-ins `ratio_lead`, `stability_lead` and `pbo_lead`, `sensitivity` (where the cost check is) and, only when it
-    applies, `few_days`. A line is a clause or whole sentences; the page adds a full stop only where one is missing."""
+    applies, `few_days`. A line is a clause or whole sentences; the page adds a full stop only where one is missing.
+    `command=False` (the page, D-145) words `sensitivity` without a command line; report.md keeps the command."""
     s = _summary(doc)
     raw = doc["summary"]
     tested = sum(1 for w in doc["windows"] if w["test"] is not None)
@@ -288,9 +289,12 @@ def notes(doc: dict) -> dict[str, str]:
         "ratio_lead": "Out-of-sample against in-sample",
         "stability_lead": "Stability",
         "pbo_lead": "Overfitting",
-        "sensitivity": ("The cost check isn't stored with a walk-forward job. Run `"
-                        + stockify_command(f"research report --walkforward {doc['job_id']} --sensitivity-run RUN_ID")
-                        + "` to add it to the report file."),
+        "sensitivity": (
+            ("The cost check isn't stored with a walk-forward job. Run `"
+             + stockify_command(f"research report --walkforward {doc['job_id']} --sensitivity-run RUN_ID")
+             + "` to add it to the report file.") if command else
+            "The cost check isn't stored with a walk-forward job. Open the page of one of its tests and use "
+            "\"Run sensitivity check\" to see how costs change a result."),
     }
     caution = _paragraph_for_days(s)
     if caution:
