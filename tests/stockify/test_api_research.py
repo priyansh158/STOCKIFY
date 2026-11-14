@@ -465,9 +465,9 @@ class SweepApiTests(SandboxedDBTest):
             {"base": {"strategy": {"kind": "python", "ref": "stockify.strategies.buy_and_hold:BuyAndHold"}}}))
         j = self.client.get("/api/research/sweeps/sweep-t-1").json()
         self.assertEqual([(a["path"], a["label"]) for a in j["axes"]],
-                         [("strategy.params.interval_s", "Bar length (seconds)"), (self.X, "Fast")])   # no label known: its words, never the path
+                         [("strategy.params.interval_s", "Bar length"), (self.X, "Fast")])   # no label known: its words, never the path
         self.assertEqual(j["objective_label"], "steadiness of returns (Sharpe)")
-        self.assertIn("Bar length (seconds) = ", j["plain"])                  # the sentence names the settings as the page does
+        self.assertIn("Bar length = ", j["plain"])                  # the sentence names the settings as the page does
         self.assertNotIn("interval_s", j["plain"])
 
     def test_a_sweep_without_a_stored_spec_labels_every_axis_in_words_not_by_its_path(self):
