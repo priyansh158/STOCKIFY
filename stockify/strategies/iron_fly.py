@@ -15,6 +15,7 @@ from stockify.strategies._option_legs import OptionLegs
 
 
 class IronFly(OptionLegs):
+    DISPLAY_NAME = "Iron Fly"   # what the UI shows (stockify.display); the catalogue test fails without one
     PARAMS = [
         {'name': 'underlying', 'label': 'Index for the options', 'type': 'underlying', 'default': 'NIFTY', 'required': False, 'help': 'the index whose options are traded'},
         {'name': 'entry_hhmm', 'label': 'Entry time (IST)', 'type': 'hhmm', 'default': '09:30', 'required': False, 'help': 'when to buy the wings and sell the at-the-money call and put'},

@@ -28,6 +28,7 @@ from stockify.strategy import Strategy, encode_state, fmt_price, fmt_qty
 
 
 class EodShortStraddle(Strategy):
+    DISPLAY_NAME = "End-of-Day Short Straddle"   # what the UI shows (stockify.display); the catalogue test fails without one
     BAR_INTERVAL_S = 86400           # the one bar interval it subscribes to (the chart reads it)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
