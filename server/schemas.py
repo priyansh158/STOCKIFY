@@ -135,6 +135,7 @@ class StrategyDTO(BaseModel):
     kind: Literal["python", "cpp"]
     ref: str = Field(..., description="'module:Class' for python, the registered name for cpp")
     name: str
+    display_name: str = Field("", description="the strategy's name for a person ('Opening Range Breakout'); never a code")
     doc: str = ""
     params: list[StrategyParamDTO] = Field(default_factory=list)
 
@@ -147,6 +148,7 @@ class TestRunDTO(BaseModel):
     status: Literal["queued", "running", "done", "failed", "cancelled"]
     impl: str | None = None
     strategy_ref: str | None = None
+    strategy_name: str | None = Field(None, description="the strategy's display name (the page shows this, never the ref)")
     start_date: str | None = None
     end_date: str | None = None
     price_basis: str | None = None
@@ -186,7 +188,8 @@ class TestFillDTO(BaseModel):
     qty: int
     price_paise: int
     note: str = Field("", description="the strategy's own note on the order this fill belongs to ('' when it gave none)")
-    tag: str = Field("", description="the strategy's tag on that order (a code label)")
+    tag: str = Field("", description="the strategy's tag on that order, as stored (a code label)")
+    tag_label: str = Field("", description="the tag in plain words ('Long entry'); the page shows this, with `tag` as its hover")
     evidence: str = Field("", description="how the engine priced the fill (A1 fills.csv: eod_close, bar_open, ltp, ...)")
     at_close: bool = Field(False, description="True when the fill is the day's close (evidence eod_close): its time is "
                                               "when the close is published, not when anything traded")
@@ -280,6 +283,7 @@ class SessionDTO(BaseModel):
     name: str
     status: str
     pause_reasons: list[str] = Field(default_factory=list)
+    strategy_name: str | None = Field(None, description="the strategy's display name")
     today_pnl_paise: int | None = None
     open_positions: int | None = None
     coverage_today: float | None = None
@@ -540,6 +544,7 @@ class PboDTO(BaseModel):
 
 class FamilySummaryDTO(BaseModel):
     family_id: str
+    title: str = ""                 # what the page calls the family: its description, else its id read as words
     description: str | None = None
     named: bool
     objective: str
@@ -555,6 +560,7 @@ class FamilySummaryDTO(BaseModel):
 
 class FamilyDetailDTO(BaseModel):
     family_id: str
+    title: str = ""
     description: str | None = None
     objective: str
     named: bool
@@ -660,9 +666,11 @@ class CompareMetricDTO(BaseModel):
 
 
 class CompareDiffDTO(BaseModel):
-    field: str
-    values: list[str | None]
+    field: str                      # the stored key: a hover for the plain `label`
+    values: list[str | None]        # as stored
     differs: bool
+    label: str = ""                 # the field in plain words
+    shown: list[str | None] = Field(default_factory=list, description="each value in plain words; the page shows these")
 
 
 class CompareSeriesDTO(BaseModel):
@@ -776,6 +784,7 @@ class WalkforwardWindowDTO(BaseModel):
     test_from: str
     test_to: str
     chosen_params: dict[str, Any] | None = None
+    chosen_text: str = ""           # the chosen settings in plain words
     chosen_run_id: str | None = None
     test_run_id: str | None = None
     test_status: str
@@ -840,6 +849,7 @@ class ChartMarkerDTO(BaseModel):
     fill_id: int | None = None
     note: str
     tag: str
+    tag_label: str = ""
     tag_is_code: bool
     charges_paise: int | None = None
     trade_pnl_paise: int | None = None
@@ -853,6 +863,7 @@ class ChartPointDTO(BaseModel):
 
 class ChartPlotDTO(BaseModel):
     name: str
+    label: str = ""                 # the line's name in plain words, for a legend
     kind: Literal["price", "level"]
     instrument_id: int
     points: list[ChartPointDTO]

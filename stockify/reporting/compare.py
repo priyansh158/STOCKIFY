@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from stockify import paths, store
+from stockify import display, paths, store
 from stockify.oracle.metrics import drawdown_series
 from stockify.reporting import figures
 from stockify.research import plain
@@ -38,6 +38,8 @@ class DiffRow:
     field: str
     values: list[str | None]
     differs: bool
+    label: str = ""                                    # the field in plain words (stockify.display)
+    shown: list[str | None] = field(default_factory=list)   # each value in plain words; `values` stays as stored
 
 
 @dataclass
@@ -134,6 +136,32 @@ def _canonical(text: str | None) -> str:
         return text or ""
 
 
+def _param_labels(cfgs: list[dict]) -> dict[str, str]:
+    """Plain label of each strategy param of the compared runs (their strategies' own params schemas)."""
+    from stockify.strategies import _catalogue
+    out: dict[str, str] = {}
+    for c in cfgs:
+        s = c.get("strategy") if isinstance(c.get("strategy"), dict) else {}
+        schema = _catalogue.schema_of(s.get("kind"), s.get("ref")) if s else None
+        for p in schema or []:
+            if isinstance(p, dict) and p.get("label"):
+                out.setdefault(p["name"], p["label"])
+    return out
+
+
+def _shown(name: str, values: list[str | None], cfgs: list[dict]) -> list[str | None]:
+    """Each value of a settings row in plain words: a strategy ref as the strategy's display name, anything else
+    through `display.setting_text`."""
+    if name == "strategy.ref":
+        from stockify.strategies import _catalogue
+        out = []
+        for v, c in zip(values, cfgs):
+            kind = (c.get("strategy") or {}).get("kind") if isinstance(c.get("strategy"), dict) else None
+            out.append(None if v is None else _catalogue.display_name_of(kind or "python", v))
+        return out
+    return [display.setting_text(name, v) for v in values]
+
+
 def compare_runs(run_ids: list[str]) -> RunComparison:
     ids = list(run_ids)
     if not MIN_RUNS <= len(ids) <= MAX_RUNS or len(set(ids)) != len(ids):
@@ -184,11 +212,12 @@ def compare_runs(run_ids: list[str]) -> RunComparison:
         return m.get(key) if m else row.get(key)
 
     diff: list[DiffRow] = []
+    param_labels = _param_labels(cfgs)
 
     def add(name: str, values: list[str | None], always: bool = True) -> None:
         d = len(set(values)) > 1
         if always or d:
-            diff.append(DiffRow(name, values, d))
+            diff.append(DiffRow(name, values, d, display.field_label(name, param_labels), _shown(name, values, cfgs)))
 
     def strat(c: dict) -> dict:
         s = c.get("strategy")
