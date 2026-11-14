@@ -135,6 +135,7 @@ export type TestStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 export interface TestRun {
   run_id: string;
   name?: string | null;
+  name_label: string;
   family_id?: string | null;
   status: TestStatus;
   impl?: string | null;
@@ -264,6 +265,7 @@ export interface TestCreated {
 export interface SessionDTO {
   session_id: string;
   name: string;
+  name_label: string;
   status: string;
   pause_reasons: string[];
   strategy_name?: string | null;
@@ -494,6 +496,7 @@ export interface SensitivityDTO {
 export interface TrialRowDTO {
   run_id: string;
   name: string | null;
+  name_label: string;
   role: string;
   status: string;
   objective_value: number | null;
@@ -557,6 +560,7 @@ export interface ResearchJobDTO {
   job_id: string;
   kind: string;
   name: string | null;
+  name_label: string;
   family_id: string | null;
   status: string;
   created_ns: number;
@@ -618,6 +622,7 @@ export interface SweepHeatmapDTO {
 export interface SweepDTO {
   job_id: string;
   name: string;
+  name_label: string;
   family_id: string;
   objective: string;
   objective_label: string;
@@ -654,6 +659,7 @@ export interface CompareSeriesDTO {
 export interface ComparisonDTO {
   run_ids: string[];
   names: string[];
+  name_labels: string[];
   metrics: CompareMetricDTO[];
   equity: CompareSeriesDTO[];
   drawdown: CompareSeriesDTO[];
@@ -766,6 +772,7 @@ export interface WalkforwardWindowDTO {
 export interface WalkforwardDTO {
   job_id: string;
   name: string;
+  name_label: string;
   family_id: string;
   objective: string;
   train: number;

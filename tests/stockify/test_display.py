@@ -46,6 +46,15 @@ class HumanizeTests(unittest.TestCase):
         self.assertEqual(display.tag_label(None), "")
 
 
+class NameLabelTests(unittest.TestCase):
+    def test_a_chosen_name_as_words_with_acronyms_upright(self):
+        for raw, want in [("orb_reliance_minute", "ORB reliance minute"), ("cmp_eod_straddle_spanlite", "Cmp EOD straddle spanlite"),
+                          ("sma_cross_cpp", "SMA cross C++"), ("a_-_b", "A - b"), ("my-run_v2.1", "My-run v2.1"),
+                          ("Opening_Range_Breakout_RELIANCE_Jun_2026", "Opening Range Breakout RELIANCE Jun 2026"),
+                          ("__x__", "X"), ("", ""), (None, "")]:
+            self.assertEqual(display.name_label(raw), want, raw)
+
+
 class SettingsAndFamilyTests(unittest.TestCase):
     def test_config_keys_have_plain_labels(self):
         for field in ("fill_model", "margin.model", "price_basis", "costs.broker", "policies.max_slices", "seed"):

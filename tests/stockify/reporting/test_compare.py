@@ -199,7 +199,7 @@ class CompareApiTests(CompareBase):
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual(body["run_ids"], ["a", "b"])
-        self.assertEqual(set(body), {"run_ids", "names", "metrics", "equity", "drawdown", "labels", "differing_labels",
+        self.assertEqual(set(body), {"run_ids", "names", "name_labels", "metrics", "equity", "drawdown", "labels", "differing_labels",
                                      "manifest_diff", "notes"})
         self.assertEqual(self.client.get("/api/tests/compare", params=[("ids", "a")]).status_code, 422)
         self.assertEqual(self.client.get("/api/tests/compare").status_code, 422)

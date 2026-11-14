@@ -329,7 +329,7 @@ class SweepApiTests(SandboxedDBTest):
         add_sweep_job(None, "wf-1", kind="walkforward", status="running", created_ns=3)
         r = self.client.get("/api/research/jobs")
         self.assertEqual([j["job_id"] for j in r.json()], ["wf-1", "sweep-b", "sweep-a"])
-        self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "family_id", "status", "created_ns",
+        self.assertEqual(list(r.json()[0]), ["job_id", "kind", "name", "name_label", "family_id", "status", "created_ns",
                                              "finished_ns", "error", "plain"])
         self.assertEqual([j["plain"] for j in r.json()], ["still running", "finished", "finished"])
         r = self.client.get("/api/research/jobs", params={"kind": "sweep"})
@@ -345,7 +345,7 @@ class SweepApiTests(SandboxedDBTest):
         r = self.client.get("/api/research/sweeps/sweep-t-1")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "objective_label", "axes", "rows",
+        self.assertEqual(list(j), ["job_id", "name", "name_label", "family_id", "objective", "objective_label", "axes", "rows",
                                    "best_run_id", "cells", "plain"])
         self.assertEqual((j["objective"], j["best_run_id"]), ("sharpe", "run2"))
         self.assertEqual([a["path"] for a in j["axes"]], [self.X, self.Y])
@@ -549,7 +549,7 @@ class WalkforwardApiTests(SandboxedDBTest):
         r = self.client.get(f"/api/research/walkforward/{self.job}")
         self.assertEqual(r.status_code, 200)
         j = r.json()
-        self.assertEqual(list(j), ["job_id", "name", "family_id", "objective", "train", "test", "step", "summary",
+        self.assertEqual(list(j), ["job_id", "name", "name_label", "family_id", "objective", "train", "test", "step", "summary",
                                    "windows", "stitched_dates", "stitched_index", "plain"])
         self.assertEqual((j["job_id"], j["train"], j["test"], j["step"], j["objective"]),
                          (self.job, 120, 30, 30, "sharpe"))

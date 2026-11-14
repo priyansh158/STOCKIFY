@@ -26,12 +26,12 @@ const sid = pathSegment;
 
 const FIXTURE_SESSIONS: SessionDTO[] = [
   {
-    session_id: "paper-20261111-a1b2c3", name: "orb_nifty", status: "RUNNING", pause_reasons: [],
+    session_id: "paper-20261111-a1b2c3", name: "orb_nifty", name_label: "ORB NIFTY", status: "RUNNING", pause_reasons: [],
     today_pnl_paise: 125_050, open_positions: 2, coverage_today: 0.998, parity_last: "pass", labels: [],
     created_ist: "2026-11-09T09:00:00+05:30",
   },
   {
-    session_id: "paper-20261110-d4e5f6", name: "sma_reliance", status: "PAUSED", pause_reasons: ["owner", "token_expired"],
+    session_id: "paper-20261110-d4e5f6", name: "sma_reliance", name_label: "SMA reliance", status: "PAUSED", pause_reasons: ["owner", "token_expired"],
     today_pnl_paise: null, open_positions: 0, coverage_today: null, parity_last: null, labels: [],
     created_ist: "2026-11-08T09:00:00+05:30",
   },

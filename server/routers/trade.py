@@ -21,6 +21,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
+from stockify import display
+
 from server.schemas import (CommandStatusDTO, SessionCommandDTO, SessionCreatedDTO, SessionDetailDTO, SessionDTO, SessionFillDTO,
                             SessionChartDTO, SessionMarginDTO, SessionOrderDTO, SessionPositionDTO, SessionStatsDTO, SessionTimelineDTO, TradeLoginDTO)
 
@@ -297,7 +299,7 @@ def _session_dto(session: dict) -> SessionDTO:
         labels = json.loads(latest["labels_json"] or "[]") if latest else []
     except ValueError:
         labels = []
-    return SessionDTO(session_id=sid, name=session["name"] or "", status=session["status"],
+    return SessionDTO(session_id=sid, name=session["name"] or "", name_label=display.name_label(session["name"]), status=session["status"],
                       pause_reasons=session["pause_reasons"], strategy_name=_strategy_name(session.get("config")),
                       today_pnl_paise=pnl,
                       open_positions=_open_positions(sid, latest["trade_date"]) if latest else None,

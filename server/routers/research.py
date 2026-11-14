@@ -90,8 +90,10 @@ def family_detail(family_id: str) -> FamilyDetailDTO:
         d["best"] = DsrDTO(**d["best"])
     if d["pbo"] is not None:
         d["pbo"] = PboDTO(**d["pbo"])
-    d["trials"] = [TrialRowDTO(**t) for t in d["trials"]]
-    d["others"] = [TrialRowDTO(**t) for t in d["others"]]
+    from stockify import display
+    d["trials"] = [TrialRowDTO(**t, name_label=display.name_label(t.get("name"))) for t in d["trials"]]
+    d["others"] = [TrialRowDTO(**t, name_label=display.name_label(t.get("name"))) for t in d["others"]]
+    d["sessions"] = [{**s, "name_label": display.name_label(s.get("name"))} for s in d["sessions"]]
     return FamilyDetailDTO(**d, title=_family_title(family_id, d.get("description")))
 
 
@@ -112,8 +114,10 @@ def list_jobs(kind: str | None = Query(None, pattern=_KIND), offset: int = Query
     from stockify.research import plain, walkforward
 
     def _row(j: dict) -> ResearchJobDTO:
+        from stockify import display
         shown = walkforward.plain_error(j)                      # a plain reason, never the raw error
-        return ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"} | {"error": shown},
+        return ResearchJobDTO(**{k: j.get(k) for k in ResearchJobDTO.model_fields if k != "plain"}
+                              | {"error": shown, "name_label": display.name_label(j.get("name"))},
                               plain=plain.job_status_sentence(j["status"], None if shown == "Failed" else shown))
 
     return [_row(j)
@@ -283,8 +287,9 @@ def sweep_detail(job_id: str, x: str | None = Query(None, max_length=200),
     chosen_x, chosen_y = _pick_axes(list(doc["axes"]), x, y)
     h = _heatmap(doc, chosen_x, chosen_y)
     labels = _axis_labels(job_id, list(doc["axes"]))
+    from stockify import display
     return SweepDTO(
-        job_id=job_id, name=str(doc.get("name", "")), family_id=str(doc.get("family_id", "")),
+        job_id=job_id, name=str(doc.get("name", "")), name_label=display.name_label(doc.get("name")), family_id=str(doc.get("family_id", "")),
         objective=doc["objective"], objective_label=_objective_label(doc["objective"]),
         axes=[SweepAxisDTO(path=a, label=labels[a], labels=[_label(v) for v in vs], values=vs)
               for a, vs in doc["axes"].items()],
@@ -356,7 +361,8 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
     d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None),
                                             "chosen_text": _chosen_text(w.get("chosen_params"), labels)})
                     for w in d["windows"]]
-    return WalkforwardDTO(**d)
+    from stockify import display
+    return WalkforwardDTO(**d, name_label=display.name_label(d.get("name")))
 
 
 _INT64 = 2**63 - 1

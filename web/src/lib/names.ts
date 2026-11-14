@@ -1,15 +1,9 @@
 /**
  * Pure helpers for how names read on the pages (checked from Python by tests/stockify/names_check.ts). No React, no fetching.
- * Strategy names, order tags and setting labels come from the server in plain words (stockify.display); these are for the
- * texts the person chose themselves (a run's or session's name), for the few code words the server does not send, and for
- * the friendly default name the New test and New session forms suggest.
+ * Strategy names, order tags, setting labels and the names a person chose (`name_label`) all come from the server in plain
+ * words (stockify.display); these are for the few code words the server does not send and for the friendly default name
+ * the New test and New session forms suggest.
  */
-
-/** "Cmp eod straddle spanlite" for "cmp_eod_straddle_spanlite": a name the person chose, shown as words. The stored name (and every id made from it) is unchanged. */
-export function nameWords(name?: string | null): string {
-  const t = (name ?? "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-  return t ? t[0].toUpperCase() + t.slice(1) : "";
-}
 
 /** Any code-like word as plain words in sentence case: "refdata_stale" gives "Refdata stale", "R_MARGIN" gives "R margin". */
 export function wordsOf(code: string): string {
@@ -65,4 +59,19 @@ export function runNameSlug(text: string): string {
   const cut = s.slice(0, RUN_NAME_MAX).replace(/[_.-]+$/, "");
   const name = cut || "test";
   return /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name) ? `run_${name}` : name;   // a Windows device name is refused
+}
+
+/**
+ * A gentle note when saving `text` as a run name changes more than spaces: any mark other than letters, digits, "." "_" and
+ * "-" is replaced by "_" (the lab keeps a run name as a folder name), and a name over the limit is cut. null when nothing but
+ * spaces changes, or when there is no text.
+ */
+export function slugNote(text: string): string | null {
+  const t = text.trim();
+  if (!t) return null;
+  const slug = runNameSlug(t);
+  const replaced = /[^A-Za-z0-9._\- ]/.test(t);
+  const cut = t.replace(/ /g, "_").length > RUN_NAME_MAX;
+  if (!replaced && !cut) return null;
+  return `Saved as "${slug}": ${replaced ? 'marks other than letters, digits, "." "_" and "-" become "_"' : ""}${replaced && cut ? ", and " : ""}${cut ? `only the first ${RUN_NAME_MAX} characters are kept` : ""}.`;
 }

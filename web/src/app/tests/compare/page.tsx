@@ -12,7 +12,6 @@ import {
   COMPARE_MAX, COMPARE_MIN, compareIds, dayNumber, getComparison, runLabels, sentenceOrDash, valuesDiffer,
 } from "@/lib/research";
 import type { CompareDiffDTO, CompareMetricDTO, CompareSeriesDTO, ComparisonDTO } from "@/lib/types";
-import { nameWords } from "@/lib/names";
 import { labelText } from "../ui";
 import CompareCharts from "./Charts";
 
@@ -180,7 +179,7 @@ export default async function ComparePage({ searchParams }: { searchParams: Prom
   }
 
   const c = got.data;
-  const labels = runLabels(c.names.map((n, i) => (n === c.run_ids[i] ? n : nameWords(n))), c.run_ids);
+  const labels = runLabels(c.name_labels.length === c.names.length ? c.name_labels : c.names, c.run_ids);
   const diffs = c.manifest_diff.filter((d) => d.differs);
   const same = c.manifest_diff.filter((d) => !d.differs);
   const labelRows = Object.entries(c.labels);

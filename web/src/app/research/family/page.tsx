@@ -3,7 +3,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { istWhenEpoch, rupees } from "@/lib/format";
-import { nameWords, statusWords } from "@/lib/names";
+import { runIdTail } from "@/lib/runid";
+import { statusWords, wordsOf } from "@/lib/names";
 import { familyIdParam, getFamily, objectiveText, pboHowText, pboNoteLine, roleWords, scoreRanks, sessionRows, unlockRows } from "@/lib/research";
 import type { FamilyDetailDTO, TrialRowDTO } from "@/lib/types";
 import { Chip, Empty, PageHead, Panel, Table, toneClass } from "@/components/ui";
@@ -39,8 +40,13 @@ function runStatusTone(status: string): "up" | "down" | "warn" | undefined {
 }
 
 function RunName({ t }: { t: TrialRowDTO }) {
-  const name = nameWords(t.name) || t.run_id;
-  return <Link href={`/tests/${encodeURIComponent(t.run_id)}`} title={t.name ? `Saved as ${t.name} (run ${t.run_id})` : undefined}>{name}</Link>;
+  const name = t.name_label || t.name || t.run_id;
+  return (
+    <>
+      <Link href={`/tests/${encodeURIComponent(t.run_id)}`} title={t.name ? `Saved as ${t.name} (run ${t.run_id})` : undefined}>{name}</Link>
+      {t.name && <div className="stk-label">Run {runIdTail(t.run_id, t.name)}</div>}
+    </>
+  );
 }
 
 function Net({ paise }: { paise: number | null }) {
@@ -117,7 +123,7 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
   return (
     <>
       <PageHead
-        title={fam.title || named || nameWords(fam.family_id)}
+        title={fam.title || named || fam.family_id}
         lede="Every try of this idea, which one was picked, and how often the held-back days were looked at."
       />
       <div className="stk-stack">
@@ -203,9 +209,9 @@ function Body({ fam }: { fam: FamilyDetailDTO }) {
                   {sessions.map((s) => (
                     <tr key={s.session_id}>
                       <th scope="row" data-wrap>
-                        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} title={s.name ? `Saved as ${s.name}` : undefined}>{nameWords(s.name) || s.session_id}</Link>
+                        <Link href={`/trade/${encodeURIComponent(s.session_id)}`} title={s.name ? `Saved as ${s.name}` : undefined}>{s.name_label || s.name || s.session_id}</Link>
                       </th>
-                      <td>{s.status ? nameWords(s.status.toLowerCase()) : "—"}</td>
+                      <td>{s.status ? wordsOf(s.status) : "—"}</td>
                       <td>{when(s.created_ns)}</td>
                     </tr>
                   ))}

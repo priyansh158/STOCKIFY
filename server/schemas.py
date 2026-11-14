@@ -144,6 +144,7 @@ class TestRunDTO(BaseModel):
     """One run as a list card shows it (lab.sqlite runs row plus its headline metrics)."""
     run_id: str
     name: str | None = None
+    name_label: str = Field("", description="the name as words (stockify.display.name_label); the page shows this")
     family_id: str | None = None
     status: Literal["queued", "running", "done", "failed", "cancelled"]
     impl: str | None = None
@@ -282,6 +283,7 @@ class SessionDTO(BaseModel):
     capital for a first day); None until that day has an equity row. `coverage_today` is 0..1."""
     session_id: str
     name: str
+    name_label: str = ""
     status: str
     pause_reasons: list[str] = Field(default_factory=list)
     strategy_name: str | None = Field(None, description="the strategy's display name")
@@ -523,6 +525,7 @@ class SensitivityDTO(BaseModel):
 class TrialRowDTO(BaseModel):
     run_id: str
     name: str | None = None
+    name_label: str = ""
     role: str
     status: str
     objective_value: float | None = None
@@ -586,6 +589,7 @@ class ResearchJobDTO(BaseModel):
     job_id: str
     kind: str
     name: str | None = None
+    name_label: str = ""
     family_id: str | None = None
     status: str
     created_ns: int
@@ -647,6 +651,7 @@ class SweepHeatmapDTO(BaseModel):
 class SweepDTO(BaseModel):
     job_id: str
     name: str
+    name_label: str = ""
     family_id: str
     objective: str
     objective_label: str            # the one name for the objective, as the plain sentence uses it
@@ -683,6 +688,7 @@ class CompareSeriesDTO(BaseModel):
 class ComparisonDTO(BaseModel):
     run_ids: list[str]
     names: list[str]
+    name_labels: list[str] = Field(default_factory=list, description="each name as words, same order as `names`")
     metrics: list[CompareMetricDTO]
     equity: list[CompareSeriesDTO]
     drawdown: list[CompareSeriesDTO]
@@ -799,6 +805,7 @@ class WalkforwardWindowDTO(BaseModel):
 class WalkforwardDTO(BaseModel):
     job_id: str
     name: str
+    name_label: str = ""
     family_id: str
     objective: str
     train: int

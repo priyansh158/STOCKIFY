@@ -162,6 +162,7 @@ export interface UnlockRow {
 export interface SessionRow {
   session_id: string;
   name: string | null;
+  name_label: string | null;
   status: string | null;
   created_ns: number | null;
 }
@@ -178,7 +179,7 @@ export function unlockRows(raw: Record<string, unknown>[] | null | undefined): U
 export function sessionRows(raw: Record<string, unknown>[] | null | undefined): SessionRow[] {
   return (raw ?? []).flatMap((r) => {
     const id = text(r.session_id);
-    return id ? [{ session_id: id, name: text(r.name), status: text(r.status), created_ns: ns(r.created_ns) }] : [];
+    return id ? [{ session_id: id, name: text(r.name), name_label: text(r.name_label), status: text(r.status), created_ns: ns(r.created_ns) }] : [];
   });
 }
 

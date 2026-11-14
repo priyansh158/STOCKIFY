@@ -15,7 +15,7 @@ import { PriceChartLazy } from "@/components/PriceChartLazy";
 import EquityChart from "./EquityChart";
 import ResearchPanel from "./ResearchPanel";
 import { costScale } from "@/lib/research";
-import { implWords, nameWords } from "@/lib/names";
+import { implWords } from "@/lib/names";
 
 const POLL_MS = 2000;
 const MAX_BACKOFF_MS = 30_000;  // after errors the poll waits longer each time, up to this
@@ -206,7 +206,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                 <StatusChip status={run.status} />
                 {run.impl && <span className="stk-label">{implWords(run.impl)}</span>}
               </div>
-              <h1 className="stk-gap-s stk-break" title={run.name ? `Saved as ${run.name}` : undefined}>{nameWords(run.name) || run.run_id}</h1>
+              <h1 className="stk-gap-s stk-break" title={run.name ? `Saved as ${run.name}` : undefined}>{run.name_label || run.name || run.run_id}</h1>
               {summaryLine && <p className="stk-lede">{summaryLine}</p>}
             </div>
             <LabelChips run={run} />

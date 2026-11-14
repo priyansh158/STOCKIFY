@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { parseRupeesToPaise } from "@/lib/format";
-import { suggestedName, runNameSlug, wordsOf, RUN_NAME_MAX } from "@/lib/names";
+import { suggestedName, runNameSlug, slugNote, wordsOf, RUN_NAME_MAX } from "@/lib/names";
 import { coerceParam, validateParams } from "@/lib/params";
 import { createTest } from "@/lib/tests";
 import type { Strategy, StrategyParam } from "@/lib/types";
@@ -103,7 +103,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
     if (source === "day") spec.interval = "day";
     if (source === "minute") spec.interval = "minute";
     if (instruments.length) spec.instruments = instruments;
-    // Any text may be typed as the name; the lab keeps it as a safe folder name (letters, digits, "_"), and the pages show it as words.
+    // Any text may be typed as the name; the lab keeps it as a safe folder name (letters, digits, "." "_" "-"), and the pages show it as words.
     return {
       config: {
         schema: "stockify.run/1",
@@ -192,7 +192,7 @@ export default function NewTestForm({ strategies, startOpen = false }: { strateg
         </div>
 
         <div className="stk-form">
-          <Field label="Name" help={`Optional. Any text; it is saved with spaces and marks turned into underscores, up to ${RUN_NAME_MAX} characters.`}>
+          <Field label="Name" help={slugNote(name) ?? `Optional. Spaces are saved as underscores and shown as spaces again; up to ${RUN_NAME_MAX} characters.`}>
             <input className={inputClass} value={name} maxLength={RUN_NAME_MAX * 2} placeholder={suggested} aria-label="Name of the test" onChange={(e) => setName(e.target.value)} />
           </Field>
           <Field label="Market data">

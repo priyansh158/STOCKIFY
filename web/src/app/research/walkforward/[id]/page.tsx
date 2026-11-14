@@ -8,7 +8,6 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Empty, PageHead, Panel, Stat, StatGrid, Table } from "@/components/ui";
 import { rupees } from "@/lib/format";
-import { nameWords } from "@/lib/names";
 import { dayNumber, getWalkforward, sentenceOrDash, wfCurve, type WalkforwardLoad } from "@/lib/research";
 import Curve from "./Curve";
 import WfChart from "./WfChart";
@@ -127,7 +126,7 @@ function Report({ r, id }: { r: WalkforwardDTO; id: string }) {
   return (
     <div className="stk-stack">
       <PageHead
-        title={`Walk-forward: ${nameWords(r.name)}`}
+        title={`Walk-forward: ${r.name_label || r.name}`}
         lede={clause(p.setup)}
         actions={<Link href={familyHref} className="stk-btn">See the whole family of tries</Link>}
       />

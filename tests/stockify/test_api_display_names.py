@@ -48,6 +48,16 @@ class DisplayNameApiTests(SandboxedDBTest):
         store.create_run({"run_id": "r3", "name": "x", "status": "done"})      # no config at all
         self.assertIsNone(self.client.get("/api/tests/r3").json()["run"]["strategy_name"])
 
+    def test_names_the_person_chose_come_as_words_with_acronyms_upright(self):
+        store.create_run({"run_id": "n1", "name": "orb_reliance_minute", "status": "done", "config_json": _cfg()})
+        store.create_run({"run_id": "n2", "name": "a_-_b", "status": "done", "config_json": _cfg()})
+        got = {r["run_id"]: (r["name"], r["name_label"]) for r in self.client.get("/api/tests").json()}
+        self.assertEqual(got["n1"], ("orb_reliance_minute", "ORB reliance minute"))   # the stored name is untouched
+        self.assertEqual(got["n2"], ("a_-_b", "A - b"))
+        d = self.client.get("/api/tests/compare?ids=n1&ids=n2").json()
+        self.assertEqual(d["name_labels"], ["ORB reliance minute", "A - b"])
+        self.assertEqual(d["names"], ["orb_reliance_minute", "a_-_b"])
+
     def test_fills_and_chart_markers_send_a_plain_tag(self):
         o = order(1, tag="orb_long", side="BUY")
         f = fill(1, 1, T(9, 30), "BUY", 5, 1000)

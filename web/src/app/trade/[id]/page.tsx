@@ -1,6 +1,5 @@
 "use client";
 
-import { nameWords } from "@/lib/names";
 import Link from "next/link";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
@@ -385,7 +384,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
                   {running ? ". Live, updating." : ""}
                 </span>
               </div>
-              <h1 className="stk-gap-s" title={detail.session.name ? `Saved as ${detail.session.name}` : undefined}>{nameWords(detail.session.name) || detail.session.session_id}</h1>
+              <h1 className="stk-gap-s" title={detail.session.name ? `Saved as ${detail.session.name}` : undefined}>{detail.session.name_label || detail.session.name || detail.session.session_id}</h1>
               {detail.session.strategy_name && <p className="stk-lede">{detail.session.strategy_name}</p>}
               <PauseReasons reasons={detail.session.pause_reasons} />
             </div>

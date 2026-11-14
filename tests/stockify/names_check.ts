@@ -5,7 +5,8 @@ import { resolve } from "node:path";
 
 const n = await import(pathToFileURL(resolve(import.meta.dirname, "..", "..", "web", "src", "lib", "names.ts")).href);
 const out: Record<string, unknown> = {};
-out.nameWords = ["cmp_eod_straddle_spanlite", "orb_reliance_minute", "orb-nifty", "  ", null, "Already Fine", "a__b"].map((x) => n.nameWords(x));
+out.notes = ["Opening Range Breakout · RELIANCE", "plain name_1.v2-x", "  ", "é", "a".repeat(70), "é".repeat(70)].map((x) => n.slugNote(x));
+out.roundTrip = n.runNameSlug("a - b");
 out.wordsOf = ["refdata_stale", "R_MARGIN", "margin:flat", "x"].map((x) => n.wordsOf(x));
 out.status = ["done", "running", "weird_one"].map((x) => n.statusWords(x));
 out.impl = ["engine", "oracle", null, "other_impl"].map((x) => n.implWords(x));

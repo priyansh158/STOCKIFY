@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { growth, istWhen, pct, rupees, rupeesWhole } from "@/lib/format";
 import { listStrategies, listTests } from "@/lib/tests";
-import { nameWords } from "@/lib/names";
 import { runIdTail } from "@/lib/runid";
 import type { Strategy, TestRun } from "@/lib/types";
 import { Empty, PageHead, Panel, Table, toneClass } from "@/components/ui";
@@ -27,11 +26,11 @@ function RunRow({ run }: { run: TestRun }) {
     <tr>
       <td className="stk-pick">
         {done ? (
-          <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${nameWords(run.name) || run.run_id}`} />
+          <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${run.name_label || run.name || run.run_id}`} />
         ) : null}
       </td>
       <td data-wrap>
-        <Link href={`/tests/${encodeURIComponent(run.run_id)}`} title={run.name ? `Saved as ${run.name}` : undefined}>{nameWords(run.name) || run.run_id}</Link>
+        <Link href={`/tests/${encodeURIComponent(run.run_id)}`} title={run.name ? `Saved as ${run.name}` : undefined}>{run.name_label || run.name || run.run_id}</Link>
         {run.name && <div className="stk-label" title={run.run_id}>Run {runIdTail(run.run_id, run.name)}</div>}
         {runSummary(run) && <div className="stk-label">{runSummary(run)}</div>}
         {run.status === "failed" && run.error && <div className="stk-down stk-label">{run.error}</div>}

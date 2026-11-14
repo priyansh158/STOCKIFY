@@ -69,7 +69,7 @@ def run_dto(row: dict) -> TestRunDTO:
     start, end = _dates(cfg)
     strategy = cfg.get("strategy") or {}
     return TestRunDTO(
-        run_id=row["run_id"], name=row.get("name"), family_id=row.get("family_id"), status=row["status"],
+        run_id=row["run_id"], name=row.get("name"), name_label=display.name_label(row.get("name")), family_id=row.get("family_id"), status=row["status"],
         impl=row.get("impl"), strategy_ref=strategy.get("ref"),
         strategy_name=_strategy_name(strategy), start_date=start, end_date=end,
         price_basis=cfg.get("price_basis"), capital_paise=cfg.get("capital_paise"),

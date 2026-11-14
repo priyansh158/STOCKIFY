@@ -46,6 +46,7 @@ class DiffRow:
 class RunComparison:
     run_ids: list[str]
     names: list[str]
+    name_labels: list[str]
     metrics: list[MetricRow]
     equity: list[dict]
     drawdown: list[dict]
@@ -237,7 +238,7 @@ def compare_runs(run_ids: list[str]) -> RunComparison:
     add("packs_sha256", [_s(sorted(m["packs"])) if m and m.get("packs") else None for m in manifests])
     add("engine_build_id", [pick(r, m, "engine_build_id") for r, m in zip(rows, manifests)])
 
-    return RunComparison(ids, names, metrics, equity, drawdown, labels, differing, diff, notes)
+    return RunComparison(ids, names, [display.name_label(r.get("name")) or r["run_id"] for r in rows], metrics, equity, drawdown, labels, differing, diff, notes)
 
 
 def _fmt(v: Any, kind: str) -> str:

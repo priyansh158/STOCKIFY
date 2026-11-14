@@ -22,9 +22,20 @@ class NamesHelperChecks(unittest.TestCase):
             raise AssertionError("names_check.ts failed: " + out.stderr)
         cls.r = json.loads(out.stdout)
 
-    def test_a_chosen_name_reads_as_words_without_changing_what_is_stored(self):
-        self.assertEqual(self.r["nameWords"], ["Cmp eod straddle spanlite", "Orb reliance minute", "Orb nifty", "", "",
-                                               "Already Fine", "A b"])
+    def test_a_name_that_is_changed_when_saved_says_so_gently(self):
+        n = self.r["notes"]
+        self.assertIn('marks other than letters, digits, "." "_" and "-" become "_"', n[0])
+        self.assertIn("Opening_Range_Breakout_RELIANCE", n[0])
+        self.assertIsNone(n[1])                       # spaces, ".", "_" and "-" are kept: nothing to say
+        self.assertIsNone(n[2])
+        self.assertIn("become", n[3])                 # non-ASCII is replaced
+        self.assertIn("only the first 64 characters", n[4])
+        self.assertTrue("become" in n[5] and "only the first 64" in n[5])
+
+    def test_a_spaced_hyphen_survives_the_slug_and_the_servers_label(self):
+        from stockify import display
+        self.assertEqual(self.r["roundTrip"], "a_-_b")
+        self.assertEqual(display.name_label(self.r["roundTrip"]), "A - b")
 
     def test_code_words_status_and_engine_in_plain_words(self):
         self.assertEqual(self.r["wordsOf"], ["Refdata stale", "R margin", "Margin flat", "X"])

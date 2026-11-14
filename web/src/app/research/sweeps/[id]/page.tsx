@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { ApiError } from "@/lib/api";
 import { stockifyCommand } from "@/lib/commands";
 import { pct } from "@/lib/format";
-import { nameWords } from "@/lib/names";
 import { getSweep, heatFormat, heatGridProps } from "@/lib/research";
 import type { SweepDTO, SweepRowDTO } from "@/lib/types";
 import { resolveTrial, trialHref, trialWords } from "@/lib/chart";
@@ -173,7 +172,7 @@ function Full({ sweep, warning, trialParam }: { sweep: SweepDTO; warning: boolea
   const none = c.cells.flat().every((v) => v === null);
   const caption = `${upperFirst(scored)}${c.hidden_axes.length > 0 ? ", best over the other settings" : ""}`;
   return (
-    <Page title={nameWords(sweep.name) || "Parameter sweep"} lede={`${c.y === null ? "Each square is one setting" : "Each square is one pair of settings"}. Scored by: ${scored}.`}>
+    <Page title={sweep.name_label || sweep.name || "Parameter sweep"} lede={`${c.y === null ? "Each square is one setting" : "Each square is one pair of settings"}. Scored by: ${scored}.`}>
       {warning && (
         <Notice tone="amber" title="That choice of settings was not used.">
           Either this sweep has no setting by that name, or the same setting was chosen for both columns and rows. The grid below shows

@@ -220,3 +220,17 @@ def family_title(family_id: str, description: str | None = None, job_name: str |
     where = f"{universe}{f' and {more.group(1)} more' if more else ''}"
     judged = plain.OBJECTIVE_LABELS.get(objective, humanize(objective).lower())
     return f"{humanize(strategy)}{f' on {where}' if where else ''}, {what}, judged by {judged}"
+
+
+# ── names the person chose (runs, sessions, sweeps) ──────────────────────────────────────────────────────────
+
+def name_label(name: object) -> str:
+    """A name the person chose, as words: underscores become spaces ("_-_" a spaced hyphen), known acronyms are upright
+    ("orb_reliance_minute" -> "ORB reliance minute") and the first letter is capital; hyphens, dots and the case the
+    person typed are kept. "" for no name. The stored name (and every id made from it) is never changed."""
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    text = " ".join(re.sub(r"_+", " ", name.replace("_-_", " - ")).split())
+    words = [ACRONYMS.get(w.lower(), w) if w.isalpha() else w for w in text.split(" ")]
+    out = " ".join(words)
+    return out if out[0] in ACRONYMS.values() or not out[0].isalpha() else out[0].upper() + out[1:]
