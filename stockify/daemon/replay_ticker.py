@@ -31,6 +31,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import date, datetime
 
 from stockify import timeutil
@@ -53,9 +54,67 @@ from stockify.data.ticks import ArchiveDay as ArchiveSource  # noqa: E402
 from stockify.data.ticks import LandingDay as LandingSource  # noqa: E402
 
 
-def source_for(day: date, path=None):
-    """The verified archive when there is one (preferred), otherwise the landing file."""
+# `--replay-sandbox` moves every output (and the state folder) away from the real lab, but the recording being replayed
+# lives in the real lab. This is the real lab's folder while a replay is sandboxed: the source is read from it strictly
+# read-only (parquet reads; the landing file as `mode=ro&immutable=1`), never written, never created.
+_SOURCE_LAB: Path | None = None
+
+
+def set_source_lab(lab: Path | None) -> None:
+    """Read replay sources from `lab` (the real lab folder) instead of the current state folder; None undoes it."""
+    global _SOURCE_LAB
+    _SOURCE_LAB = Path(lab) if lab is not None else None
+
+
+def seed_refdata_from(lab: Path, target: Path) -> bool:
+    """Give a sandbox its own copy of the real lab's instrument reference data (a consistent SQLite backup taken through a
+    read-only connection, so the real file is never written). False when there is nothing to copy or the target exists."""
+    import sqlite3
+    from stockify import paths
+    source = Path(lab) / "refdata.sqlite"
+    if target.exists() or not source.is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(paths.readonly_uri(source), uri=True)
+    try:
+        dst = sqlite3.connect(str(target))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return True
+
+
+def _source_from_lab(day: date, lab: Path):
+    """The day from the real lab without touching it: the archive when it has a `meta.json`, else the landing file
+    opened immutable (refused while its `-wal` holds rows: a recorder may be writing and an immutable read would miss
+    them). None when the lab never recorded the day."""
     from stockify.data import ticks
+    folder = lab / "ticks" / "archive" / f"date={day:%Y-%m-%d}"
+    if (folder / "meta.json").exists():
+        return ticks.ArchiveDay(day, folder)
+    landing = lab / "ticks" / "landing" / f"ticks_{day:%Y%m%d}.sqlite"
+    if not landing.exists():
+        return None
+    for suffix in ticks.WRITER_FILES:
+        side = landing.with_name(landing.name + suffix)
+        if side.is_file() and side.stat().st_size > 0:
+            raise RuntimeError(f"the recording for {day} is busy, not replayed (its {suffix} file is not empty: the "
+                               "recorder may be writing); stop the recorder or replay the archived day")
+    return ticks.LandingDay(day, landing, immutable=True)
+
+
+def source_for(day: date, path=None):
+    """The verified archive when there is one (preferred), otherwise the landing file. While a replay is sandboxed the
+    day is read, read-only, from the real lab (`set_source_lab`)."""
+    from stockify.data import ticks
+    if path is None and _SOURCE_LAB is not None:
+        found = _source_from_lab(day, _SOURCE_LAB)
+        if found is None:
+            raise FileNotFoundError(f"no recording for {day}")
+        return found
     found = ticks.open_day(day, landing_path=path)
     if found is None:
         raise FileNotFoundError(f"no recording for {day}")

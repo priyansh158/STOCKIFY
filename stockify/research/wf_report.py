@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 
-from stockify import paths, store
+from stockify import display, paths, store
 from stockify.commands import stockify_command
 from stockify.research import fileio, pbo, plain, sensitivity, walkforward
 
@@ -144,7 +144,7 @@ def summary_text(job_id: str) -> str:
     raw, lines = doc["summary"], plain_lines(doc, job["family_id"])
     tested = sum(1 for w in doc["windows"] if w["test"] is not None)
     return "\n".join([
-        f"Walk-forward {doc['name']} ({job_id}): {tested} of {raw['windows']} windows tested, "
+        f"Walk-forward {display.name_label(doc['name']) or doc['name']} ({job_id}): {tested} of {raw['windows']} windows tested, "
         f"{raw['oos_days']} out-of-sample days (window lengths are calendar days)",
         (f"Sharpe over a year: {lines['ratio']}" if _few_days(doc) else
          f"Sharpe over a year: in-sample {_sharpe(raw['is_sharpe'])}, out-of-sample {_sharpe(raw['oos_sharpe'])}"),
@@ -307,7 +307,7 @@ def build(job: dict, doc: dict, sensitivity_run: str | None) -> str:
     lines = plain_lines(doc, job["family_id"])
     tested = sum(1 for w in doc["windows"] if w["test"] is not None)
     nt = notes(doc)
-    out = [f"# Walk-forward report: {_cell(doc['name'])}", "",
+    out = [f"# Walk-forward report: {_cell(display.name_label(doc['name']) or doc['name'])}", "",
            f"Job `{job['job_id']}`. {nt['setup']}", "",
            "## In-sample against out-of-sample", "",
            *_table(["", "In-sample", "Out-of-sample"],

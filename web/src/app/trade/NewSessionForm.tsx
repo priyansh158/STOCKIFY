@@ -4,18 +4,14 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { parseRupeesToPaise } from "@/lib/format";
-import { suggestedName, wordsOf } from "@/lib/names";
-import { coerceParam, validateParams } from "@/lib/params";
+import { suggestedName } from "@/lib/names";
+import { coerceParamText, paramText, validateParams } from "@/lib/params";
 import { createSession } from "@/lib/trade";
-import type { Strategy, StrategyParam } from "@/lib/types";
+import type { Strategy } from "@/lib/types";
+import ParamField from "@/components/ParamField";
 import { Field, Panel } from "@/components/ui";
 
 const inputClass = "stk-field";
-
-function defaultText(p: StrategyParam): string | boolean {
-  if (p.type === "bool") return Boolean(p.default);
-  return p.default === null || p.default === undefined ? "" : String(p.default);
-}
 
 export default function NewSessionForm({ strategies }: { strategies: Strategy[] }) {
   const router = useRouter();
@@ -34,7 +30,7 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
   const params = useMemo(() => {
     const out: Record<string, unknown> = {};
     for (const p of strategy?.params ?? []) {
-      const v = coerceParam(p.type, values[p.name] ?? defaultText(p));
+      const v = coerceParamText(p, values[p.name] ?? paramText(p));
       if (v !== undefined && !(p.type === "bool" && v === p.default && !p.required)) out[p.name] = v;
     }
     return out;
@@ -108,32 +104,15 @@ export default function NewSessionForm({ strategies }: { strategies: Strategy[] 
             </select>
           </Field>
 
-          {(strategy?.params ?? []).map((p) => {
-            const v = values[p.name] ?? defaultText(p);
-            const label = `${p.label || wordsOf(p.name)}${p.required ? " *" : ""}`;
-            if (p.type === "bool") {
-              return (
-                <label key={p.name} className="stk-checkrow">
-                  <input type="checkbox" className="stk-check" checked={Boolean(v)} aria-invalid={bad.has(p.name)}
-                    onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} />
-                  <span>{label}<span className="stk-label stk-block">{p.help}</span></span>
-                </label>
-              );
-            }
-            return (
-              <Field key={p.name} label={label} help={p.help}>
-                <input className={inputClass} value={String(v)} aria-invalid={bad.has(p.name)}
-                  inputMode={p.type === "int" || p.type === "decimal" ? "decimal" : "text"}
-                  placeholder={p.type === "hhmm" ? "15:10" : p.type === "symbol" ? "NSE:RELIANCE" : ""}
-                  onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />
-              </Field>
-            );
-          })}
+          {(strategy?.params ?? []).map((p) => (
+            <ParamField key={p.name} param={p} value={values[p.name] ?? paramText(p)} invalid={bad.has(p.name)}
+              onChange={(next) => setValues({ ...values, [p.name]: next })} />
+          ))}
 
           <Field label="Name (optional)" help="Any text, to tell sessions apart.">
             <input className={inputClass} value={name} placeholder={suggestedName(strategy?.display_name ?? "", symbols)} aria-label="Name of the session" onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="Symbols to follow" help="Comma-separated, e.g. NSE:RELIANCE, NSE:NIFTY 50">
+          <Field label="Symbols to follow" help="Separate several with commas, e.g. NSE:RELIANCE, NSE:NIFTY 50.">
             <input className={inputClass} value={symbols} aria-invalid={bad.has("symbols")} onChange={(e) => setSymbols(e.target.value)} />
           </Field>
           <Field label="Starting money (₹)" help="Pretend money. Nothing real is used.">

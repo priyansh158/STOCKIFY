@@ -40,8 +40,16 @@ def _redirect_state_for_replay(directory: str) -> str | None:
         real_root = real_app.parent                                  # the real local app-data folder
         if target == real_root or real_app == target or real_app in target.parents or target in real_app.parents:
             return f"--replay-sandbox {directory}: that is the real lab's folder; pick an empty directory elsewhere"
+    real_lab = next((d / "lab" for d in market_day.real_state_dirs() if (d / "lab").is_dir()), None)
     target.mkdir(parents=True, exist_ok=True)
     os.environ["LOCALAPPDATA"] = str(target)
+    if real_lab is not None:
+        # The recording is replayed from the real lab, read-only; the sandbox only gets its own copy of the instrument
+        # reference data. Every output stays in the sandbox.
+        from stockify import paths
+        from stockify.daemon import replay_ticker
+        replay_ticker.set_source_lab(real_lab)
+        replay_ticker.seed_refdata_from(real_lab, paths.refdata_db())
     return None
 
 
@@ -1097,8 +1105,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="paper sessions to run: all (every armed, running or paused one), none, or ids separated "
                         "by commas")
     d.add_argument("--replay-sandbox", default=None, metavar="DIR",
-                   help="run a replay's paper sessions with DIR as the lab's home: a replay never writes sessions "
-                        "into the real lab")
+                   help="run a replay with DIR (an empty directory elsewhere) as the lab's home: everything the replay "
+                        "writes goes there, never into the real lab, while the recorded day is read from the real lab "
+                        "(read-only)")
     d.add_argument("--ticker", default="live",
                    help="live, or replay:YYYY-MM-DD:<Nx|max> to replay a recorded day")
     d.add_argument("--inject", action="append", default=[],

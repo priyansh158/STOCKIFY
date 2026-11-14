@@ -15,9 +15,9 @@ class BuyAndHold(Strategy):
     DESCRIPTION = 'Buys once with most of the cash on the first day and holds. The benchmark to compare every other strategy against.'   # one plain sentence for the New test form (the module docstring is for developers)
     # The parameter schema for the catalogue and the /tests form (data only; on_start reads ctx.params).
     PARAMS = [
-        {'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'the stock to buy, e.g. NSE:RELIANCE'},
-        {'name': 'interval_s', 'label': 'Bar length (seconds)', 'type': 'int', 'default': 86400, 'required': False, 'help': 'bar length in seconds: 86400 daily, 60 minute'},
-        {'name': 'invest', 'label': 'Share of cash to invest', 'type': 'decimal', 'default': '0.95', 'required': False, 'help': 'share of available cash to invest, e.g. 0.95'},
+        {'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'The stock to buy, e.g. NSE:RELIANCE.'},
+        {'name': 'interval_s', 'label': 'Bar length', 'type': 'int', 'default': 86400, 'required': False, 'help': 'How long each price bar covers.', 'choices': [{'value': 60, 'label': '1 minute'}, {'value': 180, 'label': '3 minutes'}, {'value': 300, 'label': '5 minutes'}, {'value': 600, 'label': '10 minutes'}, {'value': 900, 'label': '15 minutes'}, {'value': 1800, 'label': '30 minutes'}, {'value': 3600, 'label': '1 hour'}, {'value': 86400, 'label': '1 day'}]},
+        {'name': 'invest', 'label': 'Share of cash to invest (%)', 'type': 'decimal', 'default': '0.95', 'required': False, 'help': 'The share of available cash to invest, e.g. 95.', 'percent': True},
     ]
 
     def on_start(self, ctx):  # noqa: ANN001

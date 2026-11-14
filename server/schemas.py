@@ -121,6 +121,12 @@ class DataQualityResponse(BaseModel):
 # ── Strategy tests (M3.14) ───────────────────────────────────────────────────
 # Money is integer paise, times are UTC epoch ns with an ISO IST string beside them (A2 §6).
 
+class ParamChoiceDTO(BaseModel):
+    """One allowed value of a strategy parameter, with its label for a person (the value stays what is stored)."""
+    value: Any
+    label: str
+
+
 class StrategyParamDTO(BaseModel):
     """One parameter of a strategy (stockify.strategies._catalogue)."""
     name: str
@@ -129,6 +135,8 @@ class StrategyParamDTO(BaseModel):
     default: Any = None
     required: bool = False
     help: str = ""
+    choices: list[ParamChoiceDTO] = Field(default_factory=list, description="when not empty, the only values allowed; the form shows a list of their labels")
+    percent: bool = Field(False, description="a decimal fraction the form shows as a percentage (0.95 as 95); stored unchanged")
 
 
 class StrategyDTO(BaseModel):
