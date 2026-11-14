@@ -331,7 +331,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 
 .stk-iv { max-width: 40rem; }
 .stk-iv-name { font-size: var(--text-sm); color: var(--color-ink-2); font-weight: 600; }
-.stk-iv svg { width: 100%; max-width: 25rem; height: auto; }
+.stk-iv svg { width: 100%; max-width: 20rem; height: auto; }
 .stk-iv-span { stroke: var(--color-accent); stroke-width: 4; stroke-linecap: round; }
 .stk-iv-cap { stroke: var(--color-accent); stroke-width: 2; }
 .stk-iv-point { fill: var(--color-ink); stroke: var(--color-accent); stroke-width: 3; }
@@ -366,7 +366,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-trust-facts dt { font-size: var(--text-sm); color: var(--color-muted); }
 .stk-trust-facts dd { margin: 0; font-family: var(--font-outlier); font-size: var(--text-fig); font-variant-numeric: tabular-nums; }
 .stk-trust-block { display: flex; flex-direction: column; gap: var(--space-sm); border-top: var(--rule-hair) solid var(--color-rule); padding-top: var(--space-lg); }
-.stk-trust-intervals { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: var(--space-lg); }
+.stk-trust-intervals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-lg); }  /* three intervals, always one row on a desktop (no orphan at 1024) */
 .stk-trust-interval { min-width: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
 .stk-trust h4 { font-size: var(--text-title); }
 
