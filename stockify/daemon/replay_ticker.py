@@ -108,9 +108,13 @@ def _source_from_lab(day: date, lab: Path):
 
 def source_for(day: date, path=None):
     """The verified archive when there is one (preferred), otherwise the landing file. While a replay is sandboxed the
-    day is read, read-only, from the real lab (`set_source_lab`)."""
+    day is read, read-only, from the real lab (`set_source_lab`), unless the sandbox holds its own recording of that day
+    (a copy the owner or a test put there), which wins: it is the folder the run was pointed at."""
     from stockify.data import ticks
     if path is None and _SOURCE_LAB is not None:
+        own = ticks.open_day(day)
+        if own is not None:
+            return own
         found = _source_from_lab(day, _SOURCE_LAB)
         if found is None:
             raise FileNotFoundError(f"no recording for {day}")

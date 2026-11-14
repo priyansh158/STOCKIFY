@@ -89,6 +89,25 @@ class SandboxedReplayReadsTheRealLab(pf.PaperDayTest):
         self.assertTrue(paths.refdata_db().is_file())             # the sandbox's own copy of the instruments
         self.assertFalse((self.real_lab / "ticks" / "replay").exists())
 
+    def test_a_recording_the_sandbox_holds_itself_wins_over_the_real_lab(self):
+        """The real lab of the machine may hold other days (or none of this one): a day present in the sandbox is
+        replayed from there, never reported missing because the real lab lacks it."""
+        import shutil
+        landing = paths.ticks_landing_file(DAY)
+        copy = self.sandbox / "kept.sqlite"
+        for side in ("", "-wal", "-shm"):
+            if Path(str(landing) + side).is_file():
+                shutil.copyfile(str(landing) + side, str(copy) + side)
+        self.enter_sandbox()
+        own = paths.ticks_landing_file(DAY)
+        own.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(copy, own)
+        elsewhere = Path(tempfile.mkdtemp(prefix="stockify-emptylab-", dir=str(support.SANDBOX_ROOT)))
+        replay_ticker.set_source_lab(elsewhere)                   # a real lab that never recorded the day
+        source = replay_ticker.source_for(DAY)
+        self.addCleanup(source.close)
+        self.assertTrue(str(source.db.path).startswith(str(self.sandbox.resolve())))
+
     def test_an_unrecorded_day_is_still_reported_as_missing(self):
         self.enter_sandbox()
         with self.assertRaisesRegex(FileNotFoundError, "no recording for 2026-01-02"):
