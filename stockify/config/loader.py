@@ -216,13 +216,15 @@ def _check_notify(doc: dict) -> None:
 STORAGE_KEYS = ("retention_days", "disk_warn_free_gb", "disk_warn_free_fraction", "parquet_zstd_level",
                 "log_max_mb", "log_backups", "backup")
 LOG_BOUNDS = {"log_max_mb": (1, 1000), "log_backups": (0, 100)}      # a log file's size cap and how many rotated files stay
-BACKUP_KEYS = ("target", "include_span")
+BACKUP_KEYS = ("target", "include_span", "keep_snapshots")
+KEEP_SNAPSHOTS_BOUNDS = (1, 365)
 
 
 def _check_storage(doc: dict) -> None:
     """storage.json (stockify.storage/1): an unknown key at any level is refused, naming it (D-76's style: a
-    misspelt `include_span` must not silently keep its default). `backup` is `{target, include_span}`: `target` is null
-    (no backup yet) or a non-empty folder, `include_span` is true or false (GK 5.7)."""
+    misspelt `include_span` must not silently keep its default). `backup` is `{target, include_span, keep_snapshots}`: `target` is null
+    (no backup) or a non-empty folder (`~` and `%VAR%` allowed), `include_span` is true or false (GK 5.7),
+    `keep_snapshots` is a whole number from 1 to 365 (D-147)."""
     extra = set(doc) - set(STORAGE_KEYS) - {"schema"}
     if extra:
         raise ConfigError(f"storage.json: unknown keys {sorted(extra)}; known: {list(STORAGE_KEYS)}")
@@ -245,6 +247,9 @@ def _check_storage(doc: dict) -> None:
         raise ConfigError(f"storage.json: backup.target must be null or a folder path, got {target!r}")
     if not isinstance(cfg["include_span"], bool):
         raise ConfigError(f"storage.json: backup.include_span must be true or false, got {cfg['include_span']!r}")
+    keep, (low, high) = cfg["keep_snapshots"], KEEP_SNAPSHOTS_BOUNDS
+    if isinstance(keep, bool) or not isinstance(keep, int) or not low <= keep <= high:
+        raise ConfigError(f"storage.json: backup.keep_snapshots must be a whole number from {low} to {high}, got {keep!r}")
 
 
 def _check_system_notes(doc: dict) -> None:

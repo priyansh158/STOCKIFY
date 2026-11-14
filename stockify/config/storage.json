@@ -6,5 +6,5 @@
   "parquet_zstd_level": 9,
   "log_max_mb": 20,
   "log_backups": 5,
-  "backup": {"target": null, "include_span": false}
+  "backup": {"target": "~/STOCKIFY-backup", "include_span": false, "keep_snapshots": 7}
 }

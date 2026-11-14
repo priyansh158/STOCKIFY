@@ -785,7 +785,7 @@ previous trading day is not finalised stays ARMED with the timeline row `blocked
 
 ### 7.9 `storage.json`
 
-`retention_days` (**null = never delete landing files**; 🛑 the owner sets a number only after M5.13 backups exist), `disk_warn_free_gb` (20), `disk_warn_free_fraction` (`"0.10"`), `parquet_zstd_level` (9), `log_max_mb` (20, 1 to 1000) and `log_backups` (5, 0 to 100): the daemon's own log file (`stockify-daemon.log`, written by Python with every line, traceback included, redacted) rotates at that size and keeps that many older files.
+`retention_days` (**null = never delete landing files**; 🛑 the owner sets a number only after M5.13 backups exist), `disk_warn_free_gb` (20), `disk_warn_free_fraction` (`"0.10"`), `parquet_zstd_level` (9), `log_max_mb` (20, 1 to 1000) and `log_backups` (5, 0 to 100): the daemon's own log file (`stockify-daemon.log`, written by Python with every line, traceback included, redacted) rotates at that size and keeps that many older files. `backup` is `{target, include_span, keep_snapshots}`: `target` is `null` (no backup) or a folder, written with `~` or `%VAR%` and expanded at use (shipped `"~/STOCKIFY-backup"`, D-147); `include_span` adds the SPAN files; `keep_snapshots` (7, 1 to 365) is how many dated `snapshots/<day>` folders stay, the oldest beyond that removed after a run whose snapshots verified.
 
 ### 7.10 Other files
 

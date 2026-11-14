@@ -5,6 +5,9 @@ What is backed up, under the target folder:
 * `snapshots/<day>/refdata.sqlite` and `lab.sqlite`: copied with `sqlite3.Connection.backup()` from a read-only
   connection, so a live WAL database is copied consistently (committed rows only), and then checked with
   `PRAGMA integrity_check`. One snapshot folder per day; a second run on the same day replaces that day's.
+* After a run whose snapshots all verified, the OLDEST snapshot folders beyond `storage.json` -> `backup.keep_snapshots`
+  (default 7) are removed (D-147): only folders named as a date, never the run's own day, never after a failed snapshot.
+  `files/` and `manifest.json` are never pruned.
 * `files/<path under the lab>`: `journals/`, `ticks/archive/`, `nse/raw/` and the ELM archive
   (`nse/margin/elm`: NSE keeps a rolling window only), copied incrementally. A file whose size and SHA-256 equal
   the entry in `manifest.json` (and whose copy is still there) is skipped. `storage.json` → `backup.include_span`
@@ -25,9 +28,11 @@ import hashlib
 import json
 import logging
 import os
+import re
+import shutil
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from stockify import paths
@@ -40,6 +45,7 @@ MANIFEST_SCHEMA = "stockify.backup/1"
 DATABASES = ("refdata.sqlite", "lab.sqlite")
 _CHUNK = 1 << 20
 _OPEN_JOURNAL_TRIES = 3
+DEFAULT_KEEP = 7
 _REPO = Path(__file__).resolve().parent.parent
 
 
@@ -54,6 +60,7 @@ class BackupResult:
     bytes: int = 0                                    # bytes written
     errors: list[str] = field(default_factory=list)  # a copy that failed or did not verify
     notes: list[str] = field(default_factory=list)   # what was left out or trimmed, and why (not errors)
+    pruned: list[str] = field(default_factory=list)  # old snapshot folders removed (names, oldest first)
 
 
 def _sha256_file(path: Path) -> str:
@@ -74,6 +81,15 @@ def _inside(path: Path, folder: Path) -> bool:
     return path == folder or folder in path.parents
 
 
+def expand_target(raw: str | os.PathLike) -> Path:
+    """`target` as written in storage.json, with a leading `~` (home) and `%VAR%` environment variables
+    expanded. A variable that is not set is refused rather than left as a literal folder name."""
+    text = os.path.expandvars(os.path.expanduser(os.fspath(raw)))
+    if re.search(r"%[^%\/]+%", text) or text.startswith("~"):
+        raise BackupRefused(f"backup target {raw} uses a variable or ~ that is not set")
+    return Path(text)
+
+
 def check_target(target: Path) -> Path:
     """The target resolved, or BackupRefused: not the lab (or inside it, or holding it), not the repo, not a file."""
     resolved = Path(target).resolve()
@@ -90,7 +106,10 @@ def check_target(target: Path) -> Path:
 
 
 class _Run:
-    def __init__(self, target: Path, day: date, include_span: bool) -> None:
+    def __init__(self, target: Path, day: date, include_span: bool, keep_snapshots: int = DEFAULT_KEEP) -> None:
+        self.keep_snapshots = keep_snapshots
+        self.snapshots_ok = 0
+        self.snapshots_failed = False
         self.target = target
         self.lab = paths.lab_dir()
         self.day = day
@@ -294,13 +313,16 @@ class _Run:
             dest = None
             if verdict != "ok":
                 part.unlink(missing_ok=True)
+                self.snapshots_failed = True
                 self.res.errors.append(f"{name}: verification failed: integrity_check says {verdict!r}")
                 return
             size = part.stat().st_size
             os.replace(part, dst)
             self.res.copied += 1
             self.res.bytes += size
+            self.snapshots_ok += 1
         except (sqlite3.Error, OSError) as e:
+            self.snapshots_failed = True
             self.res.errors.append(f"{name}: {e}")
         finally:
             for con in (source, dest):
@@ -311,11 +333,44 @@ class _Run:
             except OSError:
                 pass
 
+    def prune_snapshots(self) -> None:
+        """Remove the oldest `snapshots/<date>` folders beyond keep_snapshots, only after today's verified."""
+        if self.snapshots_failed or not self.snapshots_ok:
+            return
+        root = self.target / "snapshots"
+        dated: list[tuple[date, Path]] = []
+        try:
+            for p in root.iterdir():
+                try:
+                    d = datetime.strptime(p.name, "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                if p.name != f"{d:%Y-%m-%d}" or p.is_symlink() or os.path.isjunction(p) or not p.is_dir():
+                    continue
+                dated.append((d, p))
+        except OSError as e:
+            self.res.notes.append(f"snapshots could not be listed for pruning: {e}")
+            return
+        dated.sort()
+        lab = self.lab.resolve()
+        for d, p in dated[:max(0, len(dated) - self.keep_snapshots)]:
+            real = p.resolve()
+            if d == self.day or not _inside(real, root.resolve()) or _inside(real, lab) or _inside(real, _REPO):
+                continue
+            try:
+                shutil.rmtree(p)
+            except OSError as e:
+                self.res.notes.append(f"old snapshot {p.name} could not be removed: {e}")
+                continue
+            self.res.pruned.append(p.name)
+            log.info("backup: pruned old snapshot %s (keeping %d)", p.name, self.keep_snapshots)
+
     def run(self) -> BackupResult:
         self.target.mkdir(parents=True, exist_ok=True)
         try:
             for name in DATABASES:
                 self.snapshot_db(self.lab / name)
+            self.prune_snapshots()
             self.copy_tree(paths.journals_dir(), journals=True)
             self.copy_tree(paths.ticks_archive_dir())
             self.copy_tree(paths.nse_raw_dir())
@@ -332,12 +387,13 @@ class _Run:
 
 def run(target: Path, *, day: date) -> BackupResult:
     """Back the lab up to `target` (see the module doc). Raises BackupRefused for a target that may not be used."""
-    resolved = check_target(Path(target))
+    resolved = check_target(expand_target(target))
     cfg = loader.load_json("storage.json").get("backup") or {}
     try:
-        res = _Run(resolved, day, bool(cfg.get("include_span", False))).run()
+        res = _Run(resolved, day, bool(cfg.get("include_span", False)),
+                   int(cfg.get("keep_snapshots", DEFAULT_KEEP))).run()
     except OSError as e:
         raise BackupRefused(f"backup target {target} cannot be written: {e}") from e
-    log.info("backup to %s: %d copied, %d skipped, %d bytes, %d errors", resolved, res.copied, res.skipped,
-             res.bytes, len(res.errors))
+    log.info("backup to %s: %d copied, %d skipped, %d bytes, %d errors, %d old snapshots pruned", resolved, res.copied,
+             res.skipped, res.bytes, len(res.errors), len(res.pruned))
     return res
