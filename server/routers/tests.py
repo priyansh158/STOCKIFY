@@ -654,7 +654,7 @@ def cancel_test(run_id: str) -> TestRunDTO:
         latest = store.get_run(run_id) or row
         if latest["status"] == "running" and run_id not in queue.running():
             raise HTTPException(status_code=409, detail=(
-                f"test run {run_id} is running but was not started by this app (it was started from outside it); "
+                f"test run {run_id} is running but was not started by this API (it was started from outside the app); "
                 "stop it where it was started"))
         raise HTTPException(status_code=409, detail=f"test run {run_id} is {latest['status']}; only waiting or "
                                                     "running tests can be cancelled")

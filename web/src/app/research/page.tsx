@@ -154,10 +154,10 @@ export default async function ResearchPage() {
               {jobs.value.sweeps.length === 0 ? (
                 <p className="stk-fine stk-gap-top">No sweeps yet. The ones you run will be listed here.</p>
               ) : (
-                <>
+                <div className="stk-gap-top">
                   <Jobs caption="Parameter sweeps, newest first" rows={jobs.value.sweeps} />
                   <CapNote note={listCapNote(jobs.value.sweeps.length, total?.sweeps ?? null, "sweeps", "latest")} />
-                </>
+                </div>
               )}
             </section>
 
