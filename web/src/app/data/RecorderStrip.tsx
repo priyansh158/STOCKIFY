@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { recorderWords } from "@/lib/data";
 import type { RecorderStatus, RecorderStatusResponse } from "@/lib/types";
-import { Chip, Panel } from "@/components/ui";
+import { Panel } from "@/components/ui";
 
 const REFRESH_MS = 5000;
 
@@ -42,12 +42,14 @@ export default function RecorderStrip({ initial }: { initial: RecorderStatus | n
     <Panel tone={w.tone === "up" ? undefined : w.tone === "info" ? "info" : "amber"}>
       <div className="stk-strip">
         <h2 className="stk-strip-title">Recorder</h2>
-        <Chip tone={w.tone}>
-          <span aria-hidden>{w.tone === "up" ? "✓" : w.tone === "down" ? "✕" : w.tone === "info" ? "–" : "~"}</span>&nbsp;{w.headline}
-        </Chip>
+        {/* the state in its colour, glyph and word, no frame (design.md ledger marks); "for your information" has no glyph */}
+        <span className={`stk-mark stk-${w.tone}`}>
+          {w.tone !== "info" && <span aria-hidden>{w.tone === "up" ? "✓" : w.tone === "down" ? "✕" : "~"}&nbsp;</span>}
+          {w.headline}
+        </span>
         {w.rate && <p>{w.rate}</p>}
         {w.last && <p>{w.last}</p>}
-        {stale && <Chip tone="warn">Can&apos;t refresh right now</Chip>}
+        {stale && <span className="stk-mark stk-warn">Can&apos;t refresh right now</span>}
       </div>
       {w.note && <p className="stk-fine stk-gap-xs">{w.note}</p>}
     </Panel>

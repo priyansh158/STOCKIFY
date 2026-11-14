@@ -82,7 +82,7 @@ function Grid({ matrix, days, selected, to }: { matrix: CoverageMatrixDTO; days:
             <tr key={day.date} data-closed={day.trading ? undefined : ""} aria-current={day.date === selected ? "true" : undefined}>
               <th scope="row">
                 <Link href={href(days, day.date, to)}>{dayLabel(day.date)}</Link> <span className="stk-label">{day.date.slice(0, 4)}</span>
-                {day.date === selected && <span className="stk-label"> (open)</span>}
+                {day.date === selected && <span className="sr-only"> (open)</span>}
               </th>
               {matrix.datasets.map((d) => {
                 const cell = day.cells[d.key];
@@ -299,18 +299,22 @@ async function DayDetail({ day, days, matrix, hideNse, to }: { day: string; days
           <p>Couldn&apos;t load the NSE file status for this day.</p>
         </ErrorPanel>
       ) : (
-        <Table caption={`NSE files for ${day}`} head={[{ label: "File" }, { label: "State" }, { label: "Detail" }]}>
-          {files.map((f) => {
-            const c = cells[f.key];
-            return (
-              <tr key={f.key}>
-                <th scope="row">{f.label}</th>
-                <td>{c ? <StateChip cell={c} datasetKey={f.key} /> : "no information"}</td>
-                <td>{c?.detail ?? "—"}</td>
-              </tr>
-            );
-          })}
-        </Table>
+        <div className="stk-marks">
+          <Table caption={`NSE files for ${dayLabel(day)}`} head={[{ label: "File" }, { label: "State" }, { label: "Detail" }]}>
+            {files.map((f) => {
+              const c = cells[f.key];
+              // the detail column carries only what the state does not already say ("not downloaded" twice is noise)
+              const detail = c?.detail && !cellWords(c, f.key).toLowerCase().includes(c.detail.trim().toLowerCase()) ? c.detail : "";
+              return (
+                <tr key={f.key}>
+                  <th scope="row">{f.label}</th>
+                  <td>{c ? <StateChip cell={c} datasetKey={f.key} /> : "no information"}</td>
+                  <td>{detail}</td>
+                </tr>
+              );
+            })}
+          </Table>
+        </div>
       )}
       {!hideNse && cells && files.some((f) => cells[f.key]?.state === "missing") && (
         <div className="stk-gap-xs">
@@ -332,7 +336,7 @@ function SilenceNote({ matrix, today }: { matrix: CoverageMatrixDTO; today: stri
     <Panel tone="amber">
       {recText && (
         <p>
-          {recText} {RECORDER_HOW_SHORT}
+          {recText}
         </p>
       )}
       {nseText && nse && (
