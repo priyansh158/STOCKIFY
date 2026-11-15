@@ -9,6 +9,8 @@ It is written for two readers:
 
 Plan version: 1.0 · written 2026-10-29 · facts verified 2026-10-29 (see `01_facts.md`).
 
+Status (2026-11-15): milestones M0 to M6 are built, reviewed and merged into `main`. What is left is live time (days of unattended recording and paper trading); see `00_overview.md` §4 and the "2026-11-15 state" section of `RECON.md`. The plan below is kept as written, with decisions recorded in the log rather than by rewriting history.
+
 ---
 
 ## File index
@@ -31,7 +33,7 @@ Plan version: 1.0 · written 2026-10-29 · facts verified 2026-10-29 (see `01_fa
 | `A3_testing.md` | Test strategy, golden scenarios, parity gates, CI | Whenever you write tests |
 | `A4_engine_semantics.md` | **The contract**: exactly how events, orders, fills, costs, ledger and settlement behave. Both the Python oracle and the C++ engine implement it | Before any M2, M3 or M4 task |
 
-Created during execution (not part of this plan drop): `RECON.md` (what the code actually looks like, appended per milestone) and `HOWTO_strategy.md` (M3.15).
+Created during execution (not part of this plan drop): `RECON.md` (what the code actually looks like, appended per milestone), `HOWTO_strategy.md` (M3.15), `HOWTO_options.md` (M4) and `writeup_draft.md` (the unpublished M6.12 draft).
 
 ## Milestone order and dependencies
 
@@ -49,7 +51,7 @@ M1.5 (the recorder) should go live as soon as M1.0–M1.2 pass, even if the rest
 
 1. **Read narrowly.** For a milestone, read `README.md`, `00_overview.md`, the milestone file, and only the appendix sections it links. Read `01_facts.md` rows when a task references them. Do not load every file at once.
 2. **Recon first.** Each milestone starts with a recon task. Confirm that the files, functions and line numbers the plan mentions still exist. Write what you found in `docs/plan/RECON.md` (append a dated section). Line numbers in this plan are hints from an earlier snapshot of the repo; trust the code.
-3. **One branch per milestone**: `stockify/m1-data`, `stockify/m3-engine`, and so on. Commit titles follow the football-position roster (`00_overview.md` §5a, D-31): `<POS> <milestone>.<n>: summary`, where `n` counts that position's commits in the milestone, e.g. `LWB 1.1: ingest UDiFF F&O bhavcopy`, then `LWB 1.2: …` for the next change to the same stage. Team-wide work uses `XI`.
+3. **One branch per milestone**: `stockify/m1-data`, `stockify/m3-engine`, and so on. All of them are now merged into `main`, and the branches stay on GitHub as a record. Commit titles follow the football-position roster (`00_overview.md` §5a, D-31): `<POS> <milestone>.<n>: summary`, where `n` counts that position's commits in the milestone, e.g. `LWB 1.1: ingest UDiFF F&O bhavcopy`, then `LWB 1.2: …` for the next change to the same stage. Team-wide work uses `XI`.
 4. **Task loop**: implement → write the tests the task lists → run the task's verification commands → tick the box in the milestone file (`- [ ]` → `- [x]`) in the same commit.
 5. **🛑 STOP gates**: stop, summarise what you found and what you propose, and wait for the owner. Never skip a gate because a workaround exists.
 6. **⚠ VERIFY facts**: anything marked ⚠ in `01_facts.md` must be checked against its source before code depends on it. Record the evidence (URL, date, what you saw) next to the fact.
