@@ -1,6 +1,8 @@
 import { api } from "@/lib/api";
 import { istWhenEpoch } from "@/lib/format";
-import type { GeoAlert } from "@/lib/types";
+import { lastCheckWords } from "@/lib/monitor";
+import type { GeoAlert, GeoMonitorStatus } from "@/lib/types";
+import CheckNews from "./CheckNews";
 import { Chip, PageHead, Panel, Table } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -34,8 +36,16 @@ async function fetchAlerts(): Promise<{ items: GeoAlert[]; failed: boolean }> {
   }
 }
 
+async function fetchMonitor(): Promise<GeoMonitorStatus | null> {
+  try {
+    return await api<GeoMonitorStatus>("/api/alerts/monitor");
+  } catch {
+    return null;
+  }
+}
+
 export default async function AlertsPage() {
-  const { items, failed } = await fetchAlerts();
+  const [{ items, failed }, monitor] = await Promise.all([fetchAlerts(), fetchMonitor()]);
 
   return (
     <div className="stk-page">
@@ -50,6 +60,13 @@ export default async function AlertsPage() {
         }
       />
 
+      {!failed && (
+        <div className="stk-stack-s">
+          <CheckNews checkingElsewhere={Boolean(monitor?.checking)} />
+          <p className="stk-fine">{lastCheckWords(monitor, istWhenEpoch(monitor?.last_check_at))}</p>
+        </div>
+      )}
+
       {failed ? (
         <Panel tone="red">
           <p role="alert">Could not reach the STOCKIFY API, so the alerts cannot be shown. Check that the app is running, then reload this page.</p>
@@ -59,8 +76,8 @@ export default async function AlertsPage() {
           <p className="stk-empty">
             No alerts yet.
             <br />
-            The news monitor is its own background process, started together with STOCKIFY when you turn it on, and it
-            needs Gemini and email set up in the settings file (.env).
+            Press Check the news now to look for world events straight away. The background monitor makes the same
+            check on a timer once it is turned on. Both need Gemini and email set up in the settings file (.env).
           </p>
         </Panel>
       ) : (

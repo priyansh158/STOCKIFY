@@ -149,7 +149,8 @@ To rehearse the recorder on a day you have already recorded, without touching th
 
 ### The geo monitor
 
-The geo monitor runs outside the API, so it keeps watching the news when the API is down:
+The geo monitor runs outside the API, so it keeps watching the news when the API is down. The Geo alerts page also has a
+"Check the news now" button that runs one check inside the app; it never overlaps the background monitor's own check.
 
 ```powershell
 .\scripts\run_geo_monitor.ps1 -Once -DryRun

@@ -25,6 +25,7 @@ export const startWalkforward = (req: WalkforwardRequestDTO) => api<WebJobDTO>("
 export const startSensitivity = (runId: string) => api<WebJobDTO>(`/api/tests/${pathSegment(runId)}/sensitivity`, POST());
 export const startBackfill = (req: BackfillRequestDTO) => api<WebJobDTO>("/api/data/backfill", POST(req));
 export const startQualityReport = (req: QualityReportRequestDTO) => api<WebJobDTO>("/api/data/report", POST(req));
+export const startNewsCheck = () => api<WebJobDTO>("/api/alerts/check", POST());
 export const cancelJob = (id: string) => api<WebJobDTO>(`/api/jobs/${pathSegment(id)}/cancel`, POST());
 export const getJob = (id: string) => api<WebJobDTO>(`/api/jobs/${pathSegment(id)}`);
 export const getResearchLimits = () => api<ResearchLimitsDTO>("/api/research/limits");
