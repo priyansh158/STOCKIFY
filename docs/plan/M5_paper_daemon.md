@@ -67,6 +67,7 @@ The access token dies at 06:00 IST every day and the official login is a browser
 ## M5.8 Notifications (S)
 
 - [x] `stockify/config/notify.json` with one channel (email only: owner, 2026-11-12, D-82, replacing the ntfy / Telegram / email choice) and per-event switches: login needed, session error, parity failure, recorder stall, disk low, daily summary (P&L, coverage, parity per session). Default: email on once the SMTP settings are set up (until then each notification is only logged), and each switch can be turned off. Secrets for the channel live outside the repo. (Built, RW 5.1-5.2: email only; the channel and its secret are owner-only, Task 25 step 6.)
+- [x] The recorder-stall and disk-low switches have senders (RM 7.1): a stalled FULL index (live days only) and the compaction job's disk warnings each email once through `notify.post`.
 
 ## M5.9 Scheduler (S)
 

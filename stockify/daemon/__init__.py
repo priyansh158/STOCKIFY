@@ -155,8 +155,13 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
             res = compact.compact(day)
             if res.status == "failed":
                 log.error("compaction of %s failed: %s; the landing file is kept", day, res.error)
-            for warning in compact.disk_warnings():
+            warnings = compact.disk_warnings()
+            for warning in warnings:
                 log.warning("disk: %s", warning)
+            if warnings:                              # one email per drive per day; `post` only enqueues
+                from stockify import paths
+                from stockify.daemon import notify
+                notify.disk_low(day, paths.lab_dir().drive, warnings)
             deleted = compact.apply_retention(day)
             if deleted:
                 log.info("retention: deleted verified landing files for %s", ", ".join(deleted))

@@ -350,5 +350,36 @@ def session_event(event: str, title: str, detail: dict, *, key: str | None = Non
     return post(event, f"[STOCKIFY] {title}", f"{title}\n\n" + "\n".join(lines) + "\n\n- STOCKIFY daemon\n", key=key)
 
 
-__all__ = ["EVENTS", "daily_summary", "fit", "flush", "NotConfigured", "post", "post_daily_summary", "reset", "rupees", "send", "send_daily_summary",
-           "send_test", "session_event", "settings", "summary_ready"]
+def recorder_stall(group: str, name: str, since_ns: int) -> bool:
+    """`post` that a FULL index went silent during the continuous session (RM 7.1). One message per episode: the key
+    holds the index and the time of its last packet, so a stall that goes on is told once. Cheap, never raises."""
+    try:
+        since = timeutil.ns_to_ist(since_ns)
+        subject = f"[STOCKIFY] The recorder stopped hearing {name}"
+        body = (f"The recorder has had no market data for {name} ({group} session) since {since:%H:%M:%S} IST on "
+                f"{since:%a %d %b %Y}, while the market is open.\n\n"
+                "What to check: that the laptop is online and awake, that Kite is up, and the recorder's status on the "
+                "Data coverage page. If the connection dropped, the recorder reconnects by itself; the missing time is "
+                "recorded as a gap and is not made up.\n\n- STOCKIFY daemon\n")
+        return post("recorder_stall", subject, body, key=f"{since.date().isoformat()}:{group}:{name}:{since_ns}")
+    except Exception as e:  # noqa: BLE001 — a message must never reach the recorder's health loop
+        log.error("stall notification could not be built: %s", type(e).__name__)
+        return False
+
+
+def disk_low(day: date, drive: str, warnings: list[str]) -> bool:
+    """`post` that the lab's disk is running low (RM 7.1): one message per drive per day, naming every warning."""
+    try:
+        lines = "\n".join(f"- {w}" for w in warnings)
+        body = (f"The disk that holds the lab data is running low:\n\n{lines}\n\n"
+                "Recorded ticks are never deleted by themselves. Free some space (old backups, downloads, other "
+                "files) or move the lab folder; the Data coverage page shows what the lab holds."
+                "\n\n- STOCKIFY daemon\n")
+        return post("disk_low", "[STOCKIFY] The disk is running low", body, key=f"{day.isoformat()}:{drive or 'lab'}")
+    except Exception as e:  # noqa: BLE001
+        log.error("disk notification could not be built: %s", type(e).__name__)
+        return False
+
+
+__all__ = ["EVENTS", "daily_summary", "disk_low", "fit", "flush", "NotConfigured", "post", "post_daily_summary", "recorder_stall",
+           "reset", "rupees", "send", "send_daily_summary", "send_test", "session_event", "settings", "summary_ready"]

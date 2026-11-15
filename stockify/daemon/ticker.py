@@ -86,7 +86,8 @@ def direct_call(fn: Callable, *args) -> None:
 class RecorderSession:
     def __init__(self, ticker, recorder: Recorder, manager: SubscriptionManager, clock: Clock, *,
                  call_in_ticker: Callable = direct_call, health_every_s: float = recorder_health.HEALTH_EVERY_S,
-                 stall_s: float = 30.0, stall_group: str = "CM"):
+                 stall_s: float = 30.0, stall_group: str = "CM",
+                 on_stall: Callable[[int, int], None] | None = None):
         self.ticker = ticker
         self.recorder = recorder
         self.manager = manager
@@ -95,6 +96,9 @@ class RecorderSession:
         self.health_every_ns = int(health_every_s * SEC)
         self.stall_ns = int(stall_s * SEC)
         self.stall_group = stall_group
+        # Told (instrument_id, last packet ns) once when a stall begins, on the health-loop thread, outside the stall
+        # lock. The daemon sets it for a live day only: a replayed day's silence is the recording's own (RM 7.1).
+        self.on_stall = on_stall
         self.exit_code = exitcodes.OK
         self.connected = False
         self.stopped = threading.Event()
@@ -246,6 +250,7 @@ class RecorderSession:
     def _check_stalls(self, now: int) -> None:
         if self.stopped.is_set() or not self.connected or calendar.phase_at(self.stall_group, now) != "CONTINUOUS":
             return
+        began: list[tuple[int, int]] = []
         with self._stall_lock:
             if self.stopped.is_set():                # `stop()` ran first: it ended every stall gap, none opens now
                 return
@@ -259,11 +264,18 @@ class RecorderSession:
                     self._stall_gaps[sub.instrument_id] = self.recorder.landing.open_gap(
                         last, "stall", f"instrument:{sub.instrument_id}")
                     self._gap("start", "stall", last, sub.instrument_id)
+                    began.append((sub.instrument_id, last))
                 elif not silent and gap is not None:
                     # `pop`, not `del`: a stop that ended this gap first leaves nothing to end twice
                     if self._stall_gaps.pop(sub.instrument_id, None) is not None:
                         self.recorder.landing.close_gap(gap, last)
                         self._gap("end", "stall", last, sub.instrument_id)
+        if self.on_stall is not None:
+            for iid, last in began:
+                try:
+                    self.on_stall(iid, last)
+                except Exception:  # noqa: BLE001 — telling the owner never disturbs the recording
+                    log.exception("the stall notice failed")
 
     def _write_health(self, now: int) -> None:
         stats = self.recorder.stats
