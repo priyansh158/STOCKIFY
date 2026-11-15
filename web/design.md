@@ -27,7 +27,7 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 
 ## Rules
 - Labels, captions, table heads, chips and nav links are the body face, sentence case, untracked (no tracked capitals anywhere). The
-  wordmark STOCKIFY is the one uppercase text.
+  STOCKIFY name is shown only as the logo image (`public/brand/`, D-149), never set in type.
 - Mono is for figures, ids and code only. Every money and quantity column is right-aligned with tabular numerals.
 - Money is the API's paise shown as rupees by `src/lib/format.ts` (`Intl.NumberFormat("en-IN")`, ₹). Plain words everywhere: no raw codes
   (a status, a parity result, a margin step) reach the screen; map them in `src/lib/trade.ts` or `src/app/tests/ui.tsx`.
