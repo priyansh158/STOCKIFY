@@ -81,6 +81,16 @@ class GeoAlertDTO(BaseModel):
     acknowledged_at: int | None = None
 
 
+class GeoMonitorStatusDTO(BaseModel):
+    """The news monitor as the /alerts page shows it (D-150): when the last check finished (epoch seconds; None when
+    none is recorded), who ran it ("background" = the scheduled monitor, "page" = the button), what it found in
+    words, and whether a check is running right now (in the app or in the scheduled monitor)."""
+    last_check_at: int | None = None
+    last_by: Literal["background", "page"] | None = None
+    last_plain: str | None = None
+    checking: bool = False
+
+
 # ── Data layer (M1) ──────────────────────────────────────────────────────────
 
 class RecorderStatusDTO(BaseModel):
@@ -944,7 +954,7 @@ class WebJobDTO(BaseModel):
     runs, or files for a download (None when not known); `plain` is the one sentence the page shows; `error` is a plain
     reason, never exception text."""
     job_id: str
-    kind: Literal["sweep", "walkforward", "sensitivity", "backfill", "report"]
+    kind: Literal["sweep", "walkforward", "sensitivity", "backfill", "report", "geo"]
     status: Literal["running", "done", "failed", "interrupted", "cancelled"]
     target: str
     done: int | None = None
