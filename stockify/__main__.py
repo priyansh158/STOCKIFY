@@ -1032,6 +1032,7 @@ def _cmd_tools_fuzz(args) -> int:
 def _cmd_notify_test(args) -> int:
     """Send one test message through the channel chosen in notify.json (secrets come from the environment). Exit 0:
     sent; 1: not sent (the reason is printed; a secret never is)."""
+    _load_env()      # the SMTP settings are in the repo's settings file, which the daemon loads too
     from stockify.daemon import notify
     error = notify.send_test()
     if error is not None:

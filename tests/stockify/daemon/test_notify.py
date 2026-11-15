@@ -169,6 +169,16 @@ class OwnerCheckTests(NotifyTestBase):
         self.assertEqual(code, 1)
         self.assertIn("no channel", err)
 
+    def test_notify_test_reads_the_settings_file_like_the_daemon(self):
+        # The SMTP settings live in the repo's settings file; the daemon loads it before sending, so the owner's
+        # check must too, or it reports "not configured" whatever the file holds.
+        from stockify import __main__ as cli
+        self.configured(channel="email")
+        with mock.patch.object(cli, "_load_env") as load, \
+                mock.patch.object(notify, "_default_sender", Recorder()):
+            self.run_cli()
+        load.assert_called_once_with()
+
     def test_notify_test_failure_names_the_class_only(self):
         self.configured(channel="email")
         with mock.patch.object(notify, "_default_sender", Recorder(fail=OSError(SECRET_TOKEN))),                 self.assertLogs("stockify.daemon.notify", "ERROR") as cm:
