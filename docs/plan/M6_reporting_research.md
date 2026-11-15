@@ -80,6 +80,8 @@ Tables: `trial_families`, run `family_id` (A1 §4).
 
 ## Verification
 
+The web does the same from buttons (D-145): "Run sweep" on a finished test, "Run walk-forward" on a finished sweep and "Run sensitivity check" on a run. The commands below stay for scripting.
+
 ```
 python -m stockify sweep --config examples/sweeps/orb_grid.yaml
 python -m stockify walkforward --sweep examples/sweeps/orb_grid.yaml --train 120d --test 30d --step 30d --objective sharpe
@@ -123,3 +125,5 @@ cd web; npm run lint; npm run build
 ## Definition of done
 
 The demo report exists and the owner has read it; `/data` shows the full coverage history; DSR and bootstrap intervals appear on every run page; all boxes ticked.
+
+**Status (2026-11-15): M6 is built, reviewed and merged into `main`.** Still open, and the owner's: the demo run on about 330 days of fetched minute bars and reading its report, `research families --backfill --dry-run` and then for real, a quality report for each recorded day (a button on the Data page, or `data report --date D`), and the durable bar-interval fix (D-112). The owner's page review of 2026-11-13 led to D-135 to D-148. M6.12 stays open: its measured numbers need live days (D-122).

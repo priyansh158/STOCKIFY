@@ -2,7 +2,7 @@
 
 > **Goal**: the deterministic C++ engine (`stocksim_core`) implementing `A4_engine_semantics.md`, usable from Python (`stockify._engine`) with Python or C++ strategies, plus the `/tests` API and UI.
 > **Depends on**: M2 (oracle, bundle resolver, goldens). **Unblocks**: M4, M5. **Size**: L.
-> **Demo**: the same SMA run (a Python strategy) through the oracle and the engine gives byte-identical artifacts; a tick replay of a recorded day runs in seconds; a test started from `/tests` on a phone shows metrics, equity curve and fills.
+> **Demo**: the same SMA run (a Python strategy) through the oracle and the engine gives byte-identical artifacts; a tick replay of a recorded day runs in seconds; a test started from `/tests` in a desktop browser (D-83) shows metrics, equity curve and fills.
 
 Concepts: C-3, C-8, C-9, C-10, C-11, C-16. Contract: `A4_engine_semantics.md`. Interfaces: `A2_interfaces.md` §1–§5. Formats: `A1_schemas.md` §5–§6.
 
