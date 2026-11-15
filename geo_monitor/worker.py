@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover
 import geo_alerts
 import stockify_paths
 from gnews import GoogleNewsClient
+from geo_monitor import cycle_guard
 from geo_monitor.email_notify import try_send_alert_email
 from geo_monitor.gemini_classifier import (
     classify_batch,
@@ -219,6 +220,17 @@ def run_once(
     return stats
 
 
+def run_cycle(*, source: str) -> dict[str, Any]:
+    """One real cycle (not a dry run) that no other cycle overlaps: raises `cycle_guard.CycleBusy` when the
+    scheduled monitor or the app is already running one. A finished cycle is recorded as the last check, with
+    `source` ("background" for the scheduled monitor, "page" for the button)."""
+    with cycle_guard.hold():
+        stats = run_once()
+    if stats.get("fetched") or not stats.get("errors"):      # a cycle that read no news at all is not a check
+        geo_alerts.record_cycle(stats, source)
+    return stats
+
+
 def _log_failure(what: str, e: BaseException) -> None:
     """Log `what` with the trace of `e`, as text that has been through `scrub`.
 
@@ -246,8 +258,10 @@ def run_forever(*, once: bool = False) -> None:
     while True:
         started = time.time()
         try:
-            stats = run_once()
+            stats = run_cycle(source="background")
             log.info("Cycle done: %s", stats)
+        except cycle_guard.CycleBusy:
+            log.info("A check started from the app is running; this cycle is skipped.")
         except Exception as e:
             _log_failure("Monitor cycle crashed", e)
         if once:

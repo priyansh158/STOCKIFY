@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS geo_alerts (
 CREATE INDEX IF NOT EXISTS idx_geo_alerts_created ON geo_alerts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_geo_alerts_severity ON geo_alerts(severity);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_geo_alerts_guid ON geo_alerts(guid);
+
+-- The last finished monitor cycle (one row): when it ended, who ran it ('background' or 'page'), what it found.
+CREATE TABLE IF NOT EXISTS monitor_status (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    finished_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    fetched INTEGER NOT NULL,
+    new INTEGER NOT NULL,
+    suspects INTEGER NOT NULL,
+    alerts INTEGER NOT NULL,
+    problems INTEGER NOT NULL
+);
 """
 
 
@@ -292,3 +304,24 @@ def get_alert(alert_id: int) -> Optional[GeoAlert]:
         "SELECT * FROM geo_alerts WHERE id = ? LIMIT 1", (alert_id,)
     ).fetchone()
     return _row_to_alert(row) if row else None
+
+
+def record_cycle(stats: dict[str, Any], source: str) -> None:
+    """Remember that a monitor cycle just finished (the /alerts page shows it as "last check")."""
+    conn = _connect()
+    with dbconn.locked_write(_lock, conn):
+        conn.execute(
+            "INSERT INTO monitor_status (id, finished_at, source, fetched, new, suspects, alerts, problems) "
+            "VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET finished_at=excluded.finished_at, "
+            "source=excluded.source, fetched=excluded.fetched, new=excluded.new, suspects=excluded.suspects, "
+            "alerts=excluded.alerts, problems=excluded.problems",
+            (int(time.time()), source, int(stats.get("fetched") or 0), int(stats.get("new") or 0),
+             int(stats.get("suspects") or 0), int(stats.get("alerts") or 0), len(stats.get("errors") or [])),
+        )
+        conn.commit()
+
+
+def last_cycle() -> Optional[dict[str, Any]]:
+    """The last finished cycle as a dict, or None when none was recorded yet."""
+    row = _connect().execute("SELECT * FROM monitor_status WHERE id = 1").fetchone()
+    return dict(row) if row else None

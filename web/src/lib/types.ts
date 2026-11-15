@@ -72,6 +72,15 @@ export interface GeoAlert {
   acknowledged_at?: number | null;
 }
 
+/** The news monitor (D-150): the last finished check (epoch seconds), who ran it, what it found, and whether a check
+ * is running right now. */
+export interface GeoMonitorStatus {
+  last_check_at?: number | null;
+  last_by?: "background" | "page" | null;
+  last_plain?: string | null;
+  checking: boolean;
+}
+
 // ── Data layer (M1) ──────────────────────────────────────────────────────────
 
 export interface RecorderStatus {
@@ -897,7 +906,7 @@ export interface SessionChartDTO extends RunChartDTO {
 }
 
 // Jobs the web app starts (D-145): a sweep, a walk-forward, a cost check, an NSE download, a quality report.
-export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report";
+export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report" | "geo";
 export type WebJobStatus = "running" | "done" | "failed" | "interrupted" | "cancelled";
 export type Objective = "sharpe" | "sortino" | "calmar" | "cagr" | "net_pnl";
 export type AxisValue = string | number | boolean | null;

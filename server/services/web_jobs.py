@@ -26,7 +26,7 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 RESEARCH_KINDS = ("sweep", "walkforward", "sensitivity")
-DATA_KINDS = ("backfill", "report")
+DATA_KINDS = ("backfill", "report", "geo")
 KINDS = RESEARCH_KINDS + DATA_KINDS
 INTERRUPTED = "interrupted: the API restarted"
 _ID_WAIT_S = 30.0                      # how long a request waits for a research job to get its id
@@ -175,6 +175,8 @@ class WebJobs:
             raise JobRefused(404, "This job is not running in this app.")
         if job.kind == "report":
             raise JobRefused(409, "A quality report takes a few seconds and cannot be stopped.")
+        if job.kind == "geo":
+            raise JobRefused(409, "A news check takes under a minute and cannot be stopped.")
         if job.status != "running":
             raise JobRefused(409, "This job has already ended.")
         job.cancel.set()
@@ -206,6 +208,7 @@ _SAME = {
     "sensitivity": "The cost check of this test is already running. Its progress is on this page.",
     "backfill": "A download of these days is already running. Its progress is on this page.",
     "report": "The quality report of this day is already being made.",
+    "geo": "A news check is already running. Its progress is on this page.",
 }
 _OUTSIDE = ("A sweep, walk-forward or cost check started outside the app (from a terminal) is still running. Wait for "
             "it to finish, or stop it where it was started.")
@@ -214,6 +217,7 @@ _BUSY = {
                 "on the Research page.",
     "backfill": "Another download from NSE is still running. Wait for it to finish.",
     "report": "Another quality report is still being made. Wait for it to finish.",
+    "geo": "A news check is already running. Wait for it to finish.",
 }
 
 
@@ -341,16 +345,54 @@ def progress_words(kind: str, status: str, done: int | None, total: int | None, 
         return "Stopped before it finished, because STOCKIFY was closed. Start it again."
     if status == "done":
         return result or {"sweep": "Finished.", "walkforward": "Finished.", "sensitivity": "Finished.",
-                          "backfill": "Finished.", "report": "The quality report is ready."}[kind]
+                          "backfill": "Finished.", "report": "The quality report is ready.",
+                          "geo": "The news check is finished."}[kind]
     if total is not None and done is not None:
         unit = {"sweep": ("try", "tries"), "walkforward": ("run", "runs"), "sensitivity": ("check", "checks"),
                 "backfill": ("file", "files")}.get(kind)
         if unit and total > 0:
             verb = "Downloading" if kind == "backfill" else "Running"
             return f"{verb}: {done} of {total} {unit[1]} finished…"
-    return {"report": "Making the report…"}.get(kind, "Running…")
+    return {"report": "Making the report…", "geo": "Checking the news…"}.get(kind, "Running…")
 
 
 def today_ist() -> date:
     from stockify import timeutil
     return timeutil.ist_today()
+
+
+# ── the news check (D-150) ───────────────────────────────────────────────────
+
+_NO_KEY = "no Gemini API key"
+
+
+def geo_failure(stats: dict[str, Any]) -> str | None:
+    """A plain reason when a cycle read no news at all (it could not even start), else None."""
+    if not stats.get("fetched") and stats.get("errors"):
+        return ("The news check could not read Google News (the network may be down, or Google refused the "
+                "request). Nothing was checked; try again in a few minutes.")
+    return None
+
+
+def geo_sentence(stats: dict[str, Any]) -> str:
+    """What a finished news check did, in plain words, from the worker's stats."""
+    fetched, alerts, suspects = int(stats.get("fetched") or 0), int(stats.get("alerts") or 0), int(stats.get("suspects") or 0)
+    errors = [str(e) for e in stats.get("errors") or []]
+    story = count_noun(fetched, "story", "stories")
+    head = (f"{count_noun(alerts, 'new alert', 'new alerts')} ({story} checked)." if alerts
+            else f"{story} checked, no new alerts.")
+    notes: list[str] = []
+    if alerts:
+        emailed = int(stats.get("emailed") or 0)
+        notes.append(f"{emailed} emailed." if emailed else "None was emailed.")
+    if any(_NO_KEY in e for e in errors):
+        notes.append(f"{count_noun(suspects, 'story', 'stories')} could not be assessed because no Gemini key is set in "
+                     "the settings file; they will be tried again once it is.")
+    elif suspects and not stats.get("classified") and errors:
+        notes.append("Gemini did not assess the stories that looked important (its quota may be used up, or the "
+                     "network failed); they will be tried again at the next check.")
+    if any("email not configured" in e for e in errors):
+        notes.append("Email is not set up in the settings file, so no email was sent.")
+    elif any(e.startswith("email:") for e in errors):
+        notes.append("An alert email could not be sent.")
+    return " ".join([head, *notes])

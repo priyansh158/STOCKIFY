@@ -23,7 +23,7 @@ switch ($Action) {
         }
         $taskAction = New-ScheduledTaskAction `
             -Execute $Pwsh `
-            -Argument "-NoProfile -File `"$Runner`"" `
+            -Argument "-NoProfile -WindowStyle Hidden -File `"$Runner`"" `
             -WorkingDirectory $Root
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
         $settings = New-ScheduledTaskSettingsSet `
