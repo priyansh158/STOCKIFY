@@ -11,7 +11,7 @@ Concepts: C-9, C-10, C-17. Decisions: D-15, D-16, D-20. Contract: `A4_engine_sem
 ## M5.0 Recon (S)
 
 - [x] Confirm how the API stores the Kite access token and how a new login updates it (from M0.0). The daemon reads the same store; it never copies or logs the token (I-10).
-- [ ] 🛑 Confirm the recorder has run for several days (M1 done) and the replay ticker reproduces them. (Live pending: the recorded day 2026-11-05 replays in a sandboxed lab copy with dropped 0, exit 0 (16 instruments, 7,440 packets, 1,293 frames, 99 heartbeats), but it is a ~20-minute session, not a full one; needs a full live day; see RECON M5.0.)
+- [ ] 🛑 Confirm the recorder has run for several days (M1 done) and the replay ticker reproduces them. (Live pending: the recorded day 2026-11-05 replays in a sandboxed lab copy with dropped 0, exit 0 (16 instruments, 7,440 packets, 1,293 frames, 99 heartbeats), but it is a ~20-minute session, not a full one; needs a full live day, and the first one is Mon 16 Nov 2026 IST; see RECON M5.0 and "2026-11-15 state".)
 
 ## M5.1 Daemon composition (M)
 
@@ -114,7 +114,7 @@ NSE trades 20:30–03:10 in Seattle (PDT; 19:30–02:10 PST), so the host must b
 
 - **A. The current Windows machine**: Task Scheduler starts `run.ps1 -Daemon` at logon; the power plan never sleeps between 19:00 and 04:30 local; Windows Update active hours avoid that window. Cheapest; most fragile.
 - Options B (Linux box) and C (cloud VM) are out of scope: STOCKIFY is Windows only (D-26). The Kite redirect stays on the loopback callback.
-- [ ] Whichever is chosen: nightly backup of `refdata.sqlite`, `lab.sqlite`, `journals/`, `ticks/archive/` and `nse/raw/` (packs and landing files are rebuildable or transient). Once backups have run for a week, the owner may set `storage.json` → `retention_days` (M1.7). (Code done, GK 5.7: nightly verified backup; D-147: the target ships as `~/STOCKIFY-backup` (home-expanded) and only the newest `keep_snapshots` (7) daily `refdata`/`lab` snapshots are kept, so the ~2.5 GB/day snapshot no longer grows without bound. Open, owner-only: `retention_days`, the D-32 power settings and the Task Scheduler install, Task 26 step 6.)
+- [x] Whichever is chosen (the owner set this up 2026-11-13 to 2026-11-15): nightly backup of `refdata.sqlite`, `lab.sqlite`, `journals/`, `ticks/archive/` and `nse/raw/` (packs and landing files are rebuildable or transient). Once backups have run for a week, the owner may set `storage.json` → `retention_days` (M1.7). (Code done, GK 5.7: nightly verified backup; D-147: the target ships as `~/STOCKIFY-backup` (home-expanded) and only the newest `keep_snapshots` (7) daily `refdata`/`lab` snapshots are kept, so the ~2.5 GB/day snapshot no longer grows without bound. Done by the owner, 2026-11-13 to 2026-11-15 (Task 26 step 6): the D-32 power settings pass `scripts/check_power.ps1`, the recorder's Scheduled Task "STOCKIFY Market Daemon" is installed and starts at logon, and the backup target is set with 7 kept. The first nightly backup run follows the first live recording day. `retention_days` stays the owner's later choice.)
 
 ## M5.14 Connection budget and development mode (S)
 
@@ -137,17 +137,17 @@ cd web; npm run lint; npm run build
 
 A real session has run for at least five live trading days with every journal-parity check passing, coverage reported, one real token expiry handled through the login flow, and the owner's chosen host and backup in place.
 
-**Status (XI 5.12, 2026-11-12): M5 is built; the live Definition of Done is open.** The demo above ran in a sandboxed lab
+**Status (XI 5.12, 2026-11-12; updated 2026-11-15): M5 is built and merged into `main`; the live Definition of Done is open.** The demo above ran in a sandboxed lab
 on the fixture day (RECON, "M5 demo"): disconnect, token expiry (exit 76, fresh fake token in the sandbox) and kill
 (exit 137), two restarts, journal parity identical, recorder parity reported. E-03 (`tests/stockify/daemon/test_e03_faults.py`)
-holds it as a subprocess test. Open, owner-only, on real trading days (Task 30 step 5):
+holds it as a subprocess test. Open, on real trading days (Task 30 step 5; (e) was done by the owner 2026-11-13 to 2026-11-15):
 
 - [ ] (a) A real session runs for five live trading days with every journal parity passing.
 - [ ] (b) Coverage is reported each day.
 - [ ] (c) One real token expiry is handled (Task 19 step 6).
 - [ ] (d) Live margins are logged (Task 21 step 6).
-- [ ] (e) The backup and host steps are done (Task 26 step 6).
+- [x] (e) The backup and host steps are done (Task 26 step 6): the owner finished them 2026-11-13 to 2026-11-15 (power settings pass, Scheduled Task installed, backup target set, email alerts configured with a test email delivered 2026-11-15, `kite check` passes).
 - [ ] (f) The API and the daemon run live on two ticker connections, and a third is refused.
 - [ ] M5.0 box 2: a full recorded day replays (the recorder going live).
 
-The first possible live day is Wed 2026-11-11 IST; each day is recorded in RECON. M5 is "built" until then, "done" after.
+The first live recording day is Mon 16 Nov 2026 IST; it has not happened yet, and each live day is recorded in RECON. M5 is "built" until the open boxes above are ticked, "done" after.

@@ -38,6 +38,10 @@ GEO_MONITOR_INTERVAL_SEC=600
 GEO_MONITOR_WHEN=1h
 ```
 
+The market daemon's own email alerts (login needed, session errors, parity failures,
+the daily summary; `stockify/config/notify.json`) go through the same SMTP settings.
+`python -m stockify notify test` sends one test message with them.
+
 Kite authentication is optional. When available, current holdings extend the
 monitor queries; otherwise it runs macro-only.
 
@@ -58,6 +62,9 @@ Logs: `%LOCALAPPDATA%\STOCKIFY\logs\geo-monitor.log`
 
 Alerts database:
 `%LOCALAPPDATA%\STOCKIFY\kite\geo_alerts.sqlite`
+
+The monitor is its own background process. It starts with `.\run.ps1 -GeoMonitor`
+or the scheduled task above, and the web pages cannot start it (D-146).
 
 When FastAPI is running, use `GET /api/alerts`,
 `POST /api/alerts/{id}/ack`, or the `/alerts` page.

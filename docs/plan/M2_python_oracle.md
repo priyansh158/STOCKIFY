@@ -38,7 +38,7 @@ File: `stockify/strategy.py`. Interface: `A2_interfaces.md` §4.
 
 - [x] Base class `Strategy` with hooks `on_start`, `on_bar`, `on_tick`, `on_timer`, `on_fill`, `on_order_update`, `on_session_phase`, `on_session_end`, `save_state`, `load_state`.
 - [x] `Context` protocol: time, subscriptions, last snapshot / depth / bars, indicators (SMA, EMA, RSI and ATR with Wilder smoothing, session VWAP), orders, positions, funds, timers, parameters, logging, `rng()`.
-- [ ] The oracle provides one `Context` implementation; the C++ engine provides another in M3.8. **Strategies written now must run unchanged on the engine later**; this is checked in M3 by running every reference strategy on both.
+- [x] The oracle provides one `Context` implementation; the C++ engine provides another in M3.8. **Strategies written now must run unchanged on the engine later**; checked in M3 by running every reference strategy on both (done, M3.10: `tests/stockify/test_engine_strategies.py`).
 
 ## M2.4 Reference strategies (S)
 

@@ -1,4 +1,4 @@
-# STOCKIFY
+<h1 align="center"><img src="docs/assets/stockify-banner.png" alt="STOCKIFY" width="560"></h1>
 
 ![A tour of STOCKIFY: a backtest's candlestick chart and trades, two runs compared, the trust panel, the tests list, the new-test form, research and data coverage](docs/assets/stockify-tour.gif)
 
@@ -22,7 +22,56 @@ It runs on Windows, on one machine, for one person. Money is in rupees, stored a
 
 **Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when it stalls, when disk runs low, and with a summary after each day.
 
-Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch. Writing your own is covered in [`docs/plan/HOWTO_strategy.md`](docs/plan/HOWTO_strategy.md), and options work in [`docs/plan/HOWTO_options.md`](docs/plan/HOWTO_options.md).
+Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch.
+
+## Writing your own strategy
+
+The app can't create strategies on its own; there is no strategy editor or rule builder in it. In the app you can pick a strategy, change its settings, sweep them, compare runs and paper-trade. To test an idea of your own, you write it as a short Python file, and from then on the app treats it like the built-in ones.
+
+**Where it goes.** Save it in `stockify/strategies/` as a new file, for example `stockify/strategies/my_breakout.py`. Every file in that folder whose name doesn't start with `_` is found automatically (files starting with `_` are helpers). It then appears in the Strategy list of the New test form, with a settings form built from what it declares. A running app keeps the version of a file it has already loaded, so restart it (`.\run.ps1`) after you change the file.
+
+**What the file contains.** One class that subclasses `Strategy` from `stockify.strategy`, with three things declared at the top and the methods you need:
+
+```python
+from stockify.strategy import Strategy, fmt_price, fmt_qty
+
+
+class MyBreakout(Strategy):
+    DISPLAY_NAME = "My Breakout"                       # the name the app shows (required: the test suite checks every strategy has one)
+    DESCRIPTION = "Buys when a bar closes above the last N bars' high."   # one plain sentence for the New test form
+    PARAMS = [                                         # the settings form; on_start reads them from ctx.params
+        {"name": "symbol", "label": "Stock", "type": "symbol", "default": None, "required": True,
+         "help": "What to trade, e.g. NSE:RELIANCE."},
+        {"name": "lookback", "label": "Lookback (bars)", "type": "int", "default": 20, "required": False,
+         "help": "How many bars make the high to beat."},
+    ]
+
+    def on_start(self, ctx):          # once, before the first bar: read settings, find the instrument, subscribe
+        self.iid = ctx.resolve(ctx.params["symbol"])
+        self.n = int(ctx.params.get("lookback", 20))
+        self.highs = []
+        ctx.subscribe_bars(self.iid, 86400)            # daily bars; 60 for minute bars
+
+    def on_bar(self, ctx, bar):       # every new bar: decide, then place orders
+        if len(self.highs) >= self.n and bar.close > max(self.highs[-self.n:]):
+            if not ctx.position(self.iid, "CNC"):
+                ctx.place(self.iid, "BUY", 10, "CNC", "MARKET", tag="entry",
+                          note=f"Bought 10: closed at {fmt_price(bar.close)}, above the {self.n}-bar high")
+        self.highs.append(bar.high)
+```
+
+Prices arrive as whole paise (₹1 is 100). Besides `on_start` and `on_bar` there are `on_tick`, `on_timer`, `on_fill`, `on_order_update`, `on_session_phase` and `on_session_end`, and `save_state` / `load_state` for anything a paper session must carry from one day to the next. The `note=` on an order is what the run page shows in the fills table's "Why" column, and `ctx.plot(...)` draws your own lines on the chart. A setting can also offer a fixed list of choices or a percentage; see the docstring at the top of `stockify/strategies/_catalogue.py` for every option.
+
+**What it may and may not do.** Before it runs, every strategy file is checked. It may import only `__future__`, `datetime`, `decimal`, `re`, `math`, `dataclasses`, `typing`, `enum`, `collections`, `itertools`, `functools`, `statistics`, `stockify.strategy`, `stockify.engine`, `stockify.timeutil` and other files in `stockify/strategies/`. It can't open files, reach the network or the operating system, or call Kite, so a strategy can never place a real order. If the check refuses something, the run fails with a message naming the line.
+
+**Testing it.**
+
+1. In the app: Strategy tests, New test, pick your strategy, fill in its settings, choose the market data and dates, then Start test. The run page shows the result, and a failed run shows the error and the last lines of its log.
+2. Make sure it wasn't luck: run a parameter sweep on it from the Research page, walk the sweep forward, and run the sensitivity check on the best result.
+3. Run the test suite (`.\.venv\Scripts\python.exe tests\run_tests.py strategy`). The catalogue test fails if your strategy has no `DISPLAY_NAME`.
+4. Once you trust it, start a paper session with it on the Paper trading page.
+
+The full walk-through, using the Opening Range Breakout as the example (the run config, running it from the command line, reading the result, determinism, and porting a strategy to C++ for speed), is [`docs/plan/HOWTO_strategy.md`](docs/plan/HOWTO_strategy.md). Options strategies (chains, legs, margin, expiry) are in [`docs/plan/HOWTO_options.md`](docs/plan/HOWTO_options.md).
 
 ## How it is built
 

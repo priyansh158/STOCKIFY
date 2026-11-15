@@ -1387,3 +1387,89 @@ M6 is "built (open: live gates)" in `00_overview.md` §4. Everything below ran o
 9. 🛑 Rebuild the engine on every machine (`.\run.ps1 -BuildEngine`) before comparing runs.
 10. The stuck-process note is resolved: the old `sod` filter process (pid 37796) ended on its own and the worktree's `.pyd` is free. Nothing to do.
 11. 🛑 Push, only on the owner's word. Nothing has been pushed past `102dd7c`.
+
+## 2026-11-15 state: the merged platform and the live gates still open (SW 7.1)
+
+This section records what the repository really holds on 2026-11-15, at `main` 529e1d0 (`RW 7.5`, `XI 7.15`). Earlier
+sections stay as the record of each milestone; where one of them lists an owner task or says "not pushed", this section
+is the current word.
+
+### Where the code is
+
+- All milestones M0 to M6 are built, reviewed and merged into `main`. GitHub `main` holds the whole platform. The branches
+  `stockify/m1-data`, `m2-oracle`, `m3-engine`, `m4-fno`, `m5-paper` and `m6-research` stay on GitHub as a record of how
+  the work was divided (owner, 2026-11-13). The old pre-pivot `master` branch was deleted from GitHub on 2026-11-13
+  (owner). There are no other branches.
+- Recorded Kite and NSE data is not in the repository. It stays on the owner's machine and in the owner's backup.
+- The decision log runs to D-148. D-136, D-138 and D-140 are not used in `00_overview.md` §5.
+
+### The layout as it stands
+
+- `server/routers/`: `alerts`, `data`, `jobs`, `kite`, `portfolio`, `research`, `search`, `tests`, `ticks`, `trade`.
+  `jobs.py` (D-145) holds the Run buttons' endpoints.
+- `web/src/app/`: `alerts`, `data`, `kite`, `portfolio`, `research`, `tests`, `trade`, and the shared `tokens.css`,
+  `base.css`, `globals.css`. The UI is desktop only (owner, 2026-11-12, D-83) and shows no terminal command (D-145).
+- `stockify/config/`: `broker_policy`, `charges`, `contract_rules`, `freeze_limits`, `kite_limits`, `margin_params`,
+  `notify`, `paper`, `pricing`, `research`, `schedule`, `sessions`, `sources`, `storage`, `system_notes`, `universe`
+  (all `.json`) and `calendar/`. `python -m stockify config` validates them.
+- `scripts/`: `check_power.ps1`, `manage_stockify_daemon.ps1`, `run_stockify_daemon.ps1`, `manage_geo_monitor.ps1`,
+  `run_geo_monitor.ps1`.
+- `python -m stockify` has these commands: `daemon`, `config`, `engine`, `notify`, `backup`, `refdata`, `data`, `nse`,
+  `bars`, `oracle`, `run`, `golden`, `compare`, `export`, `compare-artifacts`, `margin`, `research`, `sensitivity`,
+  `sweep`, `walkforward`, `session`, `parity`, `tools`, `pack`, `compact`, `calendar`, `kite`.
+- The last full Python suite recorded in this file is suite 9 (3402 tests, 0 failures, 4 tracked defects, M6 close above).
+  It was not re-run for this documentation pass; the doc-reading filters (`howto`, `docs`, `facts`, `plan`) and
+  blockwatch were.
+
+### Decisions since the plan was written
+
+All have rows in `00_overview.md` §5; the other documents were made to agree with them in SW 7.1.
+
+- Desktop only (owner, 2026-11-12, D-83): replaces mobile-first. `web/design.md` says so; M3's demo no longer says "phone".
+- D-135: yearly figures (CAGR, Calmar, turnover) show only for runs of at least `research.json` `reporting.min_days_yearly`
+  trading days (shipped 240); costs over a non-positive gross profit read n/a.
+- D-137: the run page names every contract (`display_name`), gives each fill its own Why and says when a fill is the
+  day's close.
+- D-139: a recorder status report goes stale after 12 missed reports; the API says so and says whether the market is open.
+- D-141: the site footer is removed. The TradingView attribution is the chart's own logo plus the `NOTICE` file.
+- D-142: a finished run's chart shows its bars across the full width and no last-price label.
+- D-143: `refdata`, `history`, `tick_buffer` and `geo_alerts` give each thread its own SQLite connection.
+- D-144: plain names (`display_name`, `name_label`) from one rule, `stockify.display.humanize`.
+- D-145 and D-146: the Run buttons (sweep, walk-forward, sensitivity check, NSE download, quality report) replace terminal
+  commands in the UI. The command line stays for scripting. The recorder and the news monitor are not startable from the
+  web; the pages say in words that they start with the launcher.
+- D-147: the nightly backup keeps the newest `keep_snapshots` daily snapshots (shipped 7); the target is
+  `~/STOCKIFY-backup`.
+- D-148: the second Hallmark design pass; `web/design.md` states the one date format, the column-head rule and the
+  identifier style.
+- RW 7.5 (2026-11-15): `python -m stockify notify test` loads the repo's settings file first, as the daemon does, so a
+  configured email is no longer reported as not configured.
+
+### Owner-only setup that is now done (2026-11-13 to 2026-11-15)
+
+- The D-32 power settings pass `scripts/check_power.ps1`.
+- The recorder's Scheduled Task "STOCKIFY Market Daemon" is installed and starts at logon.
+- The backup target is set (`~/STOCKIFY-backup`, keep 7). No backup has run yet; the job runs at 05:45 IST on trading days (`schedule.json`), and catches up after a wake.
+- Email alerts are configured, and a test email was delivered on 2026-11-15.
+- `python -m stockify kite check` passes: API key, fresh token, quote, historical data and the websocket.
+- A sandboxed replay rehearsal of the recorded day 2026-11-05 recorded 7440 packets with 0 dropped.
+
+M5.13 and Task 26 step 6 are therefore closed, and M5 Definition of done item (e) is ticked.
+
+### Live gates still open
+
+- The first live recording day is Mon 16 Nov 2026 IST. It has not happened yet. The only recorded day in the lab is 2026-11-05, a short session of about 20 minutes, not a full day.
+- A run of unattended live recording days (M1; the quality report is shown to the owner after the first day).
+- Paper sessions that pass nightly journal parity for five live trading days (M5 (a), (b)).
+- One real token expiry handled through the login flow (M5 (c), Task 19 step 6). Live margins logged (M5 (d), Task 21 step 6).
+- Two live Kite connections observed and a third refused (M5 (f), Task 30).
+- `research families --backfill --dry-run`, read, then run for real.
+- A quality report for each recorded day (`data report --date D`, or the Data page's "Make quality report" button).
+- About 330 days of minute bars fetched (`bars fetch`) and the demo walk-forward run on them, with its report read.
+- The durable bar-interval artifact (D-112).
+- M6.12, the public write-up with measured numbers, stays a draft (`writeup_draft.md`) until live days exist (D-122).
+- Rebuild the engine on every machine (`.\run.ps1 -BuildEngine`) before comparing runs.
+
+The M6 owner list above is replaced by this one. Its "push, only on the owner's word" item is done: GitHub `main` holds
+the platform. Its two page-review items (a look at each page at 1024 px, and the chart attribution) led to D-135 to D-148
+and D-141; no separate sign-off is recorded here.

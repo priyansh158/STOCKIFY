@@ -57,7 +57,7 @@ Files: `stockify/data/nse_files.py` (fetcher), `stockify/data/nse_parsers.py`, `
 - [x] `settlement_prices`: for each expiry date and underlying, the final settlement price. ~~index → index close; stock → official close (`cm_eod`), cross-checked against the expiring future~~ → **D-39:** NSE's FSP from the expiring contracts' settlement price in the F&O bhavcopy, cross-checked against the index close / official close; mismatches beyond one tick go to `data_quality` (D-13).
 - [x] `qtyfreeze.csv` is current-only (S-6): fetch it every trading day (M1.5 schedule) and store each day's copy; changes become `freeze_limits` rows (cross-checked against circulars in M4.1).
 - [x] View `fo_universe(trade_date, underlying)` (A1 §1.2): the point-in-time F&O stock universe (C-4).
-- [x] CLI: `python -m stockify nse backfill --datasets fo,cm,idx --from 2024-01-01 --to <yesterday>` (resumable: skips dates already fetched with a matching hash) and `python -m stockify nse fetch --date <d>`.
+- [x] CLI: `python -m stockify nse backfill --datasets fo,cm,idx --from 2024-01-01 --to <yesterday>` (resumable: skips dates already fetched with a matching hash) and `python -m stockify nse fetch --date <d>`. The Data page runs the same backfill from its "Download missing days" and "Download this day" buttons (D-145, D-146).
 - [x] Tests with trimmed real-format fixtures (`tests/fixtures/nse/`): header mapping, paise parsing, mapping to instruments, the settlement-price cross-check, a legacy and a UDiFF file for adjacent dates producing identical schemas (U-03).
 
 ## M1.4 Kite historical bar cache (M)
@@ -146,7 +146,7 @@ Files: `stockify/data/packs.py` (builder, encoder, numpy reader). Format: `A1_sc
 
 ## M1.9 Data-quality report (S)
 
-- [x] `python -m stockify data report --date D` (also run after compaction by the post-close job; reads through `stockify.data.ticks`) computes per instrument: packets, coverage (% of continuous-phase seconds with ≥ 1 packet while subscribed), longest gap, crossed books (bid ≥ ask), day-volume decreases, out-of-order exchange timestamps, receive-minus-exchange latency percentiles, heartbeat gaps. Writes `data_quality` rows and a short Markdown summary; `GET /api/data/quality?date=` returns them.
+- [x] `python -m stockify data report --date D` (the Data page has a "Make quality report" button for a day, D-145; also run after compaction by the post-close job; reads through `stockify.data.ticks`) computes per instrument: packets, coverage (% of continuous-phase seconds with ≥ 1 packet while subscribed), longest gap, crossed books (bid ≥ ask), day-volume decreases, out-of-order exchange timestamps, receive-minus-exchange latency percentiles, heartbeat gaps. Writes `data_quality` rows and a short Markdown summary; `GET /api/data/quality?date=` returns them.
 
 ## M1.10 Tracked defect #1 (S)
 

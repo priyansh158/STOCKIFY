@@ -1,4 +1,5 @@
 # Candlestick Charts with Trade Reasons Implementation Plan
+> Historical plan, kept as written. The platform is built and merged into `main`; what it really looks like now is in `docs/plan/RECON.md` ("2026-11-15 state") and `docs/plan/00_overview.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
