@@ -61,7 +61,7 @@ offline by construction.
 | File | Covers |
 |---|---|
 | `support/` | sandbox, `SandboxedDBTest` base class (resets each module's `_conn`, or its `_pool` of per-thread connections, `stockify/dbconn.py`) |
-| `stockify/test_dbconn.py` | one connection per thread; concurrent-read stress test of `refdata`, `history`, `tick_buffer`, `geo_alerts`; reset closes every connection |
+| `stockify/test_dbconn.py` | one connection per thread (D-143); concurrent-read stress test of `refdata`, `history`, `tick_buffer`, `geo_alerts`; reset closes every connection |
 | `test_module_health.py` | every module imports; public symbols exist; sandbox intact |
 | `test_india_utils.py` | ₹ formatting, lakh/crore, Indian digit grouping, ticker suffixes |
 | `test_kite_client.py` | token lifecycle, **06:00 IST expiry boundary**, symbol resolution |
@@ -70,7 +70,12 @@ offline by construction.
 | `test_portfolio_sync.py` | holding math, snapshot aggregates, fetching and caching |
 | `test_geo_monitor.py` | query building, Gemini classifier, SMTP alerts, one worker cycle |
 | `test_known_defects.py` | **confirmed bugs** — see below |
-| `stockify/` | STOCKIFY paths, exact numerics + canonical output, config loader rules, `lab.sqlite` schema, CLI, engine gateway |
+| `stockify/` | The simulation lab: paths, exact numerics, config loader rules, `lab.sqlite` schema and migrations, CLI, the engine and the oracle (goldens, parity, fuzz), strategies and the strategy guard, F&O (Black-76, SPAN-lite, SPAN, calibration), run folders and bundles, the API routers (`test_api_*.py`), backup and Kite read-only checks, and the how-to pages (`test_howto*.py` run the code the pages show) |
+| `stockify/daemon/` | The market daemon: recorder, replay ticker, dispatcher, journals, paper sessions, recovery, scheduler, notifications, connection budget, and the fault and kill end-to-end tests (E-02, E-03) |
+| `stockify/data/` | Calendar, instruments, NSE files, bar history, limits, compaction, chain replay |
+| `stockify/research/`, `stockify/reporting/`, `stockify/charts/` | Sweeps, walk-forward, bootstrap, PBO, regimes, the trial registry, sensitivity, compare and export, data coverage, and the chart models |
+| `stockify/*_check.ts` | Pure helpers from `web/src/lib/` (charts, names, labels, jobs, research, run view), run on hand cases by a Python test that calls Node; skipped with a message when Node is missing |
+| `stockify/test_ui_commands.py` | No file under `web/src` shows a terminal command (D-145) |
 | `gnews/` | pre-existing Google News client tests (not written here) |
 
 One thing gets disproportionate coverage because it is load-bearing and
@@ -98,7 +103,7 @@ It's a to-do list that tells you when it's done.
 
 | # | Defect | Severity |
 |---|---|---|
-| 1 | `india_utils.format_inr_full` loses the carry when the fraction rounds up: `format_inr_full(0.999, decimals=2)` → `'0.100'`, expected `'1.00'` | low |
+| 1 | `india_utils.format_inr_full` loses the carry when the fraction rounds up: `format_inr_full(0.999, decimals=2)` → `'0.100'`, expected `'1.00'` (four tests in `test_known_defects.py` pin it, the compact formatter included) | low |
 
 The analysis-pipeline defects tracked here earlier (and `tick_buffer.candles_since`)
 were removed together with their code in milestone M0.

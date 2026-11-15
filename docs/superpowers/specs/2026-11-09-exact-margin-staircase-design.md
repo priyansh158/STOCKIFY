@@ -1,4 +1,5 @@
 # Exact margins: the margin staircase (design)
+> Historical spec, kept as written. The platform is built and merged into `main`; what it really looks like now is in `docs/plan/RECON.md` ("2026-11-15 state") and `docs/plan/00_overview.md`.
 
 Date: 2026-11-09. Status: draft for the owner's approval. Relates to: docs/plan/M4_fno.md (M4.8 SPAN-lite, M4.9
 calibration, M4.10 exact SPAN, which this supersedes and widens), M5 (paper daemon), A4 §6.5 (funds and margin),

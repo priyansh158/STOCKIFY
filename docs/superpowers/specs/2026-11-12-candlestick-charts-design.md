@@ -1,4 +1,5 @@
 # Candlestick charts with trade reasons: design
+> Historical spec, kept as written. The platform is built and merged into `main`; what it really looks like now is in `docs/plan/RECON.md` ("2026-11-15 state") and `docs/plan/00_overview.md`.
 
 Date: 2026-11-12. Owner-approved direction (chat, 2026-11-12). Builds into M6 (branch `stockify/m6-research`).
 Calls marked **[controller's call]** were not discussed with the owner; everything else was.

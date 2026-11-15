@@ -10,3 +10,5 @@ No SQLite and no network library belong in the engine (D-04, I-11).
 | `picosha2.h` | PicoSHA2 | commit `161cb3fc4170fa7a3eca9e582cebd27cc4d1fe29` | MIT | `b13c180161ffac8d0adc81e033e493c409457c4d1258ab9781ac80579ba3bdd8` |
 
 Fetched 2026-11-02 from `raw.githubusercontent.com` (doctest/doctest, nlohmann/json, okdshin/PicoSHA2).
+
+The hashes are of the files as committed (LF line endings). A Windows checkout with `core.autocrlf=true` writes CRLF, so check with `git show HEAD:engine/third_party/<file> | sha256sum`. Checked 2026-11-15: all three match.
