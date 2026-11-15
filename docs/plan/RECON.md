@@ -1449,7 +1449,7 @@ All have rows in `00_overview.md` §5; the other documents were made to agree wi
 
 - The D-32 power settings pass `scripts/check_power.ps1`.
 - The recorder's Scheduled Task "STOCKIFY Market Daemon" is installed and starts at logon.
-- The backup target is set (`~/STOCKIFY-backup`, keep 7). The first nightly run follows the first live recording day.
+- The backup target is set (`~/STOCKIFY-backup`, keep 7). No backup has run yet; the job runs at 05:45 IST on trading days (`schedule.json`), and catches up after a wake.
 - Email alerts are configured, and a test email was delivered on 2026-11-15.
 - `python -m stockify kite check` passes: API key, fresh token, quote, historical data and the websocket.
 - A sandboxed replay rehearsal of the recorded day 2026-11-05 recorded 7440 packets with 0 dropped.
