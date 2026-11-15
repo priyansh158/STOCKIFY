@@ -17,7 +17,7 @@ import kite_client
 from tests.stockify.daemon import paper_fixture as pf
 
 from stockify import __main__ as cli
-from stockify import engine, paths, store
+from stockify import engine, paths, store, timeutil
 from stockify.config import loader
 from stockify.daemon import exitcodes, journal, lifecycle, market_day, session_day
 from stockify.daemon.dispatcher import Dispatcher
@@ -96,6 +96,27 @@ class MarketDayTest(pf.PaperDayTest):
         patcher.start()
         self.addCleanup(patcher.stop)
         return patcher
+
+    def test_a_replayed_day_never_wires_the_stall_email(self):
+        """RM 7.1: a stall in a replayed day is the recording's own silence: no `on_stall` hook, so no email."""
+        from stockify.daemon import ticker as ticker_mod
+        seen = []
+        real = ticker_mod.RecorderSession
+
+        def spy(*a, **kw):
+            seen.append(kw.get("on_stall"))
+            return real(*a, **kw)
+
+        with mock.patch.object(ticker_mod, "RecorderSession", spy):
+            self.assertEqual(self.run_day(), exitcodes.OK)
+        self.assertEqual(seen, [None])
+
+    def test_the_live_stall_hook_posts_one_recorder_stall_through_the_queue(self):
+        with mock.patch.object(market_day.notifier, "post", return_value=True) as post:
+            market_day._stall_notice(123, timeutil.ist_ns(DAY, "10:00:00"))
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[0], "recorder_stall")
+        self.assertIn("2026-", post.call_args.kwargs["key"])
 
     def test_a_session_skipped_for_the_cap_is_in_the_status_with_its_reason(self):
         real = loader.load_json

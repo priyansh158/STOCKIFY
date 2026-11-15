@@ -76,7 +76,7 @@ class SessionTest(unittest.TestCase):
         support.reset_sqlite_singleton(refdata)
         support.reset_sqlite_singleton(store)
 
-    def run_session(self, *, faults=(), **source_kw):
+    def run_session(self, *, faults=(), on_stall=None, **source_kw):
         source = LandingDB(DAY)
         record_source(source, **source_kw)
         source.close()
@@ -89,7 +89,7 @@ class SessionTest(unittest.TestCase):
         rec = Recorder(target, tokens.get, clock)
         rec.begin()
         manager = SubscriptionManager(DAY, UNIVERSE, clock, log_rows=target.log_subscriptions)
-        session = RecorderSession(ticker, rec, manager, clock)
+        session = RecorderSession(ticker, rec, manager, clock, on_stall=on_stall)
         session.start()
 
         def on_message(ws, payload, is_binary):          # synchronous for determinism
@@ -301,6 +301,48 @@ class StoppedStallTests(SessionTest):
         self.assertEqual((reason, scope), ("stall", f"instrument:{index_id}"))
         self.assertEqual(start, t("09:19:58"))              # last index packet before the silence
         self.assertEqual(end, t("09:21:00"))                # first one after it
+
+
+class StallNoticeTests(SessionTest):
+    """RM 7.1: the transition into a stall is told once (`on_stall`); a stall that goes on, or ends, tells nothing."""
+
+    def test_a_stall_is_told_once_with_the_last_packet_time(self):
+        told = []
+        self.run_session(index_silent=("09:20:00", "09:21:00"), on_stall=lambda iid, last: told.append((iid, last)))
+        self.assertEqual(told, [(instruments.find("NSE", "NIFTY 50"), t("09:19:58"))])     # 60 s silent, many checks
+
+    def test_two_separate_stalls_are_told_separately(self):
+        told = []
+        session, _, _ = self.run_session(on_stall=lambda iid, last: told.append((iid, last)))
+        self.assertEqual(told, [])                                   # no silence, no notice
+        import types
+        session.stopped.clear()
+        session.connected = True
+        session.manager = types.SimpleNamespace(
+            current={1: types.SimpleNamespace(mode="full", reason="index:NIFTY", instrument_id=7)})
+        session._stall_gaps.clear()
+        session._last_packet = {7: t("09:20:00")}
+        session._check_stalls(t("09:21:00"))
+        session._check_stalls(t("09:21:05"))                         # still the same stall
+        session._last_packet = {7: t("09:22:00")}
+        session._check_stalls(t("09:22:01"))                         # resumed: the gap closes, nothing is told
+        session._last_packet = {7: t("09:22:01")}
+        session._check_stalls(t("09:23:00"))                         # a second stall
+        self.assertEqual(told, [(7, t("09:20:00")), (7, t("09:22:01"))])
+
+    def test_a_failing_notice_never_reaches_the_health_loop(self):
+        def boom(iid, last):
+            raise RuntimeError("mail down")
+
+        from tests.stockify.daemon.test_engine_log import enable_logging
+        enable_logging(self)
+        with self.assertLogs("stockify.daemon.ticker", "ERROR"):
+            _, target, _ = self.run_session(index_silent=("09:20:00", "09:21:00"), on_stall=boom)
+        self.assertEqual([g["reason"] for g in target.gaps()], ["stall"])        # the gap is recorded all the same
+
+    def test_with_no_hook_a_stall_only_makes_its_gap(self):
+        _, target, _ = self.run_session(index_silent=("09:20:00", "09:21:00"))
+        self.assertEqual([g["reason"] for g in target.gaps()], ["stall"])
 
 
 class RecentreAndHealthTests(SessionTest):

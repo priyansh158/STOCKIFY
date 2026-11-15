@@ -208,6 +208,19 @@ def notify_cap(event: str, detail: dict) -> None:
                          key=f"{event}:{detail.get('session_id')}:{detail.get('total')}")
 
 
+def _stall_notice(instrument_id: int, since_ns: int) -> None:
+    """Tell the owner (queued, off the recorder's threads) that a FULL index went silent: see `notify.recorder_stall`."""
+    name = f"instrument {instrument_id}"
+    try:
+        from stockify.data import instruments
+        row = instruments.get(instrument_id)
+        if row:
+            name = str(row["tradingsymbol"])
+    except Exception:  # noqa: BLE001 — a name is a nicety
+        pass
+    notifier.recorder_stall("CM", name, since_ns)
+
+
 class SessionPins:
     """Keeps each session's instruments subscribed (RM 5.4). Owner `session:<id>` pins the bundle's instruments from
     ARM and, while a position is open, its instrument as well (dropped again when flat). Changes to the manager run
@@ -591,7 +604,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         log.warning("subscriptions: %s", warning)
     recorder = Recorder(landing, tokens.get, clock)
     manager.log_rows = recorder.log_subscriptions       # the writer thread stores them, never the ticker's (RM 5.5)
-    session = RecorderSession(ticker, recorder, manager, clock, call_in_ticker=call)
+    session = RecorderSession(ticker, recorder, manager, clock, call_in_ticker=call,
+                              on_stall=None if replay else _stall_notice)     # a replay's silence is the recording's own
     end_ns = timeutil.ist_ns(day, schedule["jobs"]["unsubscribe"])
 
     # The paper sessions: opened before the first frame, fed through the recorder's tap and the ticker's gap taps.

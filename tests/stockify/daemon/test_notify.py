@@ -512,3 +512,95 @@ class FixRoundTests(SandboxedDBTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StallAndDiskMessageTests(NotifyTestBase):
+    """RM 7.1: `recorder_stall` and `disk_low` have senders now; each is once per key and goes through the queue."""
+
+    def test_a_stall_is_emailed_once_per_episode_with_a_plain_message(self):
+        from stockify import timeutil
+        sender = Recorder()
+        self.configured(channel="email")
+        since = timeutil.ist_ns(DAY, "10:15:30")
+        with mock.patch.object(notify, "_default_sender", sender):
+            self.assertTrue(notify.recorder_stall("CM", "NIFTY 50", since))
+            self.assertTrue(notify.recorder_stall("CM", "NIFTY 50", since))          # the same episode again
+            self.assertTrue(notify.recorder_stall("CM", "NIFTY 50", since + 600 * 10**9))   # a new episode
+            self.assertTrue(notify.flush(5))
+        self.assertEqual(len(sender.calls), 2)
+        channel, subject, body = sender.calls[0]
+        self.assertEqual(channel, "email")
+        self.assertIn("NIFTY 50", subject)
+        self.assertIn("10:15:30 IST", body)
+        self.assertIn("2026-11-17".replace("2026-11-17", "17 Nov 2026"), body)
+
+    def test_a_stall_is_only_logged_when_its_switch_is_off(self):
+        sender = Recorder()
+        self.configured(channel="email", recorder_stall=False)
+        with mock.patch.object(notify, "_default_sender", sender):
+            notify.recorder_stall("CM", "NIFTY 50", 1)
+            self.assertTrue(notify.flush(5))
+        self.assertEqual(sender.calls, [])
+
+    def test_disk_low_is_one_email_a_day_per_drive_naming_every_warning(self):
+        sender = Recorder()
+        self.configured(channel="email")
+        warnings = ["only 3.0 GB free (warning below 20 GB)", "only 1.0% of the disk free"]
+        with mock.patch.object(notify, "_default_sender", sender):
+            notify.disk_low(DAY, "C:", warnings)
+            notify.disk_low(DAY, "C:", warnings)                      # the next loop, the same day
+            notify.disk_low(DAY, "D:", warnings)                      # another drive
+            notify.disk_low(date(2026, 11, 18), "C:", warnings)       # the next day
+            self.assertTrue(notify.flush(5))
+        self.assertEqual(len(sender.calls), 3)
+        self.assertIn("only 3.0 GB free", sender.calls[0][2])
+        self.assertIn("only 1.0% of the disk", sender.calls[0][2])
+
+    def test_a_notice_builder_never_raises(self):
+        with mock.patch.object(notify, "post", side_effect=RuntimeError("boom")),                 self.assertLogs("stockify.daemon.notify", "ERROR"):
+            self.assertFalse(notify.recorder_stall("CM", "X", 1))
+            self.assertFalse(notify.disk_low(DAY, "C:", ["w"]))
+
+
+class CompactionJobDiskTests(NotifyTestBase):
+    """RM 7.1: the daemon's compaction job is the one place disk warnings are raised to the owner."""
+
+    def run_job(self, warnings):
+        from stockify import daemon
+        from stockify.daemon import scheduler
+        from stockify.data import compact
+        state = scheduler.State()
+        res = SimpleNamespace(status="verified", error=None)
+        with mock.patch.object(compact, "compact", return_value=res), \
+                mock.patch.object(compact, "disk_warnings", return_value=warnings), \
+                mock.patch.object(compact, "apply_retention", return_value=[]), \
+                mock.patch.object(notify, "post") as post:
+            daemon._run_job("compaction", DAY, state)
+            daemon._run_job("compaction", DAY, state)                       # the next pass the same day
+        self.assertTrue(state.done("compaction", DAY))
+        return post
+
+    def test_warnings_post_disk_low_with_a_per_day_key(self):
+        post = self.run_job(["only 3.0 GB free (warning below 20 GB)"])
+        self.assertEqual(post.call_count, 2)                                # `post` is told; its key makes it once
+        events = {c.args[0] for c in post.call_args_list}
+        keys = {c.kwargs["key"] for c in post.call_args_list}
+        self.assertEqual(events, {"disk_low"})
+        self.assertEqual(len(keys), 1)
+        self.assertTrue(next(iter(keys)).startswith(DAY.isoformat()))
+
+    def test_no_warning_posts_nothing(self):
+        self.assertEqual(self.run_job([]).call_count, 0)
+
+    def test_a_notice_failure_does_not_fail_the_job(self):
+        from stockify import daemon
+        from stockify.daemon import scheduler
+        from stockify.data import compact
+        state = scheduler.State()
+        with mock.patch.object(compact, "compact", return_value=SimpleNamespace(status="verified", error=None)), \
+                mock.patch.object(compact, "disk_warnings", return_value=["w"]), \
+                mock.patch.object(compact, "apply_retention", return_value=[]), \
+                mock.patch.object(notify, "disk_low", side_effect=RuntimeError("x")), \
+                self.assertLogs("stockify.daemon", "ERROR"):
+            daemon._run_job("compaction", DAY, state)
+        self.assertTrue(state.done("compaction", DAY))
