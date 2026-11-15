@@ -61,7 +61,7 @@ export default async function AlertsPage() {
       />
 
       {!failed && (
-        <div className="stk-stack-s">
+        <div className="stk-stack-s" style={{ marginBottom: "var(--space-lg)" }}>
           <CheckNews checkingElsewhere={Boolean(monitor?.checking)} />
           <p className="stk-fine">{lastCheckWords(monitor, istWhenEpoch(monitor?.last_check_at))}</p>
         </div>
