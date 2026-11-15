@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DESTINATIONS } from "@/lib/nav";
@@ -12,8 +13,8 @@ export function AppNav() {
     <header className="stk-topbar">
       <div className="stk-topbar-in">
         {path !== "/" && (
-          <Link href="/" className="stk-wordmark">
-            STOCKIFY
+          <Link href="/" className="stk-wordmark" aria-label="STOCKIFY, home">
+            <Image src="/brand/lockup.png" alt="STOCKIFY" width={1622} height={510} unoptimized />
           </Link>
         )}
         <nav className="stk-nav" aria-label="Main">

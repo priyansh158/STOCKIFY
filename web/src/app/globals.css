@@ -37,10 +37,8 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
   display: flex; align-items: center; gap: var(--space-lg);
   max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); min-height: 3.5rem;
 }
-.stk-wordmark {
-  font-family: var(--font-outlier); font-weight: 700; font-size: var(--text-lg); color: var(--color-accent);
-  text-decoration: none; letter-spacing: 0.02em; line-height: 1;
-}
+.stk-wordmark { display: inline-flex; align-items: center; line-height: 0; }
+.stk-wordmark img { display: block; height: 2.25rem; width: auto; }
 .stk-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs); margin-left: auto; }
 .stk-nav a {
   display: inline-flex; align-items: center; min-height: var(--hit); padding-inline: var(--space-sm);
@@ -275,7 +273,9 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
   .stk-skeleton { animation: none; }
 }
 
-.stk-logo { font-size: 3rem; font-weight: 700; line-height: 1; color: var(--color-ink); letter-spacing: 0.02em; }
+.stk-logo { margin: 0; line-height: 0; }
+.stk-logo img { display: block; height: 4.5rem; width: auto; }
+.stk-logomark { display: block; height: 4.5rem; width: auto; margin-bottom: var(--space-md); }
 .stk-relative { position: relative; }
 .stk-alert-title { font-weight: 600; max-width: var(--measure); }
 .stk-table td p { max-width: var(--measure); margin-top: var(--space-2xs); }
