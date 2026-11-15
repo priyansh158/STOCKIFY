@@ -1,4 +1,4 @@
-# STOCKIFY
+<h1 align="center"><img src="docs/assets/stockify-banner.png" alt="STOCKIFY" width="560"></h1>
 
 ![A tour of STOCKIFY: a backtest's candlestick chart and trades, two runs compared, the trust panel, the tests list, the new-test form, research and data coverage](docs/assets/stockify-tour.gif)
 
