@@ -52,6 +52,8 @@ class NotifyTestBase(unittest.TestCase):
         enable_logging(self)
         notify.reset()
         self.addCleanup(notify.reset)
+        notify.outbox_path().unlink(missing_ok=True)             # no test inherits another's undelivered mail
+        self.addCleanup(lambda: notify.outbox_path().unlink(missing_ok=True))
 
     def configured(self, **kw):
         p = mock.patch.object(notify, "settings", return_value=settings(**kw))
@@ -604,3 +606,136 @@ class CompactionJobDiskTests(NotifyTestBase):
                 self.assertLogs("stockify.daemon", "ERROR"):
             daemon._run_job("compaction", DAY, state)
         self.assertTrue(state.done("compaction", DAY))
+
+
+class OutboxTests(NotifyTestBase):
+    """RM 7.2: a notification that could not be delivered because the network is down is kept on disk and retried;
+    one that cannot be fixed by waiting (auth, config) is not."""
+
+    def setUp(self):
+        super().setUp()
+        self.configured(channel="email")
+        self.addCleanup(lambda: notify.outbox_path().unlink(missing_ok=True))
+        notify.outbox_path().unlink(missing_ok=True)
+
+    def lines(self):
+        p = notify.outbox_path()
+        return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+    def test_a_dns_failure_is_kept_not_lost(self):
+        import socket
+        down = Recorder(fail=socket.gaierror(11001, "getaddrinfo failed"))
+        err = notify.send("recorder_stall", "[STOCKIFY] stalled", "body", sender=down, key="k1")
+        self.assertEqual(err, "gaierror")
+        (rec,) = self.lines()
+        self.assertEqual((rec["event"], rec["subject"], rec["body"], rec["key"]),
+                         ("recorder_stall", "[STOCKIFY] stalled", "body", "k1"))
+
+    def test_every_network_class_error_is_kept(self):
+        import smtplib
+        for exc in (OSError("x"), ConnectionError("x"), TimeoutError("x"), smtplib.SMTPConnectError(421, "x"),
+                    smtplib.SMTPServerDisconnected("x")):
+            with self.subTest(exc=type(exc).__name__):
+                notify.outbox_path().unlink(missing_ok=True)
+                notify.send("disk_low", "s", "b", sender=Recorder(fail=exc))
+                self.assertEqual(len(self.lines()), 1)
+
+    def test_auth_and_config_errors_are_not_kept(self):
+        import smtplib
+        for exc in (notify.NotConfigured("email not configured"), smtplib.SMTPAuthenticationError(535, b"bad"),
+                    RuntimeError("boom"), smtplib.SMTPRecipientsRefused({})):
+            with self.subTest(exc=type(exc).__name__):
+                notify.send("disk_low", "s", "b", sender=Recorder(fail=exc))
+                self.assertEqual(self.lines(), [])
+
+    def test_retry_delivers_and_removes_with_the_original_time(self):
+        notify.send("recorder_stall", "s", "b", sender=Recorder(fail=OSError("down")), key="k")
+        written = self.lines()[0]["written_ns"]
+        up = Recorder()
+        self.assertEqual(notify.retry_outbox(sender=up), 1)
+        self.assertEqual(self.lines(), [])
+        (channel, subject, body), = up.calls
+        self.assertEqual((channel, subject), ("email", "s"))
+        self.assertTrue(body.startswith("b"))
+        self.assertIn("sent late", body)
+        from stockify import timeutil
+        self.assertIn(f"{timeutil.ns_to_ist(written):%H:%M} IST", body)
+
+    def test_retry_while_still_down_keeps_everything_and_stops_at_the_first_failure(self):
+        notify.send("disk_low", "a", "b", sender=Recorder(fail=OSError()), key="1")
+        notify.send("disk_low", "c", "d", sender=Recorder(fail=OSError()), key="2")
+        down = Recorder(fail=OSError())
+        self.assertEqual(notify.retry_outbox(sender=down), 0)
+        self.assertEqual(len(down.calls), 1)
+        self.assertEqual(len(self.lines()), 2)
+
+    def test_the_outbox_is_bounded_and_the_oldest_is_dropped_with_a_log_line(self):
+        with self.assertLogs("stockify.daemon.notify", level="WARNING") as ctx:
+            for i in range(notify.OUTBOX_MAX + 3):
+                notify.send("disk_low", f"s{i}", "b", sender=Recorder(fail=OSError()), key=str(i))
+        subjects = [r["subject"] for r in self.lines()]
+        self.assertEqual(len(subjects), notify.OUTBOX_MAX)
+        self.assertEqual(subjects[0], "s3")
+        self.assertTrue(any("dropped" in line for line in ctx.output))
+
+    def test_a_key_is_once_only_in_the_outbox_and_after_delivery(self):
+        notify.send("recorder_stall", "s", "b", sender=Recorder(fail=OSError()), key="k")
+        notify.send("recorder_stall", "s", "b", sender=Recorder(fail=OSError()), key="k")   # the caller tried again
+        self.assertEqual(len(self.lines()), 1)                    # still one waiting copy
+        notify.retry_outbox(sender=Recorder())
+        again = Recorder()
+        self.assertIsNone(notify.send("recorder_stall", "s", "b", sender=again, key="k"))
+        self.assertEqual(again.calls, [])                         # delivered late: never sent a second time
+
+    def test_a_callers_retry_that_works_removes_the_waiting_copy(self):
+        notify.send("recorder_stall", "s", "b", sender=Recorder(fail=OSError()), key="k")
+        notify.send("recorder_stall", "s", "b", sender=Recorder(), key="k")
+        self.assertEqual(self.lines(), [])
+
+    def test_a_good_send_drains_the_outbox(self):
+        notify.send("disk_low", "old", "b", sender=Recorder(fail=OSError()), key="1")
+        ok = Recorder()
+        with mock.patch.object(notify, "_default_sender", ok):
+            notify.send("disk_low", "new", "b", sender=ok, key="2")
+        self.assertEqual([c[1] for c in ok.calls], ["new", "old"])
+        self.assertEqual(self.lines(), [])
+
+    def test_a_damaged_line_does_not_stop_the_rest(self):
+        notify.send("disk_low", "s", "b", sender=Recorder(fail=OSError()), key="1")
+        with notify.outbox_path().open("a", encoding="utf-8") as f:
+            f.write("{not json\n")
+        self.assertEqual(notify.retry_outbox(sender=Recorder()), 1)
+
+
+class ToastTests(NotifyTestBase):
+    """RM 7.3: a Windows toast says a notification could not be emailed; the subject only, never injectable."""
+
+    def setUp(self):
+        super().setUp()
+        self.configured(channel="email")
+        self.addCleanup(lambda: notify.outbox_path().unlink(missing_ok=True))
+
+    def test_blocked_under_tests(self):
+        with mock.patch("subprocess.Popen") as popen, mock.patch("subprocess.run") as run:
+            notify.toast("[STOCKIFY] x")
+            notify.flush_toasts(2)
+        popen.assert_not_called()
+        run.assert_not_called()
+
+    def test_the_command_cannot_be_broken_out_of(self):
+        evil = "a' ; Remove-Item C:\ -Recurse ; '\u2018\u2019\"`$(calc)\nnext"
+        cmd = notify.toast_command(evil)
+        self.assertEqual(cmd[:5], ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command"])
+        self.assertEqual(len(cmd), 6)
+        script = cmd[5]
+        self.assertNotIn("\n", script)
+        # Every quote character of the subject sits doubled inside the single-quoted literal.
+        self.assertIn("a'' ; Remove-Item", script)
+        self.assertIn("\u2018\u2018\u2019\u2019", script)
+
+    def test_a_failed_email_shows_a_toast_but_a_retry_does_not(self):
+        with mock.patch.object(notify, "toast") as toast:
+            notify.send("disk_low", "s1", "b", sender=Recorder(fail=OSError()), key="1")
+            self.assertEqual(toast.call_args_list, [mock.call("s1")])
+            notify.retry_outbox(sender=Recorder(fail=OSError()))
+            self.assertEqual(toast.call_count, 1)
