@@ -30,6 +30,10 @@ switch ($Action) {
             -Argument "-NoProfile -WindowStyle Hidden -File `"$Runner`"" `
             -WorkingDirectory $Root
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        # Watchdog: every 5 minutes the task is started again. With IgnoreNew this does nothing while the launcher
+        # runs, and brings it back within 5 minutes if Windows ended it (the launcher restarts the daemon itself,
+        # but nothing restarted the launcher when it was killed; seen twice on 2026-11-15). Stop disables the task.
+        $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
         $settings = New-ScheduledTaskSettingsSet `
             -MultipleInstances IgnoreNew `
             -RestartCount 3 `
@@ -43,22 +47,24 @@ switch ($Action) {
             -RunLevel Limited
         $task = New-ScheduledTask `
             -Action $taskAction `
-            -Trigger $trigger `
+            -Trigger @($trigger, $watchdog) `
             -Settings $settings `
             -Principal $principal `
             -Description "STOCKIFY market daemon: records NSE sessions, hibernates after the close."
         Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
-        Write-Host "Installed '$TaskName' for the current Windows user (starts at logon)."
+        Write-Host "Installed '$TaskName' for the current Windows user (starts at logon; restarted within 5 minutes if it stops)."
     }
     "Start" {
         if (-not (Get-DaemonTask)) { throw "Task is not installed." }
+        Enable-ScheduledTask -TaskName $TaskName | Out-Null
         Start-ScheduledTask -TaskName $TaskName
         Write-Host "Started '$TaskName'."
     }
     "Stop" {
         if (-not (Get-DaemonTask)) { throw "Task is not installed." }
+        Disable-ScheduledTask -TaskName $TaskName | Out-Null   # or the watchdog trigger would start it again
         Stop-ScheduledTask -TaskName $TaskName
-        Write-Host "Stopped '$TaskName'."
+        Write-Host "Stopped '$TaskName' (disabled until Start)."
     }
     "Status" {
         $task = Get-DaemonTask
@@ -70,6 +76,8 @@ switch ($Action) {
         Write-Host "Task state:  $($task.State)"
         Write-Host "Last run:    $($info.LastRunTime)"
         Write-Host "Last result: $($info.LastTaskResult)"
+        $every = ($task.Triggers | Where-Object { $_.Repetition.Interval } | Select-Object -First 1).Repetition.Interval
+        Write-Host "Watchdog:    $(if ($every) { "restarts it every $every if it stops" } else { 'none (run Install again to add it)' })"
         $wake = Get-ScheduledTask -TaskName "STOCKIFY Wake" -ErrorAction SilentlyContinue
         if ($wake) {
             Write-Host "Next wake:   $(($wake.Triggers | Select-Object -First 1).StartBoundary)"
