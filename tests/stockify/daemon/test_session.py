@@ -372,3 +372,37 @@ class RecentreAndHealthTests(SessionTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SubscriptionCountLogTests(SessionTest):
+    """RM 7.5: the log states the full/quote totals once chains are centred, once per change (not per tick)."""
+
+    def make(self, counts):
+        from unittest import mock
+        clock = mock.Mock()
+        clock.now_ns.return_value = 1_000
+        manager = mock.MagicMock()
+        manager.reference_ids.return_value = set()
+        manager.current = {}
+        manager.chains = []
+        manager.update_prices.return_value = mock.MagicMock(empty=lambda: True)
+        manager.counts.side_effect = lambda: dict(counts[0])
+        return RecorderSession(mock.MagicMock(), mock.MagicMock(), manager, clock)
+
+    def test_the_total_is_logged_when_it_changes_and_not_otherwise(self):
+        from tests.stockify.daemon.test_engine_log import enable_logging
+        enable_logging(self)
+        counts = [{"full": 5, "quote": 3}]
+        session = self.make(counts)
+        with self.assertLogs("stockify.daemon.ticker", level="INFO") as ctx:
+            session._on_connect(None, None)
+            session._reconcile({1: 100})                          # unchanged since connect: silent
+            counts[0] = {"full": 105, "quote": 71}
+            session._reconcile({1: 101})
+            session._reconcile({1: 102})                          # same totals again: silent
+            counts[0] = {"full": 104, "quote": 71}
+            session._reconcile({1: 103})
+        lines = [r for r in ctx.output if "subscriptions" in r]
+        self.assertEqual(len(lines), 3, lines)
+        self.assertIn("105 full, 71 quote", lines[1])
+        self.assertIn("104 full, 71 quote", lines[2])
