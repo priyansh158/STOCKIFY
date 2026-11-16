@@ -723,7 +723,7 @@ class ToastTests(NotifyTestBase):
         run.assert_not_called()
 
     def test_the_command_cannot_be_broken_out_of(self):
-        evil = "a' ; Remove-Item C:\ -Recurse ; '\u2018\u2019\"`$(calc)\nnext"
+        evil = "a' ; Remove-Item C:\\ -Recurse ; '\u2018\u2019\"`$(calc)\nnext"
         cmd = notify.toast_command(evil)
         self.assertEqual(cmd[:5], ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command"])
         self.assertEqual(len(cmd), 6)
