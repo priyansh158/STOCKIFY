@@ -138,7 +138,7 @@ def _send(event, subject, body, sender, key):  # noqa: ANN001, ANN202
         log.error("notification %s by %s failed: %s", event, channel, type(e).__name__)
         if is_network_error(e):
             _outbox_add({"event": event, "channel": channel, "subject": subject, "body": fit(body), "key": key,
-                         "written_ns": time.time_ns()})
+                         "written_ns": timeutil.now_ns()})
             _kick_retry()
         toast(subject)
         return type(e).__name__
