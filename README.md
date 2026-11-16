@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/assets/stockify-banner.png" alt="STOCKIFY" width="560"></h1>
 
-![A tour of STOCKIFY: a backtest's candlestick chart and trades, two runs compared, the trust panel, the tests list, the new-test form, research and data coverage](docs/assets/stockify-tour.gif)
+![A tour of STOCKIFY: a backtest's candlestick chart and trades, two runs compared, the trust panel, the tests list, the new-test form, research, the geo alerts page with its news check, data coverage and the home page](docs/assets/stockify-tour.gif)
 
 STOCKIFY is a practice lab for trading on India's National Stock Exchange. You write a rule, test it on past prices with the costs, fills and margin a real account would face, then let it paper-trade live prices with pretend money. It never places a real order.
 
@@ -20,7 +20,9 @@ It runs on Windows, on one machine, for one person. Money is in rupees, stored a
 
 **Paper-trade live.** Sessions trade the live Kite feed with pretend money, unattended through the day. They journal every event, recover from crashes and disconnects, and replay each night to prove the day can be reproduced exactly.
 
-**Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when it stalls, when disk runs low, and with a summary after each day.
+**Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when an index goes silent mid-session, when disk runs low, when a session hits an error or a nightly check fails, and with a summary after each day.
+
+**Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
 
 Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch.
 
@@ -82,7 +84,8 @@ The full walk-through, using the Opening Range Breakout as the example (the run 
 - **Futures and options** have option chains with implied volatility and greeks (Black-76), rolls, freeze-limit slicing, expiry settlement and physical delivery.
 - **Margin** is priced from the exchange's own files where it can be. Each day a run takes the best of five steps: exact SPAN with NSE's extreme-loss file, exact SPAN with the dated rule, a calibrated estimate, a placeholder estimate, then a flat rate. Checked against 405 margin answers from Kite, the exact step agreed with every one, the worst by ₹0.85.
 - **The app** is a FastAPI backend in `server/` and a desktop Next.js UI in `web/`. Both bind to `127.0.0.1` only.
-- **The geo monitor** in `geo_monitor/` is a separate process that watches world news for events that could move Indian stocks.
+- **The news monitor** in `geo_monitor/` runs as its own background process (a scheduled task), so it keeps watching when the app is closed. The app starts one-off checks of the same code from the Geo alerts page, with a lock so the two never run a check at the same moment.
+- **The logo** lives in `web/public/brand/` and `web/src/app/` (the browser tab icon, app icons and the web manifest); the README banner and tour are in `docs/assets/`.
 
 ## Status
 
