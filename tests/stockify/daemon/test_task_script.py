@@ -38,6 +38,14 @@ class RecorderTaskScriptTests(unittest.TestCase):
         self.assertIn("Disable-ScheduledTask", _section(self.text, "Stop"))
         self.assertIn("Enable-ScheduledTask", _section(self.text, "Start"))
 
+    def test_stop_also_ends_the_daemon_and_its_child_interpreter(self):
+        # Stopping the task ended the launcher only; the Python daemon kept running on old code (2026-11-16).
+        stop = _section(self.text, "Stop")
+        self.assertIn('-match "-m stockify daemon"', stop)
+        self.assertIn(".venv", stop)
+        self.assertIn("ParentProcessId -eq $d.ProcessId", stop)   # the venv launcher's real interpreter child
+        self.assertIn("Stop-Process", stop)
+
     def test_the_task_still_starts_hidden(self):
         self.assertIn("-NoProfile -WindowStyle Hidden -File", _section(self.text, "Install"))
 

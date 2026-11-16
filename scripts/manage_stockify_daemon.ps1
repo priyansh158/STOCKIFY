@@ -64,6 +64,18 @@ switch ($Action) {
         if (-not (Get-DaemonTask)) { throw "Task is not installed." }
         Disable-ScheduledTask -TaskName $TaskName | Out-Null   # or the watchdog trigger would start it again
         Stop-ScheduledTask -TaskName $TaskName
+        # Stopping the task ends the launcher but not the Python daemon it started (seen 2026-11-16: the daemon kept
+        # running on old code and held the log open). End this repo's daemon processes too; journals recover on start.
+        # The venv's python.exe starts the base interpreter as a child, so stop each venv daemon with its children.
+        $procs = @(Get-CimInstance Win32_Process)
+        $venvDaemons = $procs | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath -like (Join-Path $Root ".venv\*") -and
+            $_.CommandLine -match "-m stockify daemon" }
+        foreach ($d in $venvDaemons) {
+            $procs | Where-Object { $_.ParentProcessId -eq $d.ProcessId } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Stop-Process -Id $d.ProcessId -Force -ErrorAction SilentlyContinue
+        }
         Write-Host "Stopped '$TaskName' (disabled until Start)."
     }
     "Status" {
