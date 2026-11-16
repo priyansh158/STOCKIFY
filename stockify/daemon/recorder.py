@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import collections
 import itertools
+import json
 import logging
 import queue
 import socket
@@ -34,6 +35,26 @@ RECORDER_VERSION = "1"
 MINUTE_NS = 60 * 1_000_000_000
 
 log = logging.getLogger("stockify.daemon.recorder")
+
+# Kite text frame types whose contents carry no account data and help read the log. Anything else (order postbacks,
+# "message", "trade", unknown or unparseable text) is logged by type alone (RM 7.4): they hold the owner's account id.
+HARMLESS_TEXT_TYPES = frozenset({"instruments_meta", "app_code", "error"})
+
+
+def text_frame_note(payload) -> str:  # noqa: ANN001
+    """The log line for a Kite text frame: contents only for HARMLESS_TEXT_TYPES, else just the type."""
+    try:
+        text = payload if isinstance(payload, str) else bytes(payload).decode("utf-8", "replace")
+        doc = json.loads(text)
+        kind = doc.get("type") if isinstance(doc, dict) else None
+    except Exception:  # noqa: BLE001
+        kind = None
+    if not isinstance(kind, str):
+        return "text frame: unrecognised (contents not logged)"
+    if kind in HARMLESS_TEXT_TYPES:
+        return f"text frame: {text[:200]}"
+    label = "order update" if kind == "order" else f"{kind[:30]!r} message" if kind.isprintable() else "message"
+    return f"text frame: {label} (contents not logged)"
 
 
 @dataclass
@@ -194,7 +215,7 @@ class Recorder:
         self._last_recv_ns = recv_ns
         if not is_binary:
             self.stats.text_frames += 1
-            log.info("text frame: %s", payload if isinstance(payload, str) else payload[:200])
+            log.info("%s", text_frame_note(payload))
             return
         try:
             frame = kite_packets.split_frame(payload)
