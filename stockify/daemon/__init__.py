@@ -421,6 +421,8 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     clock = clock or WallClock()
     stop = stop or threading.Event()
     state = scheduler.State()
+    from stockify.daemon import notify
+    notify.resume_outbox()                                   # what an earlier run could not email (RM 7.2)
     tried: dict[tuple[str, date], int] = {}                  # (job, day) -> last attempt, for retry_every_min
 
     def catch_up() -> None:

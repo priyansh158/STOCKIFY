@@ -13,6 +13,12 @@ notification is skipped. The owner asked for email only (2026-11-11): there is n
 `_blocked()` refuses real delivery whenever `tests.support` is in `sys.modules` (every unit test, and any dev tool
 that imports it into a production process: it fails closed).
 
+A message that fails for want of a network (DNS down, connection refused or dropped, timeout) is not lost (RM 7.2): it is
+kept in `notify_outbox.jsonl` in the lab folder (the last OUTBOX_MAX; the oldest is dropped with a log line) and retried
+with a backoff by a small thread, and after every later send that works. Its key stays used, and the late mail says when it
+was written. Auth and config errors are not kept: waiting does not fix them. A Windows toast with the subject (RM 7.3)
+tells an owner at the machine when a notification could not be emailed.
+
 A notifier failure never reaches the caller. The engine thread and the recorder's ticker thread call `post`, which
 only puts the message on a bounded queue for a daemon thread. `key` makes a message once-only for the process: a
 "still open" condition must not tell the owner again (callers pass a key, or do not call at all).
@@ -22,13 +28,17 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import os
 import queue
+import smtplib
+import subprocess
 import sys
 import threading
+import time
 from datetime import date, timedelta
 from typing import Callable
 
-from stockify import store, timeutil
+from stockify import paths, store, timeutil
 from stockify.config import loader
 
 log = logging.getLogger("stockify.daemon.notify")
@@ -46,6 +56,12 @@ _worker: threading.Thread | None = None
 _pending = 0
 _idle = threading.Condition(_lock)
 _not_configured_noted = False
+OUTBOX_MAX = 50
+RETRY_BACKOFF_S = (60, 120, 300, 600)             # then every 600 s until the outbox is empty
+TOAST_TIMEOUT_S = 15
+_outbox_lock = threading.RLock()
+_retry_thread: threading.Thread | None = None
+_toasts: list[threading.Thread] = []
 
 
 class NotConfigured(RuntimeError):
@@ -115,25 +131,232 @@ def _send(event, subject, body, sender, key):  # noqa: ANN001, ANN202
     try:
         (sender or _default_sender)(channel, subject, fit(body))
     except NotConfigured as e:
-        _note_not_configured(event, e)
+        if _note_not_configured(event, e):
+            toast(subject)
         return str(e)
     except Exception as e:  # noqa: BLE001
         log.error("notification %s by %s failed: %s", event, channel, type(e).__name__)
+        if is_network_error(e):
+            _outbox_add({"event": event, "channel": channel, "subject": subject, "body": fit(body), "key": key,
+                         "written_ns": timeutil.now_ns()})
+            _kick_retry()
+        toast(subject)
         return type(e).__name__
     if key is not None:
         with _lock:
             _seen.add((event, key))
+        _outbox_discard(event, key)                   # a caller's own retry got it through: no late copy
     log.info("NOTIFY %s sent by %s: %s", event, channel, subject)
+    retry_outbox()                                    # the connection works: what waited can go now
     return None
 
 
-def _note_not_configured(event: str, e: NotConfigured) -> None:
+def _note_not_configured(event: str, e: NotConfigured) -> bool:
+    """True the first time in this process."""
     global _not_configured_noted
     with _lock:
         first, _not_configured_noted = not _not_configured_noted, True
     if first:
         log.warning("notifications are not sent: %s (NotConfigured); set the SMTP variables the geo monitor uses. "
                     "Seen on %s; reported once per process", e, event)
+    return first
+
+
+# ── the outbox (RM 7.2) ──────────────────────────────────────────────────────────────────────────────────────────
+
+def is_network_error(e: BaseException) -> bool:
+    """True when waiting can fix it: DNS (`socket.gaierror`), refused/dropped/timed-out connections, an SMTP server
+    that disconnected. SMTP errors that are not about the connection (auth, refused recipient) and NotConfigured
+    are False. (smtplib's exceptions are OSErrors, so the SMTP ones are decided first.)"""
+    if isinstance(e, NotConfigured):
+        return False
+    if isinstance(e, (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+        return True
+    if isinstance(e, smtplib.SMTPException):
+        return False
+    return isinstance(e, (OSError, ConnectionError, TimeoutError))
+
+
+def outbox_path():
+    return paths.notify_outbox_file()
+
+
+def _outbox_read() -> list[dict]:
+    p = outbox_path()
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            rec = json.loads(line)
+            if isinstance(rec, dict) and {"event", "channel", "subject", "body", "written_ns"} <= rec.keys():
+                out.append(rec)
+        except ValueError:
+            log.warning("a damaged line in the notification outbox was skipped")
+    return out
+
+
+def _outbox_write(recs: list[dict]) -> None:
+    p = outbox_path()
+    if not recs:
+        p.unlink(missing_ok=True)
+        return
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def _outbox_discard(event: str, key: str) -> None:
+    try:
+        with _outbox_lock:
+            recs = _outbox_read()
+            left = [r for r in recs if not (r["event"] == event and r.get("key") == key)]
+            if len(left) != len(recs):
+                _outbox_write(left)
+    except Exception as e:  # noqa: BLE001
+        log.error("the notification outbox could not be read: %s", type(e).__name__)
+
+
+def _outbox_add(rec: dict) -> None:
+    try:
+        with _outbox_lock:
+            recs = _outbox_read()
+            if rec.get("key") is not None:            # a caller's retry of a keyed message: one copy, the first time
+                same = [r for r in recs if r["event"] == rec["event"] and r.get("key") == rec["key"]]
+                if same:
+                    rec["written_ns"] = same[0]["written_ns"]
+                    recs = [r for r in recs if r not in same]
+            recs.append(rec)
+            while len(recs) > OUTBOX_MAX:
+                old = recs.pop(0)
+                log.warning("the notification outbox is full: the oldest (%s) was dropped", old["event"])
+            _outbox_write(recs)
+        log.warning("notification %s kept in the outbox; it is retried when the connection returns", rec["event"])
+    except Exception as e:  # noqa: BLE001
+        log.error("the notification outbox could not be written: %s", type(e).__name__)
+
+
+def _late_body(rec: dict) -> str:
+    when = timeutil.ns_to_ist(int(rec["written_ns"]))
+    return (f"{rec['body']}\n\n(sent late: written at {when:%H:%M} IST on {when:%a %d %b %Y}, delivered when the "
+            "connection returned)")
+
+
+def retry_outbox(*, sender: Sender | None = None) -> int:
+    """Try to deliver what waits, oldest first; a delivered message leaves the outbox. Stops at the first failure
+    (the rest would fail too). Returns how many were delivered. Never raises."""
+    delivered = 0
+    try:
+        with _outbox_lock:
+            recs = _outbox_read()
+            if not recs:
+                return 0
+            keep: list[dict] = []
+            for i, rec in enumerate(recs):
+                try:
+                    (sender or _default_sender)(rec["channel"], rec["subject"], fit(_late_body(rec)))
+                except Exception as e:  # noqa: BLE001
+                    log.info("outbox retry failed: %s", type(e).__name__)
+                    keep = recs[i:]
+                    break
+                delivered += 1
+                if rec.get("key") is not None:
+                    with _lock:
+                        _seen.add((rec["event"], rec["key"]))
+                log.info("NOTIFY %s delivered late from the outbox: %s", rec["event"], rec["subject"])
+            _outbox_write(keep)
+    except Exception as e:  # noqa: BLE001
+        log.error("the notification outbox retry failed: %s", type(e).__name__)
+    return delivered
+
+
+def _retry_loop() -> None:
+    n = 0
+    while True:
+        time.sleep(RETRY_BACKOFF_S[min(n, len(RETRY_BACKOFF_S) - 1)])
+        n += 1
+        retry_outbox()
+        try:
+            with _outbox_lock:
+                if not _outbox_read():
+                    return
+        except Exception:  # noqa: BLE001
+            return
+
+
+def _kick_retry() -> None:
+    """Make sure one daemon thread retries the outbox with a backoff (none under test: tests call `retry_outbox`)."""
+    global _retry_thread
+    if _blocked():
+        return
+    with _outbox_lock:
+        if _retry_thread is not None and _retry_thread.is_alive():
+            return
+        _retry_thread = threading.Thread(target=_retry_loop, name="stockify-notify-retry", daemon=True)
+        _retry_thread.start()
+
+
+def resume_outbox() -> None:
+    """At daemon start: retry what an earlier run left in the outbox."""
+    try:
+        with _outbox_lock:
+            waiting = bool(_outbox_read())
+        if waiting:
+            _kick_retry()
+    except Exception as e:  # noqa: BLE001
+        log.error("the notification outbox could not be read: %s", type(e).__name__)
+
+
+# ── the Windows toast (RM 7.3) ───────────────────────────────────────────────────────────────────────────────────
+
+_POWERSHELL_QUOTES = "'‘’‚‛"
+
+
+def _ps_literal(text: str) -> str:
+    """`text` as the inside of a PowerShell single-quoted string: one line, every quote character doubled."""
+    flat = "".join(" " if (c.isspace() or ord(c) < 32) else c for c in text)[:200]
+    return "".join(c + c if c in _POWERSHELL_QUOTES else c for c in flat)
+
+
+def toast_command(subject: str) -> list[str]:
+    """The argv that shows a toast with `subject` (no shell: the subject cannot leave its string literal)."""
+    script = ("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = "
+              "WindowsRuntime] | Out-Null; "
+              "$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+              "[Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+              "$t = $x.GetElementsByTagName('text'); "
+              "$t.Item(0).AppendChild($x.CreateTextNode('STOCKIFY could not email this')) | Out-Null; "
+              f"$t.Item(1).AppendChild($x.CreateTextNode('{_ps_literal(subject)}')) | Out-Null; "
+              "$n = [Windows.UI.Notifications.ToastNotification]::new($x); "
+              "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+              "'{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($n)")
+    return ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script]
+
+
+def _show_toast(subject: str) -> None:
+    try:
+        subprocess.run(toast_command(subject), timeout=TOAST_TIMEOUT_S, capture_output=True, check=False,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:  # noqa: BLE001
+        log.info("the desktop notice could not be shown: %s", type(e).__name__)
+
+
+def toast(subject: str) -> None:
+    """Show `subject` as a Windows desktop notice, fire and forget on its own thread. Never raises, never blocks;
+    blocked under test. Only the subject goes out: no body, no account data."""
+    try:
+        if _blocked() or sys.platform != "win32":
+            return
+        th = threading.Thread(target=_show_toast, args=(subject,), name="stockify-toast", daemon=True)
+        _toasts[:] = [t for t in _toasts if t.is_alive()][-9:] + [th]
+        th.start()
+    except Exception as e:  # noqa: BLE001
+        log.info("the desktop notice could not be started: %s", type(e).__name__)
+
+
+def flush_toasts(timeout: float = 5.0) -> None:
+    for th in list(_toasts):
+        th.join(timeout)
 
 
 def send_test(*, sender: Sender | None = None) -> str | None:
@@ -381,5 +604,6 @@ def disk_low(day: date, drive: str, warnings: list[str]) -> bool:
         return False
 
 
-__all__ = ["EVENTS", "daily_summary", "disk_low", "fit", "flush", "NotConfigured", "post", "post_daily_summary", "recorder_stall",
+__all__ = ["EVENTS", "OUTBOX_MAX", "flush_toasts", "is_network_error", "outbox_path", "resume_outbox", "retry_outbox",
+           "toast", "toast_command", "daily_summary", "disk_low", "fit", "flush", "NotConfigured", "post", "post_daily_summary", "recorder_stall",
            "reset", "rupees", "send", "send_daily_summary", "send_test", "session_event", "settings", "summary_ready"]

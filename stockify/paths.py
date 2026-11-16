@@ -44,6 +44,11 @@ def daemon_status_file() -> Path:
     return lab_dir() / "daemon_status.json"
 
 
+def notify_outbox_file() -> Path:
+    """Notifications that could not be delivered (no network), as JSON lines, waiting for a retry (RM 7.2)."""
+    return lab_dir() / "notify_outbox.jsonl"
+
+
 def refdata_db() -> Path:
     return lab_dir() / "refdata.sqlite"
 

@@ -108,6 +108,7 @@ class RecorderSession:
         # thread: one order, so `manager.current` is always what Kite holds (RM 5.5).
         self.sub_lock = threading.RLock()
         self._sent_prices: dict[int, int] = {}
+        self._logged_counts: tuple[int, int] | None = None     # (full, quote) last written to the log (RM 7.5)
         self._disconnect_gap: int | None = None
         self._stall_gaps: dict[int, int] = {}
         # `_check_stalls` (main thread) and `stop()` (the ticker thread, on a 403) both work on `_stall_gaps`.
@@ -158,6 +159,16 @@ class RecorderSession:
                 first = self.manager.build(prices)          # chains still waiting for a price
                 if not first.empty():
                     self._apply(first)
+            self._log_counts()
+
+    def _log_counts(self) -> None:
+        """Log the full/quote totals when they differ from the last logged (the connect line is logged before the
+        chains are centred, so it is not the whole story). Under `sub_lock`."""
+        counts = self.manager.counts()
+        key = (counts["full"], counts["quote"])
+        if key != self._logged_counts:
+            self._logged_counts = key
+            log.info("subscriptions now: %d full, %d quote", *key)
 
     def _apply_all(self, ws) -> None:  # noqa: ANN001
         """After a (re)connect: subscribe everything currently wanted."""
@@ -187,6 +198,9 @@ class RecorderSession:
                 self._disconnect_gap = None
                 self._gap("end", "disconnect", now)
         self._apply_all(ws)
+        with self.sub_lock:
+            counts = self.manager.counts()
+            self._logged_counts = (counts["full"], counts["quote"])
         log.info("ticker connected; %d subscriptions", len(self.manager.current))
 
     def _on_close(self, ws, code, reason) -> None:  # noqa: ANN001

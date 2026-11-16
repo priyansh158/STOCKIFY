@@ -164,3 +164,39 @@ class PathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TextFrameLogTests(RecorderTest):
+    """RM 7.4: a Kite text frame can carry the owner's own account (order postbacks): only harmless types are logged
+    with their contents; everything else logs its type alone."""
+
+    ORDER = ('{"type":"order","data":{"account_id":"AB1234","placed_by":"AB1234","order_id":"2611150000001",'
+             '"tradingsymbol":"NIFTY26NOVFUT","status":"COMPLETE","quantity":65,"average_price":24012.5}}')
+
+    def logged(self, payload) -> str:
+        from tests.stockify.daemon.test_engine_log import enable_logging
+        enable_logging(self)
+        self.rec.on_message(None, payload, False)
+        with self.assertLogs("stockify.daemon.recorder", level="INFO") as ctx:
+            self.rec.process(self.rec.queue.get_nowait())
+        return "\n".join(ctx.output)
+
+    def test_an_order_postback_logs_only_its_type(self):
+        out = self.logged(self.ORDER)
+        self.assertIn("text frame: order update (contents not logged)", out)
+        for secret in ("AB1234", "2611150000001", "NIFTY26NOVFUT", "24012.5"):
+            self.assertNotIn(secret, out)
+
+    def test_other_account_types_and_unparseable_text_are_not_logged_either(self):
+        for payload in ('{"type":"message","data":"hello AB1234"}', '{"type":"trade","data":{"x":"AB1234"}}',
+                        "not json AB1234", '["AB1234"]', '{"data":"AB1234"}'):
+            with self.subTest(payload=payload):
+                self.assertNotIn("AB1234", self.logged(payload))
+
+    def test_harmless_types_keep_their_contents(self):
+        self.assertIn("app_code", self.logged('{"type":"app_code","timestamp":"2026-11-16"}'))
+        self.assertIn("instruments_meta", self.logged('{"type":"instruments_meta","count":176}'))
+
+    def test_a_text_frame_is_still_counted(self):
+        self.logged(self.ORDER)
+        self.assertEqual(self.rec.stats.text_frames, 1)
