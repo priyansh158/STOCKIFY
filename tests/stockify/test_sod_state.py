@@ -499,6 +499,16 @@ def _shipped_worlds() -> dict:
         "stockify.strategies.buy_and_hold:BuyAndHold": (daily, {"symbol": "NSE:TEST"}, golden.build_bundle),
         "stockify.strategies.sma_cross:SmaCross": (daily, {"symbol": "NSE:TEST", "fast": 2, "slow": 3},
                                                    golden.build_bundle),
+        "stockify.strategies.rsi_pullback:RsiPullback": (
+            TS.world(TS.walk([10000, 9900, 9800, 9700, 9800, 9900, 10000, 10100, 10000, 9900]), dates=TS.DAYS),
+            {"symbol": "NSE:TEST", "rsi_n": 2}, golden.build_bundle),
+        **{f"stockify.strategies.{m}": (daily, {"symbol": "NSE:TEST", **pr}, golden.build_bundle) for m, pr in (
+            ("macd_cross:MacdCross", {"fast": 2, "slow": 3, "signal": 2}),
+            ("bollinger_reversion:BollingerReversion", {"n": 3, "k": "0.5"}),
+            ("donchian_breakout:DonchianBreakout", {"entry_n": 2, "exit_n": 2}),
+            ("supertrend:Supertrend", {"n": 2, "mult": "1.0"}),
+            ("ema_trend:EmaTrend", {"fast": 2, "slow": 3}),
+            ("chandelier_exit:ChandelierExit", {"n": 3, "mult": "1.0", "entry_n": 2}))},
         "stockify.strategies.opening_range_breakout:OpeningRangeBreakout": (
             orb_world, {"symbol": "NSE:TEST", "range_minutes": 2, "qty": 10}, golden.build_bundle),
         "stockify.strategies.eod_short_straddle:EodShortStraddle": (eod_world, {"min_days": 1}, golden.build_bundle),

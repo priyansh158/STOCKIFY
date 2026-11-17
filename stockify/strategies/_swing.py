@@ -13,6 +13,23 @@ from stockify.strategy import Bar, Strategy, fmt_qty
 
 NAN = math.nan
 
+INTERVAL_CHOICES = [{'value': 60, 'label': '1 minute'}, {'value': 180, 'label': '3 minutes'}, {'value': 300, 'label': '5 minutes'}, {'value': 600, 'label': '10 minutes'}, {'value': 900, 'label': '15 minutes'}, {'value': 1800, 'label': '30 minutes'}, {'value': 3600, 'label': '1 hour'}, {'value': 86400, 'label': '1 day'}]
+
+
+def swing_params(*own: dict) -> list[dict]:
+    """The catalogue schema every swing strategy shares: the stock, then the strategy's own numbers, then the bar length."""
+    return [{'name': 'symbol', 'label': 'Stock', 'type': 'symbol', 'default': None, 'required': True, 'help': 'What to trade, e.g. NSE:RELIANCE.'},
+            *own,
+            {'name': 'interval_s', 'label': 'Bar length', 'type': 'int', 'default': 86400, 'required': False, 'help': 'How long each price bar covers.', 'choices': [dict(c) for c in INTERVAL_CHOICES]}]
+
+
+def int_param(name: str, label: str, default: int, help_text: str) -> dict:
+    return {'name': name, 'label': label, 'type': 'int', 'default': default, 'required': False, 'help': help_text}
+
+
+def decimal_param(name: str, label: str, default: str, help_text: str) -> dict:
+    return {'name': name, 'label': label, 'type': 'decimal', 'default': default, 'required': False, 'help': help_text}
+
 
 def ema_series(values: list[int], n: int) -> list[float]:
     """Exponential average, alpha 2/(n+1), seeded with the simple average of the first n values."""
@@ -119,11 +136,13 @@ class SwingLong(Strategy):
     (want_long, exit_level in paise or None, a plain note)."""
 
     LOOKBACK = 100
+    params: dict = {}                    # the run's params, kept by on_start; decide() reads them (never the state)
 
     def decide(self, bars: list[Bar]) -> tuple[bool, float | None, str]:
         raise NotImplementedError
 
     def on_start(self, ctx):  # noqa: ANN001
+        self.params = dict(ctx.params)
         self.symbol = ctx.params["symbol"]
         self.iid = ctx.resolve(self.symbol)
         self.isec = int(ctx.params.get("interval_s", 86400))

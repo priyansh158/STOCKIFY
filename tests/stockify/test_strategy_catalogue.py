@@ -11,7 +11,11 @@ from stockify.strategies import _catalogue as C
 REFS = {"stockify.strategies.buy_and_hold:BuyAndHold", "stockify.strategies.sma_cross:SmaCross",
         "stockify.strategies.opening_range_breakout:OpeningRangeBreakout",
         "stockify.strategies.eod_short_straddle:EodShortStraddle",
-        "stockify.strategies.short_straddle_stop:ShortStraddleStop", "stockify.strategies.iron_fly:IronFly"}
+        "stockify.strategies.short_straddle_stop:ShortStraddleStop", "stockify.strategies.iron_fly:IronFly",
+        "stockify.strategies.rsi_pullback:RsiPullback", "stockify.strategies.macd_cross:MacdCross",
+        "stockify.strategies.bollinger_reversion:BollingerReversion",
+        "stockify.strategies.donchian_breakout:DonchianBreakout", "stockify.strategies.supertrend:Supertrend",
+        "stockify.strategies.ema_trend:EmaTrend", "stockify.strategies.chandelier_exit:ChandelierExit"}
 
 
 class CatalogueTests(unittest.TestCase):
@@ -55,6 +59,9 @@ class CatalogueTests(unittest.TestCase):
         for s in C.python_strategies():
             module = __import__(s["ref"].split(":")[0], fromlist=["x"])
             src = inspect.getsource(module)
+            if any(b.__name__ == "SwingLong" for b in __import__(s["ref"].split(":")[0], fromlist=["x"]).__dict__[
+                    s["ref"].split(":")[1]].__mro__):
+                src += inspect.getsource(__import__("stockify.strategies._swing", fromlist=["x"]).SwingLong)   # symbol, interval_s
             read = set(re.findall(r"""(?:params|\bp)(?:\.get\(|\[)["'](\w+)["']""", src))
             self.assertEqual(read, {p["name"] for p in s["params"]}, s["ref"])
 
