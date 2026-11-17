@@ -61,9 +61,7 @@ export function Skeleton({ size = "m" }: { size?: "s" | "m" | "l" | "title" }) {
 
 export function Empty({ children }: { children: ReactNode }) {
   return (
-    <Panel>
-      <p className="stk-empty">{children}</p>
-    </Panel>
+    <p className="stk-empty">{children}</p>
   );
 }
 

@@ -31,7 +31,7 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 /* Shell: the top bar, the page */
 .stk-topbar {
   position: sticky; top: 0; z-index: var(--z-sticky-nav);
-  background: var(--color-paper); border-bottom: var(--rule-hair) solid var(--color-rule);
+  background: var(--color-paper-2); border-bottom: var(--rule-hair) solid var(--color-rule);
 }
 .stk-topbar-in {
   display: flex; align-items: center; gap: var(--space-lg);
@@ -273,7 +273,8 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
   .stk-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .stk-btn, .stk-nav a, .stk-dests a { transition: none; }
+  .stk-btn, .stk-nav a, .stk-dests a { transition-property: background-color, color; }  /* colour fades stay; no movement */
+  .stk-btn:active { transform: none; }
   .stk-skeleton { animation: none; }
 }
 
@@ -406,7 +407,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-grid td { min-width: 8rem; }
 /* The coverage grid is a ledger: each state is its glyph and word in the state's colour, with no frame or fill, so 60 rows of
    states read as a pattern instead of a wall of boxes. The legend uses the same marks. */
-.stk-grid td .stk-chip, .stk-legend .stk-chip, .stk-marks td .stk-chip { border-color: transparent; background: transparent; padding: 0; min-height: 0; }
+.stk-grid td .stk-chip, .stk-legend .stk-chip, .stk-marks td .stk-chip, .stk-table td .stk-chip { border-color: transparent; background: transparent; padding: 0; min-height: 0; }
 .stk-grid tr[aria-current="true"] th, .stk-grid tr[aria-current="true"] td { background: var(--color-paper-3); }
 .stk-grid tr[data-closed] th[scope="row"], .stk-grid tr[data-closed] th[scope="row"] a { color: var(--color-muted); font-weight: 400; }
 .stk-grid tr[data-closed] .stk-chip { color: var(--color-muted); }
@@ -449,7 +450,6 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pricechart-trades li button:hover { background: var(--row-hover); }
 .stk-pricechart-trades li button[aria-pressed="true"] { border-color: var(--color-edge); background: var(--color-paper-3); }
 .stk-pricechart-trades li button:disabled { opacity: 0.5; cursor: not-allowed; }
-@media (prefers-reduced-motion: reduce) { .stk-pricechart-trades li button { transition: none; } }
 .stk-table tr[data-active] td { background: var(--color-paper-3); }
 .stk-table td[data-wrap] > .stk-btn { display: block; margin-top: var(--space-3xs); }
 .stk-table td[data-wrap] code { overflow-wrap: anywhere; }

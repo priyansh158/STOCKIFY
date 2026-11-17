@@ -72,14 +72,12 @@ export default async function AlertsPage() {
           <p role="alert">Could not reach the STOCKIFY API, so the alerts cannot be shown. Check that the app is running, then reload this page.</p>
         </Panel>
       ) : items.length === 0 ? (
-        <Panel>
-          <p className="stk-empty">
-            No alerts yet.
-            <br />
-            Press Check the news now to look for world events straight away. The background monitor makes the same
-            check on a timer once it is turned on. Both need Gemini and email set up in the settings file (.env).
-          </p>
-        </Panel>
+        <p className="stk-empty">
+          No alerts yet.
+          <br />
+          Press Check the news now to look for world events straight away. The background monitor makes the same
+          check on a timer once it is turned on. Both need Gemini and email set up in the settings file (.env).
+        </p>
       ) : (
         <Table
           caption="Geo alerts, newest first"
