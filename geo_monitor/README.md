@@ -48,7 +48,10 @@ monitor queries; otherwise it runs macro-only.
 ## Always-on Task Scheduler lifecycle
 
 PowerShell 7 registers a per-user task that starts at logon, ignores duplicate
-starts, and retries after crashes:
+starts, and retries after crashes. A watchdog trigger starts it again every
+5 minutes, which does nothing while it runs and brings it back if Windows ends
+it. `Stop` disables the task (so the watchdog leaves it stopped) and ends the
+monitor's Python process; `Start` enables it again:
 
 ```powershell
 .\scripts\manage_geo_monitor.ps1 Install
