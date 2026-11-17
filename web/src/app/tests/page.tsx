@@ -81,6 +81,7 @@ export default async function TestsPage({ searchParams }: { searchParams: Promis
           ) : (
             <CompareSelect>
             <Table
+              tall
               caption="Recent strategy tests. Tick two to six finished tests to compare them."
               head={[
                 { label: "Compare" },

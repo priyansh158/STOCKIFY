@@ -297,6 +297,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                     <Empty>No orders filled.</Empty>
                   ) : (
                     <Table
+                      tall
                       caption="Orders that filled"
                       head={[
                         { label: "Time (IST)" },

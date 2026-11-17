@@ -62,7 +62,7 @@ function ErrorPanel({ children }: { children: ReactNode }) {
 function Grid({ matrix, days, selected, to }: { matrix: CoverageMatrixDTO; days: number; selected?: string; to?: string }) {
   const rows = [...matrix.days].reverse();
   return (
-    <div className="stk-table-wrap" tabIndex={0} role="region" aria-label="Coverage by day">
+    <div className="stk-table-wrap" data-tall tabIndex={0} role="region" aria-label="Coverage by day">
       <table className="stk-table stk-grid">
         <caption className="sr-only">
           Recording, archive and NSE file coverage for each day, newest first. Choose a day to see its gaps and files.

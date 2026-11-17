@@ -44,6 +44,8 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 - Long state grids (data coverage), caveat lists and every status column in a table are a ledger, not a wall of boxes: the state is
   its word (and glyph, where it has one) in the state's colour, with no frame or fill. The full chip (frame and tint) is for a page's
   own head and single states outside tables (owner, 2026-11-17).
+- A long ledger (the data coverage grid, the tests list, a run's fills) is a `Table tall` (owner, 2026-11-17): its frame is at most
+  `min(75vh, 48rem)` high and scrolls on its own, sideways too, with the column heads stuck to its top. Short tables stay plain.
 - Mono is for figures: a value that has no digit in it ("too short to say") is set in the body face, and so are the words under a figure.
 - One date format wherever a person reads a date: "5 Oct 2026", with ", 14:45" or ", 14:45 IST" where the time matters (`dayWords`,
   `istWhen` in `src/lib/format.ts`). ISO stays only where the date is an identifier. A fact shared by every row goes in the column head,

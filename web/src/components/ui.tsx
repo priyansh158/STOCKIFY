@@ -65,18 +65,21 @@ export function Empty({ children }: { children: ReactNode }) {
   );
 }
 
-/** A table frame: wide on a desktop, scrolls sideways in a narrow window rather than squeezing. */
+/** A table frame: wide on a desktop, scrolls sideways in a narrow window rather than squeezing. `tall` is for a long ledger:
+ * the frame gets its own height and vertical scroll, and the column heads stay in view while the rows move under them. */
 export function Table({
   caption,
   head,
+  tall,
   children,
 }: {
   caption: string;
   head: { label: string; sub?: string; num?: boolean }[];
+  tall?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="stk-table-wrap" tabIndex={0} role="region" aria-label={caption}>
+    <div className="stk-table-wrap" data-tall={tall ? "" : undefined} tabIndex={0} role="region" aria-label={caption}>
       <table className="stk-table">
         <caption className="sr-only">{caption}</caption>
         <thead>
