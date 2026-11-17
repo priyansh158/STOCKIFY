@@ -361,7 +361,10 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       {error && (
         <div role="alert" className="stk-gap-s">
           <Panel tone="red">
-            <p>Could not reach the API: {error}</p>
+            <p>
+              Could not reach the STOCKIFY API. Check that the app is running, then reload this page.{" "}
+              <span className="stk-fine stk-mono">{error}</span>
+            </p>
           </Panel>
         </div>
       )}
@@ -494,7 +497,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
         open={confirmStop}
         title="Stop this session for good?"
         body="It will stop trading and cannot be started again. Positions it holds stay as they are. To keep it but halt trading for now, use Pause instead."
-        confirmLabel="Yes, stop it"
+        confirmLabel="Stop this session"
         onConfirm={() => {
           setConfirmStop(false);
           void control("stop");

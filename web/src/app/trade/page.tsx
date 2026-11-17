@@ -114,7 +114,10 @@ export default function TradePage() {
         {error && (
           <div role="alert">
             <Panel tone="red">
-              <p>Could not reach the API: {error}</p>
+              <p>
+                Could not reach the STOCKIFY API. Check that the app is running, then reload this page.{" "}
+                <span className="stk-fine stk-mono">{error}</span>
+              </p>
             </Panel>
           </div>
         )}
@@ -173,7 +176,7 @@ export default function TradePage() {
         open={confirm}
         title="Stop all sessions?"
         body="Every session that is running or waiting will stop taking new trades right away. Open positions stay as they are. You can resume a session later from its page."
-        confirmLabel="Yes, stop all"
+        confirmLabel="Stop all sessions"
         onConfirm={doStopAll}
         onCancel={() => setConfirm(false)}
       />

@@ -65,7 +65,10 @@ export default async function TestsPage({ searchParams }: { searchParams: Promis
       <div className="stk-stack">
         {error && (
           <Panel tone="red">
-            <p role="alert">Could not reach the API: {error}</p>
+            <p role="alert">
+              Could not reach the STOCKIFY API. Check that the app is running, then reload this page.{" "}
+              <span className="stk-fine stk-mono">{error}</span>
+            </p>
           </Panel>
         )}
 

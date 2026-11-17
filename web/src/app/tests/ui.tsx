@@ -8,7 +8,7 @@ import type { TestRun, TestStatus } from "@/lib/types";
 const TONE: Record<TestStatus, "up" | "down" | "warn" | "info" | undefined> = {
   queued: undefined,
   running: "info",
-  done: "up",
+  done: undefined,   // green means a gain; a finished test that lost money must not show green (impeccable C2)
   failed: "down",
   cancelled: "warn",
 };

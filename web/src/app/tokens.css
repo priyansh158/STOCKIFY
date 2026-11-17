@@ -5,18 +5,12 @@
   --text-fig: 1.5rem;
   --text-lg: 1.2rem;
   --text-xl: 1.44rem;
-  --text-2xl: 1.728rem;
-  --text-3xl: 2.074rem;
-  --text-display-s: 1.44rem;
   --text-display: 1.75rem;
   --text-section: 1.2rem;
   --text-title: 1rem;
-  --text-lead: 1rem;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --color-error: oklch(52% 0.19 27);
-  --color-success: oklch(50% 0.12 150);
   --color-paper: oklch(17% 0.012 160);
   --color-paper-2: oklch(21% 0.014 160);
   --color-paper-3: oklch(26% 0.016 160);
@@ -38,7 +32,7 @@
   --font-outlier: var(--font-jetbrains-mono), "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   --radius-card: 8px;
   --radius-control: 6px;
-  --radius-pill: 999px;
+  --radius-chip: 4px;
   --shadow-card: none;
   --tracking-display: -0.01em;
 }
@@ -52,16 +46,10 @@
   --space-xl: 40px;
   --space-2xl: 64px;
   --space-3xl: 96px;
-  --space-4xl: 144px;
   --dur-micro: 120ms;
-  --dur-short: 220ms;
-  --dur-long: 420ms;
   --container: 1360px;
   --gutter: 32px;
   --gap-columns: 32px;
-  --section-gap-s: 120px;
-  --section-gap: 144px;
-  --section-gap-l: 176px;
   --z-base: 1;
   --z-raised: 10;
   --z-dropdown: 100;
@@ -72,4 +60,4 @@
   --z-tooltip: 600;
   --rule-hair: 1px;
 }
-@media (max-width: 60rem) { :root { --gutter: 24px; --section-gap-s: 80px; --section-gap: 96px; --section-gap-l: 120px; } }
+@media (max-width: 60rem) { :root { --gutter: 24px; } }

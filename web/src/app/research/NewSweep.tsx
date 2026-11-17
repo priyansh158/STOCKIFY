@@ -158,7 +158,7 @@ export default function NewSweep({ runs, strategies }: { runs: TestRun[]; strate
         )}
 
         {strategy && (
-          <fieldset className="stk-stack-s" style={{ border: 0, padding: 0, margin: 0 }}>
+          <fieldset className="stk-stack-s stk-fieldset">
             <legend className="stk-label">
               Settings of {strategyName(strategy, strategy.name)}{lead ? ` in ${lead.name?.trim() || lead.run_id}` : ""}. Leave a setting empty to keep it as it is.
             </legend>
