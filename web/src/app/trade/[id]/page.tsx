@@ -193,25 +193,23 @@ function MarginCard({ rows }: { rows: SessionMarginDTO[] }) {
   if (!last) return <Empty>No margin check yet. Kite is asked while positions are open.</Empty>;
   const gap = last.gap_paise ?? null;
   return (
-    <Panel>
-      <div className="stk-stack-s">
-        <StatGrid cols={2}>
-          <Stat label="Kite says it needs" value={rupees(last.kite_total_paise)} />
-          <Stat label="Our model says" value={rupees(last.ours_total_paise)} />
-        </StatGrid>
-        <StatGrid cols={2}>
-          <Stat
-            size="s"
-            label="Difference (Kite minus ours)"
-            value={gap === null ? "—" : `${gap > 0 ? "+" : ""}${rupees(gap)}${last.gap_ppm != null ? ` (${pct(last.gap_ppm / 1_000_000, true)})` : ""}`}
-          />
-        </StatGrid>
-        <p className="stk-fine">
-          Margin is the money a broker holds back while positions are open. Checked {istWhen(last.wall_ist)}.
-        </p>
-        {last.error && <p className="stk-down">{last.error}</p>}
-      </div>
-    </Panel>
+    <div className="stk-stack-s">
+      <StatGrid cols={2}>
+        <Stat label="Kite says it needs" value={rupees(last.kite_total_paise)} />
+        <Stat label="Our model says" value={rupees(last.ours_total_paise)} />
+      </StatGrid>
+      <StatGrid cols={2}>
+        <Stat
+          size="s"
+          label="Difference (Kite minus ours)"
+          value={gap === null ? "—" : `${gap > 0 ? "+" : ""}${rupees(gap)}${last.gap_ppm != null ? ` (${pct(last.gap_ppm / 1_000_000, true)})` : ""}`}
+        />
+      </StatGrid>
+      <p className="stk-fine">
+        Margin is the money a broker holds back while positions are open. Checked {istWhen(last.wall_ist)}.
+      </p>
+      {last.error && <p className="stk-down">{last.error}</p>}
+    </div>
   );
 }
 
@@ -378,7 +376,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
       )}
 
       {detail && (
-        <div className="stk-stack">
+        <div className="stk-stack" data-ruled>
           <div className="stk-head">
             <div>
               <div className="stk-row">
@@ -417,7 +415,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
             loginDetail && <p className="stk-label">Next Kite login reminder: {loginDetail}</p>
           )}
 
-          <Panel>
+          <section className="stk-section" aria-label="Today">
             <StatGrid>
               <Stat label="Made or lost today" value={signedRupees(detail.session.today_pnl_paise, rupees)} tone={tone(detail.session.today_pnl_paise)} />
               <Stat label="Positions held" value={detail.session.open_positions == null ? "—" : String(detail.session.open_positions)} />
@@ -428,7 +426,7 @@ export default function SessionPage({ params }: { params: Promise<{ id: string }
             <div className="stk-stat-grid stk-gap-xs">
               <p className="stk-fine stk-stat-note">{PARITY_HELP}</p>
             </div>
-          </Panel>
+          </section>
 
           <Panel>
             <PriceChartLazy

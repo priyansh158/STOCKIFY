@@ -199,7 +199,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
           </Loading>
         )
       ) : (
-        <div className="stk-stack">
+        <div className="stk-stack" data-ruled>
           <div className="stk-head">
             <div>
               <div className="stk-row">
@@ -244,26 +244,26 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
           )}
 
           {extra.logs && (extra.logs.events_log.length > 0 || extra.logs.runner_log.length > 0) && (
-            <Panel>
+            <section className="stk-section">
               <h2>Last lines of the log</h2>
               <pre className="stk-pre">{[...extra.logs.runner_log, ...extra.logs.events_log].join("\n")}</pre>
-            </Panel>
+            </section>
           )}
 
           {run.status !== "done" && (
-            <Panel>
+            <section className="stk-section">
               <h2>Price and trades</h2>
               <p className="stk-muted">
                 {run.status === "queued" || run.status === "running"
                   ? "The chart appears here when the test has finished."
                   : `This test ${run.status === "failed" ? "failed" : "was cancelled"}, so there is no chart.`}
               </p>
-            </Panel>
+            </section>
           )}
 
           {run.status === "done" && (
             <>
-              <Panel>
+              <section className="stk-section" aria-label="Results">
                 <StatGrid>
                   <Stat label="Started with" value={rupeesWhole(run.nav_start_paise)} />
                   <Stat label="Ended with" value={rupeesWhole(run.nav_end_paise)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
@@ -275,7 +275,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   <Stat label="Trades that made money" value={pct(num(m.win_rate))} />
                   <Stat label="Costs paid" value={rupees(run.costs_total_paise)} />
                 </StatGrid>
-              </Panel>
+              </section>
 
               <Panel>
                 <div ref={chartRef}>
@@ -285,10 +285,10 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
 
               <ResearchPanel runId={id} />
 
-              <Panel>
+              <section className="stk-section">
                 <h2>Money over time</h2>
                 <EquityChart rows={extra.equity} start={run.nav_start_paise} />
-              </Panel>
+              </section>
 
               <div className="stk-cols-split">
                 <section className="stk-section">
@@ -344,7 +344,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                   )}
                 </section>
 
-                <Panel>
+                <section className="stk-section">
                   <h2>Where the costs went</h2>
                   {costTotal === 0 ? (
                     <p className="stk-muted">No costs were charged in this test.</p>
@@ -367,7 +367,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                       </p>
                     </div>
                   )}
-                </Panel>
+                </section>
               </div>
 
               <MarginByDay rows={extra.margin} equity={extra.equity} />
@@ -378,7 +378,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
           )}
 
           {detail?.manifest && (
-            <Panel>
+            <section className="stk-section">
               <h2>For reproducing this run</h2>
               <dl className="stk-kv">
                 {/* the run's id first: the one value needed to find or re-run this exact run */}
@@ -393,7 +393,7 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
                     </Fragment>
                   ))}
               </dl>
-            </Panel>
+            </section>
           )}
         </div>
       )}
@@ -536,7 +536,7 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
         Delta: units of the underlying the positions behave like. Gamma: how much delta changes per ₹1 move. Vega: ₹
         gained or lost per volatility point. Theta: ₹ gained or lost per day from time passing. Positive means long.
       </p>
-      <div className="stk-stack stk-gap-top">
+      <div className="stk-gap-top">
         {unders.map((u) => {
           const legs = today.filter((r) => (r.underlying ?? "") === u);
           const priced = legs.filter((r) => r.delta_units != null);
@@ -544,7 +544,7 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
           const missing = legs.length - priced.length;
           const spot = legs.find((r) => r.underlying_paise != null)?.underlying_paise ?? null;
           return (
-            <Panel key={u}>
+            <div key={u} className="stk-subblock">
               <div className="stk-stack-s">
                 <div className="stk-row-between">
                   <h3>{u || "Unknown underlying"}</h3>
@@ -606,7 +606,7 @@ function GreeksAtDayEnd({ rows }: { rows: TestGreek[] }) {
                   })}
                 </Table>
               </div>
-            </Panel>
+            </div>
           );
         })}
       </div>
@@ -656,11 +656,11 @@ function Settlements({ rows }: { rows: TestSettlement[] }) {
 function LabelMeanings({ labels }: { labels: string[] }) {
   if (labels.length === 0) return null;
   return (
-    <Panel>
+    <section className="stk-section">
       <h2>What the labels mean</h2>
       <ul className="stk-bullets">
         {labels.map((l) => <li key={l}>{labelMeaning(l)}</li>)}
       </ul>
-    </Panel>
+    </section>
   );
 }

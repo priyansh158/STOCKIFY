@@ -37,6 +37,8 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 - Gains are `--color-up`, losses `--color-down`; colour is never the only signal (the sign or a word is shown too).
 - Tables before cards. One container (`--container`, 1360 px), one gap scale. A card never sits inside a card: a table frame, chart
   stage, notice or panel placed inside a `Panel` drops its own border (globals.css does this; a notice keeps its tint as a well).
+- Long pages of results (the run page, the paper session page) are ruled, not boxed (owner, 2026-11-17): `.stk-stack[data-ruled]`
+  separates its sections with a hairline and space. A `Panel` is kept only for notices (running, failed, errors) and the chart stage.
 - Every region that loads data has four states: loading (a `Skeleton` in the shape of what comes), empty (`Empty`: one left-aligned
   line at the reading measure, with the next action, and no box around it), error (a red `Panel`), full. Show only real API data; no placeholder numbers.
 - Long state grids (data coverage), caveat lists and every status column in a table are a ledger, not a wall of boxes: the state is
