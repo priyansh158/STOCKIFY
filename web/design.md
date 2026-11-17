@@ -47,6 +47,10 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 - A long ledger (the data coverage grid, the tests list, a run's fills) is a `Table tall` (owner, 2026-11-17): its frame is at most
   `min(75vh, 48rem)` high and scrolls on its own, sideways too, with the column heads stuck to its top. Short tables stay plain.
 - Mono is for figures: a value that has no digit in it ("too short to say") is set in the body face, and so are the words under a figure.
+- A money headline that moves over time carries its recent history as a `Spark` (96 by 28 px, the accent line, a dashed level
+  and a dot at the start) only where a real series already reaches the page: today the run page's "Ended with", from the
+  day-end equity. Never a placeholder line; Portfolio "Total value" and a paper session's "Made or lost today" have no series yet,
+  so they show none (owner, 2026-11-17).
 - One date format wherever a person reads a date: "5 Oct 2026", with ", 14:45" or ", 14:45 IST" where the time matters (`dayWords`,
   `istWhen` in `src/lib/format.ts`). ISO stays only where the date is an identifier. A fact shared by every row goes in the column head,
   once; a column that is empty in every row is not drawn; hashes and build ids keep their own case in the figure face.

@@ -9,7 +9,7 @@ import { chartViewState, joinFillsAndMarkers, type ChartMarker } from "@/lib/cha
 import { chartHint, fillWhen } from "@/lib/runView";
 import { cancelTest, getEquity, getFills, getGreeks, getLogs, getMargin, getSettlements, getTest } from "@/lib/tests";
 import type { TestEquity, TestFill, TestGreek, TestLogs, TestMargin, TestRunDetail, TestSettlement } from "@/lib/types";
-import { Empty, Loading, Panel, Skeleton, Stat, StatGrid, Table } from "@/components/ui";
+import { Empty, Loading, Panel, Skeleton, Spark, Stat, StatGrid, Table } from "@/components/ui";
 import { LabelChips, StatusChip, labelMeaning, marginStep, runSummary } from "../ui";
 import { PriceChartLazy } from "@/components/PriceChartLazy";
 import EquityChart from "./EquityChart";
@@ -266,7 +266,11 @@ export default function TestDetailPage({ params }: { params: Promise<{ id: strin
               <section className="stk-section" aria-label="Results">
                 <StatGrid>
                   <Stat label="Started with" value={rupeesWhole(run.nav_start_paise)} />
-                  <Stat label="Ended with" value={rupeesWhole(run.nav_end_paise)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
+                  <Stat label="Ended with" value={rupeesWhole(run.nav_end_paise)} tone={g === null ? undefined : g >= 0 ? "up" : "down"}
+                    trend={extra.equity.length >= 2 ? (
+                      <Spark values={extra.equity.map((e) => e.nav_paise)} start={run.nav_start_paise}
+                        label={`Money at each day's close, from ${rupeesWhole(extra.equity[0].nav_paise)} on ${dayWords(extra.equity[0].trade_date)} to ${rupeesWhole(extra.equity[extra.equity.length - 1].nav_paise)}; the dashed level is what it started with`} />
+                    ) : undefined} />
                   <Stat label="Gain or loss" value={pct(g, true)} tone={g === null ? undefined : g >= 0 ? "up" : "down"} />
                   <Stat label="Per year, on average"
                     value={detail?.withheld?.cagr ?? pct(num(m.cagr), true)} />
