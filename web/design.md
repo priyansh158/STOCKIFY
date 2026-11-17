@@ -63,6 +63,8 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 - Primary: filled accent, accent-ink text, 6 px radius, 36 px high with a 44 px hit target. One primary per screen region.
 - Secondary: 1 px edge outline, same radius and height. Danger and warn are outlines in `--color-down` and `--color-warn`.
 - Fields: 36 px, `--color-edge` border, `aria-invalid` turns it red. Focus is a 2 px `--color-focus` outline (the accent), instant.
+- A tick box in a table cell is wrapped in a `<label>` that fills the cell (`.stk-pick-hit`, at least 44 px), so the whole cell
+  ticks it (owner, 2026-11-17).
 - Current page in the top bar: the `paper-3` fill and a 2 px accent bar along its foot; same weight as the other links.
 - Accent contrast (owner, 2026-11-17): 13.1:1 on paper, 12.2:1 on paper-2, 10.6:1 on paper-3; accent-ink on the accent 12.4:1.
 - Components live in `src/components/ui.tsx` (Panel, PageHead, Stat/StatGrid, Table, Field, Chip, Skeleton, Empty) and the classes

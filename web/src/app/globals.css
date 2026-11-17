@@ -482,7 +482,11 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
 .stk-pick-bar p { margin: 0; }
 .stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
-.stk-table td.stk-pick + td[data-wrap] { min-width: 14rem; }  /* the test name, after the checkbox column (was td:first-child) */
+.stk-table td.stk-pick + td[data-wrap] { min-width: 14rem; }
+/* The whole compare cell is the tick box's label, so the target is the cell, not the 18 px box (owner, 2026-11-17) */
+.stk-table td.stk-pick { padding: 0; }
+.stk-pick-hit { display: flex; justify-content: center; min-width: var(--hit); min-height: var(--hit); padding: var(--space-sm) var(--space-xs) var(--space-sm) var(--space-md); cursor: pointer; }
+.stk-pick-hit:has(:disabled) { cursor: not-allowed; }  /* the test name, after the checkbox column (was td:first-child) */
 /* The tests list has 11 columns: let its headers and the start time wrap so the name column gets the width (no scroll at 1440 px). */
 .stk-table:has(td.stk-pick) th, .stk-table:has(td.stk-pick) th.num { white-space: normal; vertical-align: bottom; }
 .stk-table:has(td.stk-pick) th.stk-pick { white-space: nowrap; }

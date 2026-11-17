@@ -26,7 +26,9 @@ function RunRow({ run }: { run: TestRun }) {
     <tr>
       <td className="stk-pick">
         {done ? (
-          <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${run.name_label || run.name || run.run_id}`} />
+          <label className="stk-pick-hit">
+            <input type="checkbox" name="ids" value={run.run_id} className="stk-check" aria-label={`Compare ${run.name_label || run.name || run.run_id}`} />
+          </label>
         ) : null}
       </td>
       <td data-wrap>
