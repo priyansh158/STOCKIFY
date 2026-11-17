@@ -7,7 +7,9 @@ The locked system. Every Hallmark run reads this first and pages share it. Chang
 - Shape of the first page: app screen (a sticky top bar on `--color-paper-2`, a step above the page, then tables, forms and stat
   rows; no hero)
 - Theme: brand. STOCKIFY green on a green-tinted ink, kept from the original app; the Matrix grid and the glow were cut
-- Axes: dark/grotesk-sans/chromatic-green. Posture: restrained. The accent marks the primary action, the current page and gains only
+- Axes: dark/grotesk-sans/chromatic-green. Posture: restrained. Two greens with two jobs (owner, 2026-11-17): the saturated green
+  (`--color-up`) means a gain and nothing else; the accent, a pale sage (`--color-accent`), marks the primary action, the current
+  page, keyboard focus, selection and the main chart line. Neither is spent on decoration
 - Desktop only (owner, 2026-11-12). Built for a laptop browser, readable down to about 1024 px. Wide tables are fine.
 
 ## Tokens
@@ -17,7 +19,7 @@ The locked system. Every Hallmark run reads this first and pages share it. Chang
   --color-paper: oklch(17% 0.012 160);  --color-paper-2: oklch(21% 0.014 160);  --color-paper-3: oklch(26% 0.016 160);
   --color-ink: oklch(95% 0.01 150);  --color-ink-2: oklch(84% 0.015 155);  --color-muted: oklch(71% 0.02 155);
   --color-rule: oklch(33% 0.018 160);  --color-edge: oklch(56% 0.02 155);   /* edge: field and button borders */
-  --color-accent: oklch(80% 0.19 150);  --color-accent-ink: oklch(20% 0.04 150);  --color-focus: oklch(78% 0.12 240);
+  --color-accent: oklch(87% 0.05 168);  --color-accent-ink: oklch(20% 0.04 150);  --color-focus: var(--color-accent);
   --color-up / --color-down / --color-warn / --color-info   /* gain, loss, needs you, for your information */
   --font-body: Inter;  --font-display: Inter (same face, one weight);  --font-outlier: JetBrains Mono (figures and ids only);
   --radius-card: 8px;  --radius-control: 6px;  --rule-hair: 1px;  --shadow-card: none;
@@ -50,7 +52,9 @@ built with `color-mix` in `globals.css`. Never a colour or font literal outside 
 ## Controls
 - Primary: filled accent, accent-ink text, 6 px radius, 36 px high with a 44 px hit target. One primary per screen region.
 - Secondary: 1 px edge outline, same radius and height. Danger and warn are outlines in `--color-down` and `--color-warn`.
-- Fields: 36 px, `--color-edge` border, `aria-invalid` turns it red. Focus is a 2 px `--color-focus` outline, instant.
+- Fields: 36 px, `--color-edge` border, `aria-invalid` turns it red. Focus is a 2 px `--color-focus` outline (the accent), instant.
+- Current page in the top bar: the `paper-3` fill and a 2 px accent bar along its foot; same weight as the other links.
+- Accent contrast (owner, 2026-11-17): 13.1:1 on paper, 12.2:1 on paper-2, 10.6:1 on paper-3; accent-ink on the accent 12.4:1.
 - Components live in `src/components/ui.tsx` (Panel, PageHead, Stat/StatGrid, Table, Field, Chip, Skeleton, Empty) and the classes
   `.stk-*` in `src/app/globals.css`.
 

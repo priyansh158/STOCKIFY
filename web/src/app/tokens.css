@@ -18,9 +18,9 @@
   --color-ink-2: oklch(84% 0.015 155);
   --color-muted: oklch(71% 0.02 155);
   --color-rule: oklch(33% 0.018 160);
-  --color-accent: oklch(80% 0.19 150);
+  --color-accent: oklch(87% 0.05 168);
   --color-accent-ink: oklch(20% 0.04 150);
-  --color-focus: oklch(78% 0.12 240);
+  --color-focus: var(--color-accent);
   --color-edge: oklch(56% 0.02 155);
   --color-up: oklch(80% 0.19 150);
   --color-down: oklch(72% 0.17 25);
