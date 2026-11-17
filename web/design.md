@@ -25,6 +25,8 @@ The locked system. Every Hallmark run reads this first and pages share it. Chang
   --radius-card: 8px;  --radius-control: 6px;  --rule-hair: 1px;  --shadow-card: none;
 }
 ```
+Headings (owner, 2026-11-17): h1 `--text-display` 1.75rem, h2 `--text-section` 1.2rem, h3 `--text-title` 1.125rem, h4 and body
+`--text-md` 1rem, so each of the first three levels differs from body by size, not by weight alone.
 The spacing scale (`--space-*`), the type scale (`--text-*`, ratio 1.2), the easings and durations are in `tokens.css`. Tints (`--tint-*`) are
 built with `color-mix` in `globals.css`. Never a colour or font literal outside the token block, never `#000` or `#fff`.
 
