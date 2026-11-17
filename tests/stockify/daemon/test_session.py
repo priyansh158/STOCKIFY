@@ -406,3 +406,33 @@ class SubscriptionCountLogTests(SessionTest):
         self.assertEqual(len(lines), 3, lines)
         self.assertIn("105 full, 71 quote", lines[1])
         self.assertIn("104 full, 71 quote", lines[2])
+
+
+class PlannedCloseLogTests(SessionTest):
+    """2026-11-17: the close at the unsubscribe time was logged as two ERROR lines (ours and kiteconnect's). A close
+    the recorder asked for is INFO; any other close stays an ERROR."""
+
+    make = SubscriptionCountLogTests.make
+
+    def levels(self, session, code, reason):
+        import logging
+        from tests.stockify.daemon.test_engine_log import enable_logging
+        enable_logging(self)
+        with self.assertLogs(level="INFO") as ctx:
+            session._on_close(None, code, reason)
+            logging.getLogger("kiteconnect.ticker").error("Connection closed: %s - %s", code, reason)
+        return [r.levelname for r in ctx.records if "losed" in r.getMessage()]
+
+    def test_the_close_after_end_session_is_info(self):
+        session = self.make([{"full": 0, "quote": 0}])
+        session.end_session()
+        self.assertEqual(self.levels(session, None, None), ["INFO", "INFO"])
+
+    def test_an_unplanned_close_stays_an_error(self):
+        session = self.make([{"full": 0, "quote": 0}])
+        self.assertEqual(self.levels(session, 1006, "boom"), ["ERROR", "ERROR"])
+
+    def test_a_close_after_a_token_expiry_stays_an_error(self):
+        session = self.make([{"full": 0, "quote": 0}])
+        session.stop(exitcodes.TOKEN_EXPIRED)
+        self.assertEqual(self.levels(session, None, None), ["ERROR", "ERROR"])
