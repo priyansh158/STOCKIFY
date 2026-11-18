@@ -1,7 +1,6 @@
-"""FS 1: the universe (today's Nifty 500 above the liquidity floor) and NSE's sector classification per stock."""
+"""FS 1: the universe (today's Nifty 500 above the liquidity floor) and each stock's sector (the list's Industry)."""
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -41,7 +40,8 @@ class UniverseCase(SandboxedDBTest):
         self.iid = {}
         for n, sym in enumerate(("RELIANCE", "ABB", "HDFCBANK"), start=1):
             conn.execute("INSERT INTO instruments (instrument_id, exchange, kind, tradingsymbol, first_seen, "
-                         "last_seen, source) VALUES (?, 'NSE', 'EQ', ?, '2024-01-01', '2026-11-17', 'kite_dump')", (n, sym))
+                         "last_seen, source) VALUES (?, 'NSE', 'EQ', ?, '2024-01-01', '2026-11-17', 'kite_dump')",
+                         (n, sym))
             self.iid[sym] = n
 
     def client(self, routes: dict) -> tuple[nse_api.Client, FakeSession]:
@@ -112,7 +112,8 @@ class LiquidityTests(UniverseCase):
         rows = universe.refresh(DAY, client=client)
         self.assertEqual(len(rows), 501)
         self.assertEqual([u for u, _ in session.calls if u.endswith(".csv")],
-                         [LIST_URL, "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"])
+                         [LIST_URL, LIST_URL,                       # a 403 warms up again and retries once
+                          "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"])
 
     def test_a_list_without_nses_header_is_refused(self):
         for d in weekdays_back(DAY, 63):
@@ -135,48 +136,35 @@ class LiquidityTests(UniverseCase):
         self.assertEqual([r["symbol"] for r in store.universe_on("2026-11-17", liquid_only=False)], ["ABB"])
 
 
-# The shape the plan expects from /api/quote-equity (`industryInfo`). NOT a saved NSE answer: the real endpoint
-# answered 403 on 2026-11-17 (tests/fixtures/fundamentals/README.md), so this shape is unverified.
-def quote_body(sym: str, macro: str, sector: str, industry: str, basic: str) -> bytes:
-    info = {"macro": macro, "sector": sector, "industry": industry, "basicIndustry": basic}
-    return json.dumps({"info": {"symbol": sym}, "industryInfo": info}).encode()
-
-
 class SectorTests(UniverseCase):
-    def test_sectors_parsed_from_industry_info(self):
-        client, session = self.client({
-            "quote-equity?symbol=RELIANCE": [(200, quote_body("RELIANCE", "Energy", "Oil Gas & Consumable Fuels",
-                                                              "Petroleum Products", "Refineries & Marketing"))],
-            "quote-equity?symbol=HDFCBANK": [(200, quote_body("HDFCBANK", "Financial Services", "Financial Services",
-                                                              "Banks", "Private Sector Bank"))],
-            "quote-equity?symbol=ABB": [(200, b'{"info":{"symbol":"ABB"}}')],     # no industryInfo: skipped
-        })
-        n = universe.refresh_sectors(["RELIANCE", "HDFCBANK", "ABB"], DAY, client=client)
-        self.assertEqual(n, 2)
-        got = store.sectors()
-        self.assertEqual(sorted(got), ["HDFCBANK", "RELIANCE"])
-        self.assertEqual(got["RELIANCE"], {"symbol": "RELIANCE", "as_of": "2026-11-17", "macro": "Energy",
-                                           "sector": "Oil Gas & Consumable Fuels", "industry": "Petroleum Products",
-                                           "basic_industry": "Refineries & Marketing"})
-        pages = [u for u, _ in session.calls if "get-quotes" in u]
-        self.assertEqual(pages, [f"https://www.nseindia.com/get-quotes/equity?symbol={s}"
-                                 for s in ("RELIANCE", "HDFCBANK", "ABB")])
-        self.assertTrue((paths.fundamentals_raw_dir("quote-equity") / "RELIANCE_20261117.json").is_file())
+    """R3: a stock's sector is the Nifty 500 list's own "Industry" column, read with the universe."""
 
-    def test_blocked_stops_the_run_and_keeps_what_was_read(self):
-        denied = (FIX / "quote-equity_RELIANCE_403.html").read_bytes()
-        client, _ = self.client({
-            "quote-equity?symbol=HDFCBANK": [(200, quote_body("HDFCBANK", "Financial Services", "Financial Services",
-                                                              "Banks", "Private Sector Bank"))],
-            "quote-equity?symbol=RELIANCE": [(403, denied)],
-        })
-        with self.assertRaises(nse_api.Blocked):
-            universe.refresh_sectors(["HDFCBANK", "RELIANCE", "ABB"], DAY, client=client)
-        self.assertEqual(sorted(store.sectors()), ["HDFCBANK"])
+    def test_sector_comes_from_the_lists_industry_column(self):
+        for d in weekdays_back(DAY, 63):
+            self.eod(d, "RELIANCE", 9 * CRORE_PAISE)
+            self.eod(d, "HDFCBANK", 9 * CRORE_PAISE)
+        self.assertEqual(universe.sectors(), {})
+        self.assertIsNone(universe.sector_of("RELIANCE"))                 # before the first refresh
+        client, _ = self.client({})
+        universe.refresh(DAY, client=client, today_list_csv=self.csv)
+        self.assertEqual(universe.sector_of("RELIANCE"), "Oil Gas & Consumable Fuels")
+        self.assertEqual(universe.sector_of("ABB"), "Capital Goods")        # listed, not liquid: still has a sector
+        self.assertIsNone(universe.sector_of("NOTLISTED"))
+        self.assertEqual(universe.sectors(), {"HDFCBANK": "Financial Services",
+                                              "RELIANCE": "Oil Gas & Consumable Fuels"})   # the liquid universe
+        self.assertEqual(len(universe.sectors(liquid_only=False)), 501)
 
-    def test_the_latest_reading_of_a_symbol_wins(self):
-        store.put_sectors("2026-11-10", [{"symbol": "RELIANCE", "macro": "A", "sector": "B", "industry": "C",
-                                          "basic_industry": "D"}])
-        store.put_sectors("2026-11-17", [{"symbol": "RELIANCE", "macro": "Energy", "sector": "B", "industry": "C",
-                                          "basic_industry": "D"}])
-        self.assertEqual(store.sectors()["RELIANCE"]["macro"], "Energy")
+    def test_the_newest_list_decides(self):
+        for d in weekdays_back(DAY, 64):
+            self.eod(d, "ABB", 9 * CRORE_PAISE)
+        client, _ = self.client({})
+        universe.refresh(DAY - timedelta(days=1), client=client, today_list_csv=self.csv)
+        moved = b"Company Name,Industry,Symbol,Series,ISIN Code\nABB India Ltd.,Services,ABB,EQ,INE117A01022\n"
+        universe.refresh(DAY, client=client, today_list_csv=moved)
+        self.assertEqual(universe.sector_of("ABB"), "Services")
+        self.assertEqual(universe.sectors(), {"ABB": "Services"})
+
+    def test_the_store_keeps_no_quote_api_sectors(self):
+        self.assertFalse(hasattr(universe, "refresh_sectors"))
+        self.assertFalse(hasattr(store, "sectors"))
+        self.assertNotIn("quote_equity", loader.load_json("fundamentals.json")["api"])

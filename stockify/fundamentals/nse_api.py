@@ -3,14 +3,16 @@
 Politeness is the Http's: browser User-Agent and Referer, one cookie warm-up GET of https://www.nseindia.com/, at least
 `min_interval_ms` (1 s) between requests, retries on 5xx. On top of that, each API endpoint is preceded once per
 Client by a GET of the NSE page a browser would show first (its `warmup` page, for that page's cookies), as
-nse_margin_files does by hand for the ELM reports API.
+nse_margin_files does by hand for the ELM reports API. Cookies expire on long runs, so a 401 / 403 runs the
+warm-ups again and retries the request once before giving up.
 
 Every answer used is kept byte for byte under `$LAB/nse/raw/fundamentals/<kind>/<name>` with a `<name>.sha256`
 sidecar ("<hex>  <name>"); a different answer under the same name is kept beside it (`_r2`, `_r3` ...). Nothing
 here modifies or deletes a raw file.
 
-`Blocked`: NSE refused (HTTP 401 / 403), or answered with an HTML page (its anti-bot page) where JSON or a CSV was
-expected. A refusal is never kept as data. Callers stop their run on it and try again later.
+`Blocked`: NSE refused (HTTP 401 / 403, twice), or answered with an HTML page (its anti-bot page) where JSON, a CSV or
+XML was expected. Only HTML counts: an XML body (XBRL filings) starts with '<' too and is data. A refusal is never
+kept as data. Callers stop their run on it and try again later.
 """
 from __future__ import annotations
 
@@ -37,10 +39,25 @@ def config() -> dict:
 # ── Raw answers ──────────────────────────────────────────────────────────────
 
 def _versioned(name: str, n: int) -> str:
+    """`name` for version 1, else `_r<n>` before the last extension (`a.b.json` -> `a.b_r2.json`)."""
     if n == 1:
         return name
-    stem, dot, ext = name.partition(".")
-    return f"{stem}_r{n}{dot}{ext}"
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}_r{n}.{ext}" if dot and stem else f"{name}_r{n}"
+
+
+def _kept_digest(target, sidecar) -> str | None:  # noqa: ANN001
+    """The sha256 recorded for a kept file. A sidecar that is missing, empty or garbled (a crash between the file and
+    its sidecar) is rebuilt from the file's own bytes, so the same answer is never taken for a new version."""
+    try:
+        words = sidecar.read_text(encoding="utf-8").split()
+    except OSError:
+        words = []
+    if words and re.fullmatch(r"[0-9a-f]{64}", words[0]):
+        return words[0]
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    sidecar.write_text(f"{digest}  {target.name}\n", encoding="utf-8")
+    return digest
 
 
 def save_raw(kind: str, name: str, body: bytes) -> str:
@@ -60,13 +77,18 @@ def save_raw(kind: str, name: str, body: bytes) -> str:
             os.replace(part, target)
             sidecar.write_text(f"{digest}  {file}\n", encoding="utf-8")
             return digest
-        if sidecar.exists() and sidecar.read_text(encoding="utf-8").split()[0] == digest:
+        if _kept_digest(target, sidecar) == digest:
             return digest
         n += 1
 
 
 def _looks_html(body: bytes) -> bool:
-    return body.lstrip()[:1] == b"<"
+    """Whether `body` is an HTML page (NSE's anti-bot or error page): after an optional UTF-8 BOM and whitespace it
+    opens with `<!doctype html` or an `<html` tag, in any case. XML (`<?xml`, `<xbrl ...`) is not HTML."""
+    head = body[:256].removeprefix(b"\xef\xbb\xbf").lstrip().lower()
+    if head.startswith(b"<!doctype html"):
+        return True
+    return head.startswith(b"<html") and (len(head) == 5 or head[5:6] in (b">", b"/") or head[5:6].isspace())
 
 
 def _default_name(day: str, params: dict) -> str:
@@ -96,12 +118,25 @@ class Client:
         except nse_files.NseError:
             pass
 
-    def fetch(self, url: str, what: str = "the file") -> bytes:
-        """The body of a 200 answer, not kept (the caller checks it, then keeps it with `save_raw`). Blocked on
-        401 / 403 / an HTML body; NseError on any other status."""
+    def _rewarm(self, warmup: str | None) -> None:
+        """Cookies expire (Akamai's within hours): the Http's homepage warm-up runs again on its next GET, and the
+        page warm-up, if any, is fetched again now."""
+        if hasattr(self.http, "_warmed"):
+            self.http._warmed = False
+        if warmup:
+            self._warmed.discard(warmup)
+            self._warm(warmup)
+
+    def fetch(self, url: str, what: str = "the file", *, warmup: str | None = None) -> bytes:
+        """The body of a 200 answer, not kept (the caller checks it, then keeps it with `save_raw`). On a 401 / 403
+        the warm-ups run again once and the request is retried once; a second refusal raises Blocked, and so does an
+        HTML body (never retried). NseError on any other status."""
         status, body = self.http.get(url)
         if status in (401, 403):
-            raise Blocked(f"{url}: NSE refused the request (HTTP {status}): {body[:80]!r}")
+            self._rewarm(warmup)
+            status, body = self.http.get(url)
+        if status in (401, 403):
+            raise Blocked(f"{url}: NSE refused the request (HTTP {status}, after warming up again): {body[:80]!r}")
         if status != 200:
             raise nse_files.NseError(f"{url}: HTTP {status}")
         if _looks_html(body):
@@ -112,7 +147,7 @@ class Client:
         """A static file (e.g. the Nifty 500 list on nsearchives), kept as `<kind>/<name>`."""
         if warmup:
             self._warm(warmup)
-        body = self.fetch(url, "the file")
+        body = self.fetch(url, "the file", warmup=warmup)
         self.last_sha256 = save_raw(kind, name, body)
         return body
 
@@ -124,7 +159,7 @@ class Client:
             raise ValueError(f"not an NSE API path: {path!r}")
         url = self.base + path + ("?" + urlencode(params) if params else "")
         self._warm(warmup)
-        body = self.fetch(url, "JSON")
+        body = self.fetch(url, "JSON", warmup=warmup)
         try:
             doc = json.loads(body)
         except ValueError as e:

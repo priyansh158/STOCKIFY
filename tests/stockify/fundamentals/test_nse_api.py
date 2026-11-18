@@ -104,6 +104,96 @@ class RawTests(ClientCase):
             client.get(url, kind="nifty500", name="20261117.csv")
 
 
+class HtmlOnlyTests(ClientCase):
+    """Only an HTML page is a refusal: XML (XBRL filings) and other bodies that start with '<' pass."""
+
+    def test_xml_bodies_pass(self):
+        url = "https://nsearchives.nseindia.com/corporate/xbrl/X.xml"
+        for n, body in enumerate((b'<?xml version="1.0" encoding="UTF-8"?><xbrli:xbrl/>',
+                                  b"\xef\xbb\xbf\r\n<?xml version='1.0'?><x/>", b"<xbrl></xbrl>",
+                                  b"<htmlish-not-a-tag/>")):
+            with self.subTest(body=body[:20]):
+                client, _ = self.client({"X.xml": [(200, body)]})
+                self.assertEqual(client.get(url, kind="xbrl", name=f"x{n}.xml"), body)
+                self.assertEqual((paths.fundamentals_raw_dir("xbrl") / f"x{n}.xml").read_bytes(), body)
+
+    def test_html_pages_are_blocked(self):
+        denied = (FIX / "quote-equity_RELIANCE_403.html").read_bytes()
+        url = "https://nsearchives.nseindia.com/content/x.csv"
+        for answer in ((403, denied), (200, denied), (200, b"\xef\xbb\xbf  \n<!DOCTYPE HTML PUBLIC>"),
+                       (200, b"\t<html lang='en'>"), (200, b"<HTML>")):
+            with self.subTest(answer=answer):
+                client, _ = self.client({"x.csv": [answer]})
+                with self.assertRaises(nse_api.Blocked):
+                    client.get(url, kind="misc", name="x.csv")
+        self.assertEqual(self.raw_files("misc"), [])
+
+
+class FakeHttp:
+    """A stand-in Http: answers each URL from a list (the last repeats) and records every GET."""
+
+    def __init__(self, clock, routes: dict):  # noqa: ANN001
+        self.clock, self.routes, self.calls, self._warmed = clock, routes, [], True
+
+    def get(self, url):  # noqa: ANN001
+        self.calls.append((url, self._warmed))
+        self._warmed = True
+        answers = self.routes.get(url, [(200, b"<!doctype html><html></html>")])
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+
+class RewarmTests(ClientCase):
+    """Akamai cookies expire within hours: a 401 / 403 warms up again once and retries once before Blocked."""
+    API = "https://www.nseindia.com/api/quote-equity?symbol=RELIANCE"
+
+    def test_a_refusal_rewarms_and_the_retry_succeeds(self):
+        http = FakeHttp(self.clock, {self.API: [(200, b"{}"), (403, b"<HTML>denied</HTML>"), (200, b'{"a":1}')]})
+        client = nse_api.Client(http)
+        client.json(QUOTE, {"symbol": "RELIANCE"}, warmup=PAGE, name="r.json")
+        self.assertEqual(client.json(QUOTE, {"symbol": "RELIANCE"}, warmup=PAGE, name="r.json"), {"a": 1})
+        urls = [u for u, _ in http.calls]
+        self.assertEqual(urls, [PAGE, self.API, self.API, PAGE, self.API])
+        # The Http's own homepage warm-up is asked for again too: the call after the refusal runs un-warmed.
+        self.assertEqual([w for _, w in http.calls], [True, True, True, False, True])
+
+    def test_a_second_refusal_raises_blocked(self):
+        http = FakeHttp(self.clock, {self.API: [(401, b"no")]})
+        client = nse_api.Client(http)
+        with self.assertRaises(nse_api.Blocked):
+            client.json(QUOTE, {"symbol": "RELIANCE"}, warmup=PAGE)
+        self.assertEqual([u for u, _ in http.calls], [PAGE, self.API, PAGE, self.API])   # one retry only
+
+    def test_a_static_file_rewarms_the_http_alone(self):
+        url = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv"
+        http = FakeHttp(self.clock, {url: [(403, b"<HTML>denied</HTML>"), (200, b"a,b\n")]})
+        self.assertEqual(nse_api.Client(http).get(url, kind="nifty500", name="l.csv"), b"a,b\n")
+        self.assertEqual(http.calls, [(url, True), (url, False)])
+
+    def test_an_html_200_is_not_retried(self):
+        http = FakeHttp(self.clock, {self.API: [(200, b"<!DOCTYPE html><html></html>")]})
+        with self.assertRaises(nse_api.Blocked):
+            nse_api.Client(http).json(QUOTE, {"symbol": "RELIANCE"}, warmup=PAGE)
+        self.assertEqual([u for u, _ in http.calls], [PAGE, self.API])
+
+
+class SidecarTests(ClientCase):
+    def test_a_missing_or_empty_sidecar_is_judged_by_the_files_bytes(self):
+        folder = paths.fundamentals_raw_dir("misc")
+        (folder / "a.json").write_bytes(b"{}")                         # a crash left the file without its sidecar
+        digest = nse_api.save_raw("misc", "a.json", b"{}")
+        self.assertEqual(digest, hashlib.sha256(b"{}").hexdigest())
+        self.assertEqual(self.raw_files("misc"), ["a.json", "a.json.sha256"])
+        (folder / "a.json.sha256").write_text("", encoding="utf-8")   # an empty sidecar: no IndexError
+        nse_api.save_raw("misc", "a.json", b"{}")
+        self.assertEqual(self.raw_files("misc"), ["a.json", "a.json.sha256"])
+        self.assertEqual((folder / "a.json.sha256").read_text(encoding="utf-8"), f"{digest}  a.json\n")
+
+    def test_a_new_version_goes_before_the_last_extension(self):
+        nse_api.save_raw("misc", "RELIANCE.2026.json", b"1")
+        nse_api.save_raw("misc", "RELIANCE.2026.json", b"2")
+        self.assertIn("RELIANCE.2026_r2.json", self.raw_files("misc"))
+
+
 class WarmupTests(ClientCase):
     def test_each_warmup_page_is_fetched_once(self):
         other = "https://www.nseindia.com/get-quotes/equity?symbol=INFY"

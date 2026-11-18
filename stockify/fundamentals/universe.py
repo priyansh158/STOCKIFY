@@ -1,4 +1,4 @@
-"""FS 1: the screener's universe and NSE's sector classification per stock.
+"""FS 1: the screener's universe, and each stock's sector.
 
 Universe (owner, 2026-11-17): today's Nifty 500 list, and of those only the stocks whose median daily traded value
 over the last `liquidity_days` (63, about three months) trading days is at least `liquidity_floor_paise` (Rs 8
@@ -7,8 +7,14 @@ crore). Traded value is refdata `cm_eod.turnover_paise`, series EQ. The trading 
 counts 0 (a suspended stock is not liquid). A stock refdata does not know has no traded value and is not liquid.
 With fewer than `liquidity_days` days in cm_eod the refresh is refused (NotEnoughHistory), never computed short.
 
-Sectors: NSE's four levels (macro-economic sector, sector, industry, basic industry) per stock from the quote API's
-`industryInfo`, stored with the day it was read; today's reading applies to the whole period (spec call 5).
+BE / RR series: cm_eod keeps the EQ series only, so a listed stock trading in another series (trade-for-trade BE, RR)
+shows no traded value, a median of 0, and is never liquid. That is the policy: a stock NSE has moved out of normal
+rolling settlement is not one to screen (2 BE and 3 RR stocks in the 2026-11-17 list).
+
+Sectors (ruling R3): a stock's sector is the list's own "Industry" column (`universe.list_industry`), stored with each
+day's universe; today's list applies to the whole period (spec call 5: reclassifications since 2022 are not
+reflected). NSE's quote API, which carries the four-level classification, refuses this client (HTTP 403, see
+tests/fixtures/fundamentals/README.md), so it is not used. `sector_of(symbol)` and `sectors()` read it.
 """
 from __future__ import annotations
 
@@ -17,14 +23,12 @@ import io
 import logging
 from datetime import date
 
-from stockify import paths
 from stockify.data import nse_files, refdata
 from stockify.fundamentals import nse_api, store
 
 log = logging.getLogger(__name__)
 
 LIST_HEADER = ["Company Name", "Industry", "Symbol", "Series", "ISIN Code"]
-INDUSTRY_KEYS = {"macro": "macro", "sector": "sector", "industry": "industry", "basic_industry": "basicIndustry"}
 
 
 class NotEnoughHistory(ValueError):
@@ -91,21 +95,22 @@ def _median(values: list[int]) -> int:
 
 
 def traded_values(dates: list[str]) -> dict[int, dict[str, int]]:
-    """{instrument_id: {trade_date: turnover_paise}} for every EQ row on `dates` (one range read on cm_eod's primary
-    key, which starts with trade_date: cm_eod has no index on instrument_id)."""
+    """{instrument_id: {trade_date: turnover_paise}} for every EQ row from the first to the last of `dates` (one range
+    read on cm_eod's primary key, which starts with trade_date: cm_eod has no index on instrument_id). `dates` are
+    the distinct cm_eod dates in that range, so the range holds no other day."""
     out: dict[int, dict[str, int]] = {}
-    wanted = set(dates)
     for d, iid, value in refdata._connect().execute(
             "SELECT trade_date, instrument_id, turnover_paise FROM cm_eod WHERE trade_date BETWEEN ? AND ? "
             "AND series = 'EQ'", (min(dates), max(dates))):
-        if d in wanted:
-            out.setdefault(int(iid), {})[d] = int(value or 0)
+        out.setdefault(int(iid), {})[d] = int(value or 0)
     return out
 
 
 def equity_ids() -> dict[str, int]:
     """{tradingsymbol: instrument_id} of NSE equities in refdata, as the cm_eod loader finds them
-    (nse_files._equity_id: exchange NSE, kind EQ; the newest id when a symbol was reused)."""
+    (nse_files._equity_id: exchange NSE, kind EQ). `kind IN ('EQ','INDEX')` is the partial index ux_instr_symbol's own
+    predicate, so SQLite can use it; the INDEX rows are dropped here. Rows come in instrument_id order, so if a symbol
+    ever had two ids the newest wins, as in instruments.find."""
     rows = refdata._connect().execute(
         "SELECT tradingsymbol, instrument_id, kind FROM instruments WHERE exchange = 'NSE' "
         "AND kind IN ('EQ', 'INDEX') ORDER BY instrument_id").fetchall()
@@ -154,45 +159,16 @@ def current() -> list[dict]:
 
 # ── Sectors ──────────────────────────────────────────────────────────────────
 
-def parse_industry_info(doc) -> dict | None:  # noqa: ANN001
-    """{macro, sector, industry, basic_industry} from a quote-equity answer's `industryInfo`; None when it is missing
-    or any level is not a non-empty string."""
-    info = doc.get("industryInfo") if isinstance(doc, dict) else None
-    if not isinstance(info, dict):
-        return None
-    out = {}
-    for col, key in INDUSTRY_KEYS.items():
-        value = info.get(key)
-        if not isinstance(value, str) or not value.strip():
-            return None
-        out[col] = value.strip()
-    return out
+def sector_of(symbol: str) -> str | None:
+    """A stock's sector: the newest Nifty 500 list's "Industry" column (R3), for any stock on that list, liquid or
+    not; None for a stock not on it, or before the first refresh."""
+    as_of = store.latest_as_of()
+    row = None if as_of is None else store.universe_row(as_of, symbol)
+    return None if row is None else row["list_industry"]
 
 
-def refresh_sectors(symbols, day: date, *, client: nse_api.Client) -> int:  # noqa: ANN001
-    """Read each symbol's classification from the quote API and store it (one symbol at a time, so a run stopped by
-    `Blocked`, which is raised, keeps what it read). A symbol NSE answers without `industryInfo`, or with another
-    error than Blocked, is logged and skipped. Returns how many symbols were stored."""
-    api = client.cfg["api"]["quote_equity"]
-    stamp = f"{day:%Y%m%d}"
-    stored = 0
-    for sym in symbols:
-        try:
-            doc = client.json(api["path"], {"symbol": sym}, warmup=api["warmup"].replace("{symbol}", sym),
-                              name=f"{sym}_{stamp}.json" if _safe(sym) else None)
-        except nse_api.Blocked:
-            raise
-        except nse_files.NseError as e:
-            log.warning("fundamentals: no sector for %s: %s", sym, e)
-            continue
-        levels = parse_industry_info(doc)
-        if levels is None:
-            log.warning("fundamentals: no sector for %s: the answer has no complete industryInfo", sym)
-            continue
-        store.put_sectors(day.isoformat(), [{"symbol": sym, **levels}])
-        stored += 1
-    return stored
-
-
-def _safe(symbol: str) -> bool:
-    return paths.safe_segment(f"{symbol}_00000000.json", 160)
+def sectors(*, liquid_only: bool = True) -> dict[str, str]:
+    """{symbol: sector} from the newest list: the liquid universe (as `current()`), or every listed stock."""
+    as_of = store.latest_as_of()
+    rows = [] if as_of is None else store.universe_on(as_of, liquid_only=liquid_only)
+    return {r["symbol"]: r["list_industry"] for r in rows}

@@ -90,7 +90,8 @@ def nse_raw_dir(dataset: str | None = None) -> Path:
 
 
 def fundamentals_db() -> Path:
-    """The fundamentals screener's store (FS 1): universe, sectors, filings and the figures parsed from them."""
+    """The fundamentals screener's store (FS 1): the universe with each stock's sector, filings and the figures
+    parsed from them."""
     return lab_dir() / "fundamentals.sqlite"
 
 

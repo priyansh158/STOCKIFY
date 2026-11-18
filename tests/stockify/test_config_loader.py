@@ -132,10 +132,10 @@ class LoaderRuleTests(unittest.TestCase):
             {"nifty500_list_url": "http://nsearchives.nseindia.com/x.csv"},
             {"nifty500_list_fallback_url": "https://example.com/x.csv"},
             {"api": {**good["api"], "base": "https://example.com"}},
-            {"api": {**good["api"], "quote_equity": {"path": "/api/quote-equity?symbol=X",
+            {"api": {**good["api"], "results": {"path": "/api/quote-equity?symbol=X",
                                                      "warmup": "https://www.nseindia.com/"}}},
-            {"api": {**good["api"], "quote_equity": {"path": "/api/x", "warmup": "https://evil.example/"}}},
-            {"api": {**good["api"], "quote_equity": {"path": "/api/x"}}},
+            {"api": {**good["api"], "results": {"path": "/api/x", "warmup": "https://evil.example/"}}},
+            {"api": {**good["api"], "results": {"path": "/api/x"}}},
             {"surprise": 1},
         )
         for change in bad_cases:

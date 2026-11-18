@@ -3,7 +3,7 @@
 What is backed up, under the target folder:
 
 * `snapshots/<day>/refdata.sqlite`, `lab.sqlite`, `desk.sqlite` (the holdings desk's grades and daily views; a
-  few rows per holding per day) and `fundamentals.sqlite` (the screener's universe, sectors and parsed filings):
+  few rows per holding per day) and `fundamentals.sqlite` (the screener's universe and parsed filings):
   copied with `sqlite3.Connection.backup()` from a read-only connection, so a live WAL database is copied
   consistently (committed rows only), and then checked with `PRAGMA integrity_check`. One snapshot folder per day; a second run on the same day replaces that day's.
 * After a run whose snapshots all verified, the OLDEST snapshot folders beyond `storage.json` -> `backup.keep_snapshots`

@@ -1,7 +1,8 @@
-"""FS 1: the fundamentals store `fundamentals.sqlite`: the universe as read each day and NSE's sector per stock.
+"""FS 1: the fundamentals store `fundamentals.sqlite`: the universe as read each day, with each stock's sector (the
+Nifty 500 list's "Industry" column, ruling R3).
 
 Derived data (rebuildable from the raw NSE answers under nse/raw/fundamentals), but nothing here deletes another
-day's rows: every day's universe and every reading of a stock's sector stays. Refreshing the universe again on the
+day's rows: every day's universe stays. Refreshing the universe again on the
 same day replaces that day's list (a symbol NSE dropped from the list since the morning goes with it).
 
 The store pattern of `stockify.desk.store`: `_lock`, `_db_path()` through `stockify.paths`, one connection per thread
@@ -24,7 +25,6 @@ _conn: Optional[sqlite3.Connection] = None
 
 UNIVERSE_COLUMNS = ("as_of", "symbol", "instrument_id", "isin", "company", "median_value_paise", "liquid",
                     "list_industry")
-SECTOR_COLUMNS = ("symbol", "as_of", "macro", "sector", "industry", "basic_industry")
 
 
 def _db_path():
@@ -80,31 +80,14 @@ def latest_as_of() -> str | None:
     return _connect().execute("SELECT MAX(as_of) AS d FROM universe").fetchone()["d"]
 
 
+def universe_row(as_of: str, symbol: str) -> dict | None:
+    """One stock's row in the universe read on `as_of`, or None."""
+    r = _connect().execute("SELECT * FROM universe WHERE as_of = ? AND symbol = ?",
+                           (str(as_of), str(symbol))).fetchone()
+    return None if r is None else dict(r)
+
+
 def universe_on(as_of: str, *, liquid_only: bool = False) -> list[dict]:
     """The universe read on `as_of`, by symbol."""
     sql = "SELECT * FROM universe WHERE as_of = ?" + (" AND liquid = 1" if liquid_only else "") + " ORDER BY symbol"
     return [dict(r) for r in _connect().execute(sql, (str(as_of),)).fetchall()]
-
-
-# ── sectors ──────────────────────────────────────────────────────────────────
-
-def put_sectors(as_of: str, rows: list[dict]) -> None:
-    """Sector readings made on `as_of` (keys: SECTOR_COLUMNS without as_of); the same symbol read again on the same
-    day replaces that reading."""
-    values = _tuples(rows, SECTOR_COLUMNS, {"as_of": str(as_of)})
-    if not values:
-        return
-    conn = _connect()
-    with dbconn.locked_write(_lock, conn):
-        conn.execute("BEGIN IMMEDIATE")
-        conn.executemany(f"INSERT OR REPLACE INTO sectors ({', '.join(SECTOR_COLUMNS)}) "
-                         f"VALUES ({', '.join('?' * len(SECTOR_COLUMNS))})", values)
-        conn.execute("COMMIT")
-
-
-def sectors() -> dict[str, dict]:
-    """{symbol: its newest sector reading}."""
-    rows = _connect().execute(
-        "SELECT s.* FROM sectors s JOIN (SELECT symbol, MAX(as_of) AS d FROM sectors GROUP BY symbol) m"
-        " ON s.symbol = m.symbol AND s.as_of = m.d ORDER BY s.symbol").fetchall()
-    return {r["symbol"]: dict(r) for r in rows}

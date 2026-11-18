@@ -18,14 +18,13 @@ class FundamentalsStoreTests(SandboxedDBTest):
         self.assertEqual(paths.fundamentals_db().parent, paths.lab_dir())
         conn = store._connect()
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertLessEqual({"schema_version", "universe", "sectors"}, tables)
+        self.assertLessEqual({"schema_version", "universe"}, tables)
+        self.assertNotIn("sectors", tables)                    # R3: the sector is the list's Industry column
         self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
                          len(migrate._files(store.STORE)))
         cols = [r[1] for r in conn.execute("PRAGMA table_info(universe)")]
-        self.assertEqual(cols[:7], ["as_of", "symbol", "instrument_id", "isin", "company", "median_value_paise",
-                                    "liquid"])
-        self.assertEqual([r[1] for r in conn.execute("PRAGMA table_info(sectors)")],
-                         ["symbol", "as_of", "macro", "sector", "industry", "basic_industry"])
+        self.assertEqual(cols, ["as_of", "symbol", "instrument_id", "isin", "company", "median_value_paise",
+                                "liquid", "list_industry"])
         self.assertIn("fundamentals.sqlite", backup.DATABASES)
         # Raw NSE answers sit under nse/raw, which the backup copies file by file.
         self.assertEqual(paths.fundamentals_raw_dir("xbrl"), paths.nse_raw_dir() / "fundamentals" / "xbrl")
