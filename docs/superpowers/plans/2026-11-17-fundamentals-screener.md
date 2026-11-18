@@ -14,7 +14,7 @@
 
 - Windows only; desktop UI (readable to ~1024 px), Hallmark + web/design.md, ₹ via Intl en-IN, plain sentence-case copy, no em dashes in copy.
 - Money int64 paise, quantities units, time UTC epoch ns, IST only at the edges. Filed amounts keep their scale (lakhs/crores/units) until converted exactly to paise.
-- Universe: today's Nifty 500 whose median daily traded value over the last three months is ≥ ₹8 crore (config value `liquidity_floor_paise = 80000000000`). No delisted companies.
+- Universe: today's Nifty 500 whose median daily traded value over the last three months is ≥ ₹8 crore (config value `liquidity_floor_paise = 8000000000`). No delisted companies.
 - Filings from 2021-04-01 onward. Each figure usable from the first trading day after NSE's broadcast (IST); restatements are new versions with their own usable day.
 - Consolidated figures when the company files them (for its whole history), standalone otherwise; never mixed.
 - The page shows no score, no rank number, and no "how the list is ordered" text (owner). Each row: symbol, sector, a few words of reason, Details.
