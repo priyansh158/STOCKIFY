@@ -64,7 +64,7 @@ stockify fundamentals refresh         # one evening's update now, within the day
 stockify fundamentals test-record     # the walk-forward test record (needs a Kite login; fetches daily prices first)
 ```
 
-Each one waits for the session's close, and only one fundamentals run (the daemon's or a command's) goes at a time.
+Each one refuses to start while the recorder's session is running, so run it after the close. Only one fundamentals run (the daemon's or a command's) goes at a time: a command started while another runs says so and stops.
 
 ## Writing your own strategy
 
