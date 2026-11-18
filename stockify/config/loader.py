@@ -451,7 +451,8 @@ def _check_fundamentals(doc: dict) -> None:
     base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `filings_from` a YYYY-MM-DD
     date; each `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
     keys = ("nifty500_list_url", "nifty500_list_fallback_url", "liquidity_floor_paise", "liquidity_days",
-            "filings_from", "basket_size", "top_kept", "api")
+            "filings_from", "basket_size", "top_kept", "corporate_action_ratios", "corporate_action_tolerance",
+            "corporate_action_hold_fall", "api")
     extra = set(doc) - set(keys) - {"schema", "note"}
     if extra:
         raise ConfigError(f"fundamentals.json: unknown keys {sorted(extra)}; known: {list(keys)}")
@@ -474,6 +475,25 @@ def _check_fundamentals(doc: dict) -> None:
     whole(doc["liquidity_days"], "liquidity_days", 1, 1000)
     whole(doc["basket_size"], "basket_size", 1, 500)
     whole(doc["top_kept"], "top_kept", 1, 500)
+    tol = doc["corporate_action_tolerance"]
+    if not isinstance(tol, str) or _SIGNED_DECIMAL.fullmatch(tol) is None or not 0 < Decimal(tol) <= Decimal("0.1"):
+        raise ConfigError(f"fundamentals.json: corporate_action_tolerance must be a decimal string in (0, 0.1], "
+                          f"got {tol!r}")
+    ratios = doc["corporate_action_ratios"]
+    if (not isinstance(ratios, list) or not ratios
+            or not all(isinstance(r, str) and _SIGNED_DECIMAL.fullmatch(r) and Decimal(r) > 1 for r in ratios)):
+        raise ConfigError(f"fundamentals.json: corporate_action_ratios must be a non-empty list of decimal strings "
+                          f"above 1, got {ratios!r}")
+    t = Decimal(tol)
+    for lo, hi in zip(ratios, ratios[1:]):
+        if not Decimal(lo) * (1 + t) < Decimal(hi) * (1 - t):
+            raise ConfigError(f"fundamentals.json: corporate_action_ratios must ascend with bands that do not overlap "
+                              f"at the tolerance: {lo} and {hi}")
+    hold = doc["corporate_action_hold_fall"]
+    if (not isinstance(hold, str) or _SIGNED_DECIMAL.fullmatch(hold) is None
+            or not 1 < Decimal(hold) < Decimal(ratios[0]) * (1 - t)):
+        raise ConfigError(f"fundamentals.json: corporate_action_hold_fall must be a decimal string above 1 and below "
+                          f"the smallest ratio's band, got {hold!r}")
     _iso_date(doc["filings_from"], "fundamentals.json: filings_from")
     if date.fromisoformat(doc["filings_from"]).isoformat() != doc["filings_from"]:
         raise ConfigError(f"fundamentals.json: filings_from: not a YYYY-MM-DD date: {doc['filings_from']!r}")

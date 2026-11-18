@@ -137,6 +137,11 @@ class LoaderRuleTests(unittest.TestCase):
             {"api": {**good["api"], "results": {"path": "/api/x", "warmup": "https://evil.example/"}}},
             {"api": {**good["api"], "results": {"path": "/api/x"}}},
             {"surprise": 1},
+            {"corporate_action_ratios": [2]}, {"corporate_action_ratios": ["1"]}, {"corporate_action_ratios": []},
+            {"corporate_action_ratios": ["3", "2"]}, {"corporate_action_ratios": ["2", "2.1"]},
+            {"corporate_action_tolerance": 0.04}, {"corporate_action_tolerance": "0.5"},
+            {"corporate_action_tolerance": "0"}, {"corporate_action_hold_fall": "1"},
+            {"corporate_action_hold_fall": "1.95"}, {"corporate_action_hold_fall": 1.3},
         )
         for change in bad_cases:
             with self.subTest(change=change):
