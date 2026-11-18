@@ -181,3 +181,15 @@ signal can never disagree with the tested rule.
   `HELD_DURING_SESSION` rule applies).
 - The reliability grade's exact thresholds, stated on the page.
 - Chart overlays' styling, within web/design.md and Hallmark.
+
+## Owner's pivot (2026-11-17, after the build)
+
+Overrides everything above that disagrees:
+
+- **No derivatives on the desk.** Drop the option chain (gauge, snapshots, polling) and the option ideas entirely.
+  The verdict never used the chain, so no strategy or verdict changes.
+- **Day by day, not live.** The desk updates once a day, after the recorder finishes the session (the nightly desk
+  job). No live candle, no minute chart, no once-a-minute refresh, no ticker subscriptions, no Kite quote calls from
+  the desk. The page shows the latest close's verdict with its date. Every strategy decides on daily closes, so for
+  swing trading the result is the same; the difference is only that an intraday move through a level is reflected
+  after that day's close.
