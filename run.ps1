@@ -238,6 +238,18 @@ if (-not (Test-Path (Join-Path $Root ".env"))) {
 
 $env:STOCKIFY_API_ORIGIN = "http://127.0.0.1:$ApiPort"
 $env:STOCKIFY_WEB_ORIGIN = "http://127.0.0.1:$WebPort"
+# The web server reads no root .env, so the one setting it shares with the API (the laptop's Tailscale
+# address, README "Log in from your phone") is copied from there; only that line is read. Both sides
+# check the value themselves and ignore an invalid one.
+$RootEnv = Join-Path $Root ".env"
+if (Test-Path $RootEnv) {
+    $remoteLine = Select-String -LiteralPath $RootEnv -Pattern '^\s*STOCKIFY_REMOTE_HOST\s*=(.*)$' | Select-Object -Last 1
+    if ($remoteLine) {
+        # As python-dotenv reads it: the last line wins, a trailing " # comment" is dropped, quotes are removed.
+        $remoteValue = ($remoteLine.Matches[0].Groups[1].Value -replace '\s+#.*$', '').Trim().Trim('"', "'")
+        $env:STOCKIFY_REMOTE_HOST = $remoteValue
+    }
+}
 $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
 try {
