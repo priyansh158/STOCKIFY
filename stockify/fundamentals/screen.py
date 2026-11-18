@@ -10,7 +10,8 @@
 - **Peers** (ruling R3): the stock's Industry from the Nifty 500 list, when that industry has at least MIN_PEERS (5)
   placed stocks; otherwise every placed stock ("All stocks (Textiles has too few)"). `peer_group` says which.
 - **Order** (ruling R9). Each figure is placed among the peers from 0 (worst) to 1 (best); a cheaper P/E or P/B and
-  lower debt are better. A loss-maker (TTM owners' profit ≤ 0) takes P/E place 0 and negative equity P/B place 0.
+  lower debt are better. A loss-maker (TTM owners' profit ≤ 0) takes P/E place 0; negative equity (R9 d, a red flag)
+  takes place 0 on P/B, debt to equity and ROE.
   The peers' places count them below every real P/E or P/B. Any other missing figure counts 0.5, the peers' middle,
   never above it. Valuation is the mean over P/E and P/B and quality the mean over the rest. composite =
   balance × valuation + (1 − balance) × quality. Rows run by composite, highest first, ties by symbol. The composite
@@ -18,7 +19,7 @@
 - **Reasons.** `short_reason` is at most 90 characters and has no numbers. It opens with any warning ("Loss-making;
   ...", "Profits falling and debt rising; ...", ruling I2). It then names the stock's two or three strongest filed
   points against its peers in relative words ("cheaper than its industry on earnings, with less debt and wider
-  margins"). An absolute word is used only where it is true outright: "debt-free" (D/E 0), "rising profits"
+  margins"). An absolute word is used only where it is true outright: "debt-free" / "no debt" (D/E 0), "rising profits"
   (growth > 0). A stock warned of rising debt is never also said to have less debt. `reasons` holds the warnings
   (loss-making, negative equity, a cheap P/E with falling profits or rising debt), then each filed figure against its
   peers' median, strongest first.
@@ -49,7 +50,9 @@ USED = {False: ("pe", "pb", "roe", "debt_equity", "op_margin", "profit_growth"),
 NEEDED = {False: 4, True: 3}
 VALUATION = ("pe", "pb")
 LOWER_BETTER = {"pe", "pb", "debt_equity"}
-WORST_FLAG = {"pe": "loss-making", "pb": "negative equity"}      # ruling R9 a: the worst place, not none
+# Ruling R9 a, d: these figures take the worst place, not none, when the stock carries the flag.
+WORST_FLAG = {"pe": "loss-making", "pb": "negative equity", "debt_equity": "negative equity",
+              "roe": "negative equity"}
 
 
 # ── placing ──────────────────────────────────────────────────────────────────
@@ -118,13 +121,16 @@ def _strengths(p: dict) -> tuple[dict[str, float], dict[str, float], dict[str, f
         if k not in p["used"]:
             continue
         if k in WORST_FLAG:                  # the loss-makers / negative equities among the peers sit below all
-            values += [math.inf] * sum(1 for q in p["peers"] if WORST_FLAG[k] in q["detail"]["flags"])
+            worst = -math.inf if k not in LOWER_BETTER else math.inf
+            values = [q["detail"]["ratios"][k] for q in p["peers"] if q["detail"]["ratios"][k] is not None
+                      and WORST_FLAG[k] not in q["detail"]["flags"]]
+            values += [worst] * sum(1 for q in p["peers"] if WORST_FLAG[k] in q["detail"]["flags"])
         v = d["ratios"][k]
-        if v is not None:
+        if k in WORST_FLAG and WORST_FLAG[k] in d["flags"]:
+            counted[k] = 0.0
+        elif v is not None:
             s = _place(v, values)
             filed[k] = counted[k] = 1 - s if k in LOWER_BETTER else s
-        elif k in WORST_FLAG and WORST_FLAG[k] in d["flags"]:
-            counted[k] = 0.0
         else:
             counted[k] = MISSING
     return filed, counted, medians
@@ -157,9 +163,11 @@ def _point(k: str, v: float) -> tuple[str, bool] | None:
 
 
 def _body(picks: list[str], r: dict, whom: str) -> str:
+    """The points as one phrase: a head, then ", with" and noun phrases ("debt-free" heads, "no debt" follows)."""
     val = [_point(k, r[k])[0] for k in picks if k in VALUATION]
     comps = [_point(k, r[k])[0] for k in picks if k not in VALUATION and _point(k, r[k])[1]]
     plain = [_point(k, r[k])[0] for k in picks if k not in VALUATION and not _point(k, r[k])[1]]
+    noun = lambda w: "no debt" if w == "debt-free" else w  # noqa: E731
     if val:
         head, rest = f"cheaper than {whom} on {_join(val)}", comps + plain      # "with less debt": than {whom}
     elif comps:
@@ -168,7 +176,7 @@ def _body(picks: list[str], r: dict, whom: str) -> str:
         head, rest = plain[0], plain[1:]
     else:
         return f"no figure stands out against {whom}"
-    return head + (f", with {_join(rest)}" if rest else "")
+    return head + (f", with {_join([noun(w) for w in rest])}" if rest else "")
 
 
 def _short(p: dict, filed: dict[str, float], warns: list[str], traps: list[str]) -> str:
@@ -196,8 +204,10 @@ def _short(p: dict, filed: dict[str, float], warns: list[str], traps: list[str])
 
 
 def _change(x: float) -> str:
-    if x <= -1:
-        return "swung to a loss"                 # M3: the earlier figure was positive, the newest is not
+    if x == -1:
+        return "fell to zero"
+    if x < -1:
+        return "swung to a loss"                 # M3: the earlier figure was positive, the newest is below zero
     return f"{'up' if x >= 0 else 'down'} {abs(x) * 100:.1f}%"
 
 
@@ -219,7 +229,11 @@ def _figure_line(k: str, v: float, median: float | None, whole: bool) -> str:
         text, fmt = f"Profit {_change(v)} on the same quarter a year earlier", _change
     else:
         text, fmt = f"Net interest income {_change(v)} on the same quarter a year earlier", _change
-    return text + (f" ({whom}: {fmt(median)})." if median is not None else ".")
+    if median is None:
+        return text + "."
+    if k in ("profit_growth", "nii_growth") and median <= -1:
+        return text + f" (half or more of {whom} fell to zero or a loss)."
+    return text + f" ({whom}: {fmt(median)})."
 
 
 def _row(p: dict, filed: dict[str, float], medians: dict[str, float | None]) -> dict:
@@ -231,7 +245,8 @@ def _row(p: dict, filed: dict[str, float], medians: dict[str, float | None]) -> 
         warnings.append("Loss-making over its last four quarters, so it has no P/E.")
     if "negative equity" in d["flags"]:
         warns.append("negative equity")
-        warnings.append("Its liabilities exceed its assets (negative equity), so it has no P/B.")
+        warnings.append("Its liabilities exceed its assets (negative equity), so P/B, debt to equity and return "
+                        "on equity count against it.")
     if filed.get("pe", 0) >= STRONG:
         for k, name, what in (("profit_growth", "profit", "profit"), ("nii_growth", "nii", "net interest income")):
             g = r[k]

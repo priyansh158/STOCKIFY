@@ -3,6 +3,7 @@ module."""
 from __future__ import annotations
 
 import json
+import unittest
 
 from tests.stockify.fundamentals.screen_support import DAY, ScreenCase
 
@@ -82,6 +83,20 @@ class OrderTests(ScreenCase):
         four = rows[names.index("FOUR")]
         self.assertNotIn("debt", four["short_reason"])
         self.assertNotIn("margin", four["short_reason"])
+
+    def test_negative_equity_is_a_red_flag(self):
+        # Ruling R9 d: negative equity takes the worst P/B, D/E and ROE places, so NEGEQ (MID1 but for its equity)
+        # falls below every profitable peer with equity.
+        five_capital_goods(self)
+        self.company("NEGEQ", "Capital Goods", price=50000, equity=-1000, equity_prev=-500)
+        rows = screen.order(DAY)
+        names = [r["symbol"] for r in rows]
+        for peer in ("GOOD", "MID1", "MID2", "MID3"):
+            self.assertGreater(names.index("NEGEQ"), names.index(peer), peer)
+        neg = rows[names.index("NEGEQ")]
+        self.assertIsNone(neg["ratios"]["roe"])
+        self.assertIsNone(neg["ratios"]["debt_equity"])
+        self.assertTrue(neg["short_reason"].startswith("Negative equity; "), neg["short_reason"])
 
     def test_unpriced_stocks_are_left_out(self):
         # Ruling R9 (b): no market value on the day, no place, however good the other figures.
@@ -179,7 +194,7 @@ class ReasonTests(ScreenCase):
         self.assertTrue(any("Loss-making" in s for s in rows["LOSS"]["reasons"]))
         self.assertTrue(rows["LOSS"]["short_reason"].startswith("Loss-making; "), rows["LOSS"]["short_reason"])
         self.assertLessEqual(len(rows["LOSS"]["short_reason"]), 90)
-        self.assertIn("debt-free", rows["LOSS"]["short_reason"])           # D/E 0: an absolute word is true
+        self.assertIn("no debt", rows["LOSS"]["short_reason"])             # D/E 0: an absolute word is true
 
     def test_relative_words_for_relative_places(self):
         # I3: a power industry where everyone borrows heavily: the lowest D/E (1.5) is less debt than its
@@ -207,6 +222,41 @@ class ReasonTests(ScreenCase):
                 self.assertNotIn(word, blob, r["symbol"])
             self.assertLessEqual(len(r["short_reason"]), 90)
             self.assertFalse(any(ch.isdigit() for ch in r["short_reason"]), r["short_reason"])
+
+
+class WordingTests(unittest.TestCase):
+    """The short reason's body reads as English for each mix of points (re-review, fix round 2)."""
+    R = {"pe": 12.0, "pb": 1.5, "roe": 0.2, "debt_equity": 0.0, "op_margin": 0.3, "profit_growth": 0.1,
+         "nii_growth": None}
+
+    def body(self, picks, **r):
+        return screen._body(picks, {**self.R, **r}, "its industry")
+
+    def test_mixes(self):
+        cases = [
+            (["debt_equity", "op_margin"], {}, "wider margins than its industry, with no debt"),
+            (["debt_equity"], {}, "debt-free"),
+            (["debt_equity", "profit_growth"], {}, "debt-free, with rising profits"),
+            (["debt_equity", "op_margin"], {"debt_equity": 0.4}, "less debt and wider margins than its industry"),
+            (["pe", "debt_equity", "op_margin"], {}, "cheaper than its industry on earnings, with wider margins "
+                                                     "and no debt"),
+            (["pe", "roe", "op_margin"], {}, "cheaper than its industry on earnings, with a higher return on "
+                                             "equity and wider margins"),
+            (["pe", "debt_equity"], {}, "cheaper than its industry on earnings, with no debt"),
+        ]
+        for picks, r, want in cases:
+            self.assertEqual(self.body(picks, **r), want, picks)
+            self.assertNotIn("and debt-free", self.body(picks, **r))
+            self.assertNotIn("with debt-free", self.body(picks, **r))
+
+    def test_changes(self):
+        self.assertEqual(screen._change(-1.0), "fell to zero")
+        self.assertEqual(screen._change(-1.5), "swung to a loss")
+        self.assertEqual(screen._change(-0.25), "down 25.0%")
+        line = screen._figure_line("profit_growth", -1.5, -1.2, False)
+        self.assertEqual(line, "Profit swung to a loss on the same quarter a year earlier (half or more of its "
+                               "industry fell to zero or a loss).")
+        self.assertIn("(its industry: up 10.0%)", screen._figure_line("profit_growth", 0.2, 0.1, False))
 
 
 class SaveTests(ScreenCase):

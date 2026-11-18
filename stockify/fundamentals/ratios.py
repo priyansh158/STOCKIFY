@@ -6,7 +6,7 @@ Every figure is the company's one basis on the day (pit.basis_on). Amounts are i
 - **P/E** = market cap ÷ TTM profit to owners (four consecutive filed quarters, pit.ttm). A TTM profit of zero or
   less gives no P/E and the flag "loss-making".
 - **P/B** = market cap ÷ total equity of the balance-sheet row (below); None when equity ≤ 0, with the flag
-  "negative equity".
+  "negative equity" (then ROE and debt to equity are None too; the screen places all three worst, ruling R9 d).
 - **Balance-sheet row** (ruling R6): the newest quarter row known on the day that carries total equity (a Sep or Mar
   quarter). Debt to equity reads its borrowings from that same row.
 - **ROE** = TTM profit to owners ÷ the mean of the total equity of the last two balance-sheet rows (just the one when
@@ -101,7 +101,7 @@ def detail(symbol: str, day: date, *, sector: str | None = None) -> dict:
     if sheets:
         last_two = [q["fields"]["total_equity"] for q in sheets[:2]]
         mean_equity = sum(last_two) / len(last_two)
-        if profit is not None and mean_equity > 0:
+        if profit is not None and mean_equity > 0 and equity > 0:
             out["roe"] = profit / mean_equity
 
     year_ago_de = None
