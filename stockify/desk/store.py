@@ -1,4 +1,4 @@
-"""HD 4.1: the desk store `desk.sqlite`: nightly evidence, the stored view of each holding per day, chain snapshots.
+"""HD 4.1: the desk store `desk.sqlite`: nightly evidence and the stored view of each holding per day.
 
 Derived data (rebuildable from the bar cache and Kite), so not under the tick-data rule, but nothing here deletes a
 row: every day's evidence and view stays readable. Writing the same key again (the nightly job re-run on one day,
@@ -145,19 +145,3 @@ def latest_views() -> list[dict]:
         " ON v.instrument_id = m.instrument_id AND v.trade_date = m.d ORDER BY v.instrument_id").fetchall()
     return [_view_row(r) for r in rows]
 
-
-# ── chain snapshots ──────────────────────────────────────────────────────────
-
-def put_chain(instrument_id: int, taken_ns: int, snapshot: dict) -> None:
-    """Store one poll of a holding's option chain, taken at `taken_ns` (UTC epoch ns)."""
-    _write("INSERT OR REPLACE INTO chain_snapshots (instrument_id, taken_ns, json) VALUES (?, ?, ?)",
-           [(int(instrument_id), int(taken_ns), _dumps(snapshot))])
-
-
-def latest_chain(instrument_id: int) -> dict | None:
-    """The newest chain snapshot of a holding ({instrument_id, taken_ns, snapshot}), or None."""
-    r = _connect().execute("SELECT * FROM chain_snapshots WHERE instrument_id = ? ORDER BY taken_ns DESC LIMIT 1",
-                           (int(instrument_id),)).fetchone()
-    if r is None:
-        return None
-    return {"instrument_id": r["instrument_id"], "taken_ns": r["taken_ns"], "snapshot": json.loads(r["json"])}

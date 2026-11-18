@@ -6,7 +6,7 @@ import math
 import random
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import tests.support as support  # noqa: F401  — must precede project imports
@@ -140,32 +140,6 @@ class SignalTests(unittest.TestCase):
         self.assertTrue(sig.note)
 
 
-class LiveCandleTests(unittest.TestCase):
-    def test_live_candle_replaces_todays_partial_bar(self):
-        bars = _flat_then([(30, 0)])
-        last_day = timeutil.ns_to_ist(bars[-1].start_ns).date()
-        today = last_day + timedelta(days=1 if last_day.weekday() < 4 else 3)
-        t1 = timeutil.ist_ns(today, "10:30")
-        one = replay.with_live_candle(bars, 101_000, t1, 100_500, 101_200, 100_100)
-        self.assertEqual(len(one), len(bars) + 1)
-        self.assertEqual(one[:-1], bars)
-        live = one[-1]
-        start = timeutil.ist_ns(today, "00:00")
-        self.assertEqual((live.start_ns, live.t_ns, live.interval_s), (start, start + DAY_NS, 86400))
-        self.assertEqual((live.open, live.high, live.low, live.close, live.built), (100_500, 101_200, 100_100, 101_000, True))
-        two = replay.with_live_candle(one, 101_500, t1 + 60 * 10**9, 100_500, 101_200, 100_100)
-        self.assertEqual(len(two), len(one))                          # replaced, not appended again
-        self.assertEqual((two[-1].close, two[-1].high), (101_500, 101_500))    # the high takes in the new price
-        self.assertEqual(two[:-1], bars)
-        # history already holding today's (partial) day bar: replaced too
-        same = replay.with_live_candle(bars, 99_000, bars[-1].start_ns + 5 * 3600 * 10**9, 100_000, 100_050, 98_000)
-        self.assertEqual(len(same), len(bars))
-        self.assertEqual((same[-1].close, same[-1].low, same[-1].built), (99_000, 98_000, True))
-        with self.assertRaises(ValueError):
-            replay.with_live_candle(bars, 99_000, bars[-2].start_ns + 3600 * 10**9, 100_000, 100_050, 98_000)
-        self.assertEqual(replay.with_live_candle([], 99_000, t1, 99_000, 99_000, 99_000), [])
-
-
 SPLIT_TREND = ["supertrend:Supertrend", "ema_trend:EmaTrend", "donchian_breakout:DonchianBreakout",
                "chandelier_exit:ChandelierExit"]
 
@@ -238,8 +212,8 @@ class ContextTests(unittest.TestCase):
         self.assertIsNone(ctx.position(1, "MIS"))
 
 
-class TailReplayTests(unittest.TestCase):
-    """HD 9.1 (R4): the live recompute replays only each strategy's last `window` bars."""
+class WindowTests(unittest.TestCase):
+    """HD 9.1 (R4), 12.2: `window` bars of warm-up are enough history, as the desk chart uses them."""
 
     def test_window_covers_each_strategys_lookback(self):
         for ref, extra in VOTERS:
@@ -249,14 +223,15 @@ class TailReplayTests(unittest.TestCase):
                 self.assertGreaterEqual(n, getattr(cls, "LOOKBACK", 0) + 5)
         self.assertGreaterEqual(replay.window(PKG + GOLDEN[0], {"symbol": "NSE:X", **GOLDEN[1]}), 205)
 
-    def test_the_tail_replay_says_what_the_whole_replay_says(self):
+    def test_a_replay_warmed_up_by_window_bars_says_what_the_whole_replay_says(self):
         _days, _evs, bars = _wave_world(600)
         for ref, extra in VOTERS:
             params = {"symbol": "NSE:X", **extra}
             steps = replay.walk(ref, params, bars)
             for k in range(560, 601, 4):
                 with self.subTest(ref=ref, k=k):
-                    tail = replay.now_tail(ref, params, bars[:k])
+                    part = bars[:k][-replay.window(ref, params):]
+                    tail = replay.walk(ref, params, part, warm=len(part) - replay.TAIL_SPARE)[-1]
                     full = steps[k - 1]
                     self.assertEqual((tail.in_position, tail.buying_today, tail.exit_level_paise),
                                      (full.in_position, full.buying_today, full.exit_level_paise))

@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { rupeesFloat } from "@/lib/format";
-import { DESK_POLL_MS, getDeskList, nsWhen, reasonWords, verdictClass } from "@/lib/desk";
+import { useMemo } from "react";
+import { dayWords, rupeesFloat } from "@/lib/format";
+import { asOfClose, reasonWords, verdictClass } from "@/lib/desk";
 import { useTicks } from "@/lib/useTicks";
 import type { DeskChipDTO, DeskListDTO, Holding } from "@/lib/types";
 import { Chip, Empty, Table } from "@/components/ui";
@@ -20,25 +20,6 @@ interface Props {
   desk: DeskListDTO | null;
 }
 
-/** The desk list, asked for again every minute while any verdict is live (the session is open). */
-function useDesk(initial: DeskListDTO | null): DeskListDTO | null {
-  const [desk, setDesk] = useState(initial);
-  const live = !!desk?.items.some((c) => c.live);
-  useEffect(() => {
-    if (!live) return;
-    const ctl = new AbortController();
-    const timer = window.setInterval(() => {
-      if (document.hidden) return;
-      getDeskList({ signal: ctl.signal }).then(setDesk, () => undefined); // a failed refresh keeps what is shown
-    }, DESK_POLL_MS);
-    return () => {
-      window.clearInterval(timer);
-      ctl.abort();
-    };
-  }, [live]);
-  return desk;
-}
-
 export function deskHref(symbol: string): string {
   return `/portfolio/${encodeURIComponent(symbol)}`;
 }
@@ -49,7 +30,7 @@ export function VerdictLink({ chip }: { chip: DeskChipDTO }) {
     <Link
       href={deskHref(chip.symbol)}
       className={`stk-link ${verdictClass(chip.verdict)}`}
-      title={chip.live ? "Live" : `As of ${nsWhen(chip.as_of_ns)}`}
+      title={asOfClose(chip.close_date, chip.as_of_ns)}
     >
       {chip.verdict}
     </Link>
@@ -74,7 +55,7 @@ function Suggestion({ h, desk }: { h: Holding; desk: DeskListDTO }) {
  * connected (Kite not authed, server down), we fall back to the static
  * `last_price` baked into the initial snapshot.
  */
-export function HoldingsList({ initial, desk: firstDesk }: Props) {
+export function HoldingsList({ initial, desk }: Props) {
   const tokens = useMemo(
     () =>
       initial
@@ -83,7 +64,6 @@ export function HoldingsList({ initial, desk: firstDesk }: Props) {
     [initial],
   );
   const ticks = useTicks(tokens);
-  const desk = useDesk(firstDesk);
 
   if (initial.length === 0) {
     return <Empty>No holdings.</Empty>;
@@ -135,7 +115,8 @@ export function HoldingsList({ initial, desk: firstDesk }: Props) {
     </Table>
     {desk ? (
       <p className="stk-fine">
-        Suggestion: what the desk&apos;s tested exit rules say about each holding, from prices alone. Open one to see why.
+        Suggestion: what the desk&apos;s tested exit rules say about each holding at the latest close, from prices alone. The desk
+        updates once a day, after the session. Open one to see why.
         Suggestions, not orders.
       </p>
     ) : (
@@ -152,14 +133,14 @@ export function DeskLastViews({ desk }: { desk: DeskListDTO | null }) {
     <section className="stk-section" aria-labelledby="desk-last">
       <h2 id="desk-last">Last suggestions</h2>
       {desk.plain && <p className="stk-fine stk-gap-bottom">{desk.plain}</p>}
-      <Table caption="The desk's last closing suggestions" head={[{ label: "Symbol" }, { label: "Suggestion" }, { label: "As of" }]}>
+      <Table caption="The desk's last closing suggestions" head={[{ label: "Symbol" }, { label: "Suggestion" }, { label: "As of the close on" }]}>
         {desk.items.map((c) => (
           <tr key={c.instrument_id}>
             <td className="stk-mono">{c.symbol}</td>
             <td>
               <VerdictLink chip={c} />
             </td>
-            <td className="stk-label">{nsWhen(c.as_of_ns)}</td>
+            <td className="stk-label">{c.close_date ? dayWords(c.close_date) : "—"}</td>
           </tr>
         ))}
       </Table>

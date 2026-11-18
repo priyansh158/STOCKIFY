@@ -32,10 +32,3 @@ CREATE TABLE views (
 );
 CREATE INDEX ix_views_instrument ON views(instrument_id, trade_date);
 
--- The option chain of a holding's underlying as polled, one row per poll.
-CREATE TABLE chain_snapshots (
-  instrument_id INTEGER NOT NULL,
-  taken_ns INTEGER NOT NULL,                     -- UTC epoch ns
-  json TEXT NOT NULL,
-  PRIMARY KEY (instrument_id, taken_ns)
-);

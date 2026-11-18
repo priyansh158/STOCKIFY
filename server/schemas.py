@@ -1006,15 +1006,15 @@ class ResearchLimitsDTO(BaseModel):
     wf_objective: str
     holdout_from: str | None = None
 
-# ── Holdings desk (HD 9): verdict chips, one holding's view. Never the owner's cost or P&L. ──
+# ── Holdings desk (HD 9, 12): verdict chips, one holding's view, as of the latest close. Never the owner's cost or P&L. ──
 
 class DeskChipDTO(BaseModel):
     symbol: str
     exchange: str
     instrument_id: int
     verdict: str
-    as_of_ns: int
-    live: bool
+    as_of_ns: int                           # when the nightly job stored the view, UTC epoch ns
+    close_date: str | None = None           # the IST date of the close the view is from
     holding_symbol: str | None = None       # the Kite holding's own tradingsymbol (a BSE holding's may differ from NSE's)
     holding_exchange: str | None = None     # the Kite holding's exchange; None for a stored view shown while logged out
 
@@ -1044,41 +1044,6 @@ class DeskSignalDTO(BaseModel):
     note: str
 
 
-class DeskGaugeDTO(BaseModel):
-    expiry: str | None = None
-    pcr_oi: float | None = None
-    call_walls: list[int]
-    put_walls: list[int]
-    max_pain_paise: int | None = None
-    atm_iv: float | None = None
-    iv_percentile: float | None = None
-    sentences: list[str]
-    taken_ns: int
-    live: bool
-
-
-class DeskIdeaLegDTO(BaseModel):
-    side: Literal["BUY", "SELL"]
-    tradingsymbol: str | None = None
-    lots: int
-    price_paise: int | None = None
-
-
-class DeskIdeaDTO(BaseModel):
-    name: str
-    legs: list[DeskIdeaLegDTO]
-    premium_paise: int
-    max_loss_paise: int | None = None
-    max_gain_paise: int | None = None
-    breakeven_paise: list[int]
-    margin_paise: int | None = None
-    margin_ok: bool | None = None
-    why: str
-    caution: str
-    possible: bool
-    not_possible_reason: str
-
-
 class DeskViewDTO(BaseModel):
     symbol: str
     instrument_id: int
@@ -1093,11 +1058,7 @@ class DeskViewDTO(BaseModel):
     signals: list[DeskSignalDTO]
     evidence_from: str | None = None
     evidence_to: str | None = None
-    gauge: DeskGaugeDTO | None = None
-    ideas: list[DeskIdeaDTO]
-    fno: bool
-    lot: int | None = None
     as_of_ns: int
-    live: bool
+    close_date: str | None = None
     plain: str
 # </block>

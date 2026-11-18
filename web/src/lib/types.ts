@@ -960,14 +960,14 @@ export interface ResearchLimitsDTO {
   holdout_from?: string | null;
 }
 
-// Holdings desk (HD 9): verdict chips, one holding's view. Never the owner's cost or P&L.
+// Holdings desk (HD 9, 12): verdict chips, one holding's view, as of the latest close. Never the owner's cost or P&L.
 export interface DeskChipDTO {
   symbol: string;
   exchange: string;
   instrument_id: number;
   verdict: string;
   as_of_ns: number;
-  live: boolean;
+  close_date?: string | null;
   holding_symbol?: string | null;
   holding_exchange?: string | null;
 }
@@ -999,41 +999,6 @@ export interface DeskSignalDTO {
   note: string;
 }
 
-export interface DeskGaugeDTO {
-  expiry?: string | null;
-  pcr_oi?: number | null;
-  call_walls: number[];
-  put_walls: number[];
-  max_pain_paise?: number | null;
-  atm_iv?: number | null;
-  iv_percentile?: number | null;
-  sentences: string[];
-  taken_ns: number;
-  live: boolean;
-}
-
-export interface DeskIdeaLegDTO {
-  side: "BUY" | "SELL";
-  tradingsymbol?: string | null;
-  lots: number;
-  price_paise?: number | null;
-}
-
-export interface DeskIdeaDTO {
-  name: string;
-  legs: DeskIdeaLegDTO[];
-  premium_paise: number;
-  max_loss_paise?: number | null;
-  max_gain_paise?: number | null;
-  breakeven_paise: number[];
-  margin_paise?: number | null;
-  margin_ok?: boolean | null;
-  why: string;
-  caution: string;
-  possible: boolean;
-  not_possible_reason: string;
-}
-
 export interface DeskViewDTO {
   symbol: string;
   instrument_id: number;
@@ -1048,12 +1013,8 @@ export interface DeskViewDTO {
   signals: DeskSignalDTO[];
   evidence_from?: string | null;
   evidence_to?: string | null;
-  gauge?: DeskGaugeDTO | null;
-  ideas: DeskIdeaDTO[];
-  fno: boolean;
-  lot?: number | null;
   as_of_ns: number;
-  live: boolean;
+  close_date?: string | null;
   plain: string;
 }
 // </block>

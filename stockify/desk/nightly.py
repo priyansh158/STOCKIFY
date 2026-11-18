@@ -135,14 +135,11 @@ def grades_for(instrument_id: int, symbol: str, day: date, *, force: bool = Fals
 
 # ── the closing view ─────────────────────────────────────────────────────────
 
-def closing_view(instrument_id: int, symbol: str, bars: list[S.Bar], rows: list[dict], *,
-                 tail: bool = False) -> tuple[str, dict]:
-    """(verdict label, the view's JSON) at the last bar's close, from the strategies' "now" and the graded `rows`.
-    `tail` replays each rule over its look-back only (`replay.now_tail`, the live recompute's fast path)."""
+def closing_view(instrument_id: int, symbol: str, bars: list[S.Bar], rows: list[dict]) -> tuple[str, dict]:
+    """(verdict label, the view's JSON) at the last bar's close, from the strategies' "now" and the graded `rows`."""
     sym = symbol if ":" in symbol else f"NSE:{symbol}"
     grades = {r["ref"]: r["grade"] for r in rows}
-    now = replay.now_tail if tail else replay.now
-    signals = [now(ref, {"symbol": sym, **extra}, bars) for ref, extra in replay.VOTERS]
+    signals = [replay.now(ref, {"symbol": sym, **extra}, bars) for ref, extra in replay.VOTERS]
     close = bars[-1].close
     atr = S.atr([(b.high, b.low, b.close) for b in bars], ATR_DAYS)
     atr = atr if math.isfinite(atr) else 0.0

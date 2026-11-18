@@ -62,7 +62,7 @@ def lab_db() -> Path:
 
 
 def desk_db() -> Path:
-    """The holdings desk's store (HD 4.1): nightly evidence, stored views, option-chain snapshots."""
+    """The holdings desk's store (HD 4.1): nightly evidence and stored views."""
     return lab_dir() / "desk.sqlite"
 
 

@@ -1,4 +1,4 @@
-"""HD 4.1: the desk store (desk.sqlite): evidence, stored views and chain snapshots, kept for every day."""
+"""HD 4.1: the desk store (desk.sqlite): evidence and stored views, kept for every day."""
 from __future__ import annotations
 
 import unittest
@@ -69,13 +69,13 @@ class DeskStoreTests(SandboxedDBTest):
             store.put_evidence([bad])
         self.assertEqual(store.latest_evidence(7), [])
 
-    def test_chain_snapshots_are_kept_and_the_newest_is_read(self):
-        store.put_chain(7, 1_000, {"strikes": [1]})
-        store.put_chain(7, 3_000, {"strikes": [3]})
-        store.put_chain(7, 2_000, {"strikes": [2]})
-        self.assertEqual(store.latest_chain(7), {"instrument_id": 7, "taken_ns": 3_000, "snapshot": {"strikes": [3]}})
-        self.assertIsNone(store.latest_chain(8))
-        self.assertEqual(store._connect().execute("SELECT COUNT(*) FROM chain_snapshots").fetchone()[0], 3)
+    def test_the_store_holds_only_evidence_and_views(self):
+        # HD 12.2: no derivatives on the desk, so no option-chain table; its size grows by one row per voter and
+        # one view per holding per day.
+        names = {r[0] for r in store._connect().execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_version'")}
+        self.assertEqual(names - {"evidence", "views"}, set(), names)
+        self.assertFalse(hasattr(store, "put_chain") or hasattr(store, "latest_chain"))
 
 
 if __name__ == "__main__":

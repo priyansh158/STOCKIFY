@@ -77,22 +77,7 @@ async def lifespan(app: FastAPI):
         import logging
 
         logging.getLogger(__name__).exception("test queue recovery failed")
-    # Holdings desk (HD 9): the chain poller works only during the session and while Kite is logged in.
-    try:
-        from server.services import desk_poller
-
-        desk_poller.start()
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception("desk poller did not start")
     yield
-    try:
-        from server.services import desk_poller
-
-        desk_poller.stop()
-    except Exception:
-        pass
     try:
         ticker_bridge.detach()
     except Exception:

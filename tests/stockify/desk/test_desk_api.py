@@ -1,7 +1,7 @@
-"""HD 9.2: /api/desk (the verdict chips, one holding's view, its chart) and the session chain poller.
+"""HD 9.2, 12.2: /api/desk (the verdict chips, one holding's view, its daily chart), as of the latest close.
 
-Offline: FastAPI's TestClient, a sandboxed lab, the holdings a fake snapshot, the tick buffer and Kite fakes. INFY
-has options (the chain tests' refdata), TCS has none."""
+Offline: FastAPI's TestClient, a sandboxed lab, the holdings a fake snapshot, a Kite fake that records every call
+(the desk's requests must make none: it updates once a day, after the session)."""
 from __future__ import annotations
 
 import math
@@ -14,20 +14,18 @@ from tests.support import SandboxedDBTest
 
 import kite_client
 import portfolio_sync
-import tick_buffer
 from stockify import kite_readonly, timeutil
 from stockify.data import history, instruments, refdata
-from stockify.desk import ideas as ideas_mod
 from stockify.desk import nightly, replay
 from stockify.desk import store as desk_store
-from tests.stockify.desk.test_chain import NEAR, NEXT, _dumps, _q
+from tests.stockify.test_bundle import HEADER
 
 DAY = date(2026, 11, 17)                                   # a Tuesday
 IN_SESSION = timeutil.ist_ns(DAY, "11:00")
 AFTER_CLOSE = timeutil.ist_ns(DAY, "20:00")
-STRIKES = list(range(1400, 1720, 20))
 TOKENS = {"INFY": 408065, "TCS": 2953217}
 FORBIDDEN = ("average_price", "pnl", "cost")
+GONE = ("gauge", "ideas", "fno", "lot", "live")            # HD 12: no derivatives, no live view
 
 
 def _weekdays_to(last: date, n: int) -> list[date]:
@@ -40,8 +38,9 @@ def _weekdays_to(last: date, n: int) -> list[date]:
 
 
 def install() -> dict[str, int]:
-    """INFY (F&O) and TCS on NSE with 400 weekdays of daily bars ending the day before DAY."""
-    instruments.sync(DAY, _dumps(STRIKES))
+    """INFY and TCS on NSE with 400 weekdays of daily bars ending the day before DAY."""
+    rows = "".join(f"{tok},1,{sym},{sym},0,,0,0.05,1,EQ,NSE,NSE\n" for sym, tok in TOKENS.items())
+    instruments.sync(DAY, {"NSE": f"{HEADER}\n{rows}"}, underlyings={})
     ids = {}
     for k, sym in enumerate(("INFY", "TCS")):
         iid = instruments.find("NSE", sym)
@@ -87,47 +86,15 @@ def snapshot(holdings=(), error=None):
 
 
 class FakeKite:
-    """`quote` / `ohlc` from canned answers (every listed name, unless `fail`), recording each call."""
+    """Records every call; the desk's requests must make none."""
 
-    def __init__(self, *, fail: bool = False, spot: float = 1530.0):
-        self.fail, self.spot, self.calls = fail, spot, []
+    def __init__(self):
+        self.calls = []
 
-    def _one(self, name: str) -> dict:
-        if name.startswith("NSE:"):
-            return {"last_price": self.spot, "ohlc": {"open": 1500.0, "high": 1545.0, "low": 1490.0, "close": 1510.0}}
-        return _q(ltp=12.0, bid=11.5, ask=12.5, oi=1000)
-
-    def quote(self, names):  # noqa: ANN001
-        self.calls.append(("quote", list(names)))
-        if self.fail:
-            raise RuntimeError("Too many requests")
-        return {n: self._one(n) for n in names}
-
-    def ohlc(self, names):  # noqa: ANN001
-        self.calls.append(("ohlc", list(names)))
-        if self.fail:
-            raise RuntimeError("Too many requests")
-        return {n: self._one(n) for n in names if n.startswith("NSE:")}
-
-    def historical_data(self, token, from_dt, to_dt, interval, **kw):  # noqa: ANN001, ANN003
-        self.calls.append(("historical_data", token, interval))
-        if self.fail:
-            raise RuntimeError("Too many requests")
-        start = timeutil.ist_ns(DAY, "09:15")
-        return [{"date": timeutil.ns_to_ist(start + i * 60 * 10**9), "open": 1500 + i, "high": 1502 + i,
-                 "low": 1499 + i, "close": 1501 + i, "volume": 100} for i in range(5)]
-
-    def margins(self):
-        return {"equity": {"net": 100000.0}}
-
-    def basket_order_margins(self, orders, consider_positions=False):  # noqa: ANN001
-        return {"initial": {"span": 1000.0, "exposure": 500.0, "additional": 0.0, "option_premium": 0.0},
-                "final": {"span": 1000.0, "exposure": 500.0, "additional": 0.0, "option_premium": 0.0}}
-
-
-class NoBucket:
-    def acquire(self) -> None:
-        pass
+    def __getattr__(self, name):  # noqa: ANN204
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return lambda *a, **k: self.calls.append(name)
 
 
 def _keys(obj, out=None):  # noqa: ANN001
@@ -151,44 +118,34 @@ class DeskApiBase(SandboxedDBTest):
         super().setUp()
         from fastapi.testclient import TestClient
         from server.main import app
-        from server.services import desk_poller
-        self.poller = desk_poller
         from server.routers import desk as desk_router
-        for reset in (desk_poller.reset, desk_router.reset):
-            reset()
-            self.addCleanup(reset)
+        desk_router.reset()
+        self.addCleanup(desk_router.reset)
         self.client = TestClient(app, base_url=support.API_BASE_URL)
         self.ids = install()
         self.views = {s: grade_and_view(self.ids[s], s) for s in self.viewed}
         self.now = AFTER_CLOSE
         self.kite = FakeKite()
-        self.ticks: dict[int, dict] = {}
-        self.subscribed: list = []
         self.snap = snapshot(the_holdings())
         self.authenticated = True
         for target, attr, fn in (
-                (desk_poller, "now_ns", lambda: self.now),
+                (desk_router, "now_ns", lambda: self.now),
                 (portfolio_sync, "cached_snapshot", lambda *a, **k: self.snap),
                 (portfolio_sync, "fetch_snapshot", lambda *a, **k: self.snap),
-                (tick_buffer, "latest_ticks_bulk", lambda tokens: {t: self.ticks[t] for t in tokens
-                                                                  if t in self.ticks}),
                 (kite_client, "is_authenticated", lambda: self.authenticated),
-                (kite_readonly, "client", lambda: self.kite),
-                (desk_poller, "_bucket", lambda: NoBucket())):
-            p = mock.patch.object(target, attr, side_effect=fn) if attr != "_bucket" else \
-                mock.patch.object(target, attr, fn)
+                (kite_readonly, "client", lambda: self.kite)):
+            p = mock.patch.object(target, attr, side_effect=fn)
             p.start()
             self.addCleanup(p.stop)
-        from server.services import ticker_bridge
-        p = mock.patch.object(ticker_bridge, "ensure_subscribed",
-                              side_effect=lambda tokens, **kw: self.subscribed.append(sorted(tokens)) or True)
-        p.start()
-        self.addCleanup(p.stop)
 
     def get(self, path: str, status: int = 200) -> dict:
         r = self.client.get(path)
         self.assertEqual(r.status_code, status, r.text)
         return r.json()
+
+
+def FORBIDDEN_IN(body) -> list[str]:  # noqa: ANN001, N802
+    return [k for k in _keys(body) for bad in FORBIDDEN if bad in k]
 
 
 class ListTests(DeskApiBase):
@@ -198,18 +155,15 @@ class ListTests(DeskApiBase):
         self.assertEqual(sorted(chips), ["INFY", "TCS"])
         for sym in ("INFY", "TCS"):
             c = chips[sym]
-            self.assertEqual((c["exchange"], c["instrument_id"], c["verdict"], c["live"]),
-                             ("NSE", self.ids[sym], self.views[sym]["verdict"], False))
+            self.assertEqual((c["exchange"], c["instrument_id"], c["verdict"]),
+                             ("NSE", self.ids[sym], self.views[sym]["verdict"]))
             self.assertEqual(c["as_of_ns"], AFTER_CLOSE - 86_400 * 10**9)
+            self.assertEqual(c["close_date"], "2026-11-16")
             self.assertEqual((c["holding_symbol"], c["holding_exchange"]), (sym, "NSE"))      # the page matches on it
+            self.assertNotIn("live", c)
         skipped = {s["symbol"]: s["reason"] for s in body["skipped"]}
         self.assertEqual(skipped, {"SGBMAR29": nightly.NOT_NSE_STOCK, "BSEONLY": nightly.BSE_ONLY})
         self.assertFalse(FORBIDDEN_IN(body))
-
-
-
-def FORBIDDEN_IN(body) -> list[str]:  # noqa: ANN001, N802
-    return [k for k in _keys(body) for bad in FORBIDDEN if bad in k]
 
 
 class NeverGradedTests(DeskApiBase):
@@ -228,73 +182,55 @@ class ViewTests(DeskApiBase):
         from server import schemas
         body = self.get("/api/desk/INFY")
         self.assertEqual(FORBIDDEN_IN(body), [])
-        for model in (schemas.DeskListDTO, schemas.DeskChipDTO, schemas.DeskViewDTO, schemas.DeskSignalDTO,
-                      schemas.DeskGaugeDTO, schemas.DeskIdeaDTO, schemas.DeskIdeaLegDTO):
+        for model in (schemas.DeskListDTO, schemas.DeskChipDTO, schemas.DeskViewDTO, schemas.DeskSignalDTO):
             for name in model.model_fields:
                 self.assertFalse(any(bad in name for bad in FORBIDDEN), f"{model.__name__}.{name}")
         self.assertEqual((body["symbol"], body["instrument_id"]), ("INFY", self.ids["INFY"]))
         self.assertEqual(body["verdict"], self.views["INFY"]["verdict"])
+        self.assertEqual(body["price_paise"], self.views["INFY"]["close_paise"])
         self.assertEqual(len(body["signals"]), len(replay.VOTERS))
         for s in body["signals"]:
             self.assertEqual((s["grade"], s["trades"], s["windows_won"], s["windows_total"]), ("strong", 12, 3, 4))
             self.assertNotRegex(s["note"], r"^(Bought|Sold|Flipped) [0-9,]+ ")      # no replay share counts
         self.assertEqual(body["evidence_to"], "2026-07-31")
-        self.assertTrue(body["fno"])
-        self.assertEqual(body["lot"], 400)
-        self.assertFalse(body["live"])
-        self.assertIsNone(body["gauge"])           # no chain snapshot yet
         self.assertEqual(set(body["agree"]) | set(body["disagree"]),
                          {s["display_name"] for s in body["signals"]})
 
-    def test_a_stock_without_options_says_so(self):
+    def test_the_view_is_the_latest_close_with_its_date_and_nothing_on_options(self):
+        from server import schemas
         body = self.get("/api/desk/TCS")
-        self.assertFalse(body["fno"])
-        self.assertIsNone(body["lot"])
-        self.assertIsNone(body["gauge"])
-        self.assertEqual(body["ideas"], [])
-        self.assertIn("No options are listed on NSE for this stock.", body["plain"])
+        self.assertEqual((body["close_date"], body["as_of_ns"]), ("2026-11-16", AFTER_CLOSE - 86_400 * 10**9))
+        self.assertIn("once a day, after the session", body["plain"])
+        self.assertNotIn("option", body["plain"].lower())
+        for name in GONE:
+            self.assertNotIn(name, body)
+            self.assertNotIn(name, schemas.DeskViewDTO.model_fields)
+        self.assertFalse(any(n.startswith(("DeskGauge", "DeskIdea")) for n in dir(schemas)))
+
+    def test_during_the_session_it_is_still_the_stored_close_and_kite_is_not_called(self):
+        self.now = IN_SESSION
+        body = self.get("/api/desk/INFY")
+        self.assertEqual(body["price_paise"], self.views["INFY"]["close_paise"])
+        self.assertEqual(body["close_date"], "2026-11-16")
+        self.get("/api/desk")
+        self.get("/api/desk/INFY/chart")
+        self.assertEqual(self.kite.calls, [])
 
     def test_unknown_or_unheld_symbols_are_404(self):
         self.get("/api/desk/NOSUCH", 404)
         self.get("/api/desk/bad%20name!", 404)
 
-    def test_live_view_uses_the_latest_tick_and_is_cached(self):
-        self.now = IN_SESSION
-        self.ticks[TOKENS["INFY"]] = {"ts": IN_SESSION // 10**9 - 5, "ltp": 1531.5, "volume": 0, "oi": 0}
-        with mock.patch.object(nightly, "closing_view", wraps=nightly.closing_view) as cv:
-            body = self.get("/api/desk/INFY")
-            self.get("/api/desk/INFY")
-            self.assertEqual(cv.call_count, 1)               # the second request within 30 s is the cached view
-        self.assertTrue(body["live"])
-        # Before any pass: one ohlc call for the day's range, and its price is newer than the tick.
-        self.assertEqual([c[0] for c in self.kite.calls], ["ohlc"])
-        self.assertEqual((body["price_paise"], body["as_of_ns"]), (153_000, IN_SESSION))
-        self.now = IN_SESSION + 31 * 10**9
-        self.ticks[TOKENS["INFY"]] = {"ts": IN_SESSION // 10**9 + 30, "ltp": 1531.5, "volume": 0, "oi": 0}
-        body = self.get("/api/desk/INFY")
-        self.assertEqual((body["price_paise"], body["as_of_ns"]), (153_150, IN_SESSION + 30 * 10**9))
-        self.assertEqual([c[0] for c in self.kite.calls], ["ohlc"])      # the day's range is kept
-
-    def test_ideas_get_the_atr_the_verdict_used(self):
-        self.poller.take_pass(IN_SESSION, client=self.kite)
-        self.now = IN_SESSION + 10**9
-        with mock.patch.object(ideas_mod, "ideas", wraps=ideas_mod.ideas) as fn:
-            body = self.get("/api/desk/INFY")
-        self.assertTrue(body["ideas"])
-        kw = fn.call_args.kwargs
-        self.assertGreater(kw["atr_paise"], 0)
-        self.assertEqual(fn.call_args.args[5], 800)         # free shares: the holding's quantity
-
 
 class ChartTests(DeskApiBase):
     def test_chart_shape_matches_run_chart(self):
         from server import schemas
-        body = self.get("/api/desk/INFY/chart?interval=day")
+        body = self.get("/api/desk/INFY/chart")
         self.assertEqual(set(body), set(schemas.RunChartDTO.model_fields))
         schemas.RunChartDTO.model_validate(body)
         self.assertEqual((body["markers"], body["data_state"], body["interval_s"]), ([], "ok", 86_400))
         self.assertEqual(body["instrument_id"], self.ids["INFY"])
         self.assertTrue(body["bars"])
+        self.assertEqual(body["bars"][-1]["d"], "2026-11-16")                # the last stored close; no live candle
         self.assertTrue(body["plots"])
         self.assertLessEqual(len(body["plots"]), 8)
         for p in body["plots"]:
@@ -304,116 +240,32 @@ class ChartTests(DeskApiBase):
         bar_t = {b["t"] for b in body["bars"]}
         self.assertTrue(all(pt["t"] in bar_t for p in body["plots"] for pt in p["points"]))
 
-    def test_level_lines_end_at_the_last_full_day_while_todays_candle_forms(self):
-        self.now = IN_SESSION
-        self.ticks[TOKENS["INFY"]] = {"ts": IN_SESSION // 10**9 - 5, "ltp": 1531.5, "volume": 0, "oi": 0}
-        self.poller.take_pass(IN_SESSION, client=self.kite)
-        self.now = IN_SESSION + 10**9
-        body = self.get("/api/desk/INFY/chart?interval=day")
-        today = body["bars"][-1]
-        self.assertEqual(today["d"], DAY.isoformat())                     # the forming candle is drawn
-        self.assertTrue(body["plots"])
-        for p in body["plots"]:
-            self.assertLess(p["points"][-1]["t"], today["t"], p["name"])    # but no level step on it
-            self.assertEqual(p["points"][-1]["t"], body["bars"][-2]["t"])
-
-    def test_minute_chart_is_todays_candles(self):
-        self.now = IN_SESSION
-        body = self.get("/api/desk/INFY/chart?interval=minute")
-        self.assertEqual((body["interval_s"], body["data_state"], body["markers"]), (60, "ok", []))
-        self.assertEqual(len(body["bars"]), 5)
-        self.assertEqual(body["bars"][0]["d"], DAY.isoformat())
-        self.get("/api/desk/INFY/chart?interval=minute")
-        self.assertEqual([c[0] for c in self.kite.calls].count("historical_data"), 1)     # cached
-        self.get("/api/desk/INFY/chart?interval=week", 422)
+    def test_the_chart_is_daily_only_and_cached_until_the_bars_change(self):
+        with mock.patch.object(replay, "walk", wraps=replay.walk) as walk:
+            day = self.get("/api/desk/INFY/chart")
+            self.assertEqual(self.get("/api/desk/INFY/chart?interval=minute"), day)     # no minute chart any more
+            self.assertEqual(walk.call_count, len(replay.VOTERS))                        # the second is cached
+        self.assertEqual(day["interval_s"], 86_400)
 
 
 class DegradeTests(DeskApiBase):
-    def test_logged_out_returns_last_snapshot_not_500(self):
-        self.poller.take_pass(IN_SESSION, client=self.kite)            # a good pass while logged in
-        taken = desk_store.latest_chain(self.ids["INFY"])["taken_ns"]
-        self.assertEqual(taken, IN_SESSION)
+    def test_logged_out_returns_the_last_views_not_500(self):
         self.authenticated = False
         self.snap = snapshot([], error="Kite is not logged in")
-        self.kite.fail = True
-        self.now = IN_SESSION + 600 * 10**9
-        self.assertEqual(self.poller.take_pass(self.now)["active"], False)
         body = self.get("/api/desk")
         self.assertEqual(sorted(c["symbol"] for c in body["items"]), ["INFY", "TCS"])
-        self.assertTrue(all(not c["live"] for c in body["items"]))
         self.assertTrue(all(c["holding_symbol"] is None for c in body["items"]))      # no holdings while logged out
+        self.assertTrue(all(c["close_date"] == "2026-11-16" for c in body["items"]))
         self.assertTrue(body["plain"])
         view = self.get("/api/desk/INFY")
-        self.assertFalse(view["live"])
-        self.assertEqual(view["gauge"]["taken_ns"], taken)
-        self.assertFalse(view["gauge"]["live"])
-        self.assertEqual(view["ideas"], [])
         self.assertIn("not logged in", view["plain"])
+        self.assertIn("16 Nov 2026", view["plain"])
         self.get("/api/desk/INFY/chart")
-
-    def test_a_refused_quote_batch_keeps_the_last_snapshot(self):
-        self.poller.take_pass(IN_SESSION, client=self.kite)
-        self.kite.fail = True
-        later = IN_SESSION + 60 * 10**9
-        out = self.poller.take_pass(later, client=self.kite)
-        self.assertTrue(out["error"])
-        self.assertEqual(desk_store.latest_chain(self.ids["INFY"])["taken_ns"], IN_SESSION)
-        self.now = later + 300 * 10**9
-        view = self.get("/api/desk/INFY")
-        self.assertEqual(view["gauge"]["taken_ns"], IN_SESSION)
-        self.assertFalse(view["gauge"]["live"])
-
-
-class PollerTests(DeskApiBase):
-    def test_poller_does_nothing_outside_the_session(self):
-        with mock.patch.object(portfolio_sync, "cached_snapshot") as snap:
-            out = self.poller.take_pass(AFTER_CLOSE, client=self.kite)
-            out2 = self.poller.take_pass(timeutil.ist_ns(date(2026, 11, 15), "11:00"), client=self.kite)  # a Sunday
-        self.assertEqual((out["active"], out2["active"]), (False, False))
-        snap.assert_not_called()
         self.assertEqual(self.kite.calls, [])
-        self.assertEqual(self.subscribed, [])
-        self.assertIsNone(desk_store.latest_chain(self.ids["INFY"]))
-
-    def test_poller_does_nothing_logged_out(self):
-        self.authenticated = False
-        out = self.poller.take_pass(IN_SESSION, client=self.kite)
-        self.assertFalse(out["active"])
-        self.assertEqual(self.kite.calls, [])
-
-    def test_a_pass_quotes_every_holding_in_one_batch_and_stores_the_chain(self):
-        out = self.poller.take_pass(IN_SESSION, client=self.kite)
-        self.assertTrue(out["active"])
-        quotes = [c for c in self.kite.calls if c[0] == "quote"]
-        self.assertEqual(len(quotes), 1)
-        names = quotes[0][1]
-        self.assertIn("NSE:INFY", names)
-        self.assertIn("NSE:TCS", names)
-        self.assertTrue(any(n.startswith("NFO:INFY") for n in names))
-        self.assertEqual(self.subscribed, [sorted(TOKENS.values())])
-        snap = desk_store.latest_chain(self.ids["INFY"])
-        self.assertEqual(snap["taken_ns"], IN_SESSION)
-        self.assertEqual(snap["snapshot"]["expiries"], [NEAR, NEXT])
-        self.assertIsNone(desk_store.latest_chain(self.ids["TCS"]))
-        self.now = IN_SESSION + 10**9
-        view = self.get("/api/desk/INFY")
-        self.assertTrue(view["live"])
-        self.assertEqual(view["price_paise"], 153_000)
-        self.assertTrue(view["gauge"]["live"])
-        self.assertEqual(view["gauge"]["taken_ns"], IN_SESSION)
-        self.assertEqual([c[0] for c in self.kite.calls].count("ohlc"), 0)     # the pass's quotes held the range
-
-    def test_the_thread_starts_and_stops(self):
-        p = self.poller.DeskPoller(interval_s=3600)
-        with mock.patch.object(self.poller, "take_pass", return_value={"active": False}) as tp:
-            p.start()
-            p.stop(timeout=5)
-        self.assertFalse(p.is_alive())
-        self.assertLessEqual(tp.call_count, 1)
 
 
 class BseHeldTests(DeskApiBase):
-    """I-1: a stock held through BSE and listed on NSE is the NSE stock everywhere, its live price included."""
+    """I-1: a stock held through BSE and listed on NSE is the NSE stock everywhere."""
 
     def setUp(self):
         super().setUp()
@@ -424,20 +276,10 @@ class BseHeldTests(DeskApiBase):
         self.assertEqual((chips["INFY"]["exchange"], chips["INFY"]["holding_symbol"], chips["INFY"]["holding_exchange"]),
                          ("NSE", "INFY", "BSE"))
 
-    def test_the_live_parts_use_the_nse_token(self):
-        self.poller.take_pass(IN_SESSION, client=self.kite)
-        self.assertEqual(self.subscribed, [sorted(TOKENS.values())])
-        self.poller.reset()
-        self.now = IN_SESSION + 31 * 10**9
-        self.ticks[TOKENS["INFY"]] = {"ts": IN_SESSION // 10**9 + 30, "ltp": 1531.5, "volume": 0, "oi": 0}
-        self.ticks[800001] = {"ts": IN_SESSION // 10**9 + 30, "ltp": 999.0, "volume": 0, "oi": 0}
-        self.poller.take_pass(IN_SESSION + 10**9, client=self.kite)       # the day's range, from the quote
+    def test_the_view_and_chart_are_the_nse_stocks(self):
         body = self.get("/api/desk/INFY")
-        self.assertTrue(body["live"])
-        self.assertEqual(body["price_paise"], 153_150)                     # the NSE tick, not the BSE one
-        self.get("/api/desk/INFY/chart?interval=minute")
-        hist = [c for c in self.kite.calls if c[0] == "historical_data"]
-        self.assertEqual([c[1] for c in hist], [TOKENS["INFY"]])
+        self.assertEqual((body["symbol"], body["instrument_id"]), ("INFY", self.ids["INFY"]))
+        self.assertEqual(self.get("/api/desk/INFY/chart")["instrument_id"], self.ids["INFY"])
 
 
 if __name__ == "__main__":

@@ -22,14 +22,14 @@ export default function ThesisPanel({ view }: { view: DeskViewDTO }) {
         {view.counts && <p className="stk-fine">{view.counts[0].toUpperCase() + view.counts.slice(1)}.</p>}
 
         <dl className="stk-kv stk-kv-wide stk-gap-xs">
-          <dt>Price</dt>
+          <dt>Closing price</dt>
           <dd>{rupees(view.price_paise)}</dd>
           <dt>Nearest exit level</dt>
           <dd data-plain={view.nearest_exit_paise == null ? "" : undefined}>{view.nearest_exit_paise != null ? rupees(view.nearest_exit_paise) : "None below the price"}</dd>
         </dl>
         {view.nearest_exit_paise != null && (
           <p className="stk-fine">
-            {rupees(view.nearest_exit_paise)} is the highest exit level below the price among the rules that still say stay
+            {rupees(view.nearest_exit_paise)} is the highest exit level below the closing price among the rules that still say stay
             in and have a record on this stock. A close under it would turn that rule to get out.
           </p>
         )}

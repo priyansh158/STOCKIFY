@@ -7,9 +7,9 @@ exactly as a backtest does (`stockify.strategy.load`, source guard included) and
 oracle fills them with the next bar instead, and a daily bar reaches the strategy at its end, so the replay over
 bars[:k] (last bar: day k - 1, counting from 0) matches the oracle's end-of-day position on day k + 1.
 
-The live recompute (`now_tail`) replays only the last `window(ref, params)` bars: each voter decides from a fixed
-look-back (the swing rules' LOOKBACK, the golden cross's slow average), so a replay that starts that many bars back,
-plus a few for the bar before the last, says the same as one over the whole history.
+Each voter decides from a fixed look-back (the swing rules' LOOKBACK, the golden cross's slow average), so a replay
+that starts `window(ref, params)` bars back says the same as one over the whole history: the desk chart draws two
+years of exit levels with only that much warm-up behind them.
 
 Bars are the bar cache's adjusted basis (`stockify.data.history`), so a split or bonus never looks like a crash.
 Money is paise, time UTC epoch ns.
@@ -45,7 +45,7 @@ VOTERS: tuple[tuple[str, dict], ...] = (
 BASELINE: tuple[str, dict] = (PKG + "buy_and_hold:BuyAndHold", {})
 
 NOT_ON_DESK = "not available on the desk"
-TAIL_SPARE = 5                 # bars a tail replay keeps beyond a rule's look-back
+TAIL_SPARE = 5                 # bars of history kept beyond a rule's look-back (`window`)
 
 
 @dataclass(frozen=True)
@@ -276,8 +276,8 @@ def now(ref: str, params: dict, bars: list[S.Bar]) -> Signal:
 
 
 def window(ref: str, params: dict) -> int:
-    """How many of the latest bars a tail replay of `ref` needs to say what a replay over all of them says: the
-    rule's look-back (`LOOKBACK`, or the golden cross's slow average) plus TAIL_SPARE."""
+    """How many bars of history a replay of `ref` needs behind a bar to say there what a replay over all of them
+    says: the rule's look-back (`LOOKBACK`, or the golden cross's slow average) plus TAIL_SPARE."""
     return _window(ref, *(None if params.get(k) is None else int(params[k]) for k in ("fast", "slow")))
 
 
@@ -292,16 +292,6 @@ def _window(ref: str, fast: int | None, slow: int | None) -> int:
     if ref == PKG + "sma_cross:SmaCross" and "slow" not in params:
         need = max(need, 200)
     return need + TAIL_SPARE
-
-
-def now_tail(ref: str, params: dict, bars: list[S.Bar]) -> Signal:
-    """`now` from only the last `window(ref, params)` bars: the live recompute's fast path. Those bars are the
-    history; on_bar runs on the last TAIL_SPARE of them only, each with a full look-back behind it. The position,
-    the buying-today flag and the exit level match the full replay; the note is the tail's own last order's."""
-    if not bars:
-        return now(ref, params, bars)
-    tail = bars[-window(ref, params):]
-    return walk(ref, params, tail, warm=max(0, len(tail) - TAIL_SPARE))[-1]
 
 
 _QTY_LEAD = re.compile(r"^(?:Bought|Sold short|Sold|Flipped to (?:long|short)) [0-9,]+ \S+: ")
@@ -330,27 +320,3 @@ def daily_bars(instrument_id: int, *, until_ns: int | None = None) -> list[S.Bar
                          close=int(r["close_paise"]), volume=int(r["volume"] or 0), oi=int(r["oi"] or 0)))
     return out
 
-
-def _day_start_ns(t_ns: int) -> int:
-    """The start of the IST trading day holding t_ns (00:00 IST, as Kite stamps day candles), UTC epoch ns."""
-    return timeutil.ist_ns(timeutil.ns_to_ist(t_ns).date(), "00:00")
-
-
-def with_live_candle(bars: list[S.Bar], ltp_paise: int, t_ns: int, day_open_paise: int, day_high_paise: int,
-                     day_low_paise: int) -> list[S.Bar]:
-    """`bars` with today's partial day bar (built=True) from the live price: replacing a bar for today if the
-    history already has one, else appended. The high and low take in the open and the live price. A copy; `bars`
-    is not changed. No bars: no stock to build on, so [] back."""
-    if not bars:
-        return []
-    start = _day_start_ns(t_ns)
-    last = bars[-1]
-    if start < last.start_ns:
-        raise ValueError("the live price is older than the last daily bar")
-    keep = bars[:-1] if start == last.start_ns else list(bars)
-    volume, oi = (last.volume, last.oi) if start == last.start_ns else (0, 0)
-    live = S.Bar(instrument=last.instrument, interval_s=DAY_S, start_ns=start, t_ns=start + DAY_NS,
-                 open=int(day_open_paise), high=max(int(day_high_paise), int(ltp_paise), int(day_open_paise)),
-                 low=min(int(day_low_paise), int(ltp_paise), int(day_open_paise)), close=int(ltp_paise),
-                 volume=volume, oi=oi, built=True)
-    return [*keep, live]
