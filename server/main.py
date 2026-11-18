@@ -19,6 +19,8 @@ load_dotenv(dotenv_path=stockify_paths.env_file(), override=True)
 _WEB_ORIGIN = stockify_paths.loopback_origin(
     "STOCKIFY_WEB_ORIGIN", "http://127.0.0.1:3000"
 )
+# The laptop's Tailscale address, for the Kite login from the phone; None (the default) = loopback only.
+_REMOTE_HOST = stockify_paths.remote_host()
 
 import kite_client  # noqa: E402, F401  — patches the Kite SDK's client class to paper only (LCB 5.7)
 from fastapi import FastAPI
@@ -98,20 +100,27 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS is restricted to the configured Windows-loopback web origin.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[_WEB_ORIGIN],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# The API serves this machine's own UI only (server/local_only.py). The middleware added last
-# runs first: the Host is checked, then the X-Forwarded-Host the web server's rewrite adds, then
-# the Origin, and only then CORS and the routes.
-app.add_middleware(local_only.WebOriginOnly, web_origin=_WEB_ORIGIN)
-app.add_middleware(local_only.ForwardedHostOnly)
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(local_only.LOOPBACK_HOSTS), www_redirect=False)
+
+def _install_guards(app: FastAPI, web_origin: str, remote_host: str | None) -> None:
+    """CORS and the four local-only guards (server/local_only.py); `remote_host` None = loopback only."""
+    # CORS is restricted to the configured Windows-loopback web origin (and the Tailscale one when set).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[web_origin] + ([f"https://{remote_host}"] if remote_host else []),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    # The API serves this machine's own UI only. The middleware added last runs first: a Funnel request
+    # is refused, then the Host is checked, then the X-Forwarded-Host the web server's rewrite adds,
+    # then the Origin, and only then CORS and the routes.
+    app.add_middleware(local_only.WebOriginOnly, web_origin=web_origin, remote_host=remote_host)
+    app.add_middleware(local_only.ForwardedHostOnly, remote_host=remote_host)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=local_only.allowed_hosts(remote_host), www_redirect=False)
+    app.add_middleware(local_only.NoFunnel)                 # first of all: nothing from the internet via Funnel
+
+
+_install_guards(app, _WEB_ORIGIN, _REMOTE_HOST)
 
 
 @app.get("/api/health")

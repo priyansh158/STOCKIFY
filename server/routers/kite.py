@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 import kite_client
@@ -27,8 +27,9 @@ log = logging.getLogger("stockify.kite")
 
 router = APIRouter(prefix="/api/kite", tags=["kite"])
 
-# Where to send the user after the OAuth callback. Kept here so we can roll
-# it forward when we deploy under a custom domain.
+# Where to send the user after the OAuth callback (loopback). A login that came in through the
+# laptop's Tailscale address (STOCKIFY_REMOTE_HOST) goes back there instead; see _web_callback.
+# The login URL itself is Kite's own: the redirect target is set in the Kite developer console.
 _NEXTJS_CALLBACK = (
     stockify_paths.loopback_origin(
         "STOCKIFY_WEB_ORIGIN", "http://127.0.0.1:3000"
@@ -48,16 +49,33 @@ async def login_url() -> dict:
     return {"url": kite_client.login_url()}
 
 
+def _web_callback(request: Request) -> str:
+    """The web page to land on: the Tailscale address when the login came in through it, else loopback.
+
+    The guards (server/local_only.py) have already refused any Host or X-Forwarded-Host that is neither
+    loopback nor the one STOCKIFY_REMOTE_HOST, so a name seen here is one of those.
+    """
+    remote = stockify_paths.remote_host()
+    if remote:
+        names = [request.headers.get("host", "")]
+        names += [n for v in request.headers.getlist("x-forwarded-host") for n in v.split(",")]
+        if any(n.strip().split(":")[0] == remote for n in names):
+            return f"https://{remote}/kite/callback"
+    return _NEXTJS_CALLBACK
+
+
 @router.get("/callback")
-async def callback(request_token: str = Query("", description="Zerodha request_token")):
+async def callback(request: Request, request_token: str = Query("", description="Zerodha request_token")):
     """Browser landing endpoint after Zerodha auth.
 
     Exchanges the request_token for an access_token, persists it, then
-    redirects to the Next.js callback page (which shows success / failure).
+    redirects to the Next.js callback page (which shows success / failure),
+    on the address the browser came in through (loopback, or the Tailscale one).
     """
+    page = _web_callback(request)
     if not request_token:
         return RedirectResponse(
-            url=f"{_NEXTJS_CALLBACK}?status=err&reason=missing_request_token",
+            url=f"{page}?status=err&reason=missing_request_token",
             status_code=302,
         )
     try:
@@ -65,10 +83,10 @@ async def callback(request_token: str = Query("", description="Zerodha request_t
     except Exception as e:
         log.warning("Kite token exchange failed: %s", e)
         return RedirectResponse(
-            url=f"{_NEXTJS_CALLBACK}?status=err&reason={type(e).__name__}",
+            url=f"{page}?status=err&reason={type(e).__name__}",
             status_code=302,
         )
-    return RedirectResponse(url=f"{_NEXTJS_CALLBACK}?status=ok", status_code=302)
+    return RedirectResponse(url=f"{page}?status=ok", status_code=302)
 
 
 @router.post("/exchange")

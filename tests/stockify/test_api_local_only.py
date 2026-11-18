@@ -154,11 +154,17 @@ class OriginTests(LocalOnlyBase):
         from starlette.middleware.trustedhost import TrustedHostMiddleware
         from server import local_only
         stack = self.main.app.user_middleware                   # outermost first
-        self.assertEqual([m.cls for m in stack], [TrustedHostMiddleware, local_only.ForwardedHostOnly,
-                                                  local_only.WebOriginOnly, CORSMiddleware])
-        self.assertEqual(list(stack[0].kwargs["allowed_hosts"]), ["127.0.0.1", "localhost"])
-        self.assertEqual(stack[2].kwargs["web_origin"], self.main._WEB_ORIGIN)
-        self.assertEqual(stack[3].kwargs["allow_origins"], [self.main._WEB_ORIGIN])
+        self.assertEqual([m.cls for m in stack], [local_only.NoFunnel, TrustedHostMiddleware,
+                                                  local_only.ForwardedHostOnly, local_only.WebOriginOnly,
+                                                  CORSMiddleware])
+        # The real app follows the owner's STOCKIFY_REMOTE_HOST (RemoteHost* below test both settings).
+        remote = self.main._REMOTE_HOST
+        extra_host, extra_origin = ([remote], [f"https://{remote}"]) if remote else ([], [])
+        self.assertEqual(list(stack[1].kwargs["allowed_hosts"]), ["127.0.0.1", "localhost", *extra_host])
+        self.assertEqual(stack[2].kwargs["remote_host"], remote)
+        self.assertEqual(stack[3].kwargs["web_origin"], self.main._WEB_ORIGIN)
+        self.assertEqual(stack[3].kwargs["remote_host"], remote)
+        self.assertEqual(stack[4].kwargs["allow_origins"], [self.main._WEB_ORIGIN, *extra_origin])
 
 
 class HostTests(LocalOnlyBase):
@@ -395,6 +401,323 @@ class TicksSocketTests(LocalOnlyBase):
             self.assertEqual(ws.receive_json()["type"], "error")
         self.unsubscribe.assert_called_once_with({1000})
         self.assertEqual(self._subscribed(), self._tokens(cap) + [5])
+
+
+# ── STOCKIFY_REMOTE_HOST: the one Tailscale host, for the Kite login from the phone ──────────────────
+# docs/superpowers/specs/2026-11-18-phone-login-tailscale-design.md. Off (unset, empty or invalid) the
+# guards are exactly loopback; on, exactly one more name and one more Origin are accepted.
+
+TS_HOST = "laptop.tail1234.ts.net"
+TS_ORIGIN = "https://" + TS_HOST
+# Names and origins that look like the remote host and must never pass.
+TS_HOST_NEAR_MISSES = ("other.tail1234.ts.net", "laptop.tail9999.ts.net", TS_HOST + ".evil.com", "evil" + TS_HOST,
+                       "x." + TS_HOST, TS_HOST.upper(), "Laptop.tail1234.ts.net", TS_HOST + ".", "tail1234.ts.net",
+                       "ts.net", "evil.ts.net", TS_HOST + ",evil.example")
+TS_ORIGIN_NEAR_MISSES = ("http://" + TS_HOST, TS_ORIGIN.upper(), "https://Laptop.tail1234.ts.net",
+                         TS_ORIGIN + ".evil.com", "https://evil" + TS_HOST, "https://other.tail1234.ts.net",
+                         TS_ORIGIN + ":443", TS_ORIGIN + ":3000", TS_ORIGIN + "/", "wss://" + TS_HOST, TS_HOST,
+                         TS_ORIGIN + ", " + EVIL, "null", "")
+
+
+class RemoteHostSettingTests(unittest.TestCase):
+    def _read(self, value):
+        import os
+        import stockify_paths
+        with support.isolated_env({}, clear=False):
+            os.environ.pop("STOCKIFY_REMOTE_HOST", None)
+            if value is not None:
+                os.environ["STOCKIFY_REMOTE_HOST"] = value
+            return stockify_paths.remote_host()
+
+    def test_valid_tailscale_host_names_are_taken(self):
+        for value, expected in ((TS_HOST, TS_HOST), ("  " + TS_HOST + "\t", TS_HOST),
+                                ("my-pc.tail-net.ts.net", "my-pc.tail-net.ts.net"),
+                                ("a.b.c.ts.net", "a.b.c.ts.net"), ("a1.b2.ts.net", "a1.b2.ts.net")):
+            with self.subTest(value=value):
+                self.assertEqual(self._read(value), expected)
+
+    def test_absent_or_empty_is_off(self):
+        for value in (None, "", "   "):
+            with self.subTest(value=value):
+                self.assertIsNone(self._read(value))
+
+    def test_anything_else_is_ignored(self):
+        for value in ("https://" + TS_HOST, "http://" + TS_HOST, TS_HOST + ":443", TS_HOST + "/",
+                      "*.tail1234.ts.net", "**.ts.net", TS_HOST.upper(), "Laptop.tail1234.ts.net", TS_HOST + ".",
+                      "tail1234.ts.net", "ts.net", ".ts.net", "laptop..ts.net", "-laptop.tail1234.ts.net",
+                      "laptop-.tail1234.ts.net", "laptop.tail1234.ts.net.evil.com", "laptop.tail1234.ts.network",
+                      "laptop.tail1234.ts_net", "laptop.tail1234.tsnet", "localhost", "127.0.0.1", "evil.example",
+                      TS_HOST + ",evil.ts.net", TS_HOST + " evil.ts.net", "lap top.tail1234.ts.net",
+                      "laptop.tail1234.ts.net\nx", "läptop.tail1234.ts.net", "a" * 64 + ".tail1234.ts.net",
+                      ("a" * 60 + ".") * 5 + "ts.net", "user@" + TS_HOST):
+            with self.subTest(value=value):
+                self.assertIsNone(self._read(value))
+
+    def test_an_ignored_value_is_logged_once(self):
+        import logging
+        import stockify_paths
+        previous = logging.root.manager.disable
+        logging.disable(logging.NOTSET)                  # tests/run_tests.py silences logging globally
+        self.addCleanup(logging.disable, previous)
+        stockify_paths._remote_host_warned.discard("https://warn-once.tail1234.ts.net")
+        with self.assertLogs("stockify.paths", level="WARNING") as logs:
+            for _ in range(3):
+                self.assertIsNone(self._read("https://warn-once.tail1234.ts.net"))
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("STOCKIFY_REMOTE_HOST is ignored", logs.output[0])
+        self.assertNotIn("warn-once", logs.output[0])
+
+
+class RemoteHostGuardTests(unittest.TestCase):
+    """The guard classes on their own, with the setting off and on."""
+
+    WEB = "http://127.0.0.1:3000"
+
+    def _fwd(self, value: bytes):
+        return {"type": "http", "method": "GET", "headers": [(b"x-forwarded-host", value)]}
+
+    def _post(self, origin: bytes):
+        return {"type": "http", "method": "POST", "headers": [(b"origin", origin)]}
+
+    def test_allowed_hosts(self):
+        from server import local_only
+        self.assertEqual(local_only.allowed_hosts(None), ["127.0.0.1", "localhost"])
+        self.assertEqual(local_only.allowed_hosts(""), ["127.0.0.1", "localhost"])
+        self.assertEqual(local_only.allowed_hosts(TS_HOST), ["127.0.0.1", "localhost", TS_HOST])
+
+    def test_the_guards_take_only_a_valid_tailscale_name(self):
+        # A wildcard would mean any host to TrustedHostMiddleware: the guards refuse to be built with one.
+        from server import local_only
+        for bad in ("*", "*.ts.net", "evil.example", "https://" + TS_HOST, TS_HOST.upper(), " " + TS_HOST, "ts.net"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    local_only.allowed_hosts(bad)
+                with self.assertRaises(ValueError):
+                    local_only.ForwardedHostOnly(None, remote_host=bad)
+                with self.assertRaises(ValueError):
+                    local_only.WebOriginOnly(None, self.WEB, remote_host=bad)
+
+    def test_forwarded_host_off_refuses_the_tailscale_host(self):
+        from server import local_only
+        for guard in (local_only.ForwardedHostOnly(None), local_only.ForwardedHostOnly(None, remote_host=None),
+                      local_only.ForwardedHostOnly(None, remote_host="")):
+            for value in (TS_HOST, TS_HOST + ":443", "127.0.0.1:3000," + TS_HOST):
+                with self.subTest(value=value):
+                    self.assertTrue(guard.refuses(self._fwd(value.encode())))
+            self.assertFalse(guard.refuses(self._fwd(b"127.0.0.1:3000")))
+
+    def test_forwarded_host_on_accepts_exactly_the_one_host(self):
+        from server import local_only
+        guard = local_only.ForwardedHostOnly(None, remote_host=TS_HOST)
+        for value in (TS_HOST, TS_HOST + ":443", TS_HOST + ":3000", " " + TS_HOST + " ", TS_HOST + "," + TS_HOST,
+                      "127.0.0.1:3000", "localhost", TS_HOST + ",127.0.0.1:3000"):
+            with self.subTest(value=value):
+                self.assertFalse(guard.refuses(self._fwd(value.encode())))
+        for value in TS_HOST_NEAR_MISSES + ("evil.example", "", TS_HOST + ",evil.example", "LOCALHOST"):
+            with self.subTest(value=value):
+                self.assertTrue(guard.refuses(self._fwd(value.encode())))
+
+    def test_origin_off_refuses_the_tailscale_origin(self):
+        from server import local_only
+        for guard in (local_only.WebOriginOnly(None, self.WEB), local_only.WebOriginOnly(None, self.WEB, remote_host=None),
+                      local_only.WebOriginOnly(None, self.WEB, remote_host="")):
+            self.assertTrue(guard.refuses(self._post(TS_ORIGIN.encode())))
+            self.assertFalse(guard.refuses(self._post(self.WEB.encode())))
+
+    def test_origin_on_accepts_exactly_https_of_the_one_host(self):
+        from server import local_only
+        guard = local_only.WebOriginOnly(None, self.WEB, remote_host=TS_HOST)
+        for origin in (TS_ORIGIN, " " + TS_ORIGIN + " ", self.WEB):
+            with self.subTest(origin=origin):
+                self.assertFalse(guard.refuses(self._post(origin.encode())))
+                self.assertFalse(guard.refuses({"type": "websocket", "headers": [(b"origin", origin.encode())]}))
+        for origin in TS_ORIGIN_NEAR_MISSES + (EVIL, self.WEB + ".evil.example"):
+            with self.subTest(origin=origin):
+                self.assertTrue(guard.refuses(self._post(origin.encode())))
+                self.assertTrue(guard.refuses({"type": "websocket", "headers": [(b"origin", origin.encode())]}))
+        # Two Origin headers: either foreign one refuses, as before.
+        self.assertTrue(guard.refuses({"type": "http", "method": "POST",
+                                       "headers": [(b"origin", TS_ORIGIN.encode()), (b"origin", EVIL.encode())]}))
+
+
+class RemoteHostAppTests(LocalOnlyBase):
+    """The real routes behind the real guard stack (server.main._install_guards), with the setting off and on."""
+
+    def _app(self, remote_host):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        app = FastAPI()
+        app.router.routes.extend(self.main.app.router.routes)
+        self.main._install_guards(app, self.web, remote_host)
+        env = support.isolated_env({"STOCKIFY_REMOTE_HOST": remote_host or ""}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        return TestClient(app, base_url=API, follow_redirects=False)
+
+    def test_off_the_tailscale_host_is_refused_everywhere(self):
+        self._fake_login()
+        client = self._app(None)
+        self.assertEqual(client.get("/api/health", headers={"Host": TS_HOST}).status_code, 400)
+        self.assertEqual(client.get("/api/health", headers={"Host": "127.0.0.1:8001",
+                                                            "X-Forwarded-Host": TS_HOST}).status_code, 400)
+        self.assertEqual(client.post("/api/kite/logout", headers={"Origin": TS_ORIGIN}).status_code, 403)
+        self.assertTrue(kite_client._token_file().exists())
+        self.assertNotIn("access-control-allow-origin",
+                         client.get("/api/health", headers={"Origin": TS_ORIGIN}).headers)
+        r = client.get("/api/health", headers={"Host": "127.0.0.1:8001", "X-Forwarded-Host": "127.0.0.1:3000"})
+        self.assertEqual(r.json(), {"ok": True, "service": "stockify-api"})
+
+    def test_on_the_one_host_is_served_and_can_log_out(self):
+        self._fake_login()
+        client = self._app(TS_HOST)
+        for headers in ({"Host": TS_HOST}, {"Host": "127.0.0.1:8001", "X-Forwarded-Host": TS_HOST},
+                        {"Host": "127.0.0.1:8001", "X-Forwarded-Host": "127.0.0.1:3000"}):
+            with self.subTest(headers=headers):
+                r = client.get("/api/health", headers=headers)
+                self.assertEqual(r.status_code, 200)
+        r = client.get("/api/health", headers={"Origin": TS_ORIGIN})
+        self.assertEqual(r.headers.get("access-control-allow-origin"), TS_ORIGIN)
+        r = client.post("/api/kite/logout", headers={"Host": "127.0.0.1:8001", "X-Forwarded-Host": TS_HOST,
+                                                     "Origin": TS_ORIGIN})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(kite_client._token_file().exists())
+
+    def test_on_every_other_name_and_origin_is_still_refused(self):
+        self._fake_login()
+        client = self._app(TS_HOST)
+        for host in TS_HOST_NEAR_MISSES + ("evil.example",):
+            with self.subTest(host=host):
+                self.assertEqual(client.get("/api/health", headers={"Host": host}).status_code, 400)
+                r = client.get("/api/kite/status", headers={"Host": "127.0.0.1:8001", "X-Forwarded-Host": host})
+                self.assertEqual(r.status_code, 400)
+        for origin in TS_ORIGIN_NEAR_MISSES + (EVIL,):
+            with self.subTest(origin=origin):
+                r = client.post("/api/kite/logout", headers={"X-Forwarded-Host": TS_HOST, "Origin": origin})
+                self.assertEqual(r.status_code, 403)
+                self.assertTrue(kite_client._token_file().exists())
+        r = client.get("/api/health", headers={"Origin": "http://" + TS_HOST})
+        self.assertNotIn("access-control-allow-origin", r.headers)
+
+    def test_on_an_ipv6_literal_host_is_still_refused(self):
+        # Review L-3: Starlette's rule takes the name before the first colon, so `[::1]` never matches anything.
+        client = self._app(TS_HOST)
+        for host in ("[::1]:8001", "[::1]", "[" + TS_HOST + "]"):
+            with self.subTest(host=host):
+                self.assertEqual(client.get("/api/health", headers={"Host": host}).status_code, 400)
+                r = client.get("/api/health", headers={"Host": "127.0.0.1:8001", "X-Forwarded-Host": host})
+                self.assertEqual(r.status_code, 400)
+
+    def test_a_funnel_request_is_refused_in_both_modes(self):
+        # Review I-2: Tailscale Funnel would carry internet clients to the same host name; it marks each such
+        # request with `Tailscale-Funnel-Request`. The API refuses any request with that header, whatever its value.
+        from starlette.testclient import WebSocketDenialResponse
+        self._fake_login()
+        for remote in (None, TS_HOST):
+            client = self._app(remote)
+            for value in ("?1", "", "0", "false"):
+                for headers in ({}, {"X-Forwarded-Host": TS_HOST, "Origin": TS_ORIGIN},
+                                {"Host": TS_HOST, "Origin": TS_ORIGIN}):
+                    with self.subTest(remote=remote, value=value, headers=headers):
+                        h = {**headers, "Tailscale-Funnel-Request": value}
+                        self.assertEqual(client.get("/api/health", headers=h).status_code, 400)
+                        self.assertEqual(client.get("/api/kite/callback?request_token=t", headers=h).status_code, 400)
+                        self.assertEqual(client.post("/api/kite/logout", headers=h).status_code, 400)
+                        self.assertTrue(kite_client._token_file().exists())
+            with self.assertRaises(WebSocketDenialResponse):
+                with client.websocket_connect(WS + "/api/ws/ticks", headers={"Tailscale-Funnel-Request": "?1"}):
+                    pass  # pragma: no cover
+
+    def test_the_funnel_check_on_its_own(self):
+        from server import local_only
+        guard = local_only.NoFunnel(None)
+        for headers, refused in (([], False), ([(b"tailscale-funnel-request", b"?1")], True),
+                                 ([(b"Tailscale-Funnel-Request", b"")], True),
+                                 ([(b"host", b"127.0.0.1"), (b"tailscale-funnel-request", b"anything")], True),
+                                 ([(b"tailscale-funnel", b"?1")], False)):
+            for kind in ("http", "websocket"):
+                with self.subTest(headers=headers, kind=kind):
+                    self.assertEqual(guard.refuses({"type": kind, "method": "GET", "headers": headers}), refused)
+        self.assertFalse(guard.refuses({"type": "lifespan", "headers": [(b"tailscale-funnel-request", b"?1")]}))
+
+    def test_on_the_tick_stream_opens_from_the_tailscale_origin_only(self):
+        from starlette.websockets import WebSocketDisconnect
+        client = self._app(TS_HOST)
+        with mock.patch.object(kite_client, "is_authenticated", return_value=False):
+            with client.websocket_connect(WS + "/api/ws/ticks", headers={"X-Forwarded-Host": TS_HOST,
+                                                                          "Origin": TS_ORIGIN}) as ws:
+                self.assertEqual(ws.receive_json()["type"], "error")      # open: answered "not authenticated"
+            with self.assertRaises(WebSocketDisconnect) as refused:
+                with client.websocket_connect(WS + "/api/ws/ticks", headers={"X-Forwarded-Host": TS_HOST,
+                                                                              "Origin": "http://" + TS_HOST}):
+                    pass  # pragma: no cover
+            self.assertEqual(refused.exception.code, 1008)
+
+
+class KiteCallbackReturnTests(LocalOnlyBase):
+    """Where /api/kite/callback sends the browser after the token exchange, with the setting off and on."""
+
+    _app = RemoteHostAppTests._app
+
+    def _callback(self, client, headers, token="tok"):
+        with mock.patch.object(kite_client, "exchange_request_token", return_value={}) as exchange:
+            r = client.get("/api/kite/callback" + (f"?request_token={token}" if token else ""), headers=headers)
+        self.assertEqual(r.status_code, 302)
+        return r.headers["location"], exchange
+
+    def test_off_the_return_is_the_loopback_web_page(self):
+        client = self._app(None)
+        for headers in ({}, {"Host": "127.0.0.1:8001", "X-Forwarded-Host": "127.0.0.1:3000"}):
+            with self.subTest(headers=headers):
+                location, exchange = self._callback(client, headers)
+                self.assertEqual(location, self.web + "/kite/callback?status=ok")
+                exchange.assert_called_once_with("tok")
+
+    def test_off_an_invalid_setting_returns_to_loopback(self):
+        client = self._app(None)
+        with support.isolated_env({"STOCKIFY_REMOTE_HOST": "https://" + TS_HOST}, clear=False):
+            location, _ = self._callback(client, {})
+        self.assertEqual(location, self.web + "/kite/callback?status=ok")
+
+    def test_on_a_login_through_the_tailscale_host_returns_there(self):
+        client = self._app(TS_HOST)
+        for headers in ({"Host": "127.0.0.1:8001", "X-Forwarded-Host": TS_HOST},
+                        {"Host": "127.0.0.1:8001", "X-Forwarded-Host": TS_HOST + ":443"},
+                        {"Host": TS_HOST}):
+            with self.subTest(headers=headers):
+                location, _ = self._callback(client, headers)
+                self.assertEqual(location, TS_ORIGIN + "/kite/callback?status=ok")
+        location, exchange = self._callback(client, {"X-Forwarded-Host": TS_HOST}, token="")
+        self.assertEqual(location, TS_ORIGIN + "/kite/callback?status=err&reason=missing_request_token")
+        exchange.assert_not_called()
+        with mock.patch.object(kite_client, "exchange_request_token", side_effect=ValueError("x")):
+            r = client.get("/api/kite/callback?request_token=t", headers={"X-Forwarded-Host": TS_HOST})
+        self.assertEqual(r.headers["location"], TS_ORIGIN + "/kite/callback?status=err&reason=ValueError")
+
+    def test_on_a_login_through_loopback_returns_to_loopback(self):
+        client = self._app(TS_HOST)
+        for headers in ({}, {"Host": "127.0.0.1:8001", "X-Forwarded-Host": "127.0.0.1:3000"},
+                        {"Host": "localhost:8001"}):
+            with self.subTest(headers=headers):
+                location, _ = self._callback(client, headers)
+                self.assertEqual(location, self.web + "/kite/callback?status=ok")
+
+    def test_on_a_foreign_name_never_reaches_the_callback(self):
+        client = self._app(TS_HOST)
+        for host in TS_HOST_NEAR_MISSES:
+            with self.subTest(host=host):
+                with mock.patch.object(kite_client, "exchange_request_token") as exchange:
+                    r = client.get("/api/kite/callback?request_token=t", headers={"X-Forwarded-Host": host})
+                self.assertEqual(r.status_code, 400)
+                exchange.assert_not_called()
+
+    def test_the_login_url_is_kites_own_in_both_modes(self):
+        for remote in (None, TS_HOST):
+            with self.subTest(remote=remote):
+                client = self._app(remote)
+                headers = {"X-Forwarded-Host": TS_HOST} if remote else {}
+                r = client.get("/api/kite/login_url", headers=headers)
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(r.json()["url"], "https://kite.zerodha.com/connect/login?v=3&api_key=test-key")
 
 
 if __name__ == "__main__":

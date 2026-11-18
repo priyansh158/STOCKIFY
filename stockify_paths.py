@@ -7,7 +7,9 @@ sandbox.
 """
 from __future__ import annotations
 
+import logging
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -72,3 +74,36 @@ def loopback_origin(env_name: str, default: str) -> str:
         )
     # The origin as a browser sends it: lower-case host, and no port when it is http's default.
     return f"http://{parsed.hostname}" + (f":{port}" if port not in (None, 80) else "")
+
+
+# The one host name, besides loopback, the API and the web server answer: the laptop's private Tailscale
+# address (docs/superpowers/specs/2026-11-18-phone-login-tailscale-design.md). `<machine>.<tailnet>.ts.net`,
+# lower case, no scheme, no port, no wildcard, no trailing dot; each label 1-63 letters, digits or hyphens,
+# not starting or ending with a hyphen. web/src/lib/remoteHost.ts applies the same rule.
+_TS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_REMOTE_HOST_RULE = re.compile(rf"(?:{_TS_LABEL}\.){{2,}}ts\.net")
+_remote_host_warned: set[str] = set()
+
+
+def is_remote_host(value: str) -> bool:
+    """True when `value` is exactly one valid Tailscale host name (no surrounding space)."""
+    return isinstance(value, str) and len(value) <= 253 and _REMOTE_HOST_RULE.fullmatch(value) is not None
+
+
+def remote_host(env_name: str = "STOCKIFY_REMOTE_HOST") -> str | None:
+    """The Tailscale host name in `env_name`, or None when it is unset, empty or not a valid one.
+
+    A value that does not pass the rule is ignored (logged once per value): it never relaxes the guards.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    if is_remote_host(value):
+        return value
+    if value not in _remote_host_warned:
+        _remote_host_warned.add(value)
+        logging.getLogger("stockify.paths").warning(
+            "%s is ignored: it must be one Tailscale host name such as laptop.tailnet.ts.net "
+            "(lower case, no scheme, no port, no wildcard); only loopback is served.", env_name)
+    return None
