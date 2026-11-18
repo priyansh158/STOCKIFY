@@ -17,6 +17,10 @@ An entry may carry `"choices"`, a list of `{"value", "label"}`: the form shows a
 value, and any other value is refused. A decimal entry may carry `"percent": True`: the form shows the fraction as a
 percentage (0.95 as 95) and stores it unchanged.
 
+A `ranking` value is set by the fundamentals screener, never typed (the form shows "Set by the screener"): an object
+{label: [{"date": "YYYY-MM-DD", "symbols": [text, ...]}, ...]}, each label's dates rising (FS 6). Only its shape is
+checked here; a symbol that is not in the run's data is the strategy's to skip.
+
 `schema_of` is the lookup every run config passes through (stockify.runconfig, REG 5.3): one strategy by its
 ref, without listing the catalogue or loading the engine.
 """
@@ -27,13 +31,15 @@ import inspect
 import pkgutil
 import re
 import sys
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from stockify import display
 from stockify import strategy as S
 
-PARAM_TYPES = ("int", "bool", "str", "decimal", "symbol", "hhmm", "underlying")
+PARAM_TYPES = ("int", "bool", "str", "decimal", "symbol", "hhmm", "underlying", "ranking")
 
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
 _HHMM = re.compile(r"^\s*\d{1,2}:\d{1,2}(:\d{1,2})?\s*$")
 _SYMBOL = re.compile(r"^([A-Z]+:)?\S.*$")
 _REF = re.compile(r"^stockify\.strategies\.(?!_)\w+:\w+$")     # a non-underscore module of this package
@@ -199,6 +205,34 @@ def _choice_problem(p: dict, v) -> str | None:  # noqa: ANN001
     return None if ok else f"{v!r} is not one of {', '.join(str(c) for c in values)}"
 
 
+def _ranking_problem(v) -> str | None:  # noqa: ANN001
+    """What is wrong with a ranking's shape, or None (see the module docstring)."""
+    if not isinstance(v, dict):
+        return "an object of lists by label"
+    for label, entries in v.items():
+        if not isinstance(label, str) or not label.strip():
+            return "a label that is not a non-empty text"
+        if not isinstance(entries, list):
+            return f"{label!r} is not a list"
+        last = ""
+        for e in entries:
+            if not isinstance(e, dict) or set(e) != {"date", "symbols"}:
+                return f"an entry of {label!r} is not {{date, symbols}}"
+            d = e["date"]
+            if not isinstance(d, str) or not _ISO_DAY.match(d):
+                return f"{label!r} has a date that is not YYYY-MM-DD"
+            try:
+                date.fromisoformat(d)
+            except ValueError:
+                return f"{label!r} has a date that is not YYYY-MM-DD"
+            if d <= last:
+                return f"{label!r} has dates that do not rise"
+            last = d
+            if not isinstance(e["symbols"], list) or any(not isinstance(x, str) or not x.strip() for x in e["symbols"]):
+                return f"{label!r} on {d} has symbols that are not a list of texts"
+    return None
+
+
 def _type_problem(t: str, v) -> str | None:  # noqa: ANN001
     if t == "int":
         if isinstance(v, bool):
@@ -228,6 +262,9 @@ def _type_problem(t: str, v) -> str | None:  # noqa: ANN001
         return None if isinstance(v, str) and v.strip() else "is not a non-empty text"
     if t == "symbol":
         return None if isinstance(v, str) and _SYMBOL.match(v.strip() or "") else "is not a symbol like NSE:RELIANCE"
+    if t == "ranking":
+        why = _ranking_problem(v)
+        return None if why is None else f"is not a ranking: {why}"
     if t == "hhmm":
         if not isinstance(v, str) or not _HHMM.match(v):
             return "is not a time like 15:10"
