@@ -98,7 +98,7 @@ def broadcast_of(entry: dict, fields: tuple[str, ...] = ("broadCastDate", "exchd
     return None, None
 
 
-def _xbrl_url(v: Any) -> tuple[str | None, str | None]:
+def nse_xbrl_url(v: Any) -> tuple[str | None, str | None]:
     """(url, None) for an XBRL link on NSE's archive, else (None, the reason)."""
     if not _has(v) or str(v).rstrip().endswith("/-"):
         return None, "NSE lists no XBRL file for this filing"
@@ -121,7 +121,7 @@ def filing_id(symbol: str, period_end: str, period_kind: str, basis: str, broadc
 def _row(symbol: str, *, period_start: str | None, period_end: str, period_kind: str, consolidated: Any,
          broadcast: tuple[int | None, str | None], source: str, seq: Any, xbrl: Any) -> dict:
     basis = "consolidated" if consolidated == "Consolidated" else "standalone"
-    url, why = _xbrl_url(xbrl)
+    url, why = nse_xbrl_url(xbrl)
     if broadcast[0] is None:
         why = "; ".join(w for w in (why, "NSE lists no broadcast time for this filing") if w)
     return {"filing_id": filing_id(symbol, period_end, period_kind, basis, broadcast[0], url),

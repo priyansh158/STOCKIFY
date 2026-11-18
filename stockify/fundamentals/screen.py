@@ -34,7 +34,7 @@ import statistics
 from datetime import date
 
 from stockify import dbconn
-from stockify.fundamentals import ratios, store, universe
+from stockify.fundamentals import ratios, series, store, universe
 
 STALE_DAYS = 200                     # task-4 review: a newest quarter older than this is out of date
 MIN_PEERS = 5                        # ruling R3: fewer placed stocks in an industry: compare with all stocks
@@ -300,16 +300,28 @@ def order(day: date, *, balance: float = 0.5) -> list[dict]:
 # ── kept lists ───────────────────────────────────────────────────────────────
 
 def save(day: date, rows: list[dict]) -> None:
-    """Keep the day's list (replacing one saved for that day before), position 1 first."""
-    iso = day.isoformat() if isinstance(day, date) else str(day)
+    """Keep the day's list (replacing one saved for that day before), position 1 first, with the universe it was
+    computed from. Each listed stock's details series are computed and kept first (series.precompute), so a list
+    is never shown without them."""
+    day = day if isinstance(day, date) else date.fromisoformat(str(day))
+    iso = day.isoformat()
+    series.precompute(day, rows, min_peers=MIN_PEERS)
     values = [(iso, n, r["symbol"], json.dumps(r, sort_keys=True, ensure_ascii=False))
               for n, r in enumerate(rows, start=1)]
+    as_of = store.latest_as_of()
     conn = store._connect()
     with dbconn.locked_write(store._lock, conn):
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM screen_runs WHERE day = ?", (iso,))
         conn.executemany("INSERT INTO screen_runs (day, position, symbol, json) VALUES (?, ?, ?, ?)", values)
+        conn.execute("INSERT OR REPLACE INTO screen_days (day, universe_as_of) VALUES (?, ?)", (iso, as_of))
         conn.execute("COMMIT")
+
+
+def universe_of(day: str) -> str | None:
+    """The universe.as_of the list of `day` (ISO) was computed from; None when not kept."""
+    r = store._connect().execute("SELECT universe_as_of FROM screen_days WHERE day = ?", (str(day),)).fetchone()
+    return None if r is None else r["universe_as_of"]
 
 
 def latest() -> tuple[str | None, list[dict]]:

@@ -4,6 +4,7 @@ Offline: FastAPI's TestClient over a sandboxed fundamentals store and refdata, f
 (screen_support), the list saved as the daily job saves it."""
 from __future__ import annotations
 
+import json
 import statistics
 import unittest
 from datetime import date, timedelta
@@ -173,7 +174,7 @@ class DetailTests(FundamentalsApiBase):
         body = self.get("/api/fundamentals/HELD")
         self.assertEqual(body["left_out_reason"], "no results on record")
         self.assertIsNone(body["peer_group"])
-        self.assertTrue(body["reasons"])
+        self.assertEqual(body["reasons"], [])                    # the reason is said once, in left_out_reason
         self.assertEqual(body["series"], [])
         self.assertEqual([(f["status"], f["reason"]) for f in body["filings"]],
                          [("held", "the figures do not add up: total income differs from its parts")])
@@ -184,6 +185,29 @@ class DetailTests(FundamentalsApiBase):
         rev = next(s for s in body["series"] if s["key"] == "revenue")
         # 900, 1000, 1000, 1100, 1200, 1300: the middle two's mean, in whole paise
         self.assertEqual(rev["points"][-1]["sector_median"], 1050 * CR)
+
+    def test_a_listed_stocks_detail_reads_the_saved_series(self):
+        expected = self.get("/api/fundamentals/BBB")["series"]
+        calls = []
+        real_known, real_mcap = pit.known_on, pit.market_cap
+        with mock.patch.object(pit, "known_on", side_effect=lambda *a, **k: calls.append("known_on")
+                               or real_known(*a, **k)),                 mock.patch.object(pit, "market_cap", side_effect=lambda *a, **k: calls.append("market_cap")
+                                  or real_mcap(*a, **k)):
+            body = self.get("/api/fundamentals/BBB")
+        self.assertEqual(calls, [])                             # no per-peer point-in-time reads on a click
+        self.assertEqual(body["series"], expected)
+        saved = store._connect().execute("SELECT symbol FROM screen_series WHERE day = ? ORDER BY symbol",
+                                         (DAY.isoformat(),)).fetchall()
+        self.assertEqual([r["symbol"] for r in saved], sorted(r["symbol"] for r in screen.latest()[1]))
+
+    def test_a_newer_universe_does_not_drop_a_listed_stock(self):
+        newer = [u for u in self.universe if u["symbol"] != "BBB"]
+        store.put_universe("2026-08-07", newer)
+        body = self.get("/api/fundamentals/BBB")
+        self.assertEqual(body["company"], "BBB Ltd.")
+        listing = self.get("/api/fundamentals")
+        self.assertEqual({i["symbol"]: i["company"] for i in listing["items"]}["BBB"], "BBB Ltd.")
+        self.assertEqual(listing["held_count"], 1)              # counted against the universe the screen used
 
     def test_unknown_symbol_404(self):
         for sym in ("NOPE", "THIN", "bad%20sym", "A" * 41):
@@ -246,8 +270,11 @@ class NoScoreTests(FundamentalsApiBase):
                      "SeriesDTO", "SeriesPointDTO", "FilingDTO", "FundamentalsTestRecordDTO"):
             keys |= set(schemas[name]["properties"])
         self.assertEqual([k for k in keys for bad in FORBIDDEN if bad in k.lower()], [])
-        # The stored rows carry no score either: the list's order is the judgement.
-        self.assertEqual([k for k in _keys(screen.latest()[1]) for bad in FORBIDDEN if bad in k.lower()], [])
+        # The stored rows and series carry no score either: the list's order is the judgement.
+        saved = [json.loads(r["json"]) for r in store._connect().execute("SELECT json FROM screen_series")]
+        self.assertTrue(saved)
+        self.assertEqual([k for k in _keys([screen.latest()[1], saved]) for bad in FORBIDDEN if bad in k.lower()],
+                         [])
 
 
 if __name__ == "__main__":

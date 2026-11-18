@@ -16,13 +16,19 @@ Per quarter end:
 `peer_series` puts the peers' median beside each of the stock's points: the median over the peers (the stock among
 them) that have that figure at the same quarter end; money medians in whole paise (the middle two's mean rounded
 down). Points run oldest first; a figure with no point at all is left out.
+
+`precompute(day, rows)` does that once for every stock of a day's list (the peer groups as the screen forms them)
+and keeps it in `screen_series`; screen.save calls it, and the details page reads it back with `saved`, so a click
+makes no point-in-time reads.
 """
 from __future__ import annotations
 
+import json
 import statistics
 from datetime import date
 
-from stockify.fundamentals import pit, ratios
+from stockify import dbconn
+from stockify.fundamentals import pit, ratios, store
 
 # (key, label, unit, for financials, for others)
 FIGURES = (("revenue", "Revenue", "paise", False, True),
@@ -61,7 +67,7 @@ def quarterly(symbol: str, day: date, *, financial: bool) -> dict[str, dict[str,
         profit = _ttm(by_end, end, "profit_owners")
         sheets = [s for s in quarters if s["period_end"] <= end and "total_equity" in s["fields"]]
         equity = sheets[0]["fields"]["total_equity"] if sheets else None
-        if sheets and profit is not None:
+        if sheets and profit is not None and equity > 0:         # as ratios.py: negative equity gives no ROE
             mean_equity = sum(s["fields"]["total_equity"] for s in sheets[:2]) / len(sheets[:2])
             put("roe", end, profit / mean_equity if mean_equity > 0 else None)
         if financial:
@@ -115,3 +121,45 @@ def peer_series(symbol: str, day: date, *, financial: bool, peers: list[tuple[st
                   for end in sorted(own[key])]
         out.append({"key": key, "label": label, "unit": unit, "points": points})
     return out
+
+
+def peer_groups(rows: list[dict], *, min_peers: int) -> dict[str, list[dict]]:
+    """{symbol: its peer rows} as screen.py forms them from the placed stocks (here: a day's list): the stock's
+    industry when it has at least `min_peers` listed stocks, else every listed stock."""
+    by_sector: dict[str, list[dict]] = {}
+    for r in rows:
+        if r["sector"] is not None:
+            by_sector.setdefault(r["sector"], []).append(r)
+    out = {}
+    for r in rows:
+        group = by_sector.get(r["sector"], []) if r["sector"] is not None else []
+        out[r["symbol"]] = group if len(group) >= min_peers else rows
+    return out
+
+
+def precompute(day: date, rows: list[dict], *, min_peers: int) -> int:
+    """Compute every listed stock's series with its peer medians and keep them for `day` (replacing that day's);
+    each stock's figures are read once. Returns how many were kept."""
+    iso = day.isoformat()
+    cache: dict = {}
+    fin = lambda r: r["sector"] == ratios.FINANCIAL_SECTOR  # noqa: E731
+    values = []
+    by_symbol = {r["symbol"]: r for r in rows}
+    for sym, group in peer_groups(rows, min_peers=min_peers).items():
+        row = by_symbol[sym]
+        shown = peer_series(sym, day, financial=fin(row), peers=[(p["symbol"], fin(p)) for p in group], cache=cache)
+        values.append((iso, sym, json.dumps(shown, sort_keys=True, ensure_ascii=False)))
+    conn = store._connect()
+    with dbconn.locked_write(store._lock, conn):
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM screen_series WHERE day = ?", (iso,))
+        conn.executemany("INSERT INTO screen_series (day, symbol, json) VALUES (?, ?, ?)", values)
+        conn.execute("COMMIT")
+    return len(values)
+
+
+def saved(day: str, symbol: str) -> list[dict] | None:
+    """The kept series of a listed stock for the list of `day` (ISO), or None when none was kept."""
+    r = store._connect().execute("SELECT json FROM screen_series WHERE day = ? AND symbol = ?",
+                                 (str(day), str(symbol))).fetchone()
+    return None if r is None else json.loads(r["json"])

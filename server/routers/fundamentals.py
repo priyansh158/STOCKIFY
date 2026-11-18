@@ -1,12 +1,14 @@
 """FS 9: /api/fundamentals, the fundamentals screener. Ideas to research, never orders.
 
 * `GET /api/fundamentals`: the results coming up (today through 28 days), then the newest saved list, best first
-  (`position` orders it; the page does not print it), with how many universe stocks are not on it.
+  (`position` orders it; the page does not print it), with how many stocks of the universe it was computed from
+  are not on it. Names and that count use the list's own universe (screen.universe_of), not a newer one.
 * `GET /api/fundamentals/test-record`: the walk-forward summary of the screen's test record, or `available: false`.
 * `GET /api/fundamentals/{symbol}`: one stock's figures against its peers' median (table and quarter-by-quarter
-  series), the plain reasons, and the filings each figure came from. A stock of the universe that is not on the list
-  (no usable results, a held filing, no price) still gets its filings and the reason; a symbol outside the universe
-  is a 404.
+  series), the plain reasons, and the filings each figure came from. A listed stock's series and peer medians are
+  the ones series.precompute kept when the list was saved, so a click makes no point-in-time reads per peer. A stock
+  of the newest universe that is not on the list (no usable results, a held filing, no price) gets its filings, its
+  own series without medians and `left_out_reason`; any other symbol is a 404 (a stock on the list never is).
 
 Everything is read from fundamentals.sqlite and refdata: nothing here calls NSE. No score, rank, place or method
 text reaches a response (owner, 2026-11-17): the list's order is the judgement.
@@ -22,14 +24,12 @@ from fastapi import APIRouter, HTTPException
 from server.schemas import (
     CandidateDetailDTO,
     CandidateDTO,
-    DsrDTO,
     FilingDTO,
     FundamentalsListDTO,
     FundamentalsTestRecordDTO,
     RatioDTO,
     ResultsDateDTO,
     SeriesDTO,
-    WalkforwardSummaryDTO,
 )
 from stockify import timeutil
 from stockify.fundamentals import calendar, filings, ratios, screen, series, store
@@ -61,14 +61,23 @@ def _today() -> date:
     return timeutil.ns_to_ist(now_ns()).date()
 
 
-def _universe() -> dict[str, dict]:
-    """The newest Nifty 500 list read, every stock (liquid or not), by symbol."""
-    as_of = store.latest_as_of()
+def _universe(as_of: str | None) -> dict[str, dict]:
+    """The Nifty 500 list read on `as_of`, every stock (liquid or not), by symbol."""
     return {} if as_of is None else {r["symbol"]: r for r in store.universe_on(as_of)}
 
 
-def _company(uni: dict[str, dict], symbol: str) -> str:
-    return (uni.get(symbol) or {}).get("company") or symbol
+def _universes(day: str | None) -> tuple[dict[str, dict], dict[str, dict]]:
+    """(the universe the list of `day` was computed from, the newest universe). They differ after a universe
+    refresh before the next screen: the list is named and counted against its own, a stock not yet screened is
+    found in the newest."""
+    newest = store.latest_as_of()
+    used = (screen.universe_of(day) if day else None) or newest
+    latest = _universe(newest)
+    return (latest if used == newest else _universe(used)), latest
+
+
+def _company(symbol: str, *unis: dict[str, dict]) -> str:
+    return next((u[symbol]["company"] for u in unis if u.get(symbol) and u[symbol]["company"]), symbol)
 
 
 def _record() -> tuple[str | None, str | None]:
@@ -83,13 +92,13 @@ def _record() -> tuple[str | None, str | None]:
 @router.get("", response_model=FundamentalsListDTO)
 def fundamentals_list() -> FundamentalsListDTO:
     day, rows = screen.latest()
-    uni = _universe()
+    used, latest = _universes(day)
     listed = {r["symbol"] for r in rows}
-    items = [CandidateDTO(position=n, symbol=r["symbol"], company=_company(uni, r["symbol"]), sector=r["sector"],
-                          short_reason=r["short_reason"]) for n, r in enumerate(rows, start=1)]
-    upcoming = [ResultsDateDTO(symbol=m["symbol"], company=_company(uni, m["symbol"]), date=m["meeting_date"],
+    items = [CandidateDTO(position=n, symbol=r["symbol"], company=_company(r["symbol"], used, latest),
+                          sector=r["sector"], short_reason=r["short_reason"]) for n, r in enumerate(rows, start=1)]
+    upcoming = [ResultsDateDTO(symbol=m["symbol"], company=_company(m["symbol"], latest, used), date=m["meeting_date"],
                                period_hint=m["period_hint"]) for m in calendar.upcoming(_today())]
-    held = sum(1 for s, u in uni.items() if u["liquid"] and s not in listed)
+    held = sum(1 for s, u in used.items() if u["liquid"] and s not in listed)
     return FundamentalsListDTO(as_of=day, upcoming=upcoming, items=items, held_count=held,
                                test_record_id=_record()[0], notes=list(NOTES))
 
@@ -110,11 +119,10 @@ def fundamentals_test_record() -> FundamentalsTestRecordDTO:
         note = STILL_RUNNING if e.kind == "not_done" else "The test record could not be read."
         log.info("fundamentals: test record %s not shown (%s)", job_id, e.kind)
         return FundamentalsTestRecordDTO(available=False, message=note, job_id=job_id, notes=list(NOTES))
-    from server.routers.research import _clean
-    s = _clean(d["summary"])
-    s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
+    from server.routers.research import walkforward_summary_dto
     plain = {str(k): str(v) for k, v in (d.get("plain") or {}).items() if isinstance(v, str)}
-    return FundamentalsTestRecordDTO(available=True, job_id=job_id, summary=WalkforwardSummaryDTO(**s), plain=plain,
+    return FundamentalsTestRecordDTO(available=True, job_id=job_id, summary=walkforward_summary_dto(d["summary"]),
+                                     plain=plain,
                                      benchmark=benchmark, notes=list(NOTES))
 
 
@@ -129,16 +137,9 @@ def _filing(f: dict) -> FilingDTO:
     when = None
     if f["broadcast_ns"] is not None:
         when = timeutil.ns_to_ist(int(f["broadcast_ns"])).strftime("%Y-%m-%d %H:%M")
-    url = filings._xbrl_url(f["xbrl_url"])[0] if f["xbrl_url"] else None      # only an NSE archive https link
+    url = filings.nse_xbrl_url(f["xbrl_url"])[0] if f["xbrl_url"] else None      # only an NSE archive https link
     return FilingDTO(period_end=f["period_end"], period_kind=f["period_kind"], basis=f["basis"], broadcast_ist=when,
                      xbrl_url=url, status=f["status"], reason=f["reason"])
-
-
-def _peers(row: dict, rows: list[dict]) -> list[tuple[str, bool]]:
-    """The stock's peer group as the screen formed it: its industry's listed stocks, or every listed stock."""
-    by_industry = row["sector"] is not None and row["peer_group"] == f"Industry: {row['sector']}"
-    group = [r for r in rows if r["sector"] == row["sector"]] if by_industry else rows
-    return [(r["symbol"], r["sector"] == ratios.FINANCIAL_SECTOR) for r in group]
 
 
 @router.get("/{symbol}", response_model=CandidateDetailDTO)
@@ -146,28 +147,29 @@ def fundamentals_detail(symbol: str) -> CandidateDetailDTO:
     if not _SYMBOL.match(symbol):
         raise HTTPException(status_code=404, detail=NOT_IN_UNIVERSE)
     sym = symbol.upper()
-    uni = _universe()
-    u = uni.get(sym)
-    if u is None or not u["liquid"]:
-        raise HTTPException(status_code=404, detail=NOT_IN_UNIVERSE)
     day_iso, rows = screen.latest()
-    day = date.fromisoformat(day_iso) if day_iso else _today()
+    used, latest = _universes(day_iso)
     row = next((r for r in rows if r["symbol"] == sym), None)
+    u = latest.get(sym)
+    if row is None and (u is None or not u["liquid"]):          # a stock on the list is always shown
+        raise HTTPException(status_code=404, detail=NOT_IN_UNIVERSE)
+    day = date.fromisoformat(day_iso) if day_iso else _today()
     sector = row["sector"] if row is not None else (u["list_industry"] or None)
     financial = sector == ratios.FINANCIAL_SECTOR
+    points = None
     if row is not None:
         reason, peer_group, reasons = None, row["peer_group"], list(row["reasons"])
         table = _ratio_rows(row["ratios"], row["sector_medians"], financial)
-        peers = _peers(row, rows)
+        points = series.saved(day_iso, sym)                     # kept when the list was saved: no reads per peer
     else:
         d = ratios.detail(sym, day, sector=sector)
         reason = screen.left_out_reason(d, day) or NOT_YET
-        peer_group, reasons = None, [f"Not on the list: {reason}."]
+        peer_group, reasons = None, []                          # the reason is said once, in left_out_reason
         table = _ratio_rows(d["ratios"], {}, financial)
-        peers = []
-    points = series.peer_series(sym, day, financial=financial, peers=peers)
+    if points is None:                                          # not on the list: its own figures, no medians
+        points = series.peer_series(sym, day, financial=financial, peers=[])
     shown = sorted(filings.for_symbol(sym), key=lambda f: (f["period_end"], f["broadcast_ns"] or 0), reverse=True)
-    return CandidateDetailDTO(symbol=sym, company=_company(uni, sym), sector=sector, peer_group=peer_group,
+    return CandidateDetailDTO(symbol=sym, company=_company(sym, used, latest), sector=sector, peer_group=peer_group,
                               left_out_reason=reason, reasons=reasons, ratios=table,
                               series=[SeriesDTO(**s) for s in points], filings=[_filing(f) for f in shown],
                               as_of=day_iso)

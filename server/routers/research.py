@@ -38,6 +38,13 @@ def _clean(v: Any) -> Any:
     return v
 
 
+def walkforward_summary_dto(summary: dict) -> WalkforwardSummaryDTO:
+    """A walk-forward report's summary (wf_report.detail()["summary"]) as its DTO, non-finite floats as None."""
+    s = _clean(summary)
+    s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
+    return WalkforwardSummaryDTO(**s)
+
+
 def run_research_dto(run_id: str) -> RunResearchDTO:
     """The caller has checked that the run exists (404 there)."""
     from stockify.research import plain, report
@@ -370,9 +377,7 @@ def walkforward_detail(job_id: str) -> WalkforwardDTO:
         if e.kind == "not_done":
             return _not_done(job_id, str(e))
         raise HTTPException(status_code=404 if e.kind == "unknown" else 409, detail=str(e))
-    s = d["summary"]
-    s["dsr"] = DsrDTO(**s["dsr"]) if s.get("dsr") is not None else None
-    d["summary"] = WalkforwardSummaryDTO(**s)
+    d["summary"] = walkforward_summary_dto(d["summary"])
     schema = _window_params(d["windows"])
     d["windows"] = [WalkforwardWindowDTO(**{**w, "error": plain.plain_reason(w.get("error"), fallback=None),
                                             "chosen_text": _chosen_text(w.get("chosen_params"), schema)})
