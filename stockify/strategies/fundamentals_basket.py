@@ -11,7 +11,8 @@ logged once), and after every bar of that moment:
 * sells all of each held stock no longer in the basket, and trims one held above its share;
 * buys each basket stock up to its share, from the funds available. A share is 95 % of the value (cash plus held stocks
   at their last close) over the basket's size, bought with the 3 % headroom of the CNC sizing (sma_cross), so a fill
-  at up to 3 % above the close still fits.
+  at up to 3 % above the close still fits. A list with fewer usable stocks than the basket's size keeps the same share
+  per stock, and the money of the empty places stays in cash (ruling R11).
 Sale proceeds are not all usable on the day of the sale, so on the next daily bar it buys once more, to fill any
 share still short. A change smaller than 5 % of a share is not traded.
 """
@@ -118,7 +119,7 @@ class FundamentalsBasket(Strategy):
         for iid, (qty, avg) in held.items():
             last = self._close(ctx, iid, False)
             value += qty * (avg if last is None else last)
-        self.share = value * INVEST_PCT // 100 // len(self.basket) if self.basket else 0
+        self.share = value * INVEST_PCT // 100 // self.size     # R11: a short list keeps equal slots; the rest is cash
         band = self.share * BAND_PCT // 100
         for iid in sorted(held):
             qty = held[iid][0]

@@ -338,11 +338,14 @@ def _cmd_fundamentals_refresh(args) -> int:
     if _fundamentals_session_guard():
         return 1
     try:
-        res = job.run(timeutil.ist_today())
+        res = job.run(timeutil.ist_today(), budget=job.daily_request_budget())   # the day's budget, as the daemon (R12)
     except job.Busy:
         print(_FUNDAMENTALS_BUSY, file=sys.stderr)
         return 1
     print(json.dumps(res, sort_keys=True, default=str))
+    if res.get("budget_spent"):
+        print("Today's NSE request budget (fundamentals.json daily_request_budget) is spent; what is left waits for "
+              "tomorrow's run.", file=sys.stderr)
     return 0 if res.get("complete") else 1
 
 
@@ -1269,7 +1272,7 @@ def main(argv: list[str] | None = None) -> int:
     fb.add_argument("--limit", metavar="N", type=_positive_int, help="list at most N companies in this run")
     fb.set_defaults(func=_cmd_fundamentals_backfill)
     fusub.add_parser("refresh", help="one daily run now: universe (Fridays), results calendar, new filings, "
-                                     "figures and today's list").set_defaults(func=_cmd_fundamentals_refresh)
+                                     "figures and today's list (within the day's NSE request budget)").set_defaults(func=_cmd_fundamentals_refresh)
     fusub.add_parser("test-record", help="the screener's walk-forward test record (needs a Kite login; fetches "
                                          "daily prices for about 500 stocks)"
                      ).set_defaults(func=_cmd_fundamentals_test_record)

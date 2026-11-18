@@ -9,7 +9,7 @@ import Link from "next/link";
 import { dayWords } from "@/lib/format";
 import {
   basisWords, broadcastWords, figureName, figureText, filingState, getFundamentalsDetail, medianLabel, MEANINGS,
-  peerWords, periodKindWords, reasonText, sentence,
+  peerWords, periodKindWords, sentence,
 } from "@/lib/fundamentals";
 import type { CandidateDetailDTO } from "@/lib/types";
 import { Empty, Panel, Table } from "@/components/ui";
@@ -81,6 +81,8 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
   const median = medianLabel(d.peer_group);
   const peers = peerWords(d.peer_group);
   const hasMedians = d.ratios.some((x) => x.sector_median != null);
+  // A left-out stock's one reason is left_out_reason. The API writes every reason in the page's figure style.
+  const why = left ? [d.left_out_reason as string] : d.reasons;
   return (
     <div className="stk-stack" data-ruled>
       <div className="stk-head">
@@ -98,12 +100,12 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
 
       <section className="stk-section" aria-labelledby="fund-why">
         <h2 id="fund-why">{left ? "Why it is not on the list" : "Why it is on the list"}</h2>
-        {d.reasons.length === 0 ? (
+        {why.length === 0 ? (
           <Empty>No reasons were given for this stock.</Empty>
         ) : (
           <ul className="stk-bullets">
-            {d.reasons.map((t) => (
-              <li key={t}>{reasonText(left ? t.replace(/^Not on the list: /, "") : t)}</li>
+            {why.map((t) => (
+              <li key={t}>{sentence(t)}</li>
             ))}
           </ul>
         )}

@@ -7,7 +7,7 @@ import unittest
 
 from tests.stockify.fundamentals.screen_support import DAY, ScreenCase
 
-from stockify.fundamentals import screen
+from stockify.fundamentals import filings, ratios, screen
 
 PUBLIC = {"symbol", "sector", "peer_group", "ratios", "sector_medians", "reasons", "short_reason"}
 
@@ -108,6 +108,18 @@ class OrderTests(ScreenCase):
         for sym in ("NOPXGOOD", "NOTLISTED"):
             self.assertIn({"symbol": sym, "reason": "no market price to judge it by on this day"},
                           result["left_out"])
+
+    def test_a_held_filing_is_named_as_the_reason(self):
+        # A stock whose only filing could not be read says so, not "no results on record".
+        five_capital_goods(self)
+        fid = self.put("HELDCO", "2025-09-30", {})
+        filings.mark(fid, "held", "the P&L adds up to zero")
+        reason = screen.left_out_reason(ratios.detail("HELDCO", DAY, sector="Capital Goods"), DAY, "HELDCO")
+        self.assertEqual(reason, "its results could not be read (held back: the P&L adds up to zero)")
+        late = self.put("LATECO", "2025-12-31", {})      # broadcast 9 Feb 2026: not known on DAY
+        filings.mark(late, "held", "broken")
+        self.assertEqual(screen.left_out_reason(ratios.detail("LATECO", DAY, sector="Capital Goods"), DAY, "LATECO"),
+                         "no results on record")
 
     def test_loss_maker_ranks_below_profitable_peers(self):
         # Ruling R9 (a): LOSS is MID1 with a loss; it takes the worst P/E place, not none.
@@ -252,11 +264,21 @@ class WordingTests(unittest.TestCase):
     def test_changes(self):
         self.assertEqual(screen._change(-1.0), "fell to zero")
         self.assertEqual(screen._change(-1.5), "swung to a loss")
-        self.assertEqual(screen._change(-0.25), "down 25.0%")
+        self.assertEqual(screen._change(-0.25), "down 25.0 %")
         line = screen._figure_line("profit_growth", -1.5, -1.2, False)
         self.assertEqual(line, "Profit swung to a loss on the same quarter a year earlier (half or more of its "
                                "industry fell to zero or a loss).")
-        self.assertIn("(its industry: up 10.0%)", screen._figure_line("profit_growth", 0.2, 0.1, False))
+        self.assertIn("(its industry: up 10.0 %)", screen._figure_line("profit_growth", 0.2, 0.1, False))
+
+    def test_figures_read_in_the_page_style(self):
+        # The API is the one source of the page's figure style: "12.3 %" and a true minus (U+2212).
+        self.assertEqual(screen._figure_line("roe", -0.05, 0.123, False),
+                         "Earns −5.0 % a year on shareholders' equity (its industry: 12.3 %).")
+        self.assertEqual(screen._figure_line("pb", -1.25, 2.0, True),
+                         "Priced at −1.2 times its book value (all stocks: 2.0).")
+        self.assertEqual(screen._figure_line("debt_equity", -0.5, None, False), "Debt is −0.50 times its equity.")
+        for k in ("roe", "op_margin", "profit_growth"):
+            self.assertNotRegex(screen._figure_line(k, 0.1, -0.2, False), r"\d%|-")
 
 
 class SaveTests(ScreenCase):

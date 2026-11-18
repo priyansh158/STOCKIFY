@@ -693,12 +693,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_refresh_runs_one_daily_run_now(self):
-        seen = []
-        with mock.patch.object(job, "run", lambda day, **kw: seen.append(day) or {"complete": True, "stopped": None,
-                                                                                  "failed": []}):
+        seen, kws = [], []
+        with mock.patch.object(job, "run", lambda day, **kw: seen.append(day) or kws.append(kw) or
+                               {"complete": True, "stopped": None, "failed": []}):
             code, out, _ = self.run_cli(["fundamentals", "refresh"])
         self.assertEqual(code, 0)
         self.assertEqual(seen, [timeutil.ist_today()])
+        self.assertEqual(kws[0].get("budget"), job.daily_request_budget())   # counted against the day's budget (R12)
         self.assertIn('"complete": true', out)
 
     def test_the_commands_refuse_to_start_during_the_session(self):

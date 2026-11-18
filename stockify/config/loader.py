@@ -449,7 +449,7 @@ def _check_research(doc: dict) -> None:
 def _check_fundamentals(doc: dict) -> None:
     """fundamentals.json (stockify.fundamentals/1): every key present and none unknown; the list URLs and the API
     base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
-    valuation weights) distinct decimal strings in [0, 1] and `basket_sizes` distinct whole numbers from 5 to 50 and
+    valuation weights) decimal strings in [0, 1], no two equal as numbers, and `basket_sizes` distinct whole numbers from 5 to 50 and
     at most `top_kept`; `daily_request_budget` a whole number of requests from 1; `filings_from` a YYYY-MM-DD
     date; each `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
     keys = ("nifty500_list_url", "nifty500_list_fallback_url", "liquidity_floor_paise", "liquidity_days",
@@ -479,10 +479,11 @@ def _check_fundamentals(doc: dict) -> None:
     whole(doc["top_kept"], "top_kept", 1, 500)
     whole(doc["daily_request_budget"], "daily_request_budget", 1, 100_000)
     balances = doc["balances"]
-    if (not isinstance(balances, list) or not balances or len(set(map(str, balances))) != len(balances)
-            or not all(isinstance(b, str) and _SIGNED_DECIMAL.fullmatch(b) and 0 <= Decimal(b) <= 1 for b in balances)):
-        raise ConfigError(f"fundamentals.json: balances must be a non-empty list of distinct decimal strings from 0 "
-                          f"(quality only) to 1 (valuation only), got {balances!r}")
+    if (not isinstance(balances, list) or not balances
+            or not all(isinstance(b, str) and _SIGNED_DECIMAL.fullmatch(b) and 0 <= Decimal(b) <= 1 for b in balances)
+            or len({Decimal(b) for b in balances}) != len(balances)):      # "0.5" and "0.50" are one balance
+        raise ConfigError(f"fundamentals.json: balances must be a non-empty list of decimal strings from 0 "
+                          f"(quality only) to 1 (valuation only), no two equal as numbers, got {balances!r}")
     sizes = doc["basket_sizes"]
     if not isinstance(sizes, list) or not sizes or len(set(map(repr, sizes))) != len(sizes):
         raise ConfigError(f"fundamentals.json: basket_sizes must be a non-empty list of distinct whole numbers, "

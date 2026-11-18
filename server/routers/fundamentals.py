@@ -163,7 +163,7 @@ def fundamentals_detail(symbol: str) -> CandidateDetailDTO:
         points = series.saved(day_iso, sym)                     # kept when the list was saved: no reads per peer
     else:
         d = ratios.detail(sym, day, sector=sector)
-        reason = screen.left_out_reason(d, day) or NOT_YET
+        reason = screen.left_out_reason(d, day, sym) or NOT_YET
         peer_group, reasons = None, []                          # the reason is said once, in left_out_reason
         table = _ratio_rows(d["ratios"], {}, financial)
     if points is None:                                          # not on the list: its own figures, no medians

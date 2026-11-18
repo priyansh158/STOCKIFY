@@ -166,11 +166,6 @@ export function broadcastWords(s: string | null | undefined): string {
   return m ? `${dayWords(m[1])}, ${m[2]} IST` : s;
 }
 
-/** A reason from the API in the page's figure style: a true minus and "12.3 %" as in the figures table. */
-export function reasonText(s: string): string {
-  return sentence(s.replace(/(^|[\s(])-(?=\d)/g, `$1${MINUS}`).replace(/(\d)%/g, "$1 %"));
-}
-
 /** A clause from the API as a sentence: capitalised, with a full stop. */
 export function sentence(s: string): string {
   const t = s.trim();

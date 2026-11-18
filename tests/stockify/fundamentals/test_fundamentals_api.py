@@ -172,7 +172,8 @@ class DetailTests(FundamentalsApiBase):
 
     def test_a_held_stock_shows_its_filings_and_why_it_is_not_listed(self):
         body = self.get("/api/fundamentals/HELD")
-        self.assertEqual(body["left_out_reason"], "no results on record")
+        self.assertEqual(body["left_out_reason"], "its results could not be read (held back: the figures do not add "
+                                                  "up: total income differs from its parts)")
         self.assertIsNone(body["peer_group"])
         self.assertEqual(body["reasons"], [])                    # the reason is said once, in left_out_reason
         self.assertEqual(body["series"], [])

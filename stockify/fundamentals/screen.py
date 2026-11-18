@@ -1,7 +1,8 @@
 """FS 5: the screen. Each liquid stock against its industry; the order, best first, and a few plain words why.
 
 - **Who is placed.** Every stock of the newest liquid universe (universe.current()), checked in this order:
-  no quarter known at all ("no results on record"); newest usable quarter ended more than STALE_DAYS (200) days
+  no quarter known at all ("no results on record", or "its results could not be read (held back: <reason>)" when a
+  held filing was known by the day); newest usable quarter ended more than STALE_DAYS (200) days
   before the day ("results are out of date"); no market value on the day, from no close, a held share count or no
   shares filed (ruling R9 b: "no market price to judge it by on this day"); fewer than four of its six figures (P/E,
   P/B, ROE, debt to equity, operating margin, profit growth; ratios.py) ("too few figures"). A financial (Industry
@@ -35,7 +36,7 @@ import statistics
 from datetime import date
 
 from stockify import dbconn
-from stockify.fundamentals import ratios, series, store, universe
+from stockify.fundamentals import pit, ratios, series, store, universe
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ DEBT_FLOOR = 0.1                     # ... when it is at least 0.1 (a rise from 
 SHORT_MAX = 90
 MISSING = 0.5                        # ruling R9 c: a missing figure counts as the peers' middle
 NO_PRICE = "no market price to judge it by on this day"
+MINUS = "−"                     # the true minus of the page's figures (web/src/lib/fundamentals.ts)
 
 USED = {False: ("pe", "pb", "roe", "debt_equity", "op_margin", "profit_growth"),
         True: ("pe", "pb", "roe", "nii_growth")}
@@ -78,10 +80,26 @@ def _has(d: dict, k: str) -> bool:
     return d["ratios"][k] is not None or (k in WORST_FLAG and WORST_FLAG[k] in d["flags"])
 
 
-def left_out_reason(d: dict, day: date) -> str | None:
-    """Why the screen leaves a stock out on `day`, from its ratios.detail on that day; None when it is placed."""
+def _held_reason(symbol: str, day: date) -> str | None:
+    """The reason of the newest held filing of `symbol` known on `day` (usable by then; one NSE lists no broadcast
+    time for counts once its period has ended); None when it has none."""
+    rows = store._connect().execute(
+        "SELECT period_end, broadcast_ns, reason FROM filings WHERE symbol = ? AND status = 'held' "
+        "ORDER BY period_end DESC, broadcast_ns DESC", (symbol,)).fetchall()
+    for period_end, broadcast_ns, reason in rows:
+        known = (pit.usable_day(broadcast_ns) <= day if broadcast_ns is not None
+                 else date.fromisoformat(period_end) < day)
+        if known:
+            return reason or "no reason recorded"
+    return None
+
+
+def left_out_reason(d: dict, day: date, symbol: str | None = None) -> str | None:
+    """Why the screen leaves a stock out on `day`, from its ratios.detail on that day; None when it is placed. With
+    no quarter known, a held filing known by `day` is named ("its results could not be read (held back: ...)")."""
     if d["newest_quarter"] is None:
-        return "no results on record"
+        held = _held_reason(symbol, day) if symbol is not None else None
+        return "no results on record" if held is None else f"its results could not be read (held back: {held})"
     if (day - date.fromisoformat(d["newest_quarter"])).days > STALE_DAYS:
         return "results are out of date"
     if "no market value" in d["flags"]:
@@ -96,7 +114,7 @@ def _candidates(day: date) -> tuple[list[dict], list[dict]]:
     for u in universe.current():
         sym, sector = u["symbol"], (u["list_industry"] or None)
         d = ratios.detail(sym, day, sector=sector)
-        reason = left_out_reason(d, day)
+        reason = left_out_reason(d, day, sym)
         if reason is None:
             placed.append({"symbol": sym, "sector": sector, "detail": d, "used": USED[d["financial"]]})
             continue
@@ -217,13 +235,18 @@ def _change(x: float) -> str:
         return "fell to zero"
     if x < -1:
         return "swung to a loss"                 # M3: the earlier figure was positive, the newest is below zero
-    return f"{'up' if x >= 0 else 'down'} {abs(x) * 100:.1f}%"
+    return f"{'up' if x >= 0 else 'down'} {abs(x) * 100:.1f} %"
+
+
+def _num(x: float, digits: int) -> str:
+    """A figure as the page prints it: a true minus (U+2212), never a hyphen."""
+    return f"{x:.{digits}f}".replace("-", MINUS)
 
 
 def _figure_line(k: str, v: float, median: float | None, whole: bool) -> str:
     whom = "all stocks" if whole else "its industry"
-    pct = lambda x: f"{x * 100:.1f}%"  # noqa: E731
-    times = lambda x: f"{x:.1f}"  # noqa: E731
+    pct = lambda x: f"{_num(x * 100, 1)} %"  # noqa: E731 — the page's figure style, "12.3 %"
+    times = lambda x: _num(x, 1)  # noqa: E731
     if k == "pe":
         text, fmt = f"Priced at {times(v)} times its last four quarters' profit", times
     elif k == "pb":
@@ -231,7 +254,7 @@ def _figure_line(k: str, v: float, median: float | None, whole: bool) -> str:
     elif k == "roe":
         text, fmt = f"Earns {pct(v)} a year on shareholders' equity", pct
     elif k == "debt_equity":
-        text, fmt = f"Debt is {v:.2f} times its equity", lambda x: f"{x:.2f}"
+        text, fmt = f"Debt is {_num(v, 2)} times its equity", lambda x: _num(x, 2)
     elif k == "op_margin":
         text, fmt = f"Operating margin of {pct(v)}", pct
     elif k == "profit_growth":
@@ -267,7 +290,7 @@ def _row(p: dict, filed: dict[str, float], medians: dict[str, float | None]) -> 
         de = r["debt_equity"]
         if de is not None and before is not None and de >= DEBT_FLOOR and de > before * DEBT_RISE:
             traps.append("debt")
-            warnings.append(f"Cheap on earnings, but its debt has risen from {before:.2f} to {de:.2f} times its "
+            warnings.append(f"Cheap on earnings, but its debt has risen from {_num(before, 2)} to {_num(de, 2)} times its "
                             "equity in a year.")
     order = sorted(filed, key=lambda k: (-filed[k], ratios.KEYS.index(k)))
     lines = [_figure_line(k, r[k], medians[k], p["whole"]) for k in order]

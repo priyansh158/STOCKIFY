@@ -63,6 +63,14 @@ class HistoryTests(ScreenCase):
         self.assertEqual(history.balances(), ["0.3", "0.5", "0.7"])
         self.assertEqual(history.basket_sizes(), [10, 20, 30])
 
+    def test_balances_equal_as_numbers_are_refused(self):
+        from stockify.config import loader
+        doc = loader.load_json("fundamentals.json")
+        for bad in (["0.5", "0.50"], ["0.3", ".3"], ["1", "1.0"]):
+            with self.subTest(bad=bad), self.assertRaisesRegex(loader.ConfigError, "balances"):
+                loader._check_fundamentals({**doc, "balances": bad})
+        loader._check_fundamentals({**doc, "balances": ["0.3", "0.5", "0.7"]})
+
     def test_a_day_with_no_placed_stock_is_left_out(self):
         five_capital_goods(self)
         got = history.rankings(date(2025, 11, 1), date(2025, 11, 30))   # no close in early November: none placed

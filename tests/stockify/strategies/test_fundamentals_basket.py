@@ -92,6 +92,19 @@ class FundamentalsBasketTests(unittest.TestCase):
             pos = _rows(run / "positions_eod.csv")
             self.assertEqual({int(r["instrument_id"]) for r in pos if int(r["qty"]) > 0}, {3})
 
+    def test_a_short_list_keeps_equal_slots_and_cash(self):
+        # Ruling R11: one usable stock with basket_size 2 gets half of 95 % of the value; the rest stays in cash.
+        with tempfile.TemporaryDirectory(prefix="fs6-") as tmp:
+            run = self._run(Path(tmp), balance="0.3")
+            pos = _rows(run / "positions_eod.csv")
+            nav = {r["trade_date"]: int(r["nav_paise"]) for r in _rows(run / "equity.csv")}
+            day = "2026-01-30"
+            held = [int(r["qty"]) * int(r["mark_paise"]) for r in pos if r["trade_date"] == day and int(r["qty"]) > 0]
+            self.assertEqual(len(held), 1)
+            share = nav[day] * 95 // 100 // 2
+            self.assertGreater(held[0], share * 85 // 100, (held, share))
+            self.assertLess(held[0], share * 110 // 100, (held, share))
+
     def test_an_unknown_balance_is_refused(self):
         with tempfile.TemporaryDirectory(prefix="fs6-") as tmp, self.assertRaisesRegex(Exception, "0.9"):
             self._run(Path(tmp), balance="0.9")
