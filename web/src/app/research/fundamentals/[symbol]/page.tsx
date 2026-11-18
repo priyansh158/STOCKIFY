@@ -9,7 +9,7 @@ import Link from "next/link";
 import { dayWords } from "@/lib/format";
 import {
   basisWords, broadcastWords, figureName, figureText, filingState, getFundamentalsDetail, medianLabel, MEANINGS,
-  peerWords, periodKindWords, sentence,
+  peerWords, periodKindWords, reasonText, sentence,
 } from "@/lib/fundamentals";
 import type { CandidateDetailDTO } from "@/lib/types";
 import { Empty, Panel, Table } from "@/components/ui";
@@ -97,13 +97,13 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
       </div>
 
       <section className="stk-section" aria-labelledby="fund-why">
-        <h2 id="fund-why">{left ? "Why it is not on the list" : "Why it is worth a closer look"}</h2>
+        <h2 id="fund-why">{left ? "Why it is not on the list" : "Why it is on the list"}</h2>
         {d.reasons.length === 0 ? (
           <Empty>No reasons were given for this stock.</Empty>
         ) : (
           <ul className="stk-bullets">
             {d.reasons.map((t) => (
-              <li key={t}>{sentence(left ? t.replace(/^Not on the list: /, "") : t)}</li>
+              <li key={t}>{reasonText(left ? t.replace(/^Not on the list: /, "") : t)}</li>
             ))}
           </ul>
         )}
@@ -137,7 +137,11 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
       <section className="stk-section" aria-labelledby="fund-charts">
         <h2 id="fund-charts">Quarter by quarter</h2>
         {d.series.length === 0 ? (
-          <Empty>No quarter&apos;s figures have been read for this stock yet, so there is nothing to draw.</Empty>
+          d.ratios.some((x) => x.value != null) ? (
+            <Empty>Charts are drawn for stocks on the list.</Empty>
+          ) : (
+            <Empty>No quarter&apos;s figures have been read for this stock yet, so there is nothing to draw.</Empty>
+          )
         ) : (
           <>
             <p className="stk-fine stk-gap-bottom">

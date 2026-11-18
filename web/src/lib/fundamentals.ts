@@ -66,15 +66,20 @@ export function figureName(key: string, label: string): string {
 const CRORE = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
 const CRORE_SMALL = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 1 });
 
-/** A figure in its unit: paise as ₹ crore, "times" as 18.4×, a fraction as 12.3 %. Missing is a dash. */
+const MINUS = "−";   // a true minus sign, as the research figures use (researchHelpers objectiveFormat)
+
+/** A figure in its unit: paise as ₹ crore, "times" as 18.4×, a fraction as 12.3 % (the app's `pct` spacing). A negative
+ * figure leads with a true minus, before the ₹: "−₹1,234 cr". Missing is a dash. */
 export function figureText(unit: SeriesDTO["unit"], v: number | null | undefined): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return "—";
+  const sign = v < 0 ? MINUS : "";
+  const a = Math.abs(v);
   if (unit === "paise") {
-    const cr = v / 1e9;                          // 1 crore = ₹1,00,00,000 = 1e9 paise
-    return `₹${(Math.abs(cr) < 100 ? CRORE_SMALL : CRORE).format(cr)} cr`;
+    const cr = a / 1e9;                          // 1 crore = ₹1,00,00,000 = 1e9 paise
+    return `${sign}₹${(cr < 100 ? CRORE_SMALL : CRORE).format(cr)} cr`;
   }
-  if (unit === "fraction") return `${(v * 100).toFixed(1)} %`;
-  return `${v.toFixed(Math.abs(v) < 10 ? 2 : 1)}×`;
+  if (unit === "fraction") return `${sign}${(a * 100).toFixed(1)} %`;
+  return `${sign}${a.toFixed(a < 10 ? 2 : 1)}×`;
 }
 
 /** A quarter's period end ("2025-09-30") as a number that counts quarters, so a missing quarter leaves a gap. */
@@ -92,20 +97,20 @@ export function quarterWords(n: number): string {
   return `${MONTHS[n - y * 4]} ${y}`;
 }
 
-/** One figure's series as chart points: the stock's and its peers' median, broken where more than a half-year is missing. */
+/** One figure's series as chart points: the stock's and its peers' median. The step is the series' own smallest gap
+ * (a quarter, or a half-year for balance-sheet figures), and the line breaks wherever a step is missing. */
 export function chartLines(s: SeriesDTO): { own: [number, number][]; median: [number, number][]; ownBreaks: number[]; medianBreaks: number[] } {
   const pts = s.points.map((p) => ({ q: quarterNumber(p.period_end), v: p.value, m: p.sector_median }));
   const line = (get: (p: (typeof pts)[number]) => number | null | undefined) => {
     const out: [number, number][] = [];
-    const breaks: number[] = [];
-    let last: number | null = null;
     for (const p of pts) {
       const v = get(p);
-      if (v === null || v === undefined || !Number.isFinite(v)) continue;
-      if (last !== null && p.q - last > 2) breaks.push(p.q);    // half-yearly balance-sheet figures are two quarters apart
-      out.push([p.q, v]);
-      last = p.q;
+      if (v !== null && v !== undefined && Number.isFinite(v)) out.push([p.q, v]);
     }
+    out.sort((x, y) => x[0] - y[0]);
+    const gaps = out.slice(1).map((p, i) => p[0] - out[i][0]);
+    const step = gaps.length ? Math.min(...gaps) : 1;
+    const breaks = out.slice(1).filter((p, i) => p[0] - out[i][0] > step).map((p) => p[0]);
     return { out, breaks };
   };
   const own = line((p) => p.v);
@@ -159,6 +164,11 @@ export function broadcastWords(s: string | null | undefined): string {
   if (!s) return "—";
   const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/.exec(s);
   return m ? `${dayWords(m[1])}, ${m[2]} IST` : s;
+}
+
+/** A reason from the API in the page's figure style: a true minus and "12.3 %" as in the figures table. */
+export function reasonText(s: string): string {
+  return sentence(s.replace(/(^|[\s(])-(?=\d)/g, `$1${MINUS}`).replace(/(\d)%/g, "$1 %"));
 }
 
 /** A clause from the API as a sentence: capitalised, with a full stop. */
