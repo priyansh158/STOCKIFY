@@ -3,14 +3,21 @@
 The desk asks every tested strategy the same question the backtest answers bar by bar: would it be holding the
 stock now, and at what price would it get out? Rather than a second copy of each rule, `now()` loads the strategy
 exactly as a backtest does (`stockify.strategy.load`, source guard included) and feeds it the bars through
-`ReplayContext`, which offers only what the desk's strategies use. Orders fill at once at the bar's close (the
-oracle fills them at the next bar instead, so the replay over bars[:k] matches the oracle's position on day k).
+`ReplayContext`, which offers only what the desk's strategies use. Orders fill at once at the bar's close. The
+oracle fills them with the next bar instead, and a daily bar reaches the strategy at its end, so the replay over
+bars[:k] (last bar: day k - 1, counting from 0) matches the oracle's end-of-day position on day k + 1.
+
+The live recompute (`now_tail`) replays only the last `window(ref, params)` bars: each voter decides from a fixed
+look-back (the swing rules' LOOKBACK, the golden cross's slow average), so a replay that starts that many bars back,
+plus a few for the bar before the last, says the same as one over the whole history.
 
 Bars are the bar cache's adjusted basis (`stockify.data.history`), so a split or bonus never looks like a crash.
 Money is paise, time UTC epoch ns.
 """
 from __future__ import annotations
 
+import functools
+import re
 from dataclasses import dataclass
 
 from stockify import strategy as S
@@ -38,6 +45,7 @@ VOTERS: tuple[tuple[str, dict], ...] = (
 BASELINE: tuple[str, dict] = (PKG + "buy_and_hold:BuyAndHold", {})
 
 NOT_ON_DESK = "not available on the desk"
+TAIL_SPARE = 5                 # bars a tail replay keeps beyond a rule's look-back
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,7 @@ class ReplayContext:
         self._iid = int(instrument_id)
         self._spec = dict(spec) if spec is not None else {"lot": 1}
         self._bars: list[S.Bar] = []
+        self._by_key: dict[tuple[int, int], list[S.Bar]] = {}    # (instrument, interval_s) -> its bars, in order
         self._now = 0
         self._cash = int(capital_paise)
         self._positions: dict[tuple[int, str], _Position] = {}
@@ -99,6 +108,7 @@ class ReplayContext:
     def advance(self, bar: S.Bar) -> None:
         """The next bar has closed: it joins the history and the clock moves to its end."""
         self._bars.append(bar)
+        self._by_key.setdefault((bar.instrument, bar.interval_s), []).append(bar)
         self._now = bar.t_ns
 
     def subscribed(self, bar: S.Bar) -> bool:
@@ -125,7 +135,9 @@ class ReplayContext:
         self._subs.add((int(iid), int(interval_s)))
 
     def _series(self, iid: int, interval_s: int) -> list[S.Bar]:
-        return [b for b in self._bars if b.instrument == iid and b.interval_s == int(interval_s)]
+        """The bars of one series so far (kept as they arrive: no walk over the whole history per call). Callers
+        must not change the list."""
+        return self._by_key.get((int(iid), int(interval_s)), [])
 
     def bars(self, iid: int, interval_s: int, n: int) -> list[S.Bar]:
         return self._series(iid, interval_s)[-n:] if n > 0 else []
@@ -230,9 +242,11 @@ def _signal(ref: str, name: str, ctx: ReplayContext, bar: S.Bar, first_today: in
         note=ctx.orders[-1]["note"] if ctx.orders else "")
 
 
-def walk(ref: str, params: dict, bars: list[S.Bar]) -> list[Signal]:
+def walk(ref: str, params: dict, bars: list[S.Bar], *, warm: int = 0) -> list[Signal]:
     """Replay `ref` (a "package.module:Class" strategy) with `params` over `bars`, oldest first: the Signal after
-    each bar, so walk(...)[k - 1] == now(..., bars[:k]). One pass, for a day-by-day view of a rule."""
+    each bar, so walk(...)[k - 1] == now(..., bars[:k]). One pass, for a day-by-day view of a rule. The first
+    `warm` bars only join the history (the strategy sees them through ctx.bars, not through on_bar), and get no
+    Signal."""
     st = S.load(ref)
     name = display_name(ref, type(st), params)
     if not bars:
@@ -240,8 +254,10 @@ def walk(ref: str, params: dict, bars: list[S.Bar]) -> list[Signal]:
     ctx = ReplayContext(params, bars[0].instrument)
     st.on_start(ctx)
     out = []
-    for bar in bars:
+    for i, bar in enumerate(bars):
         ctx.advance(bar)
+        if i < warm:
+            continue
         first_today = len(ctx.orders)
         if ctx.subscribed(bar):
             st.on_bar(ctx, bar)
@@ -257,6 +273,48 @@ def now(ref: str, params: dict, bars: list[S.Bar]) -> Signal:
         return Signal(ref, display_name(ref, type(st), params), False, False, None,
                       "No daily bars for this stock yet.")
     return walk(ref, params, bars)[-1]
+
+
+def window(ref: str, params: dict) -> int:
+    """How many of the latest bars a tail replay of `ref` needs to say what a replay over all of them says: the
+    rule's look-back (`LOOKBACK`, or the golden cross's slow average) plus TAIL_SPARE."""
+    return _window(ref, *(None if params.get(k) is None else int(params[k]) for k in ("fast", "slow")))
+
+
+@functools.lru_cache(maxsize=64)
+def _window(ref: str, fast: int | None, slow: int | None) -> int:
+    params = {k: v for k, v in (("fast", fast), ("slow", slow)) if v is not None}
+    cls = type(S.load(ref))
+    need = int(getattr(cls, "LOOKBACK", 0) or 0)
+    for key in ("fast", "slow"):
+        if key in params:
+            need = max(need, int(params[key]))
+    if ref == PKG + "sma_cross:SmaCross" and "slow" not in params:
+        need = max(need, 200)
+    return need + TAIL_SPARE
+
+
+def now_tail(ref: str, params: dict, bars: list[S.Bar]) -> Signal:
+    """`now` from only the last `window(ref, params)` bars: the live recompute's fast path. Those bars are the
+    history; on_bar runs on the last TAIL_SPARE of them only, each with a full look-back behind it. The position,
+    the buying-today flag and the exit level match the full replay; the note is the tail's own last order's."""
+    if not bars:
+        return now(ref, params, bars)
+    tail = bars[-window(ref, params):]
+    return walk(ref, params, tail, warm=max(0, len(tail) - TAIL_SPARE))[-1]
+
+
+_QTY_LEAD = re.compile(r"^(?:Bought|Sold short|Sold|Flipped to (?:long|short)) [0-9,]+ \S+: ")
+
+
+def plain_note(note: str) -> str:
+    """A replay order's note without its lead ("Bought 1,39,391 NSE:X: "): the share count comes from the
+    replay's notional book, not the owner's, so the desk never shows it. The reason starts with a capital."""
+    m = _QTY_LEAD.match(note or "")
+    if not m:
+        return note or ""
+    rest = note[m.end():]
+    return rest[:1].upper() + rest[1:]
 
 
 # ── Bars ─────────────────────────────────────────────────────────────────────

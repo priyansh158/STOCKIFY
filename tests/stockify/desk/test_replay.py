@@ -238,5 +238,38 @@ class ContextTests(unittest.TestCase):
         self.assertIsNone(ctx.position(1, "MIS"))
 
 
+class TailReplayTests(unittest.TestCase):
+    """HD 9.1 (R4): the live recompute replays only each strategy's last `window` bars."""
+
+    def test_window_covers_each_strategys_lookback(self):
+        for ref, extra in VOTERS:
+            with self.subTest(ref=ref):
+                n = replay.window(ref, {"symbol": "NSE:X", **extra})
+                cls = type(strategy.load(ref))
+                self.assertGreaterEqual(n, getattr(cls, "LOOKBACK", 0) + 5)
+        self.assertGreaterEqual(replay.window(PKG + GOLDEN[0], {"symbol": "NSE:X", **GOLDEN[1]}), 205)
+
+    def test_the_tail_replay_says_what_the_whole_replay_says(self):
+        _days, _evs, bars = _wave_world(600)
+        for ref, extra in VOTERS:
+            params = {"symbol": "NSE:X", **extra}
+            steps = replay.walk(ref, params, bars)
+            for k in range(560, 601, 4):
+                with self.subTest(ref=ref, k=k):
+                    tail = replay.now_tail(ref, params, bars[:k])
+                    full = steps[k - 1]
+                    self.assertEqual((tail.in_position, tail.buying_today, tail.exit_level_paise),
+                                     (full.in_position, full.buying_today, full.exit_level_paise))
+
+    def test_plain_note_drops_the_replays_share_count(self):
+        self.assertEqual(replay.plain_note("Bought 1,39,391 NSE:X: the close rose above the band"),
+                         "The close rose above the band")
+        self.assertEqual(replay.plain_note("Sold 12 NSE:M&M: it fell below the line"), "It fell below the line")
+        self.assertEqual(replay.plain_note("Flipped to long 5 NSE:X: why"), "Why")
+        self.assertEqual(replay.plain_note("Sold short 5 NSE:X: why"), "Why")
+        self.assertEqual(replay.plain_note("No daily bars for this stock yet."), "No daily bars for this stock yet.")
+        self.assertEqual(replay.plain_note(""), "")
+
+
 if __name__ == "__main__":
     unittest.main()
