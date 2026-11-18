@@ -968,6 +968,8 @@ export interface DeskChipDTO {
   verdict: string;
   as_of_ns: number;
   live: boolean;
+  holding_symbol?: string | null;
+  holding_exchange?: string | null;
 }
 
 export interface DeskSkipDTO {

@@ -201,6 +201,7 @@ class ListTests(DeskApiBase):
             self.assertEqual((c["exchange"], c["instrument_id"], c["verdict"], c["live"]),
                              ("NSE", self.ids[sym], self.views[sym]["verdict"], False))
             self.assertEqual(c["as_of_ns"], AFTER_CLOSE - 86_400 * 10**9)
+            self.assertEqual((c["holding_symbol"], c["holding_exchange"]), (sym, "NSE"))      # the page matches on it
         skipped = {s["symbol"]: s["reason"] for s in body["skipped"]}
         self.assertEqual(skipped, {"SGBMAR29": nightly.NOT_NSE_STOCK, "BSEONLY": nightly.BSE_ONLY})
         self.assertFalse(FORBIDDEN_IN(body))
@@ -303,6 +304,19 @@ class ChartTests(DeskApiBase):
         bar_t = {b["t"] for b in body["bars"]}
         self.assertTrue(all(pt["t"] in bar_t for p in body["plots"] for pt in p["points"]))
 
+    def test_level_lines_end_at_the_last_full_day_while_todays_candle_forms(self):
+        self.now = IN_SESSION
+        self.ticks[TOKENS["INFY"]] = {"ts": IN_SESSION // 10**9 - 5, "ltp": 1531.5, "volume": 0, "oi": 0}
+        self.poller.take_pass(IN_SESSION, client=self.kite)
+        self.now = IN_SESSION + 10**9
+        body = self.get("/api/desk/INFY/chart?interval=day")
+        today = body["bars"][-1]
+        self.assertEqual(today["d"], DAY.isoformat())                     # the forming candle is drawn
+        self.assertTrue(body["plots"])
+        for p in body["plots"]:
+            self.assertLess(p["points"][-1]["t"], today["t"], p["name"])    # but no level step on it
+            self.assertEqual(p["points"][-1]["t"], body["bars"][-2]["t"])
+
     def test_minute_chart_is_todays_candles(self):
         self.now = IN_SESSION
         body = self.get("/api/desk/INFY/chart?interval=minute")
@@ -327,6 +341,7 @@ class DegradeTests(DeskApiBase):
         body = self.get("/api/desk")
         self.assertEqual(sorted(c["symbol"] for c in body["items"]), ["INFY", "TCS"])
         self.assertTrue(all(not c["live"] for c in body["items"]))
+        self.assertTrue(all(c["holding_symbol"] is None for c in body["items"]))      # no holdings while logged out
         self.assertTrue(body["plain"])
         view = self.get("/api/desk/INFY")
         self.assertFalse(view["live"])
@@ -403,6 +418,11 @@ class BseHeldTests(DeskApiBase):
     def setUp(self):
         super().setUp()
         self.snap = snapshot([holding("INFY", 800001, exchange="BSE"), holding("TCS", TOKENS["TCS"])])
+
+    def test_the_chip_names_the_bse_holding_it_came_from(self):
+        chips = {c["symbol"]: c for c in self.get("/api/desk")["items"]}
+        self.assertEqual((chips["INFY"]["exchange"], chips["INFY"]["holding_symbol"], chips["INFY"]["holding_exchange"]),
+                         ("NSE", "INFY", "BSE"))
 
     def test_the_live_parts_use_the_nse_token(self):
         self.poller.take_pass(IN_SESSION, client=self.kite)

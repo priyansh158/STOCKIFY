@@ -1015,6 +1015,8 @@ class DeskChipDTO(BaseModel):
     verdict: str
     as_of_ns: int
     live: bool
+    holding_symbol: str | None = None       # the Kite holding's own tradingsymbol (a BSE holding's may differ from NSE's)
+    holding_exchange: str | None = None     # the Kite holding's exchange; None for a stored view shown while logged out
 
 
 class DeskSkipDTO(BaseModel):

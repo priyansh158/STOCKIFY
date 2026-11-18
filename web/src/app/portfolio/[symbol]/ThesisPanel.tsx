@@ -4,7 +4,7 @@ import { verdictClass } from "@/lib/desk";
 import type { DeskViewDTO } from "@/lib/types";
 
 function names(list: string[]): string {
-  return list.length ? list.join(", ") : "none";
+  return list.length ? list.join(", ") : "None";
 }
 
 export default function ThesisPanel({ view }: { view: DeskViewDTO }) {
@@ -29,19 +29,19 @@ export default function ThesisPanel({ view }: { view: DeskViewDTO }) {
         </dl>
         {view.nearest_exit_paise != null && (
           <p className="stk-fine">
-            {rupees(view.nearest_exit_paise)} is the highest exit level below the price among the rules with a record here that still
-            say stay in. A close under it turns that rule to out.
+            {rupees(view.nearest_exit_paise)} is the highest exit level below the price among the rules that still say stay
+            in and have a record on this stock. A close under it would turn that rule to get out.
           </p>
         )}
 
         {!noSignal && (
           <dl className="stk-desk-sides">
             <div>
-              <dt className="stk-label">Say stay in</dt>
+              <dt className="stk-label">Rules that say stay in</dt>
               <dd>{names(view.agree)}</dd>
             </div>
             <div>
-              <dt className="stk-label">Say be out</dt>
+              <dt className="stk-label">Rules that say get out</dt>
               <dd>{names(view.disagree)}</dd>
             </div>
           </dl>
@@ -50,8 +50,8 @@ export default function ThesisPanel({ view }: { view: DeskViewDTO }) {
         <details className="stk-fine">
           <summary>How the suggestion is made</summary>
           <p className="stk-gap-xs">
-            Each rule says in or out. Its say is weighted by its record on this stock: strong counts 3, some 2, weak 1,
-            none 0. Exit when rules carrying at least 60% of the weight say be out and one of them has a strong or
+            Each rule says stay in or get out. Its vote is weighted by its record on this stock: strong counts 3, some 2, weak 1,
+            none 0. Exit when rules carrying at least 60% of the weight say get out and one of them has a strong or
             some record; Trim from 40%; Tighten stop when the price is within one day&apos;s typical move of the
             nearest exit level; otherwise Hold. With no weight at all, the desk gives no call. Your cost and profit
             play no part.

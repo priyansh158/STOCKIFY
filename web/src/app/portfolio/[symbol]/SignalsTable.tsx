@@ -26,7 +26,7 @@ export default function SignalsTable({ view }: { view: DeskViewDTO }) {
               { label: "Rule" },
               { label: "Says now" },
               { label: "Exit level", num: true },
-              { label: "Record here" },
+              { label: "Record on this stock" },
               { label: "Years it beat holding", num: true },
               { label: "Trades", num: true },
               { label: "Per year", sub: "the rule", num: true },
@@ -54,7 +54,7 @@ export default function SignalsTable({ view }: { view: DeskViewDTO }) {
             })}
           </Table>
           <p className="stk-fine stk-gap-top">
-            Record here: none when the rule made fewer than 8 trades or the stock has under 3 years of prices; strong
+            Record on this stock: none when the rule made fewer than 8 trades or the stock has under 3 years of prices; strong
             when it beat just holding the stock, risk for risk, in at least 70% of the yearly windows and overall; some
             from 55%; weak below that. A rule with no record carries no weight in the suggestion.
           </p>

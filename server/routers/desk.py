@@ -135,7 +135,8 @@ def desk_list() -> DeskListDTO:
             continue
         view, as_of, live = cur
         items.append(DeskChipDTO(symbol=sym, exchange="NSE", instrument_id=iid, verdict=view["verdict"],
-                                 as_of_ns=as_of, live=live))
+                                 as_of_ns=as_of, live=live, holding_symbol=h.tradingsymbol,
+                                 holding_exchange=h.exchange))
     return DeskListDTO(items=items, skipped=skipped)
 
 
@@ -283,8 +284,10 @@ def _day_chart(iid: int, sym: str, h, t_ns: int) -> RunChartDTO:  # noqa: ANN001
     bars = replay.daily_bars(iid)
     price = P.live_price(iid, sym, P.nse_token(h, iid, P.ist_day(t_ns)), t_ns, allow_call=False) \
         if (h is not None and P.in_session(t_ns)) else None
+    partial = None                     # the start of today's candle, while it is still forming
     if bars and price is not None and price["t_ns"] >= bars[-1].start_ns:
         bars = replay.with_live_candle(bars, price["ltp"], price["t_ns"], price["open"], price["high"], price["low"])
+        partial = bars[-1].start_ns
     key = (len(bars), bars[-1].start_ns if bars else None, bars[-1].close if bars else None,
            bars[-1].high if bars else None, bars[-1].low if bars else None)
     with _lock:
@@ -300,8 +303,11 @@ def _day_chart(iid: int, sym: str, h, t_ns: int) -> RunChartDTO:  # noqa: ANN001
         warm = replay.window(ref, params)
         part = bars[-(CHART_DAYS + warm):]
         steps = replay.walk(ref, params, part, warm=max(0, len(part) - len(shown)))
+        # each line ends at the last full day: today's level moves with the price, so it is shown in the table
+        # (the view), not as a step on the forming candle that would read as one more candle.
         pts = [[b.start_ns, s.exit_level_paise] for b, s in zip(part[len(part) - len(steps):], steps)
-               if s.exit_level_paise is not None and b.start_ns >= first]
+               if s.exit_level_paise is not None and b.start_ns >= first
+               and (partial is None or b.start_ns < partial)]
         if pts:
             name = _plot_name(ref)
             plots.append({"name": name, "kind": "price", "instrument_id": iid, "points": pts})

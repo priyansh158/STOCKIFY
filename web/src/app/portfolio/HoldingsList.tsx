@@ -58,7 +58,11 @@ export function VerdictLink({ chip }: { chip: DeskChipDTO }) {
 
 function Suggestion({ h, desk }: { h: Holding; desk: DeskListDTO }) {
   const sym = h.symbol.toUpperCase();
-  const chip = desk.items.find((c) => c.symbol.toUpperCase() === sym);
+  const ex = h.exchange.toUpperCase();
+  // the chip names the holding it came from (a BSE holding's NSE symbol may differ); the NSE symbol is the fallback
+  const chip =
+    desk.items.find((c) => c.holding_symbol?.toUpperCase() === sym && (c.holding_exchange ?? "").toUpperCase() === ex) ??
+    desk.items.find((c) => !c.holding_symbol && c.symbol.toUpperCase() === sym);
   if (chip) return <VerdictLink chip={chip} />;
   const skip = desk.skipped.find((s) => s.symbol.toUpperCase() === sym);
   return <span className="stk-label">{skip ? reasonWords(skip.reason) : "Not analysed"}</span>;

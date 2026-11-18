@@ -93,11 +93,11 @@ export function nsTime(ns: number): string {
   return `${p("hour")}:${p("minute")} IST`;
 }
 
-/** What a rule says now, in words. A rule that is out but would buy today counts as in (its rule is buying here). */
+/** What a rule says now, in words. A rule that is out but would buy today counts as staying in. */
 export function signalWords(s: DeskSignalDTO): { text: string; out: boolean } {
   if (s.in_position) return { text: "Stay in", out: false };
-  if (s.buying_today) return { text: "Buying here", out: false };
-  return { text: "Be out", out: true };
+  if (s.buying_today) return { text: "Would buy today", out: false };
+  return { text: "Get out", out: true };
 }
 
 export const GRADE_WORDS: Record<DeskGrade, string> = {
