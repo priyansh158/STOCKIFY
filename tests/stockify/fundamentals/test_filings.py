@@ -60,8 +60,9 @@ class ListTests(FilingsCase):
     def test_list_parses_periods_basis_and_broadcast_ist(self):
         client, session = self.client(listing_routes())
         got = filings.list_for("RELIANCE", client=client, since=SINCE)
-        # Legacy listing: 29 quarterly + 5 annual from 2021-04-01 (no half-years); integrated listing: 14 more.
-        self.assertEqual(len(got), 29 + 5 + 14)
+        # Legacy listing: 29 quarterly + 5 annual from 2021-04-01 (no half-years); integrated listing: 14 quarters,
+        # plus an annual row for each of its 4 March filings.
+        self.assertEqual(len(got), 29 + 5 + 14 + 4)
         self.assertEqual(len(filings.for_symbol("RELIANCE")), len(got))
         self.assertTrue(all(r["period_end"] >= "2021-04-01" for r in got))
         self.assertEqual({r["period_kind"] for r in got if r["source"] == "results"}, {"Q", "A"})
@@ -96,6 +97,26 @@ class ListTests(FilingsCase):
         self.assertEqual(len(kept), 6)                           # three answers, each with its .sha256
         gaps = [b - a for (_, a), (_, b) in zip(session.calls, session.calls[1:])]
         self.assertTrue(all(g >= 1_000_000_000 for g in gaps), gaps)
+
+    def test_integrated_march_filing_is_also_the_year(self):
+        client, session = self.client(listing_routes())
+        filings.list_for("RELIANCE", client=client, since=SINCE)
+        integ = [r for r in filings.for_symbol("RELIANCE") if r["source"] == "integrated"]
+        self.assertEqual(sorted({r["period_end"] for r in integ if r["period_kind"] == "A"}),
+                         ["2025-03-31", "2026-03-31"])
+        self.assertEqual({r["period_kind"] for r in integ if not r["period_end"].endswith("-03-31")}, {"Q"})
+        mar = self.rows(period_end="2026-03-31", basis="consolidated")
+        self.assertEqual(sorted(r["period_kind"] for r in mar), ["A", "Q"])
+        q, a = sorted(mar, key=lambda r: r["period_kind"], reverse=True)
+        # Same file, time and sequence number as the quarter; its own id (the period kind is part of it); the year
+        # runs from 1 April.
+        for k in ("xbrl_url", "broadcast_ns", "broadcast_source", "seq_number", "source", "status"):
+            self.assertEqual(a[k], q[k], k)
+        self.assertEqual(a["broadcast_ns"], timeutil.ist_ns(date(2026, 4, 24), "22:57:12"))
+        self.assertEqual(a["filing_id"], filings.filing_id("RELIANCE", "2026-03-31", "A", "consolidated",
+                                                           a["broadcast_ns"], a["xbrl_url"]))
+        self.assertNotEqual(a["filing_id"], q["filing_id"])
+        self.assertEqual((a["period_start"], q["period_start"]), ("2025-04-01", None))
 
     def test_listing_twice_adds_nothing_and_keeps_status(self):
         client, _ = self.client(listing_routes())

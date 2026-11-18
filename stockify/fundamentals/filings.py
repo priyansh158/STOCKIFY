@@ -7,7 +7,9 @@ Two NSE listings hold a company's results (both read, both kept raw through `nse
   are two entries (two rows here) that usually share one XBRL link; that file is fetched once.
 - `/api/integrated-filing-results?index=equities&symbol=&type=Integrated Filing- Financials` ("integrated"): SEBI's
   integrated filing, every quarter from the one ended 31 Mar 2025 (RELIANCE, read 2026-11-17). It names only the
-  quarter end (`qe_Date`), so its rows are Q; a March filing also carries the year's figures (the parser's concern).
+  quarter end (`qe_Date`), so its rows are Q. A March filing also carries the year's figures (12-month P&L, the
+  year's cash flow): it gives an A row too (period 1 April to 31 March), on the same file, time and sequence number,
+  with its own filing_id (the period kind is part of it), as the legacy Quarterly / Annual pair does.
 
 Each filing keeps NSE's broadcast time (IST in the listing, UTC ns here): `broadCastDate`, else `exchdisstime`, else
 `filingDate` (results), `broadcast_Date` (integrated); `broadcast_source` says which field it came from. Basis is
@@ -171,9 +173,12 @@ def parse_integrated(symbol: str, doc: Any, since: date) -> list[dict]:
         end = parse_day(e["qe_Date"])
         if end < since:
             continue
-        out.append(_row(symbol, period_start=None, period_end=end.isoformat(), period_kind="Q",
-                        consolidated=e.get("consolidated"), broadcast=broadcast_of(e, ("broadcast_Date",)),
-                        source="integrated", seq=e.get("seq_Id"), xbrl=e.get("xbrl")))
+        common = dict(period_end=end.isoformat(), consolidated=e.get("consolidated"),
+                      broadcast=broadcast_of(e, ("broadcast_Date",)), source="integrated", seq=e.get("seq_Id"),
+                      xbrl=e.get("xbrl"))
+        out.append(_row(symbol, period_start=None, period_kind="Q", **common))
+        if end.month == 3:                    # the March filing is the year's too: an A row on the same file
+            out.append(_row(symbol, period_start=date(end.year - 1, 4, 1).isoformat(), period_kind="A", **common))
     return out
 
 
