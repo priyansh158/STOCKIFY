@@ -276,9 +276,18 @@ def _xbrl_problem(body: bytes) -> str | None:
     return None
 
 
-def _looks_html(body: bytes) -> bool:
-    head = body.lstrip()[:64].lower()
-    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+BROKEN_BODY = "the XBRL file NSE sent is "
+REFUSED = (401, 403, 429)
+
+
+def _get_xbrl(client: nse_api.Client, url: str) -> tuple[int, bytes]:
+    """(status, body) of one XBRL file through the client's Http. A 401 / 403 is NSE's cookies expiring (Akamai's
+    within hours): the warm-up runs again and the request is retried once, as `nse_api.Client.fetch` does."""
+    status, body = client.http.get(url)
+    if status in (401, 403):
+        client._rewarm(None)
+        status, body = client.http.get(url)
+    return status, body
 
 
 def _sidecar(file: Path) -> Path:
@@ -338,7 +347,9 @@ def download_pending(*, client: nse_api.Client, limit: int | None = None, deadli
     """Fetch the XBRL file of every `listed` filing, newest broadcast first. Returns {"downloaded", "skipped" (kept
     already, no request), "failed", "stopped": None | "blocked" | "deadline" | "limit"}. `limit` caps the requests
     made; `deadline_ns` (UTC ns, the Http's clock) is checked before each one. A 404 holds the filing (NSE has no
-    file at its link); another failure leaves it listed with the reason, tried again next run."""
+    file at its link), and so does a body that is not well-formed XBRL the second time it comes; another failure
+    leaves it listed with the reason, tried again next run. A refusal (401 / 403 still after a fresh warm-up, 429,
+    or an HTML page) stops the run: stopped = "blocked", nothing marked, the rest stays listed."""
     http = client.http
     out: dict[str, Any] = {"downloaded": 0, "skipped": 0, "failed": 0, "stopped": None}
     fetches = 0
@@ -366,13 +377,13 @@ def download_pending(*, client: nse_api.Client, limit: int | None = None, deadli
         fetches += 1
         url = row["xbrl_url"]
         try:
-            status, body = http.get(url)
+            status, body = _get_xbrl(client, url)
         except nse_files.NseError as e:
             log.warning("fundamentals: XBRL %s for %s: %s", url, row["symbol"], e)
             _update(row["filing_id"], reason=f"the XBRL file could not be fetched: {e}")
             out["failed"] += 1
             continue
-        if status in (401, 403) or (status == 200 and _looks_html(body)):
+        if status in REFUSED or (status == 200 and nse_api._looks_html(body)):
             log.warning("fundamentals: NSE refused the XBRL file %s (HTTP %s); stopping, the rest stays listed",
                         url, status)
             out["stopped"] = "blocked"
@@ -384,8 +395,12 @@ def download_pending(*, client: nse_api.Client, limit: int | None = None, deadli
         problem = f"HTTP {status}" if status != 200 else _xbrl_problem(body)
         if problem is not None:
             log.warning("fundamentals: XBRL %s for %s: %s", url, row["symbol"], problem)
-            _update(row["filing_id"], reason=f"the XBRL file NSE sent is {problem}" if status == 200
-                    else f"the XBRL file could not be fetched ({problem})")
+            if status != 200:
+                _update(row["filing_id"], reason=f"the XBRL file could not be fetched ({problem})")
+            elif (row["reason"] or "").startswith(BROKEN_BODY):       # the second broken body: not tried again
+                mark(row["filing_id"], "held", f"{BROKEN_BODY}{problem}, twice")
+            else:
+                _update(row["filing_id"], reason=f"{BROKEN_BODY}{problem}")
             out["failed"] += 1
             continue
         sha, rel = _keep(row, body)

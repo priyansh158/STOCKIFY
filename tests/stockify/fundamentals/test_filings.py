@@ -260,6 +260,40 @@ class DownloadTests(FilingsCase):
         self.assertEqual(cons["status"], "listed")                      # a broken body is tried again next time
         self.assertIn("not a well-formed XBRL", cons["reason"])
         self.assertEqual(list(paths.fundamentals_raw_dir("xbrl").rglob("*.xml")), [])
+        # Broken a second time: held with the reason, and never fetched again.
+        client, _ = self.client(self.xbrl_routes(cons=[(200, b"<?xml version='1.0'?><xbrli:xbrl")]))
+        self.assertEqual(filings.download_pending(client=client)["failed"], 1)
+        cons = self.rows(basis="consolidated")[0]
+        self.assertEqual(cons["status"], "held")
+        self.assertIn("not a well-formed XBRL", cons["reason"])
+        self.assertIn("twice", cons["reason"])
+        client, session = self.client(self.xbrl_routes())
+        self.assertEqual(filings.download_pending(client=client)["failed"], 0)
+        self.assertEqual(self.xbrl_requests(session), [])
+
+    def test_403_warms_up_again_and_retries_once(self):
+        """Cookies expire during a long backfill: one refusal is followed by a fresh warm-up and one retry."""
+        self.list_two()
+        denied = fixture("quote-equity_RELIANCE_403.html")
+        client, session = self.client(self.xbrl_routes(
+            stand=[(403, denied), (200, fixture("xbrl_RELIANCE_20241231_standalone.xml"))]))
+        got = filings.download_pending(client=client)
+        self.assertEqual((got["downloaded"], got["failed"], got["stopped"]), (2, 0, None))
+        urls = [u for u, _ in session.calls]
+        self.assertEqual(urls[:4], ["https://www.nseindia.com/", Q3_STAND, "https://www.nseindia.com/", Q3_STAND])
+        self.assertEqual(self.xbrl_requests(session), [Q3_STAND, Q3_STAND, Q3_CONS])
+
+    def test_429_and_a_bom_html_page_stop_the_run_like_a_refusal(self):
+        self.list_two()
+        for answer in ((429, b"Too Many Requests"), (200, b"\xef\xbb\xbf\r\n<HTML><HEAD><TITLE>Access Denied")):
+            with self.subTest(status=answer[0]):
+                client, session = self.client(self.xbrl_routes(stand=[answer]))
+                got = filings.download_pending(client=client)
+                self.assertEqual((got["downloaded"], got["failed"], got["stopped"]), (0, 0, "blocked"))
+                self.assertEqual(self.xbrl_requests(session), [Q3_STAND])          # nothing after the refusal
+                row = self.rows(basis="standalone")[0]
+                self.assertEqual((row["status"], row["reason"]), ("listed", None))
+        self.assertEqual(list(paths.fundamentals_raw_dir("xbrl").rglob("*.xml")), [])
 
     def test_same_file_listed_twice_is_fetched_once(self):
         """NSE lists the year's last quarter and the year under one XBRL link."""
