@@ -6,7 +6,7 @@ import { Field } from "@/components/ui";
 
 const inputClass = "stk-field";
 
-/** One strategy setting in a form: a tick box, a list of plain choices, or a typed value, by what the schema says.
+/** One strategy setting in a form: a tick box, a list of plain choices, a typed value, or (a `ranking`) a read-only note, by what the schema says.
  *  `value` is the text shown (a percentage for a `percent` setting); the parent turns it into the stored value (`coerceParamText`). */
 export default function ParamField({ param: p, value, invalid, onChange }: {
   param: StrategyParam;
@@ -22,6 +22,14 @@ export default function ParamField({ param: p, value, invalid, onChange }: {
           onChange={(e) => onChange(e.target.checked)} />
         <span>{label}<span className="stk-label stk-block">{p.help}</span></span>
       </label>
+    );
+  }
+  if (p.type === "ranking") {
+    // Set by the fundamentals screener (each month's list); shown, never edited.
+    return (
+      <Field label={p.label || wordsOf(p.name)} help={p.help}>
+        <input className={inputClass} value="Set by the screener" readOnly aria-readonly="true" />
+      </Field>
     );
   }
   if (p.choices?.length) {

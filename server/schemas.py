@@ -141,7 +141,7 @@ class StrategyParamDTO(BaseModel):
     """One parameter of a strategy (stockify.strategies._catalogue)."""
     name: str
     label: str = ""
-    type: Literal["int", "bool", "str", "decimal", "symbol", "hhmm", "underlying"]
+    type: Literal["int", "bool", "str", "decimal", "symbol", "hhmm", "underlying", "ranking"]
     default: Any = None
     required: bool = False
     help: str = ""

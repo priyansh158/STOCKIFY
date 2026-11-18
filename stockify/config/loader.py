@@ -448,11 +448,13 @@ def _check_research(doc: dict) -> None:
 
 def _check_fundamentals(doc: dict) -> None:
     """fundamentals.json (stockify.fundamentals/1): every key present and none unknown; the list URLs and the API
-    base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `filings_from` a YYYY-MM-DD
+    base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
+    valuation weights) distinct decimal strings in [0, 1] and `basket_sizes` distinct whole numbers from 5 to 50 and
+    at most `top_kept`; `filings_from` a YYYY-MM-DD
     date; each `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
     keys = ("nifty500_list_url", "nifty500_list_fallback_url", "liquidity_floor_paise", "liquidity_days",
-            "filings_from", "basket_size", "top_kept", "corporate_action_ratios", "corporate_action_tolerance",
-            "corporate_action_hold_fall", "api")
+            "filings_from", "basket_size", "top_kept", "balances", "basket_sizes", "corporate_action_ratios",
+            "corporate_action_tolerance", "corporate_action_hold_fall", "api")
     extra = set(doc) - set(keys) - {"schema", "note"}
     if extra:
         raise ConfigError(f"fundamentals.json: unknown keys {sorted(extra)}; known: {list(keys)}")
@@ -475,6 +477,17 @@ def _check_fundamentals(doc: dict) -> None:
     whole(doc["liquidity_days"], "liquidity_days", 1, 1000)
     whole(doc["basket_size"], "basket_size", 1, 500)
     whole(doc["top_kept"], "top_kept", 1, 500)
+    balances = doc["balances"]
+    if (not isinstance(balances, list) or not balances or len(set(map(str, balances))) != len(balances)
+            or not all(isinstance(b, str) and _SIGNED_DECIMAL.fullmatch(b) and 0 <= Decimal(b) <= 1 for b in balances)):
+        raise ConfigError(f"fundamentals.json: balances must be a non-empty list of distinct decimal strings from 0 "
+                          f"(quality only) to 1 (valuation only), got {balances!r}")
+    sizes = doc["basket_sizes"]
+    if not isinstance(sizes, list) or not sizes or len(set(map(repr, sizes))) != len(sizes):
+        raise ConfigError(f"fundamentals.json: basket_sizes must be a non-empty list of distinct whole numbers, "
+                          f"got {sizes!r}")
+    for n in sizes:                                  # the strategy's own bounds (fundamentals_basket.py), within top_kept
+        whole(n, "basket_sizes", 5, min(50, doc["top_kept"]))
     tol = doc["corporate_action_tolerance"]
     if not isinstance(tol, str) or _SIGNED_DECIMAL.fullmatch(tol) is None or not 0 < Decimal(tol) <= Decimal("0.1"):
         raise ConfigError(f"fundamentals.json: corporate_action_tolerance must be a decimal string in (0, 0.1], "

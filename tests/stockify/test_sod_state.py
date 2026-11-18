@@ -464,6 +464,7 @@ def _script(bundle: dict):  # noqa: ANN202
 def _shipped_worlds() -> dict:
     """Every catalogue strategy with a multi-day world and params: ref -> (world, params, bundle builder)."""
     from tests.stockify import test_strategies as TS
+    from tests.stockify.strategies import test_fundamentals_basket as FB
     from tests.stockify.test_chain_view import EXPIRY, chain_bundle, chain_world
     closes = [10000, 10000, 10000, 10100, 10200, 10300, 10150, 10000, 9900, 9850]
     daily = TS.world(TS.walk(closes), dates=TS.DAYS)
@@ -514,6 +515,8 @@ def _shipped_worlds() -> dict:
         "stockify.strategies.eod_short_straddle:EodShortStraddle": (eod_world, {"min_days": 1}, golden.build_bundle),
         "stockify.strategies.short_straddle_stop:ShortStraddleStop": (chain, dict(opt), chain_bundle),
         "stockify.strategies.iron_fly:IronFly": (chain, {**opt, "wing_strikes": 1}, chain_bundle),
+        "stockify.strategies.fundamentals_basket:FundamentalsBasket": (
+            FB.three_stock_world(), {"ranking": FB.ranking(), "balance": "0.5", "basket_size": 2}, golden.build_bundle),
         # the comparison wrapper (not in the catalogue) around a catalogue strategy
         "stockify.strategies._margin_watch:MarginWatch": (
             daily, {"inner_ref": "stockify.strategies.sma_cross:SmaCross", "symbol": "NSE:TEST", "fast": 2, "slow": 3},

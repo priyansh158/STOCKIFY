@@ -119,7 +119,8 @@ export interface DataQualityResponse {
 // ── Strategy tests (M3.14) ───────────────────────────────────────────────────
 // Money is integer paise, times are UTC epoch ns with an ISO IST string beside them.
 
-export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" | "underlying";
+/** `ranking` is set by the fundamentals screener (a run config carries it); the form never edits it. */
+export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" | "underlying" | "ranking";
 
 export interface ParamChoice {
   value: unknown;

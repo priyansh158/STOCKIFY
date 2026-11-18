@@ -93,10 +93,32 @@ def universe_on(as_of: str, *, liquid_only: bool = False) -> list[dict]:
     return [dict(r) for r in _connect().execute(sql, (str(as_of),)).fetchall()]
 
 
-# ── the test record ──────────────────────────────────────────────────────────
+# ── the test record (FS 6) ───────────────────────────────────────────────────
+
+TEST_RECORD_NAME = "fundamentals-basket"                 # the walk-forward job test_record.run starts
+TEST_RECORD_BENCHMARK = ("NSE:NIFTY 500", "price index, without dividends")    # Kite's index candles (spec call 9)
+
 
 def latest_test_record() -> dict | None:
-    """The newest stored test record of the screen (FS 6: the walk-forward of the fundamentals basket), as
-    {"job_id": the walk-forward research job id, "benchmark": the benchmark's label (optional)}, or None while none
-    has been stored. FS 6 stores it; until then there is none."""
-    return None
+    """The newest test record, or None before the first: the newest lab.sqlite walk-forward job named
+    "fundamentals-basket" (test_record.run starts it), as {"job_id", "family_id", "status", "start", "end" (ISO
+    days of its span, or None), "benchmark": the benchmark's label, "benchmark_symbol"}."""
+    import json
+
+    from stockify import store as lab
+    offset = 0
+    while True:
+        jobs = lab.list_research_jobs("walkforward", offset=offset, limit=200)
+        for j in jobs:
+            if j.get("name") != TEST_RECORD_NAME:
+                continue
+            try:
+                span = json.loads(j.get("spec_json") or "{}").get("span") or [None, None]
+            except ValueError:
+                span = [None, None]
+            return {"job_id": j["job_id"], "family_id": j.get("family_id"), "status": j.get("status"),
+                    "start": span[0], "end": span[1], "benchmark": TEST_RECORD_BENCHMARK[1],
+                    "benchmark_symbol": TEST_RECORD_BENCHMARK[0]}
+        if len(jobs) < 200:
+            return None
+        offset += 200

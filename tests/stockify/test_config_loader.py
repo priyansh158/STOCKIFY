@@ -142,6 +142,10 @@ class LoaderRuleTests(unittest.TestCase):
             {"corporate_action_tolerance": 0.04}, {"corporate_action_tolerance": "0.5"},
             {"corporate_action_tolerance": "0"}, {"corporate_action_hold_fall": "1"},
             {"corporate_action_hold_fall": "1.95"}, {"corporate_action_hold_fall": 1.3},
+            {"balances": []}, {"balances": [0.5]}, {"balances": ["1.5"]}, {"balances": ["0.5", "0.5"]},
+            {"balances": ["-0.1"]}, {"balances": "0.5"},
+            {"basket_sizes": []}, {"basket_sizes": [0]}, {"basket_sizes": [10, 10]}, {"basket_sizes": ["10"]},
+            {"basket_sizes": [51]}, {"basket_sizes": [60], "top_kept": 50},
         )
         for change in bad_cases:
             with self.subTest(change=change):
