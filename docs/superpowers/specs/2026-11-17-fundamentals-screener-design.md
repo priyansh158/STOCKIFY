@@ -129,7 +129,7 @@ These override anything above that disagrees:
 
 - **No small, illiquid stocks** ("we don't want to target them anyway because they lack liquidity"). The universe is
   today's Nifty 500 plus a liquidity floor: a stock is listed only if its median daily traded value over the last
-  three months is at least ₹10 crore (my call on the number; a config value).
+  three months is at least ₹8 crore (owner, 2026-11-17; a config value).
 - **No score shown.** The page is an ordered list, best first; the order itself is the judgement. Each row reads:
   the symbol (e.g. RELIANCE), a few words on why the screen picked it ("Cheaper than its sector on earnings, with
   rising profits and little debt"), and a **Details** button. The ranking method (the sector comparisons below) decides
