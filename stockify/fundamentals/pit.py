@@ -40,12 +40,18 @@
   a rise (a consolidation), and share issues (QIP, rights) between filings, which carry the last filed count.
 - **Market cap** = cm_eod raw close (series EQ) on the day, else the latest of the 5 trading days before it, × the
   shares known on the day (adjusted up to that close's date); None when either is missing.
+- **Reads cached** (FS 6): inside `with reads_cached():` each filings, versions and price read is made once per
+  distinct arguments, for this thread / context only (a ContextVar), so a run over many days and balances
+  (history.rankings) does not repeat them. Only for data that does not change during the block; the answers are
+  shared, so callers treat them as read-only (none of this module's do otherwise).
 
 Money in int paise, EPS and face value in paise per share, shares in units; days are IST dates.
 """
 from __future__ import annotations
 
 import calendar as _monthcal
+import contextlib
+import contextvars
 import functools
 from datetime import date, timedelta
 from decimal import Decimal
@@ -70,6 +76,38 @@ LEVELS = ("paid_up_equity", "face_value", "total_equity", "borrowings_current", 
           "total_assets", "cash")
 TTM_FIELDS = FLOW + ("eps_basic", "eps_diluted")
 _KIND_ORDER = {"Q": 0, "A": 1, "H": 2}
+
+
+# ── reads cached within a block ──────────────────────────────────────────────
+
+_memo: contextvars.ContextVar[dict | None] = contextvars.ContextVar("stockify_fundamentals_pit_memo", default=None)
+
+
+@contextlib.contextmanager
+def reads_cached():
+    """Within the block, this module's store and price reads are made once per distinct arguments (this context only;
+    see the module docstring)."""
+    token = _memo.set({})
+    try:
+        yield
+    finally:
+        _memo.reset(token)
+
+
+def _cached(copy=None):  # noqa: ANN001, ANN202
+    """Memoise a read inside `reads_cached()`; `copy` (e.g. dict) hands each caller its own top level."""
+    def wrap(fn):  # noqa: ANN001, ANN202
+        @functools.wraps(fn)
+        def inner(*args):  # noqa: ANN002, ANN202
+            memo = _memo.get()
+            if memo is None:
+                return fn(*args)
+            key = (fn.__name__, tuple(tuple(a) if isinstance(a, list) else a for a in args))
+            if key not in memo:
+                memo[key] = fn(*args)
+            return memo[key] if copy is None else copy(memo[key])
+        return inner
+    return wrap
 
 
 # ── days ─────────────────────────────────────────────────────────────────────
@@ -108,6 +146,7 @@ def _cfg() -> tuple[tuple[tuple[str, Fraction], ...], Fraction, Fraction]:
 
 # ── versions ─────────────────────────────────────────────────────────────────
 
+@_cached()
 def basis_on(symbol: str, day: date) -> str:
     """'consolidated' from the usable day of the company's first parsed consolidated filing, else 'standalone'
     (ruling R8 amended: a held consolidated filing never switches the basis, so it cannot blank the figures)."""
@@ -117,6 +156,7 @@ def basis_on(symbol: str, day: date) -> str:
     return "consolidated" if first is not None and usable_day(first) <= day else "standalone"
 
 
+@_cached()
 def _versions(symbol: str, basis: str) -> list[dict]:
     """Every parsed filing of the basis with its figures, oldest broadcast first."""
     out: dict[str, dict] = {}
@@ -159,6 +199,7 @@ def _derive(h: dict, q: dict) -> dict:
             "derived_from": [h["filing_id"], q["filing_id"]]}
 
 
+@_cached(copy=dict)
 def _lists(symbol: str, day: date) -> dict:
     basis, chosen = _known(symbol, day)
     newest = lambda kind: sorted((v for (_, k), v in chosen.items() if k == kind),  # noqa: E731
@@ -220,6 +261,7 @@ def latest(symbol: str, day: date, field: str) -> int | None:
 
 # ── shares and market cap ────────────────────────────────────────────────────
 
+@_cached()
 def _instrument(symbol: str) -> int | None:
     r = refdata._connect().execute(
         "SELECT instrument_id FROM instruments WHERE exchange = 'NSE' AND tradingsymbol = ? AND kind = 'EQ'"
@@ -227,6 +269,7 @@ def _instrument(symbol: str) -> int | None:
     return None if r is None else int(r[0])
 
 
+@_cached()
 def _closes(iid: int, days: list[date]) -> dict[str, int]:
     out: dict[str, int] = {}
     isos = [d.isoformat() for d in days]
@@ -241,6 +284,7 @@ def _closes(iid: int, days: list[date]) -> dict[str, int]:
     return out
 
 
+@_cached()
 def _coverage_start() -> str | None:
     """The first trading day cm_eod holds any EQ close for (ISO), or None."""
     return refdata._connect().execute("SELECT MIN(trade_date) FROM cm_eod WHERE series = 'EQ'").fetchone()[0]
@@ -250,6 +294,7 @@ def _fall(seen: Fraction) -> str:
     return f"{(Decimal(seen.numerator) / Decimal(seen.denominator)).quantize(Decimal('0.001'))}"
 
 
+@_cached()
 def _splits(iid: int | None, after: date, through: date) -> tuple[list[dict], list[dict]]:
     """(splits / bonuses, holds) in NSE's raw closes on trading days after `after`, through `through`:
     [{"day", "ratio" (as configured)}], [{"day", "fall" (last close ÷ close, 3 dp), "gap_days" when it spans more
