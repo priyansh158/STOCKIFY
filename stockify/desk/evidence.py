@@ -33,7 +33,7 @@ from stockify.desk import store
 VOTERS = replay.VOTERS
 BASELINE = replay.BASELINE
 
-CAPITAL_PAISE = 100_000_000                 # ₹10,00,000 (1,00,00,000 paise)
+CAPITAL_PAISE = 100_000_000                 # ₹10,00,000 (10,00,00,000 paise)
 MIN_WINDOW_DAYS = 120                       # trading days a partial first or last year needs to count
 MIN_TRADES = 8                              # grade "none" below this many trades...
 MIN_YEARS = 3                               # ...or this many years of history
