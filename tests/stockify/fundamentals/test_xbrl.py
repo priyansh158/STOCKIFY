@@ -11,16 +11,10 @@ import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
 
 from stockify import paths
-from stockify.fundamentals import store, xbrl
+from stockify.fundamentals import filings, store, xbrl
 
 FIX = Path(__file__).resolve().parents[2] / "fixtures" / "fundamentals"
 
-# Task 2 owns the filings table (migration 0002). Its DDL as the plan gives it, so this file runs whether or not
-# that migration is present yet.
-FILINGS_DDL = """CREATE TABLE IF NOT EXISTS filings (
-  filing_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, period_end TEXT NOT NULL, period_kind TEXT NOT NULL,
-  basis TEXT NOT NULL, broadcast_ns INTEGER, xbrl_url TEXT, xbrl_sha256 TEXT, xbrl_file TEXT,
-  status TEXT NOT NULL, reason TEXT)"""
 
 
 def cr(amount: str) -> int:
@@ -34,7 +28,7 @@ def fixture(name: str) -> bytes:
     return (FIX / name).read_bytes()
 
 
-RELIANCE_Q3 = "xbrl_RELIANCE_2024-12-31_consolidated.xml"
+RELIANCE_Q3 = "xbrl_RELIANCE_20241231_consolidated.xml"
 
 
 class ParseIndAsTests(SandboxedDBTest):
@@ -58,7 +52,7 @@ class ParseIndAsTests(SandboxedDBTest):
         self.assertEqual(r.ytd["revenue_ops"], cr("715563"))
 
     def test_indas_quarter_standalone(self):
-        r = xbrl.parse(fixture("xbrl_RELIANCE_2024-12-31_standalone.xml"), period_kind="Q", basis="standalone")
+        r = xbrl.parse(fixture("xbrl_RELIANCE_20241231_standalone.xml"), period_kind="Q", basis="standalone")
         self.assertEqual(r.problems, [])
         self.assertEqual(r.period_end, "2024-12-31")
         self.assertEqual((r.fields["revenue_ops"], r.fields["profit_before_tax"], r.fields["net_profit"]),
@@ -76,9 +70,32 @@ class ParseIndAsTests(SandboxedDBTest):
         f = r.fields
         self.assertEqual((f["total_equity"], f["total_assets"], f["cash"]), (cr("819453"), cr("1815123"), cr("90353")))
         self.assertEqual((f["borrowings_current"], f["borrowings_noncurrent"]), (cr("132409"), cr("203928")))
-        self.assertEqual(f["operating_cash_flow"], cr("91810"))           # the six months to September
+        # The cash flow is the six months to September: not a quarter figure, so a quarterly row never carries it.
+        self.assertNotIn("operating_cash_flow", f)
         self.assertEqual(r.raw["total_equity"], "EquityAttributableToOwnersOfParent 8194530000000.00")
         self.assertEqual(f["profit_owners"], cr("16563"))                   # the quarter, not the half year
+
+    def test_half_year_kind_reads_the_six_months(self):
+        r = xbrl.parse(fixture("xbrl_RELIANCE_2024-09-30_consolidated.xml"), period_kind="H", basis="consolidated",
+                       period_end="2024-09-30")
+        self.assertEqual(r.problems, [])
+        self.assertEqual(r.fields, {
+            "revenue_ops": cr("471698"), "other_income": cr("8859"), "total_income": cr("480557"),
+            "total_expenses": cr("432286"), "finance_costs": cr("11935"), "depreciation": cr("26476"),
+            "profit_before_tax": cr("48271"), "tax": cr("11722"), "net_profit": cr("36768"),
+            "profit_owners": cr("31701"), "eps_basic": 4685, "eps_diluted": 4685,
+            "paid_up_equity": cr("6766"), "face_value": 1000,
+            "total_equity": cr("819453"), "borrowings_current": cr("132409"), "borrowings_noncurrent": cr("203928"),
+            "total_assets": cr("1815123"), "cash": cr("90353"),
+            "operating_cash_flow": cr("91810"),                       # the six months, on the six months' row
+        })
+        self.assertEqual(r.raw["operating_cash_flow"], "CashFlowsFromUsedInOperatingActivities 918100000000.00")
+
+    def test_all_zero_profit_and_loss_is_held(self):
+        data = fixture("xbrl_VSTIND_2024-12-31_standalone.xml")
+        zeroed = re.sub(rb'(contextRef="OneD" unitRef="INR" decimals="-5">)-?[0-9.]+<', rb"\g<1>0.00<", data)
+        r = xbrl.parse(zeroed, period_kind="Q", basis="standalone")
+        self.assertIn("all profit and loss figures are zero", r.problems)
 
     def test_annual_kind_reads_the_year(self):
         data = fixture("xbrl_INFY_2024-03-31_consolidated.xml")
@@ -144,7 +161,7 @@ class ParseIndAsTests(SandboxedDBTest):
         self.assertEqual(b.fields["net_profit"], cr("7729.64"))
 
     def test_basis_and_period_must_match_the_listing(self):
-        r = xbrl.parse(fixture("xbrl_RELIANCE_2024-12-31_standalone.xml"), period_kind="Q", basis="consolidated")
+        r = xbrl.parse(fixture("xbrl_RELIANCE_20241231_standalone.xml"), period_kind="Q", basis="consolidated")
         self.assertTrue(any("standalone" in p and "consolidated" in p for p in r.problems), r.problems)
         r = xbrl.parse(fixture(RELIANCE_Q3), period_kind="Q", basis="consolidated", period_end="2024-09-30")
         self.assertTrue(any("2024-09-30" in p for p in r.problems), r.problems)
@@ -167,7 +184,7 @@ class ParseIntegratedTests(SandboxedDBTest):
                          (cr("332861"), cr("29550"), cr("25548"), 1888))
         # Its balance sheet is at 30-Sep-2026; the comparative column at 31-Mar-2026 (PY_I) is not read.
         self.assertEqual((f["total_assets"], f["total_equity"], f["cash"]), (cr("2275033"), cr("944404"), cr("181723")))
-        self.assertEqual(f["operating_cash_flow"], cr("93055"))
+        self.assertNotIn("operating_cash_flow", f)
         self.assertEqual(r.ytd_months, 6)
 
         b = xbrl.parse(fixture("xbrl_HDFCBANK_20260930_integrated_consolidated.xml"), period_kind="Q",
@@ -217,7 +234,7 @@ class ParseFinancialsTests(SandboxedDBTest):
         self.assertEqual(s.raw["total_assets"], "CapitalAndLiabilities 63414593400000.00")
         self.assertEqual(s.fields["total_equity"], cr("892.46") + cr("418666.86"))
         self.assertEqual(s.fields["cash"], cr("264027.53") + cr("72073.93"))
-        self.assertEqual(s.fields["operating_cash_flow"], cr("35960.16"))
+        self.assertNotIn("operating_cash_flow", s.fields)
         self.assertEqual(s.fields["net_profit"], cr("18331.44"))
 
     def test_nbfc_fields(self):
@@ -283,7 +300,9 @@ class ChecksTests(SandboxedDBTest):
 
 def _put_filing(filing_id: str, fixture_name: str | None, *, symbol: str, period_end: str, kind: str = "Q",
                 basis: str = "consolidated", status: str = "downloaded", broadcast_ns: int = 1,
-                data: bytes | None = None) -> None:
+                data: bytes | None = None, source: str = "results",
+                xbrl_url: str = "https://nsearchives.nseindia.in/corporate/xbrl/INDAS_1_1_01012025010101.xml") -> None:
+    """A row as filings.py writes it (migration 0002's columns), with the XBRL kept where download_pending keeps it."""
     conn = store._connect()
     rel = None
     digest = None
@@ -294,18 +313,16 @@ def _put_filing(filing_id: str, fixture_name: str | None, *, symbol: str, period
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(body)
         digest = hashlib.sha256(body).hexdigest()
-    conn.execute("INSERT INTO filings (filing_id, symbol, period_end, period_kind, basis, broadcast_ns, xbrl_url,"
-                 " xbrl_sha256, xbrl_file, status, reason) VALUES (?,?,?,?,?,?,?,?,?,?,NULL)",
-                 (filing_id, symbol, period_end, kind, basis, broadcast_ns, "https://nsearchives.nseindia.in/x.xml",
-                  digest, rel, status))
+    row = {"filing_id": filing_id, "symbol": symbol, "period_start": None, "period_end": period_end,
+           "period_kind": kind, "basis": basis, "broadcast_ns": broadcast_ns, "broadcast_source": "broadCastDate",
+           "source": source, "seq_number": "1", "xbrl_url": xbrl_url, "xbrl_sha256": digest, "xbrl_file": rel,
+           "status": status, "reason": None}
+    conn.execute(f"INSERT INTO filings ({', '.join(filings.COLUMNS)}) VALUES ({', '.join('?' * len(filings.COLUMNS))})",
+                 tuple(row[c] for c in filings.COLUMNS))
 
 
 class IngestTests(SandboxedDBTest):
     db_modules = (store,)
-
-    def setUp(self):
-        super().setUp()
-        store._connect().execute(FILINGS_DDL)
 
     def status(self, filing_id: str) -> tuple:
         row = store._connect().execute("SELECT status, reason FROM filings WHERE filing_id = ?", (filing_id,)).fetchone()
@@ -335,7 +352,7 @@ class IngestTests(SandboxedDBTest):
         self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 0})
 
     def test_broken_filing_is_held_with_reason(self):
-        broken = "xbrl_RELIANCE_2024-12-31_standalone_broken.xml"
+        broken = "xbrl_RELIANCE_20241231_standalone_broken.xml"
         r = xbrl.parse(fixture(broken), period_kind="Q", basis="standalone")
         self.assertEqual(r.problems, ["profit after tax (₹8,721.00 crore) differs from profit before tax minus tax "
                                       "(₹9,721.00 crore) by more than 1 %"])
@@ -377,6 +394,18 @@ class IngestTests(SandboxedDBTest):
                        basis="consolidated")
         self.assertEqual(r.problems, ["the XBRL file declares a DOCTYPE, which NSE filings never do"])
 
+    def test_ingest_uses_the_file_name_when_the_comment_is_missing(self):
+        data = re.sub(rb"<!--IF[^>]*-->", b"", fixture("xbrl_HDFCBANK_20260930_integrated_consolidated.xml"), count=1)
+        url = "https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_BANKING_1740913_17102026054812_WEB.xml"
+        _put_filing("h" * 64, None, symbol="HDFCBANK", period_end="2026-09-30", data=data, source="integrated",
+                    xbrl_url=url)
+        _put_filing("i" * 64, None, symbol="HDFCBANK", period_end="2026-09-30", data=data, source="integrated",
+                    xbrl_url="https://nsearchives.nseindia.in/corporate/xbrl/SOMETHING_ELSE_1.xml", broadcast_ns=2)
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 1})
+        self.assertEqual(self.status("h" * 64), ("parsed", None))
+        self.assertEqual(self.figures("h" * 64)["interest_earned"][0], cr("95131.63"))
+        self.assertIn("no map", self.status("i" * 64)[1])
+
     def test_quarters_must_add_up_to_the_year_to_date(self):
         data = fixture("xbrl_RELIANCE_2024-09-30_consolidated.xml")
         h = xbrl.parse(data, period_kind="Q", basis="consolidated")
@@ -412,8 +441,8 @@ class MapSourcesTests(SandboxedDBTest):
 
     def test_every_fixture_parses_clean(self):
         cases = {
-            "xbrl_RELIANCE_2024-12-31_consolidated.xml": ("consolidated", "indas"),
-            "xbrl_RELIANCE_2024-12-31_standalone.xml": ("standalone", "indas"),
+            "xbrl_RELIANCE_20241231_consolidated.xml": ("consolidated", "indas"),
+            "xbrl_RELIANCE_20241231_standalone.xml": ("standalone", "indas"),
             "xbrl_RELIANCE_2024-09-30_consolidated.xml": ("consolidated", "indas"),
             "xbrl_RELIANCE_2021-06-30_consolidated.xml": ("consolidated", "indas"),
             "xbrl_INFY_2024-03-31_consolidated.xml": ("consolidated", "indas"),
@@ -427,7 +456,7 @@ class MapSourcesTests(SandboxedDBTest):
             "xbrl_HDFCBANK_20260930_integrated_consolidated.xml": ("consolidated", "banking"),
             "xbrl_BAJFINANCE_20260930_integrated_consolidated.xml": ("consolidated", "nbfc"),
         }
-        names = {p.name for p in FIX.glob("xbrl_*.xml")} - {"xbrl_RELIANCE_2024-12-31_standalone_broken.xml"}
+        names = {p.name for p in FIX.glob("xbrl_*.xml")} - {"xbrl_RELIANCE_20241231_standalone_broken.xml"}
         self.assertLessEqual(set(cases), names)          # other tasks' fixtures may sit beside these
         for name, (basis, family) in cases.items():
             with self.subTest(name=name):

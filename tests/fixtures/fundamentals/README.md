@@ -42,12 +42,11 @@ Fetched on 2026-11-17 (about 20:00-20:20 PST) the same way: the filings lists fr
 https://www.nseindia.com/api/corporates-financial-results?index=equities&symbol=<SYM>&period=Quarterly (after a warm-up
 GET of https://www.nseindia.com/companies-listing/corporate-filings-financial-results) and, for the integrated filings,
 https://www.nseindia.com/api/integrated-filing-results?index=equities&symbol=<SYM>&type=Integrated%20Filing-%20Financials
-(after https://www.nseindia.com/companies-listing/corporate-integrated-filing); then each XBRL file once. All answered 200.
+(after https://www.nseindia.com/companies-listing/corporate-integrated-filing); then each XBRL file once. All answered 200. The quarter ended 31-Dec-2024 for RELIANCE (consolidated and
+standalone) is the Task 2 pair `xbrl_RELIANCE_20241231_*.xml` above, the same bytes.
 
 | file | URL | what it is | sha256 |
 |------|-----|------------|--------|
-| `xbrl_RELIANCE_2024-12-31_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_117297_1348248_16012025081520.xml | 58,404 bytes; Ind AS, quarter ended 31-Dec-2024, consolidated (no balance sheet) | 45e06a7ef567ffd564e2234cbe97293407fa7f6dcd4db568c7f25fd44ec492bc |
-| `xbrl_RELIANCE_2024-12-31_standalone.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_117298_1348254_16012025082021.xml | 57,588 bytes; Ind AS, same quarter, standalone | 7a4376e20bcff469a6674116f0e45a76233d6358517d082a0a714ba78e6c2e96 |
 | `xbrl_RELIANCE_2024-09-30_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_112771_1269085_14102024073244.xml | 83,484 bytes; Ind AS, quarter ended 30-Sep-2024 with the half-year balance sheet and cash flow | d1daceb0f8cdd5708fe0b2f61d9d863f9dd3ec85440e14554791a870abc3426b |
 | `xbrl_RELIANCE_2021-06-30_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_73303_495024_23072021080800_WEB.xml | 35,440 bytes; Ind AS, quarter ended 30-Jun-2021: refers to OneD / OneI without defining them | 0b3104296636d7e91091d6b2138ee68e98459572f9b0de83d400434c3e885868 |
 | `xbrl_INFY_2024-03-31_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_104589_1099938_19042024112830.xml | 108,706 bytes; Ind AS, quarter and year ended 31-Mar-2024 (shared by the Q4 and Annual listings) | 76b50cfcb43c474f7db3203627fe300165dcc54e7890d71eae416d7b838bb977 |
@@ -60,7 +59,7 @@ https://www.nseindia.com/api/integrated-filing-results?index=equities&symbol=<SY
 | `xbrl_RELIANCE_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_INDAS_1750537_30102026093254_WEB.xml | 103,242 bytes; integrated filing (IFIndAs V2.1), quarter ended 30-Sep-2026, consolidated; copied from the Task 2 fixtures | 5e596d6e3dc2941d060bcb95585708f9b1bc3e892db9ab27cc7c03fd9513f758 |
 | `xbrl_HDFCBANK_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_BANKING_1740913_17102026054812_WEB.xml | 80,749 bytes; integrated filing (IFBanking V2.1), quarter ended 30-Sep-2026, consolidated | 41840bebf50eacb915fe9ddd2d7cd2bace3d6fffdaa0898a482bd56ddd94aa3b |
 | `xbrl_BAJFINANCE_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_NBFC_INDAS_1742040_19102026075918_WEB.xml | 57,385 bytes; integrated filing (IFNBFC V2.1), quarter ended 30-Sep-2026, consolidated | 3de881019f229f5fde8d2aa113ea1c71304f5225ebe6a4d192b5f4a65f54ea34 |
-| `xbrl_RELIANCE_2024-12-31_standalone_broken.xml` | (made here) | a copy of the standalone file with the quarter's ProfitBeforeTax raised from 115970000000.00 to 125970000000.00 (₹1,000 crore), so profit after tax no longer equals profit before tax minus tax | 0fe2abb77764a53cdd9c001b292609456f5ae7f2d51c48c942699202d5d1e2ac |
+| `xbrl_RELIANCE_20241231_standalone_broken.xml` | (made here) | a copy of `xbrl_RELIANCE_20241231_standalone.xml` (above, from Task 2) with the quarter's ProfitBeforeTax raised from 115970000000.00 to 125970000000.00 (₹1,000 crore), so profit after tax no longer equals profit before tax minus tax | 0fe2abb77764a53cdd9c001b292609456f5ae7f2d51c48c942699202d5d1e2ac |
 ## Event calendar (FS 7)
 
 Fetched on 2026-11-17 (IST) the same way, after a warm-up GET of

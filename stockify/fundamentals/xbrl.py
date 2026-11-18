@@ -26,8 +26,9 @@ What the real files look like (fixtures in tests/fixtures/fundamentals, fetched 
   Decimal(text) × 100, exactly (a fraction of a paisa is a problem, not rounded); unit must be INR (INR/shares for
   per-share). The declared rounding sets only the checks' slack. A scale slip would break EPS × shares ≈ profit.
 - Quirks: balance-sheet lines filed as zeros in a quarter without a balance sheet (NBFC December) mean "not filed";
-  SBI files `Assets` without a unit (the equal CapitalAndLiabilities is used); the cash-flow statement sits in the
-  year-to-date context, so `operating_cash_flow` is the 6 months (September) or 12 months (March) to date; a
+  SBI files `Assets` without a unit (the equal CapitalAndLiabilities is used); the cash-flow statement is filed only
+  year to date (6 months in September, 12 in March), so `operating_cash_flow` is stored only for an H or A filing
+  (the Annual listing shares the March file); a quarterly row never carries it; a P&L filed as all zeros is held; a
   standalone filing has no minority interests, so profit_owners = net_profit there.
 
 Element map (local names; first filed wins, `+` = sum of parts):
@@ -50,7 +51,7 @@ Element map (local names; first filed wins, `+` = sum of parts):
 | borrowings_current / _noncurrent | BorrowingsCurrent / BorrowingsNoncurrent | — | — |
 | total_assets | Assets | Assets, CapitalAndLiabilities | Assets |
 | cash | CashAndCashEquivalents | CashAndBalancesWithReserveBankOfIndia + BalancesWithBanksAndMoneyAtCallAndShortNotice | CashAndCashEquivalents |
-| operating_cash_flow | CashFlowsFromUsedInOperatingActivities (year to date) | same | same |
+| operating_cash_flow | CashFlowsFromUsedInOperatingActivities (H / A filings only) | same | same |
 
 Sources: RELIANCE 2024-12-31 consolidated + standalone, 2024-09-30 and 2021-06-30 consolidated, 2026-09-30
 integrated; INFY 2024-03-31; VSTIND 2024-12-31 (lakhs); HDFCBANK 2024-12-31, 2021-06-30 and 2026-09-30 integrated;
@@ -93,6 +94,8 @@ LABELS = {
 KINDS = {"Q": 3, "H": 6, "A": 12}
 _KIND_WORDS = {"Q": "quarter", "H": "half year", "A": "year"}
 _BALANCE_SHEET = ("total_equity", "borrowings_current", "borrowings_noncurrent", "total_assets", "cash")
+_PL = ("revenue_ops", "interest_earned", "other_income", "total_income", "total_expenses", "profit_before_tax",
+       "tax", "net_profit")
 _YTD_CORE = ("revenue_ops", "interest_earned", "profit_before_tax", "net_profit")
 _MARKER = re.compile(rb"<!--\s*(IF[A-Za-z]+)\s+V?([0-9.]*)")
 
@@ -375,7 +378,9 @@ class _Parser:
             res.step_paise = 10 ** max(0, 2 - min(decs)) if decs else 1
 
         ctx_for = {"flow": flow, "instant": instants,
-                   "ytd": ytd if res.ytd_months in (6, 12) else []}
+                   # The cash flow is filed only year to date: kept only when that is the filing's own period
+                   # (H: 6 months, A: 12), never on a quarter's row, where it would read as a quarter figure.
+                   "ytd": ytd if self.kind in ("H", "A") and res.ytd_months == months else []}
         for name, spec in self.spec["fields"].items():
             got = self.value(name, spec, ctx_for[spec["period"]])
             if got is not None:
@@ -401,6 +406,9 @@ class _Parser:
                     got = self.value(name, spec, ytd, quiet=True)
                     if got is not None:
                         res.ytd[name] = got[0]
+        pl = [res.fields[k] for k in _PL if k in res.fields]
+        if pl and not any(pl):
+            self.problem("all profit and loss figures are zero")
         for p in check(res.fields, period_kind=self.kind, aux=aux):
             self.problem(p)
         return res
