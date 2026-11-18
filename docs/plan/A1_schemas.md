@@ -764,6 +764,7 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
             "finalise": { "start": "19:30", "retry_every_min": 15 },
             "parity": { "start": "19:45", "retry_every_min": 15 },
             "daily_summary": { "start": "19:50", "retry_every_min": 15 },
+            "desk": { "start": "20:10", "retry_every_min": 30, "until": "23:30" },
             "backup": "05:45",
             "token_dependent_retry": { "every_min": 5, "until": "09:10" },
             "day_end": "23:59:59" } }
