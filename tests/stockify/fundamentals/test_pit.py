@@ -32,6 +32,7 @@ class PitCase(SandboxedDBTest):
             "INSERT INTO instruments (instrument_id, exchange, kind, tradingsymbol, first_seen, last_seen, source) "
             "VALUES (7, 'NSE', 'EQ', ?, '2021-01-01', '2026-11-17', 'kite_dump')", (SYM,))
         self.n = 0
+        self.close(date(2021, 1, 4), 100000)                  # NSE closes on record from 2021 (backfilled)
 
     def put(self, period_end: str, fields: dict, *, broadcast_ns: int, kind: str = "Q", basis: str = "consolidated",
             symbol: str = SYM, status: str = "parsed", period_start: str | None = None) -> str:
@@ -87,6 +88,11 @@ class UsableDayTests(PitCase):
         # Broadcast before the open on a trading day: still the next trading day.
         self.assertEqual(pit.usable_day(ist(date(2024, 10, 28), "08:00")), date(2024, 10, 29))
 
+    def test_midnight_ist(self):
+        # 23:59 IST Thursday 24 Oct 2024 is usable Friday 25; two minutes later (00:01 IST Friday) Monday 28.
+        self.assertEqual(pit.usable_day(ist(date(2024, 10, 24), "23:59")), date(2024, 10, 25))
+        self.assertEqual(pit.usable_day(ist(date(2024, 10, 25), "00:01")), date(2024, 10, 28))
+
     def test_only_parsed_filings_count(self):
         self.put("2024-09-30", pnl(100, 10), broadcast_ns=ist(date(2024, 10, 14), "20:00"), status="held")
         self.assertEqual(pit.known_on(SYM, date(2025, 1, 1))["quarters"], [])
@@ -110,28 +116,55 @@ class VersionTests(PitCase):
         self.put("2024-09-30", pnl(100, 10), broadcast_ns=ist(date(2024, 10, 20), "20:00"))
         self.assertEqual([e["filing_id"] for e in pit.known_on(SYM, date(2025, 1, 1))["quarters"]], [v1])
 
-    def test_basis_fixed_per_company(self):
-        # Standalone from the start, consolidated only from the Dec 2024 quarter: consolidated for every date.
-        self.put("2024-06-30", pnl(90, 9), broadcast_ns=ist(date(2024, 7, 19), "20:00"), basis="standalone")
-        self.put("2024-09-30", pnl(95, 9), broadcast_ns=ist(date(2024, 10, 14), "20:00"), basis="standalone")
-        cons = self.put("2024-12-31", pnl(120, 12), broadcast_ns=ist(date(2025, 1, 16), "20:00"))
-        self.put("2024-12-31", pnl(99, 9), broadcast_ns=ist(date(2025, 1, 16), "20:05"), basis="standalone")
-        self.assertEqual(pit.basis_for(SYM), "consolidated")
-        early = pit.known_on(SYM, date(2024, 11, 1))
-        self.assertEqual((early["basis"], early["quarters"]), ("consolidated", []))     # never standalone instead
-        late = pit.known_on(SYM, date(2025, 2, 1))
-        self.assertEqual([e["filing_id"] for e in late["quarters"]], [cons])
-        # A company that never filed consolidated is standalone throughout.
+    def test_basis_is_point_in_time_and_never_mixed(self):
+        # Ruling R8. Standalone quarters from 2022; consolidated first filed for the June 2025 quarter (broadcast
+        # Friday 18 Jul 2025, usable Monday 21 Jul): standalone before that day, consolidated from it.
+        stand = {}
+        for end, b in (("2022-03-31", date(2022, 4, 22)), ("2022-06-30", date(2022, 7, 22)),
+                       ("2022-09-30", date(2022, 10, 21)), ("2022-12-31", date(2023, 1, 20)),
+                       ("2025-03-31", date(2025, 4, 25)), ("2025-06-30", date(2025, 7, 18))):
+            stand[end] = self.put(end, {**pnl(10, 1), "total_equity": 500 * CR}, broadcast_ns=ist(b, "20:00"),
+                                  basis="standalone")
+        cons = {}
+        for end, b in (("2025-06-30", date(2025, 7, 18)), ("2025-09-30", date(2025, 10, 17)),
+                       ("2025-12-31", date(2026, 1, 16)), ("2026-03-31", date(2026, 4, 24))):
+            cons[end] = self.put(end, pnl(20, 2, shares=2 * SHARES), broadcast_ns=ist(b, "20:30"))
+        on = date(2023, 2, 1)
+        self.assertEqual(pit.basis_on(SYM, on), "standalone")
+        k = pit.known_on(SYM, on)
+        self.assertEqual(k["basis"], "standalone")
+        self.assertEqual([e["filing_id"] for e in k["quarters"]],
+                         [stand[e] for e in ("2022-12-31", "2022-09-30", "2022-06-30", "2022-03-31")])
+        self.assertEqual(pit.ttm(SYM, on, "revenue_ops"), 40 * CR)                 # four standalone quarters
+        self.assertEqual(pit.shares(SYM, on), SHARES)
+        self.assertEqual(pit.basis_on(SYM, date(2025, 7, 18)), "standalone")       # broadcast day: not yet
+        self.assertEqual(pit.latest(SYM, date(2025, 7, 18), "total_equity"), 500 * CR)
+        switched = date(2025, 7, 21)
+        self.assertEqual(pit.basis_on(SYM, switched), "consolidated")
+        k = pit.known_on(SYM, switched)
+        self.assertEqual([e["filing_id"] for e in k["quarters"]], [cons["2025-06-30"]])   # no standalone mixed in
+        self.assertIsNone(pit.ttm(SYM, switched, "revenue_ops"))                    # one consolidated quarter only
+        self.assertIsNone(pit.latest(SYM, switched, "total_equity"))               # standalone balance not used
+        self.assertEqual(pit.shares(SYM, switched), 2 * SHARES)
+        self.assertIsNone(pit.ttm(SYM, date(2026, 4, 24), "revenue_ops"))          # March not usable yet
+        self.assertEqual(pit.ttm(SYM, date(2026, 4, 27), "revenue_ops"), 80 * CR)  # four consolidated quarters
+        # Looking back later never changes the earlier view.
+        self.assertEqual(pit.ttm(SYM, on, "revenue_ops"), 40 * CR)
+
+    def test_basis_without_consolidated_filings_and_a_held_one(self):
         self.put("2024-09-30", pnl(10, 1), broadcast_ns=ist(date(2024, 10, 14), "20:00"), basis="standalone",
                  symbol="VSTIND")
-        self.assertEqual(pit.basis_for("VSTIND"), "standalone")
+        self.assertEqual(pit.basis_on("VSTIND", date(2026, 1, 1)), "standalone")
         self.assertEqual(len(pit.known_on("VSTIND", date(2024, 11, 1))["quarters"]), 1)
-        # A held consolidated filing still fixes the basis (no figures is better than switching basis).
-        self.put("2024-09-30", {}, broadcast_ns=ist(date(2024, 10, 14), "20:00"), symbol="ABB", status="held")
-        self.put("2024-09-30", pnl(10, 1), broadcast_ns=ist(date(2024, 10, 14), "20:00"), basis="standalone",
+        self.assertEqual(pit.basis_on("NOBODY", date(2026, 1, 1)), "standalone")
+        # A held consolidated filing switches the basis from its own usable day (its figures are missing, and
+        # standalone ones are not used in their place).
+        self.put("2024-06-30", pnl(10, 1), broadcast_ns=ist(date(2024, 7, 19), "20:00"), basis="standalone",
                  symbol="ABB")
-        self.assertEqual(pit.basis_for("ABB"), "consolidated")
-        self.assertEqual(pit.basis_for("NOBODY"), "standalone")
+        self.put("2024-09-30", {}, broadcast_ns=ist(date(2024, 10, 14), "20:00"), symbol="ABB", status="held")
+        self.assertEqual(pit.basis_on("ABB", date(2024, 10, 14)), "standalone")
+        self.assertEqual(pit.basis_on("ABB", date(2024, 10, 15)), "consolidated")
+        self.assertEqual(pit.known_on("ABB", date(2024, 10, 15))["quarters"], [])
 
     def test_kinds_are_kept_apart_and_quarters_capped_at_eight(self):
         d, ends = date(2021, 6, 30), []
@@ -237,10 +270,12 @@ class SharesTests(PitCase):
         # Face value ₹10 → ₹5 (ex-date Monday 5 Aug 2024): the shares double, the close halves. The June quarter
         # (pre-split count) is the latest filing until the September quarter is usable on 15 Oct.
         self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 6, 28), 301000)                                  # the close before each window
         self.close(date(2024, 8, 1), 301000)
         self.close(date(2024, 8, 2), 300000)
         self.close(date(2024, 8, 5), 150500)                                   # the split, and a small move
         self.close(date(2024, 8, 6), 151000)
+        self.close(date(2024, 9, 30), 151000)
         self.close(date(2024, 10, 15), 152000)
         before = pit.market_cap(SYM, date(2024, 8, 2))
         self.assertEqual(before, SHARES * 300000)
@@ -261,6 +296,7 @@ class SharesTests(PitCase):
 
     def test_an_ordinary_fall_is_not_a_split(self):
         self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 6, 28), 300000)
         self.close(date(2024, 8, 2), 300000)
         self.close(date(2024, 8, 5), 240000)                                   # 20 % down: a price move
         self.assertEqual(pit.shares(SYM, date(2024, 8, 5)), SHARES)
@@ -269,8 +305,10 @@ class SharesTests(PitCase):
     def test_a_fall_no_ratio_explains_holds_the_count_until_the_next_filing(self):
         # A third off in a day (a 1:2 bonus, or a crash like ZEEL's on 2024-01-23: the price cannot tell): no count.
         self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 6, 28), 300000)
         self.close(date(2024, 8, 2), 300000)
         self.close(date(2024, 8, 5), 199000)
+        self.close(date(2024, 9, 30), 200000)
         self.assertEqual(pit.market_cap(SYM, date(2024, 8, 2)), SHARES * 300000)
         self.assertIsNone(pit.shares(SYM, date(2024, 8, 5)))
         self.assertIsNone(pit.market_cap(SYM, date(2024, 8, 5)))
@@ -282,6 +320,47 @@ class SharesTests(PitCase):
         self.close(date(2024, 10, 15), 200000)
         self.assertEqual(pit.market_cap(SYM, date(2024, 10, 15)), SHARES * 3 // 2 * 200000)
 
+    def test_a_split_across_a_missing_close_is_still_seen(self):
+        # No close on Friday 2 Aug (the day before the ex-date): the 5 Aug close is compared with 1 Aug's.
+        self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 6, 28), 300000)
+        self.close(date(2024, 8, 1), 300000)
+        self.close(date(2024, 8, 5), 150500)
+        detail = pit.shares_detail(SYM, date(2024, 8, 5))
+        self.assertEqual((detail["shares"], detail["adjustments"], detail["held"]),
+                         (2 * SHARES, [{"day": "2024-08-05", "ratio": "2"}], []))
+        self.assertEqual(pit.market_cap(SYM, date(2024, 8, 5)), 2 * SHARES * 150500)
+
+    def test_a_fall_across_a_long_gap_holds(self):
+        # 1 Aug, then nothing for 8 trading days: a halving across that gap may be a split or a price move: held.
+        self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 6, 28), 300000)
+        self.close(date(2024, 8, 1), 300000)
+        self.close(date(2024, 8, 14), 150000)
+        detail = pit.shares_detail(SYM, date(2024, 8, 14))
+        self.assertEqual((detail["shares"], detail["adjustments"]), (None, []))
+        self.assertEqual(detail["held"], [{"day": "2024-08-14", "fall": "2.000", "gap_days": 8}])
+        self.assertIsNone(pit.market_cap(SYM, date(2024, 8, 14)))
+        # The same gap with no fall is fine.
+        refdata._connect().execute("UPDATE cm_eod SET close_paise = 299000 WHERE trade_date = '2024-08-14'")
+        self.assertEqual(pit.market_cap(SYM, date(2024, 8, 14)), SHARES * 299000)
+
+    def test_no_close_before_the_window_holds(self):
+        self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 8, 1), 300000)
+        # Closes on record (from 2021) but none in the 5 trading days before 1 Jul: nothing to compare with.
+        detail = pit.shares_detail(SYM, date(2024, 8, 1))
+        self.assertIsNone(detail["shares"])
+        self.assertEqual(detail["held"], [{"day": "2024-08-01",
+                                           "reason": "no NSE close in the 5 trading days before 2024-07-01"}])
+        self.assertIsNone(pit.market_cap(SYM, date(2024, 8, 1)))
+        # Close coverage starting after the period end (cm_eod begins 2024-07-15): a split before it is invisible.
+        refdata._connect().execute("DELETE FROM cm_eod WHERE trade_date < '2024-07-15'")
+        self.close(date(2024, 7, 15), 300000)
+        detail = pit.shares_detail(SYM, date(2024, 8, 1))
+        self.assertEqual((detail["shares"], detail["held"]),
+                         (None, [{"day": "2024-07-01", "reason": "no NSE close on record before 2024-07-15"}]))
+
     def test_ratios_come_from_config(self):
         cfg = loader.load_json("fundamentals.json")
         self.assertEqual(cfg["corporate_action_ratios"], ["2", "2.5", "3", "4", "5", "6", "10", "20"])
@@ -291,6 +370,7 @@ class SharesTests(PitCase):
 class MarketCapTests(PitCase):
     def test_close_on_the_day_else_the_latest_within_five_trading_days(self):
         self.put("2024-06-30", pnl(100, 10), broadcast_ns=ist(date(2024, 7, 19), "20:00"))
+        self.close(date(2024, 6, 28), 300000)
         self.close(date(2024, 8, 1), 300000)
         self.assertEqual(pit.market_cap(SYM, date(2024, 8, 1)), SHARES * 300000)
         # 2, 5, 6, 7, 8 Aug have no row: the 1st is within five trading days of the 8th, not of the 9th.

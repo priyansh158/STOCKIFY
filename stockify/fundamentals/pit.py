@@ -7,9 +7,10 @@
   company's basis the version used on a day is the latest broadcast already usable then; a later filing with
   different figures (a restatement) replaces it from its own usable day, never before. A later filing with the same
   figures is the same version: the first one (its filing_id and date) stays.
-- **Basis.** `basis_for(symbol)`: consolidated if the company has any consolidated filing at all (any status),
-  else standalone; fixed for every date (spec call 7). Before its first consolidated filing is usable a company has
-  no figures; standalone figures are never used in their place.
+- **Basis** (ruling R8, point in time): `basis_on(symbol, day)` is consolidated from the usable day of the
+  company's first consolidated filing (any status, so a held one counts too) onward, standalone before. Every
+  reader takes that one basis for the day, so nothing mixes bases: TTM needs four quarters of it (None until four
+  consolidated quarters exist after a switch), and latest / shares read only its filings.
 - **What real filings give** (ruling R6, task-3 re-review): quarter rows (Q) carry the quarter's P&L, and the
   September and March ones also carry the balance sheet; there are no usable half-year (H) rows; annual (A) rows
   carry the year's P&L and operating cash flow (legacy to FY2024, and from FY2025 the A row filings.py lists on each
@@ -31,8 +32,12 @@
   up to a quarter (RELIANCE 2024-10-28 to 2025-01-16). Any other fall of corporate_action_hold_fall (1.3×) or more
   in that window (a 1:2 bonus, a split with a big ex-date move, a demerger, a crash: the price alone cannot tell)
   holds the count: shares and market cap are None until that later filing, never a guess. The fall is seen on the
-  ex-date itself: no look-ahead. Not handled: a rise (a consolidation), a split on a day the stock did not trade,
-  and share issues (QIP, rights) between filings, which carry the last filed count.
+  ex-date itself: no look-ahead. Each close is compared with the last close before it (so a missing close on or
+  before the ex-date does not hide a split); across more than MAX_GAP_DAYS trading days without a close, a fall of
+  the hold level or more holds rather than being read as a ratio. The window needs a close in the MAX_GAP_DAYS
+  trading days before it to compare with: if those days precede the first close on record in cm_eod, or the stock
+  has no close in them, the count is held (a newly listed stock waits for a filing after its listing). Not handled:
+  a rise (a consolidation), and share issues (QIP, rights) between filings, which carry the last filed count.
 - **Market cap** = cm_eod raw close (series EQ) on the day, else the latest of the 5 trading days before it, × the
   shares known on the day (adjusted up to that close's date); None when either is missing.
 
@@ -54,6 +59,7 @@ from stockify.fundamentals import store, xbrl
 
 SEGMENT = "CM"
 PRICE_LOOKBACK_DAYS = 5                    # ruling (task-4 dispatch): the latest close within 5 trading days
+MAX_GAP_DAYS = 5                           # trading days without a close a split comparison may span
 QUARTERS_KEPT = 8
 ROUNDING_SLACK_PAISE = 10 ** 9             # ₹1 crore: the largest rounding step a filing declares (taxonomy.json)
 
@@ -102,11 +108,13 @@ def _cfg() -> tuple[tuple[tuple[str, Fraction], ...], Fraction, Fraction]:
 
 # ── versions ─────────────────────────────────────────────────────────────────
 
-def basis_for(symbol: str) -> str:
-    """'consolidated' if the company has any consolidated filing (whatever its status), else 'standalone'."""
-    hit = store._connect().execute("SELECT 1 FROM filings WHERE symbol = ? AND basis = 'consolidated' LIMIT 1",
-                                   (symbol,)).fetchone()
-    return "consolidated" if hit else "standalone"
+def basis_on(symbol: str, day: date) -> str:
+    """'consolidated' from the usable day of the company's first consolidated filing (whatever its status; one
+    without a broadcast time never becomes usable), else 'standalone' (ruling R8)."""
+    first = store._connect().execute(
+        "SELECT MIN(broadcast_ns) FROM filings WHERE symbol = ? AND basis = 'consolidated'"
+        " AND broadcast_ns IS NOT NULL", (symbol,)).fetchone()[0]
+    return "consolidated" if first is not None and usable_day(first) <= day else "standalone"
 
 
 def _versions(symbol: str, basis: str) -> list[dict]:
@@ -129,7 +137,7 @@ def _versions(symbol: str, basis: str) -> list[dict]:
 
 def _known(symbol: str, day: date) -> tuple[str, dict[tuple[str, str], dict]]:
     """(basis, {(period_end, period_kind): the version in use on `day`})."""
-    basis = basis_for(symbol)
+    basis = basis_on(symbol, day)
     iso = day.isoformat()
     chosen: dict[tuple[str, str], dict] = {}
     for v in _versions(symbol, basis):
@@ -233,30 +241,59 @@ def _closes(iid: int, days: list[date]) -> dict[str, int]:
     return out
 
 
+def _coverage_start() -> str | None:
+    """The first trading day cm_eod holds any EQ close for (ISO), or None."""
+    return refdata._connect().execute("SELECT MIN(trade_date) FROM cm_eod WHERE series = 'EQ'").fetchone()[0]
+
+
+def _fall(seen: Fraction) -> str:
+    return f"{(Decimal(seen.numerator) / Decimal(seen.denominator)).quantize(Decimal('0.001'))}"
+
+
 def _splits(iid: int | None, after: date, through: date) -> tuple[list[dict], list[dict]]:
-    """(splits / bonuses, other large falls) in NSE's raw closes on trading days after `after`, through `through`:
-    [{"day", "ratio" (as configured)}], [{"day", "fall" (previous close ÷ close, 3 dp)}]."""
+    """(splits / bonuses, holds) in NSE's raw closes on trading days after `after`, through `through`:
+    [{"day", "ratio" (as configured)}], [{"day", "fall" (last close ÷ close, 3 dp), "gap_days" when it spans more
+    than MAX_GAP_DAYS trading days without a close} | {"day", "reason"} when there is no close to compare with]."""
     if iid is None or through <= after:
         return [], []
-    days = nse_calendar.trading_days(SEGMENT, after + timedelta(days=1), through)
-    if not days:
+    window = nse_calendar.trading_days(SEGMENT, after + timedelta(days=1), through)
+    if not window:
         return [], []
-    days = [nse_calendar.previous_trading_day(SEGMENT, days[0])] + days
+    lead = [nse_calendar.previous_trading_day(SEGMENT, window[0])]
+    while len(lead) < MAX_GAP_DAYS:
+        lead.insert(0, nse_calendar.previous_trading_day(SEGMENT, lead[0]))
+    days = lead + window
     closes = _closes(iid, days)
     ratios, tol, hold = _cfg()
-    found, falls = [], []
-    for a, b in zip(days, days[1:]):
-        ca, cb = closes.get(a.isoformat()), closes.get(b.isoformat())
-        if ca is None or cb is None:
+    anchor = next((i for i in range(len(lead) - 1, -1, -1) if days[i].isoformat() in closes), None)
+    if anchor is None:
+        cover = _coverage_start()
+        if cover is None or lead[-1].isoformat() < cover:
+            return [], [{"day": window[0].isoformat(), "reason": f"no NSE close on record before {cover}"}]
+        first = next((d for d in window if d.isoformat() in closes), None)
+        if first is None:
+            return [], []                         # no close at all: nothing priced, nothing to hold
+        return [], [{"day": first.isoformat(),
+                     "reason": f"no NSE close in the {MAX_GAP_DAYS} trading days before {window[0].isoformat()}"}]
+    found, held = [], []
+    for i in range(len(lead), len(days)):
+        cb = closes.get(days[i].isoformat())
+        if cb is None:
             continue
-        seen = Fraction(ca, cb)
-        match = next((text for text, r in ratios if abs(seen / r - 1) <= tol), None)
-        if match is not None:
-            found.append({"day": b.isoformat(), "ratio": match})
-        elif seen >= hold:
-            falls.append({"day": b.isoformat(),
-                          "fall": f"{(Decimal(seen.numerator) / Decimal(seen.denominator)).quantize(Decimal('0.001'))}"})
-    return found, falls
+        seen = Fraction(closes[days[anchor].isoformat()], cb)
+        gap = i - anchor - 1
+        day = days[i].isoformat()
+        if gap > MAX_GAP_DAYS:
+            if seen >= hold:
+                held.append({"day": day, "fall": _fall(seen), "gap_days": gap})
+        else:
+            match = next((text for text, r in ratios if abs(seen / r - 1) <= tol), None)
+            if match is not None:
+                found.append({"day": day, "ratio": match})
+            elif seen >= hold:
+                held.append({"day": day, "fall": _fall(seen)})
+        anchor = i
+    return found, held
 
 
 def _profit(fields: dict) -> int | None:
@@ -274,7 +311,8 @@ def _eps_agrees(fields: dict, shares: Fraction) -> bool | None:
 def shares_detail(symbol: str, day: date, *, price_day: date | None = None) -> dict | None:
     """The share count known on `day` and where it came from: {"shares" (None when held), "base_shares",
     "filing_id", "period_end", "period_kind", "source": "paid_up" | "eps", "adjustments": [{"day", "ratio"}],
-    "held": [{"day", "fall"}] (falls no ratio explains: the count is unknown), "skipped": [filing_id whose paid-up
+    "held": [{"day", "fall"[, "gap_days"]} | {"day", "reason"}] (falls no ratio explains, or no close to compare
+    with: the count is unknown; see _splits), "skipped": [filing_id whose paid-up
     count disagreed with its EPS]}. Splits are looked for through `price_day` (default `day`). None if no filing
     gives a count."""
     entries = [e for e in _newest_first(_lists(symbol, day)) if e["derived_from"] is None]
