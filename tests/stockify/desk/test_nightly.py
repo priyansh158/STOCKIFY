@@ -176,6 +176,21 @@ class SkipTests(NightlyBase):
         self.assertEqual(res["analysed"], 2)
         self.assertIsNotNone(desk_store.latest_view(self.ids["MOVEDCO"]))
 
+    def test_a_holding_whose_lookup_raises_does_not_stop_the_others(self):
+        real = nightly.resolve
+
+        def resolve(h, day):  # noqa: ANN001, ANN202
+            if h.tradingsymbol == "LONGCO":
+                raise RuntimeError("refdata could not be read")
+            return real(h, day)
+        with mock.patch.object(nightly, "resolve", side_effect=resolve):
+            res = self.run_job([holding("LONGCO", 500001), holding("MOVEDCO", 123456)])
+        self.assertFalse(res["complete"])
+        self.assertEqual([f["symbol"] for f in res["failed"]], ["LONGCO"])
+        self.assertEqual(res["analysed"], 1)
+        self.assertIsNotNone(desk_store.latest_view(self.ids["MOVEDCO"]))
+        self.assertIsNone(desk_store.latest_view(self.ids["LONGCO"]))
+
 
 class ViewTests(NightlyBase):
     def test_nightly_writes_a_view_per_holding(self):

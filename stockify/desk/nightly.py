@@ -198,8 +198,8 @@ def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN0
             log.info("desk for %s: stopping before the next session; the rest runs later", day)
             stopped = True
             break
-        iid, reason = resolve(h, day)
         try:
+            iid, reason = resolve(h, day)           # inside the try: a lookup that raises fails this holding only
             if reason is None:
                 reason = _one(h, iid, day, client, now)
         except Exception as e:  # noqa: BLE001 — one holding's trouble never stops the others
