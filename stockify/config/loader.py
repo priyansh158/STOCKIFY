@@ -52,6 +52,7 @@ SCHEMAS = {
     "notify.json": "stockify.notify/1",
     "research.json": "stockify.research/1",
     "paper.json": "stockify.paper/1",
+    "fundamentals.json": "stockify.fundamentals/1",
 }
 
 CSV_HEADERS = {
@@ -445,6 +446,86 @@ def _check_research(doc: dict) -> None:
                           f"coverage.max_days ({maximum})")
 
 
+def _check_fundamentals(doc: dict) -> None:
+    """fundamentals.json (stockify.fundamentals/1): every key present and none unknown; the list URLs and the API
+    base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
+    valuation weights) decimal strings in [0, 1], no two equal as numbers, and `basket_sizes` distinct whole numbers from 5 to 50 and
+    at most `top_kept`; `daily_request_budget` a whole number of requests from 1; `filings_from` a YYYY-MM-DD
+    date; each `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
+    keys = ("nifty500_list_url", "nifty500_list_fallback_url", "liquidity_floor_paise", "liquidity_days",
+            "filings_from", "basket_size", "top_kept", "balances", "basket_sizes", "corporate_action_ratios",
+            "corporate_action_tolerance", "corporate_action_hold_fall", "daily_request_budget", "api")
+    extra = set(doc) - set(keys) - {"schema", "note"}
+    if extra:
+        raise ConfigError(f"fundamentals.json: unknown keys {sorted(extra)}; known: {list(keys)}")
+    for key in keys:
+        if key not in doc:
+            raise ConfigError(f"fundamentals.json: {key} is missing")
+
+    def nse_url(value, where: str, prefixes: tuple) -> None:
+        if not isinstance(value, str) or not value.startswith(prefixes):
+            raise ConfigError(f"fundamentals.json: {where} must start with one of {list(prefixes)}, got {value!r}")
+
+    def whole(value, where: str, low: int, high: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ConfigError(f"fundamentals.json: {where} must be a whole number from {low} to {high}, got {value!r}")
+
+    nse_url(doc["nifty500_list_url"], "nifty500_list_url", ("https://nsearchives.nseindia.com/",))
+    nse_url(doc["nifty500_list_fallback_url"], "nifty500_list_fallback_url",
+            ("https://nsearchives.nseindia.com/", "https://www.niftyindices.com/"))
+    whole(doc["liquidity_floor_paise"], "liquidity_floor_paise", 0, 10 ** 15)
+    whole(doc["liquidity_days"], "liquidity_days", 1, 1000)
+    whole(doc["basket_size"], "basket_size", 1, 500)
+    whole(doc["top_kept"], "top_kept", 1, 500)
+    whole(doc["daily_request_budget"], "daily_request_budget", 1, 100_000)
+    balances = doc["balances"]
+    if (not isinstance(balances, list) or not balances
+            or not all(isinstance(b, str) and _SIGNED_DECIMAL.fullmatch(b) and 0 <= Decimal(b) <= 1 for b in balances)
+            or len({Decimal(b) for b in balances}) != len(balances)):      # "0.5" and "0.50" are one balance
+        raise ConfigError(f"fundamentals.json: balances must be a non-empty list of decimal strings from 0 "
+                          f"(quality only) to 1 (valuation only), no two equal as numbers, got {balances!r}")
+    sizes = doc["basket_sizes"]
+    if not isinstance(sizes, list) or not sizes or len(set(map(repr, sizes))) != len(sizes):
+        raise ConfigError(f"fundamentals.json: basket_sizes must be a non-empty list of distinct whole numbers, "
+                          f"got {sizes!r}")
+    for n in sizes:                                  # the strategy's own bounds (fundamentals_basket.py), within top_kept
+        whole(n, "basket_sizes", 5, min(50, doc["top_kept"]))
+    tol = doc["corporate_action_tolerance"]
+    if not isinstance(tol, str) or _SIGNED_DECIMAL.fullmatch(tol) is None or not 0 < Decimal(tol) <= Decimal("0.1"):
+        raise ConfigError(f"fundamentals.json: corporate_action_tolerance must be a decimal string in (0, 0.1], "
+                          f"got {tol!r}")
+    ratios = doc["corporate_action_ratios"]
+    if (not isinstance(ratios, list) or not ratios
+            or not all(isinstance(r, str) and _SIGNED_DECIMAL.fullmatch(r) and Decimal(r) > 1 for r in ratios)):
+        raise ConfigError(f"fundamentals.json: corporate_action_ratios must be a non-empty list of decimal strings "
+                          f"above 1, got {ratios!r}")
+    t = Decimal(tol)
+    for lo, hi in zip(ratios, ratios[1:]):
+        if not Decimal(lo) * (1 + t) < Decimal(hi) * (1 - t):
+            raise ConfigError(f"fundamentals.json: corporate_action_ratios must ascend with bands that do not overlap "
+                              f"at the tolerance: {lo} and {hi}")
+    hold = doc["corporate_action_hold_fall"]
+    if (not isinstance(hold, str) or _SIGNED_DECIMAL.fullmatch(hold) is None
+            or not 1 < Decimal(hold) < Decimal(ratios[0]) * (1 - t)):
+        raise ConfigError(f"fundamentals.json: corporate_action_hold_fall must be a decimal string above 1 and below "
+                          f"the smallest ratio's band, got {hold!r}")
+    _iso_date(doc["filings_from"], "fundamentals.json: filings_from")
+    if date.fromisoformat(doc["filings_from"]).isoformat() != doc["filings_from"]:
+        raise ConfigError(f"fundamentals.json: filings_from: not a YYYY-MM-DD date: {doc['filings_from']!r}")
+    api = doc["api"]
+    if not isinstance(api, dict) or api.get("base") != "https://www.nseindia.com":
+        raise ConfigError("fundamentals.json: api must be an object whose base is \"https://www.nseindia.com\"")
+    for name, entry in api.items():
+        if name == "base":
+            continue
+        if not isinstance(entry, dict) or set(entry) != {"path", "warmup"}:
+            raise ConfigError(f"fundamentals.json: api.{name} must be an object with exactly ['path', 'warmup']")
+        if not isinstance(entry["path"], str) or not entry["path"].startswith("/api/") or "?" in entry["path"]:
+            raise ConfigError(f"fundamentals.json: api.{name}.path must start with /api/ and carry no query, "
+                              f"got {entry['path']!r}")
+        nse_url(entry["warmup"], f"api.{name}.warmup", ("https://www.nseindia.com/",))
+
+
 def load_json(name: str,config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
@@ -470,6 +551,8 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
         _check_research(doc)
     if name == "storage.json":
         _check_storage(doc)
+    if name == "fundamentals.json":
+        _check_fundamentals(doc)
     return doc
 
 

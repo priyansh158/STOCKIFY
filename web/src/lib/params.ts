@@ -9,6 +9,26 @@ const SYMBOL = /^([A-Z]+:)?\S.*$/;
 const DIGITS = String.raw`\d+(?:_\d+)*`;
 const DECIMAL = new RegExp(String.raw`^\s*[+-]?(?:${DIGITS}(?:\.(?:${DIGITS})?)?|\.${DIGITS})(?:[eE][+-]?${DIGITS})?\s*$`);
 
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The shape check of a `ranking` (the server's `_ranking_problem`, briefly): {label: [{date, symbols}]}, dates rising. */
+function rankingProblem(v: unknown): string | null {
+  const bad = "is not a ranking";
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return bad;
+  for (const [label, entries] of Object.entries(v)) {
+    if (!label.trim() || !Array.isArray(entries)) return bad;
+    let last = "";
+    for (const e of entries) {
+      if (typeof e !== "object" || e === null || Object.keys(e).sort().join() !== "date,symbols") return bad;
+      const { date, symbols } = e as { date: unknown; symbols: unknown };
+      if (typeof date !== "string" || !ISO_DAY.test(date) || date <= last) return bad;
+      last = date;
+      if (!Array.isArray(symbols) || symbols.some((x) => typeof x !== "string" || !x.trim())) return bad;
+    }
+  }
+  return null;
+}
+
 function typeProblem(type: StrategyParam["type"], v: unknown): string | null {
   switch (type) {
     case "int":
@@ -28,6 +48,8 @@ function typeProblem(type: StrategyParam["type"], v: unknown): string | null {
       return typeof v === "string" && v.trim() ? null : "is not a non-empty text";
     case "symbol":
       return typeof v === "string" && SYMBOL.test(v.trim()) ? null : "is not a symbol like NSE:RELIANCE";
+    case "ranking":
+      return rankingProblem(v);
     case "hhmm": {
       if (typeof v !== "string" || !HHMM.test(v)) return "is not a time like 15:10";
       const parts = v.trim().split(":").map(Number);
@@ -67,6 +89,7 @@ export function validateParams(schema: StrategyParam[], params: Record<string, u
 /** Text typed into a form field → the JSON value sent for that param type ("" means not given). */
 export function coerceParam(type: StrategyParam["type"], text: string | boolean): unknown {
   if (typeof text === "boolean") return text;
+  if (type === "ranking") return undefined; // set by the screener, never typed
   const t = text.trim();
   if (t === "") return undefined;
   if (type === "int" && /^[+-]?\d+$/.test(t)) return Number(t);
@@ -107,6 +130,7 @@ function shiftPoint(t: string, places: number): string {
 /** The text a form field starts with for a parameter: its default as typed, a percentage for a `percent` entry. */
 export function paramText(p: StrategyParam): string | boolean {
   if (p.type === "bool") return Boolean(p.default);
+  if (p.type === "ranking") return "";
   if (p.default === null || p.default === undefined) return "";
   return p.percent ? fractionToPercentText(String(p.default)) : String(p.default);
 }

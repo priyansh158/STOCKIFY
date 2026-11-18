@@ -17,6 +17,7 @@ trade date and are skipped on non-trading days:
 | parity      | 19:45, retry 15 min       | catch-up; after finalise; skipped results are retried |
 | daily_summary | 19:50, retry 15 min     | catch-up; after finalise; waits for every session of the day |
 | desk        | 20:10 → 23:30, retry 30 min | catch-up; after nse_fetch; held during the session; the holdings desk (HD 8) |
+| fundamentals | 20:40 → 23:30, retry 30 min | catch-up; after nse_fetch; held during the session; the screener (FS 8) |
 | backup      | 05:45                     | catch-up on every wake; the latest trading day owes one; a null target is a skip |
 
 Completed jobs are remembered in `$LAB/scheduler_state.json` so a restart or a
@@ -45,13 +46,16 @@ from stockify.data import calendar
 SEGMENT = "FO"
 CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
-CATCH_UP = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk", "backup")
+CATCH_UP = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk", "fundamentals",
+            "backup")
 DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary",
-             "desk")                                 # one day's jobs, in order
+             "desk", "fundamentals")                 # one day's jobs, in order
 DEFAULT_RETRY_MIN = {"backup": 15}                  # a job given as a plain time retries at this gap
-DEPENDS = {"compaction": "finalise", "parity": "finalise", "daily_summary": "finalise", "desk": "nse_fetch"}
-HELD_DURING_SESSION = ("finalise", "parity", "backup", "desk")   # an engine replay, a lab copy or the desk's
-                                                            # backtests: not beside the live recorder (M-2)
+DEPENDS = {"compaction": "finalise", "parity": "finalise", "daily_summary": "finalise", "desk": "nse_fetch",
+           "fundamentals": "nse_fetch"}          # the screener's market caps need the day's raw closes
+HELD_DURING_SESSION = ("finalise", "parity", "backup", "desk", "fundamentals")   # an engine replay, a lab copy, the
+                                                            # desk's backtests or the screener's NSE reads and
+                                                            # rescoring: not beside the live recorder (M-2)
 HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files",)   # fetched the same evening (CAM 4.4), not the next morning
 
 
@@ -78,6 +82,8 @@ class DayPlan:
     daily_summary_ns: int
     desk_ns: int
     desk_until_ns: int
+    fundamentals_ns: int
+    fundamentals_until_ns: int
     backup_ns: int
 
 
@@ -107,6 +113,8 @@ def plan(day: date, cfg: dict | None = None) -> DayPlan:
         daily_summary_ns=timeutil.ist_ns(day, _start(jobs["daily_summary"])),
         desk_ns=timeutil.ist_ns(day, jobs["desk"]["start"]),
         desk_until_ns=timeutil.ist_ns(day, jobs["desk"]["until"]),
+        fundamentals_ns=timeutil.ist_ns(day, jobs["fundamentals"]["start"]),
+        fundamentals_until_ns=timeutil.ist_ns(day, jobs["fundamentals"]["until"]),
         backup_ns=timeutil.ist_ns(day, _start(jobs["backup"])),
     )
 
@@ -172,13 +180,14 @@ def token_retry_ns(cfg: dict | None = None) -> int:
 
 def window_end_ns(job: str, day: date, cfg: dict | None = None) -> int:
     p = plan(day, cfg)
-    return {"nse_fetch": p.nse_fetch_until_ns, "margin_files": p.margin_files_until_ns, "desk": p.desk_until_ns}[job]
+    return {"nse_fetch": p.nse_fetch_until_ns, "margin_files": p.margin_files_until_ns, "desk": p.desk_until_ns,
+            "fundamentals": p.fundamentals_until_ns}[job]
 
 
 def _due_ns(job: str, p: DayPlan) -> int:
     return {"nse_fetch": p.nse_fetch_ns, "margin_files": p.margin_files_ns, "finalise": p.finalise_ns,
             "compaction": p.compaction_ns, "parity": p.parity_ns, "daily_summary": p.daily_summary_ns, "desk": p.desk_ns,
-            "backup": p.backup_ns}[job]
+            "fundamentals": p.fundamentals_ns, "backup": p.backup_ns}[job]
 
 
 def runnable(job: str, day: date, state: State) -> bool:
@@ -199,7 +208,7 @@ def session_in_progress(now_ns: int, cfg: dict | None = None) -> bool:
 
 def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tuple[str, date]]:
     """Catch-up jobs whose start passed on a recent trading day and never completed: oldest day first, each day's in
-    `DAY_ORDER` (fetch, margin files, finalise, compaction, parity, summary, desk), then the backup. The backup is one job for the
+    `DAY_ORDER` (fetch, margin files, finalise, compaction, parity, summary, desk, fundamentals), then the backup. The backup is one job for the
     latest trading day whose 05:45 has passed (it copies whatever changed, so earlier days add nothing)."""
     out = []
     today = timeutil.ns_to_ist(now_ns).date()

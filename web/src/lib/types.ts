@@ -119,7 +119,8 @@ export interface DataQualityResponse {
 // ── Strategy tests (M3.14) ───────────────────────────────────────────────────
 // Money is integer paise, times are UTC epoch ns with an ISO IST string beside them.
 
-export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" | "underlying";
+/** `ranking` is set by the fundamentals screener (a run config carries it); the form never edits it. */
+export type ParamType = "int" | "bool" | "str" | "decimal" | "symbol" | "hhmm" | "underlying" | "ranking";
 
 export interface ParamChoice {
   value: unknown;
@@ -906,7 +907,7 @@ export interface SessionChartDTO extends RunChartDTO {
 }
 
 // Jobs the web app starts (D-145): a sweep, a walk-forward, a cost check, an NSE download, a quality report.
-export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report" | "geo";
+export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report" | "geo" | "fundamentals";
 export type WebJobStatus = "running" | "done" | "failed" | "interrupted" | "cancelled";
 export type Objective = "sharpe" | "sortino" | "calmar" | "cagr" | "net_pnl";
 export type AxisValue = string | number | boolean | null;
@@ -1016,5 +1017,87 @@ export interface DeskViewDTO {
   as_of_ns: number;
   close_date?: string | null;
   plain: string;
+}
+
+// Fundamentals screener (FS 9): the ordered list, one stock's details, the test record. No score, rank or place
+// field anywhere: the list's order is the judgement (owner, 2026-11-17).
+export interface ResultsDateDTO {
+  symbol: string;
+  company: string;
+  date: string;
+  period_hint: string;
+}
+
+export interface CandidateDTO {
+  position: number;
+  symbol: string;
+  company: string;
+  sector?: string | null;
+  short_reason: string;
+}
+
+export interface FundamentalsListDTO {
+  as_of?: string | null;
+  upcoming: ResultsDateDTO[];
+  items: CandidateDTO[];
+  held_count: number;
+  not_listed_count: number;
+  test_record_id?: string | null;
+  notes: string[];
+}
+
+export interface RatioDTO {
+  key: string;
+  label: string;
+  value?: number | null;
+  sector_median?: number | null;
+  unit: "times" | "fraction";
+}
+
+export interface SeriesPointDTO {
+  period_end: string;
+  value?: number | null;
+  sector_median?: number | null;
+}
+
+export interface SeriesDTO {
+  key: string;
+  label: string;
+  unit: "paise" | "times" | "fraction";
+  points: SeriesPointDTO[];
+}
+
+export interface FilingDTO {
+  period_end: string;
+  period_kind: string;
+  basis: string;
+  broadcast_ist?: string | null;
+  xbrl_url?: string | null;
+  status: string;
+  reason?: string | null;
+}
+
+export interface CandidateDetailDTO {
+  symbol: string;
+  company: string;
+  sector?: string | null;
+  peer_group?: string | null;
+  left_out_reason?: string | null;
+  listed: boolean;
+  reasons: string[];
+  ratios: RatioDTO[];
+  series: SeriesDTO[];
+  filings: FilingDTO[];
+  as_of?: string | null;
+}
+
+export interface FundamentalsTestRecordDTO {
+  available: boolean;
+  message?: string | null;
+  job_id?: string | null;
+  summary?: WalkforwardSummaryDTO | null;
+  plain?: Record<string, string> | null;
+  benchmark?: string | null;
+  notes: string[];
 }
 // </block>

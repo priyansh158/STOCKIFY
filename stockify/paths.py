@@ -39,6 +39,12 @@ def daemon_lock_file() -> Path:
     return lab_dir() / "daemon.lock"
 
 
+def fundamentals_lock_file() -> Path:
+    """The lock one fundamentals run holds (FS 8): the daemon's job, `fundamentals refresh` or `backfill`. Beside
+    daemon.lock, not under nse/raw (the backup's tree)."""
+    return lab_dir() / "fundamentals_run.lock"
+
+
 def daemon_status_file() -> Path:
     """What the daemon last knew when it stopped (GK 5.1): the last frame it recorded, and why it stopped."""
     return lab_dir() / "daemon_status.json"
@@ -87,6 +93,20 @@ def ticks_archive_dir(day: date | None = None) -> Path:
 def nse_raw_dir(dataset: str | None = None) -> Path:
     base = lab_dir() / "nse" / "raw"
     return _dir(base / dataset if dataset else base)
+
+
+def fundamentals_db() -> Path:
+    """The fundamentals screener's store (FS 1): the universe with each stock's sector, filings and the figures
+    parsed from them."""
+    return lab_dir() / "fundamentals.sqlite"
+
+
+def fundamentals_raw_dir(kind: str) -> Path:
+    """$LAB/nse/raw/fundamentals/<kind>: NSE's answers for the screener (the Nifty 500 list, quote JSON, filings
+    lists, XBRL ...) kept byte for byte. Under nse/raw, so the backup copies them. `kind` must be one safe segment."""
+    if not safe_segment(kind, 64):
+        raise ValueError(f"not a valid fundamentals raw kind: {kind!r}")
+    return _dir(nse_raw_dir("fundamentals") / kind)
 
 
 MARGIN_KINDS = ("span", "elm", "manifest")

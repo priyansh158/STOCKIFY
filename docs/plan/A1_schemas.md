@@ -765,6 +765,7 @@ Keys, each a dated list of rows: `mis_cutoff` (`{group, time}`, Z-5; ⚠ CAS-era
             "parity": { "start": "19:45", "retry_every_min": 15 },
             "daily_summary": { "start": "19:50", "retry_every_min": 15 },
             "desk": { "start": "20:10", "retry_every_min": 30, "until": "23:30" },
+            "fundamentals": { "start": "20:40", "retry_every_min": 30, "until": "23:30" },
             "backup": "05:45",
             "token_dependent_retry": { "every_min": 5, "until": "09:10" },
             "day_end": "23:59:59" } }
@@ -776,9 +777,9 @@ daemon's clock. `margin_files` also holds sleep on its trade date until the day'
 one incomplete attempt past `until` ends it (`nse margin-files --date D` fetches it later).
 
 The paper day's jobs (CDM 5.1) are catch-up jobs too. Per trading day, oldest first, in this order: `nse_fetch`,
-`margin_files`, `finalise`, `parity`, `daily_summary`, `desk`; then one `backup` for the latest trading day. `finalise` waits
+`margin_files`, `finalise`, `compaction`, `parity`, `daily_summary`, `desk`, `fundamentals`; then one `backup` for the latest trading day. `finalise` waits
 for the day's NSE files and is cut off at the next trading day's `day_bundles` time (a holiday in between is skipped);
-`parity` and `daily_summary` run only once `finalise` is done for the day. `desk` (the holdings desk's grading and closing views, D-152) starts at 20:10 IST, retries every 30 minutes until 23:30, runs after `nse_fetch`, is held during the session like `finalise`, and stops 10 minutes before the next session's `refdata` / `day_bundles` (what is left runs on a later pass). `day_bundles` for D runs after `refdata` for D:
+`parity` and `daily_summary` run only once `finalise` is done for the day. `desk` (the holdings desk's grading and closing views, D-152) starts at 20:10 IST, retries every 30 minutes until 23:30, runs after `nse_fetch`, is held during the session like `finalise`, and stops 10 minutes before the next session's `refdata` / `day_bundles` (what is left runs on a later pass). `fundamentals` (the screener's daily run, D-153) starts at 20:40 IST, retries every 30 minutes until 23:30, runs after `nse_fetch` (its market values need the day's closes), is held during the session and stops 10 minutes before the next session's `refdata` / `day_bundles`, like `desk`; a run that spent the day's NSE request budget (fundamentals.json `daily_request_budget`) is marked done, and one stopped at the deadline, refused by NSE or kept out by another fundamentals run (the shared lock) is tried again. The catch-up gives each job the daemon clock's time when that job starts, not the time the pass started, so a job after a long one judges its deadline on the real time (D-153; this fixed `desk` too). `day_bundles` for D runs after `refdata` for D:
 `refdata` is retried every `token_dependent_retry.every_min` until `until`, a failure that is not about the login then
 leaves D-1's refdata in use (bundle label `refdata_stale`), and a later login runs it at once. A session whose
 previous trading day is not finalised stays ARMED with the timeline row `blocked_on_finalise`. `backup` is `null`-safe: no

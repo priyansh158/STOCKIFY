@@ -145,7 +145,7 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
     """Run one scheduler job for `day` (compaction, quality, nse_fetch, margin_files, prune, finalise, parity,
-    daily_summary, desk, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
+    daily_summary, desk, fundamentals, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
     tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
     windows are judged against it."""
     now_ns = timeutil.now_ns() if now_ns is None else now_ns
@@ -229,6 +229,8 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         _daily_summary(day, state)
     elif job == "desk":
         _desk_job(day, state, now_ns)
+    elif job == "fundamentals":
+        _fundamentals_job(day, state, now_ns)
     elif job == "backup":
         _backup_job(day, state)
 
@@ -388,6 +390,55 @@ def _desk_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         state.mark("desk", day)
 
 
+def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """The fundamentals screener's daily run (FS 8, `stockify.fundamentals.job`): universe, results calendar,
+    filings, XBRL figures and the day's list. Like the desk it stops DESK_MARGIN_NS before the next session's
+    preparation (the earlier of `refdata` and `day_bundles`), judged on the daemon clock: `now_ns` is the time this
+    job started (the catch-up reads it per job) and the NSE client's Http runs on it, so no NSE request is made after
+    the deadline. The day's runs share fundamentals.json `daily_request_budget` (R12): once it is spent the day's
+    list is saved and the job is marked, whatever failed (it waits for tomorrow). A stop at the deadline, another
+    run holding the lock (a CLI refresh or backfill) or a raised error: tried again, not marked. NSE refusing
+    (blocked): tried again until the window's `until`, then given up for the day (marked, logged). Companies that failed: tried again every `retry_every_min` until the window's `until`, then given up
+    (marked)."""
+    from stockify.daemon import scheduler
+    from stockify.daemon.clock import OffsetClock, WallClock
+    from stockify.data import nse_files
+    from stockify.fundamentals import job, nse_api
+    nxt = scheduler.plan(scheduler.session_day(now_ns))
+    deadline = min(nxt.refdata_ns, nxt.day_bundles_ns) - DESK_MARGIN_NS
+    try:
+        client = nse_api.Client(nse_files.Http(clock=OffsetClock(WallClock(), now_ns)))
+        res = job.run(day, client=client, deadline_ns=deadline, budget=job.daily_request_budget())
+    except job.Busy:
+        log.info("fundamentals for %s: another fundamentals run (a refresh or backfill) is in progress; tried again "
+                 "later", day)
+        return
+    except Exception:  # noqa: BLE001 — the screener never costs the daemon anything
+        log.exception("the fundamentals job for %s raised; it will be tried again", day)
+        return
+    log.info("fundamentals for %s: universe %s, %s calendar meetings, %d companies listed, %d failed, list of %s, "
+             "%s NSE requests%s; stopped: %s", day, res.get("universe"), res.get("calendar"), res.get("listed", 0),
+             len(res["failed"]), res.get("saved"), res.get("requests"),
+             " (the day's budget spent)" if res.get("budget_spent") else "", res["stopped"])
+    if res["stopped"] == "blocked" and now_ns >= scheduler.window_end_ns("fundamentals", day):
+        log.warning("fundamentals for %s: NSE still refused after the retry window; giving up for the day (the "
+                    "next evening's run picks up what is left)", day)
+        state.mark("fundamentals", day)
+        return
+    if res["stopped"] is not None:
+        return                                        # `job.run` logged it: tried again on a later pass
+    if res["complete"]:
+        state.mark("fundamentals", day)
+    elif res.get("budget_spent"):                     # the day's requests are spent: a retry would ask nothing (R12)
+        log.warning("fundamentals for %s: the day's NSE request budget is spent; %s left for tomorrow's run", day,
+                    ", ".join(f["symbol"] for f in res["failed"]))
+        state.mark("fundamentals", day)
+    elif res["failed"] and now_ns >= scheduler.window_end_ns("fundamentals", day):
+        log.warning("fundamentals for %s: %s still failing after the retry window; giving up for the day", day,
+                    ", ".join(f["symbol"] for f in res["failed"]))
+        state.mark("fundamentals", day)
+
+
 SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up
 _summary_flight: dict[date, list] = {}               # day -> [] while a send is in flight, then [its error or None]
 
@@ -460,9 +511,9 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
     def catch_up() -> None:
         """The scheduler's missed jobs, each at most once per its retry interval. Also what the wait for a Kite login
         runs on every poll (LCB 5.2): a missing login never holds up the earlier days' work."""
-        now = clock.now_ns()
-        in_session = scheduler.session_in_progress(now)
-        for job, d in scheduler.missed_jobs(now, state):
+        for job, d in scheduler.missed_jobs(clock.now_ns(), state):
+            now = clock.now_ns()                             # each job gets the time it starts at, not the pass's:
+            in_session = scheduler.session_in_progress(now)  # a job after a long one judges its deadline on it (C1)
             if in_session and job in scheduler.HELD_DURING_SESSION:
                 continue                                     # not beside the live recorder: after the close (M-2)
             if not scheduler.runnable(job, d, state):

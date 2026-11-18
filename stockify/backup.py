@@ -2,16 +2,17 @@
 
 What is backed up, under the target folder:
 
-* `snapshots/<day>/refdata.sqlite`, `lab.sqlite` and `desk.sqlite` (the holdings desk's grades and daily views; a
-  few rows per holding per day): copied with `sqlite3.Connection.backup()` from a read-only
-  connection, so a live WAL database is copied consistently (committed rows only), and then checked with
-  `PRAGMA integrity_check`. One snapshot folder per day; a second run on the same day replaces that day's.
+* `snapshots/<day>/refdata.sqlite`, `lab.sqlite`, `desk.sqlite` (the holdings desk's grades and daily views; a
+  few rows per holding per day) and `fundamentals.sqlite` (the screener's universe and parsed filings):
+  copied with `sqlite3.Connection.backup()` from a read-only connection, so a live WAL database is copied
+  consistently (committed rows only), and then checked with `PRAGMA integrity_check`. One snapshot folder per day; a second run on the same day replaces that day's.
 * After a run whose snapshots all verified, the OLDEST snapshot folders beyond `storage.json` -> `backup.keep_snapshots`
   (default 7) are removed (D-147): only folders named as a date, never the run's own day, never after a failed snapshot.
   `files/` and `manifest.json` are never pruned.
-* `files/<path under the lab>`: `journals/`, `ticks/archive/`, `nse/raw/` and the ELM archive
-  (`nse/margin/elm`: NSE keeps a rolling window only), copied incrementally. A file whose size and SHA-256 equal
-  the entry in `manifest.json` (and whose copy is still there) is skipped. `storage.json` → `backup.include_span`
+* `files/<path under the lab>`: `journals/`, `ticks/archive/`, `nse/raw/` (with the screener's raw NSE answers in
+  `nse/raw/fundamentals/`) and the ELM archive (`nse/margin/elm`: NSE keeps a rolling window only), copied
+  incrementally. A file whose size and SHA-256 equal the entry in `manifest.json` (and whose copy is still there) is
+  skipped. `storage.json` → `backup.include_span`
   adds the SPAN files, which can be fetched again (default off).
 * A journal has its `.crc` checksum file and any `.torn` / `.damaged[N]` files beside it, and they travel with it. An
   open journal (not finalised) is being appended to, so it is read once into memory, its checksum file first, then
@@ -43,7 +44,8 @@ from stockify.daemon import journal
 log = logging.getLogger(__name__)
 
 MANIFEST_SCHEMA = "stockify.backup/1"
-DATABASES = ("refdata.sqlite", "lab.sqlite", "desk.sqlite")      # desk.sqlite: the holdings desk (D-152)
+DATABASES = ("refdata.sqlite", "lab.sqlite", "desk.sqlite",      # desk.sqlite: the holdings desk (D-152)
+             "fundamentals.sqlite")                           # the fundamentals screener (FS 1)
 _CHUNK = 1 << 20
 _OPEN_JOURNAL_TRIES = 3
 DEFAULT_KEEP = 7

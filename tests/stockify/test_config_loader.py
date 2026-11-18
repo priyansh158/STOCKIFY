@@ -122,6 +122,46 @@ class LoaderRuleTests(unittest.TestCase):
         (self.dir / "storage.json").write_text(json.dumps({**good, "log_backups": 0}), encoding="utf-8")
         self.assertEqual(loader.load_json("storage.json", self.dir)["log_backups"], 0)
 
+    def test_fundamentals_json_is_checked(self):
+        """FS 1: NSE hosts only, bounded whole numbers, a real date, api entries {path, warmup}; unknown keys
+        refused."""
+        good = json.loads((loader.CONFIG_DIR / "fundamentals.json").read_text(encoding="utf-8"))
+        bad_cases = (
+            {"liquidity_floor_paise": "8000000000"}, {"liquidity_floor_paise": True}, {"liquidity_days": 0},
+            {"basket_size": 501}, {"top_kept": 2.5}, {"filings_from": "20210401"}, {"filings_from": "2021-13-01"},
+            {"nifty500_list_url": "http://nsearchives.nseindia.com/x.csv"},
+            {"nifty500_list_fallback_url": "https://example.com/x.csv"},
+            {"api": {**good["api"], "base": "https://example.com"}},
+            {"api": {**good["api"], "results": {"path": "/api/quote-equity?symbol=X",
+                                                     "warmup": "https://www.nseindia.com/"}}},
+            {"api": {**good["api"], "results": {"path": "/api/x", "warmup": "https://evil.example/"}}},
+            {"api": {**good["api"], "results": {"path": "/api/x"}}},
+            {"surprise": 1},
+            {"corporate_action_ratios": [2]}, {"corporate_action_ratios": ["1"]}, {"corporate_action_ratios": []},
+            {"corporate_action_ratios": ["3", "2"]}, {"corporate_action_ratios": ["2", "2.1"]},
+            {"corporate_action_tolerance": 0.04}, {"corporate_action_tolerance": "0.5"},
+            {"corporate_action_tolerance": "0"}, {"corporate_action_hold_fall": "1"},
+            {"corporate_action_hold_fall": "1.95"}, {"corporate_action_hold_fall": 1.3},
+            {"balances": []}, {"balances": [0.5]}, {"balances": ["1.5"]}, {"balances": ["0.5", "0.5"]},
+            {"balances": ["-0.1"]}, {"balances": "0.5"},
+            {"basket_sizes": []}, {"basket_sizes": [0]}, {"basket_sizes": [10, 10]}, {"basket_sizes": ["10"]},
+            {"basket_sizes": [51]}, {"basket_sizes": [60], "top_kept": 50},
+        )
+        for change in bad_cases:
+            with self.subTest(change=change):
+                (self.dir / "fundamentals.json").write_text(json.dumps({**good, **change}), encoding="utf-8")
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("fundamentals.json", self.dir)
+        missing = dict(good)
+        del missing["liquidity_days"]
+        (self.dir / "fundamentals.json").write_text(json.dumps(missing), encoding="utf-8")
+        with self.assertRaisesRegex(loader.ConfigError, "liquidity_days is missing"):
+            loader.load_json("fundamentals.json", self.dir)
+        extra_api = {**good, "api": {**good["api"], "results": {"path": "/api/corporates-financial-results",
+                                                                "warmup": "https://www.nseindia.com/companies"}}}
+        (self.dir / "fundamentals.json").write_text(json.dumps(extra_api), encoding="utf-8")
+        self.assertIn("results", loader.load_json("fundamentals.json", self.dir)["api"])
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")

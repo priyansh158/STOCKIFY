@@ -15,7 +15,8 @@ REFS = {"stockify.strategies.buy_and_hold:BuyAndHold", "stockify.strategies.sma_
         "stockify.strategies.rsi_pullback:RsiPullback", "stockify.strategies.macd_cross:MacdCross",
         "stockify.strategies.bollinger_reversion:BollingerReversion",
         "stockify.strategies.donchian_breakout:DonchianBreakout", "stockify.strategies.supertrend:Supertrend",
-        "stockify.strategies.ema_trend:EmaTrend", "stockify.strategies.chandelier_exit:ChandelierExit"}
+        "stockify.strategies.ema_trend:EmaTrend", "stockify.strategies.chandelier_exit:ChandelierExit",
+        "stockify.strategies.fundamentals_basket:FundamentalsBasket"}
 
 
 class CatalogueTests(unittest.TestCase):
@@ -49,7 +50,7 @@ class CatalogueTests(unittest.TestCase):
 
     @staticmethod
     def _required(s: dict) -> dict:
-        sample = {"symbol": "NSE:TEST", "int": 3}
+        sample = {"symbol": "NSE:TEST", "int": 3, "ranking": {"0.5": [{"date": "2026-01-01", "symbols": ["X"]}]}}
         return {p["name"]: sample.get(p["type"], 3) for p in s["params"] if p["required"]}
 
     def test_schemas_match_what_the_strategies_read(self):
@@ -106,6 +107,31 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual(v(EodShortStraddle.PARAMS, {"stop_multiple": "abc"}), ["stop_multiple: is not a decimal number"])
         self.assertEqual(v(EodShortStraddle.PARAMS, {"stop_multiple": 2}), [])
         self.assertEqual(v(SmaCross.PARAMS, []), ["params must be an object"])
+
+    def test_ranking_param_type_validates_shape(self):
+        """FS 6: a `ranking` is {label: [{"date": "YYYY-MM-DD", "symbols": [text]}]}, dates rising."""
+        schema = [{"name": "ranking", "label": "Monthly lists", "type": "ranking", "default": None, "required": True,
+                   "help": "Set by the screener."}]
+        v = lambda value: C.validate_params(schema, {"ranking": value})  # noqa: E731
+        good = {"0.5": [{"date": "2026-01-01", "symbols": ["RELIANCE", "TCS"]},
+                        {"date": "2026-02-02", "symbols": []}], "0.3": []}
+        self.assertEqual(v(good), [])
+        bad = [[], "x", {"": []}, {"0.5": {}}, {"0.5": ["2026-01-01"]},
+               {"0.5": [{"date": "2026-01-01"}]},
+               {"0.5": [{"date": "2026-01-01", "symbols": ["A"], "extra": 1}]},
+               {"0.5": [{"date": "2026-13-01", "symbols": ["A"]}]},
+               {"0.5": [{"date": "1 Jan 2026", "symbols": ["A"]}]},
+               {"0.5": [{"date": "2026-01-01", "symbols": "A"}]},
+               {"0.5": [{"date": "2026-01-01", "symbols": ["A", ""]}]},
+               {"0.5": [{"date": "2026-01-01", "symbols": ["A", 3]}]},
+               {"0.5": [{"date": "2026-02-02", "symbols": ["A"]}, {"date": "2026-01-01", "symbols": ["A"]}]},
+               {"0.5": [{"date": "2026-01-01", "symbols": ["A"]}, {"date": "2026-01-01", "symbols": ["A"]}]}]
+        for b in bad:
+            with self.subTest(value=b):
+                problems = v(b)
+                self.assertEqual(len(problems), 1, problems)
+                self.assertTrue(problems[0].startswith("ranking: is not a ranking"), problems)
+        self.assertIn("ranking", C.PARAM_TYPES)
 
     def test_protection_bp_is_refused_outside_1_to_10000_when_the_config_is_checked(self):
         """C review I1: protection_bp is the same 1..10000 bp ctx.place takes, refused at config time, not mid-run."""
