@@ -24,13 +24,47 @@ It runs on Windows, on one machine, for one person. Money is in rupees, stored a
 
 **Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
 
-Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for stocks you hold: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit.
+Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for stocks you hold: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit. The Fundamentals basket holds the stocks on the fundamentals list in equal shares and rebalances each month.
 
 **Holdings desk.** Open a stock on the Portfolio page and you get a page for that holding: its daily chart with each rule's exit level, one suggestion (Hold, Tighten stop, Trim, Exit, or No reliable signal when no rule has a record worth weighing on that stock), and the rules behind it. The desk works on stocks only: it has no option chain and no option ideas. It suggests and never orders. Nothing on it can place a trade, and it reads only your holdings and daily prices through Kite's read-only calls.
 
 How a suggestion is made: the desk updates once a day, after the session, when the recorder has finished. That night it tests the swing rules on each held stock's daily prices, with the lab's realistic costs, year by year against simply holding. Each rule gets a record on that stock (strong, some, weak or none), and the rules vote at that day's close, weighted by their record. The page shows the suggestion as of that close and its date, the votes, the price levels that would change the suggestion, and the table that turns votes into a word. Every rule decides on daily closes, so for swing trading this is the same answer a live view would give; a move through a level during the day shows after that day's close. The tests stop on 31 July 2026, the day before the months the research page keeps in reserve, so the desk never looks at them to grade a rule; the day's vote does use every close up to that day, because it is not a test.
 
 Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion.
+
+## Fundamentals
+
+The Fundamentals page (Research, then Fundamentals) lists stocks that look cheap and healthy against their own industry, judged on the results the companies file with NSE. It is a list of ideas to research. It never says "buy", it shows no score or rank number, and nothing on it can place an order.
+
+The page has three parts.
+
+- **Results coming up.** The covered companies that have a board meeting for their results in the next four weeks.
+- **Worth a closer look.** The day's list, best first, each stock with a few words on why, such as "cheaper than its industry on earnings, with wider margins and no debt". A warning comes first when there is one, such as a loss over the last four quarters or rising debt. The order is the judgement; how it is worked out stays off the page.
+- **Details.** One stock's figures beside its industry's median: P/E, P/B, return on equity, debt to equity, operating margin and profit growth (a bank or other financial is judged on P/E, P/B, return on equity, profit growth and net interest income growth). A chart of each figure by quarter, and every filing the figures came from, with a link to NSE's own file. A stock that is covered but not on the list says why: its results are out of date or could not be read, or it has no price to judge it by.
+
+Where the figures come from:
+
+- **The companies.** Today's Nifty 500 list from NSE, kept to the stocks whose median daily traded value over the last three months is at least ₹8 crore. Each stock's industry is the Industry column of that same list. (NSE's quote pages give a finer grouping, but they refuse automated reads.) An industry with fewer than five stocks on the list is compared with all of them instead.
+- **The results.** NSE's results filings in XBRL from April 2021, and the integrated filings that companies have made since the quarter ended March 2025. Consolidated figures are used from the day a company first files them, standalone ones before that, never a mix. A figure counts from the first trading day after NSE broadcast it, so a past day's list uses only what was known on that day. A restated result is kept as a new version, never written over the old one. A filing whose figures do not add up is held back with the reason, never guessed.
+- **The prices.** NSE's end-of-day files give each day's market value. Kite's daily prices are used for the test record.
+
+The daemon brings it up to date each evening after the close, from 20:40 IST once the day's NSE files are in. It makes at most 900 NSE requests a day, about one a second, and stops 10 minutes before the next session's preparation; what is left waits for the next evening.
+
+What it cannot tell you:
+
+- It covers today's listed companies only. A company that has since left the Nifty 500, merged or delisted is missing from the past lists too, so the past looks better than it was.
+- The industries are today's NSE groups, used for every past day as well.
+- The test record walks the list forward: a year to choose the settings, then the next 90 days, from 2022 to 31 July 2026, the day before the months the research page keeps in reserve. It compares the basket with Kite's Nifty 500 index, which is a price index without dividends.
+
+The commands:
+
+```powershell
+stockify fundamentals backfill        # the first fill: every company's filings since April 2021, a few hours (resumable; --from, --limit)
+stockify fundamentals refresh         # one evening's update now, within the day's 900 NSE requests
+stockify fundamentals test-record     # the walk-forward test record (needs a Kite login; fetches daily prices first)
+```
+
+Each one waits for the session's close, and only one fundamentals run (the daemon's or a command's) goes at a time.
 
 ## Writing your own strategy
 
@@ -241,6 +275,7 @@ stockify tools compare-strategies --config <file>                 # several stra
 stockify sweep --config examples\sweeps\orb_grid.yaml             # a parameter sweep
 stockify walkforward --sweep examples\sweeps\orb_grid.yaml        # walk a sweep forward
 stockify sensitivity --run <run id>                               # costs and fills made worse
+stockify fundamentals refresh                                     # the fundamentals list now (see Fundamentals)
 
 # Margin
 stockify margin check --leg "SELL 65 NIFTY26N1724950CE" --leg "SELL 65 NIFTY26N1724950PE" --date 2026-11-09 --at 10:00
