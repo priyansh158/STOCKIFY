@@ -66,7 +66,7 @@ class JobCase(SandboxedDBTest):
         self.calls.append(("list", symbol))
         return []
 
-    def fake_download(self, *, client, limit=None, deadline_ns=None):  # noqa: ANN001, ANN202
+    def fake_download(self, *, client, limit=None, deadline_ns=None, can_fetch=None):  # noqa: ANN001, ANN202
         self.calls.append(("download", deadline_ns))
         return dict(self.download)
 
@@ -300,6 +300,35 @@ class DaemonWiringTests(JobCase):
             daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "20:40"))
         self.assertTrue(state.done("fundamentals", TUE))
 
+    def test_a_spent_budget_is_marked_and_a_retry_asks_nse_nothing(self):
+        """FS 8.3: one company failing while the day's budget is spent: the job is marked (the failure waits for
+        tomorrow), and a second pass 30 minutes later on the same day makes no NSE request."""
+        from stockify import daemon
+        from stockify.fundamentals import nse_api as api
+        state = scheduler.State()
+        for s in ("ALPHA", "BETA", "GAMMA"):
+            job.note_listed(s, OVERDUE)
+        def flaky(symbol, *, client, since):  # noqa: ANN001, ANN202
+            self.calls.append(("list", symbol))
+            for _ in range(4):
+                client.http.session.get(f"https://www.nseindia.com/api/x?symbol={symbol}")
+            if symbol == "ALPHA":
+                raise nse_files.NseError("HTTP 500")
+            return []
+        self.patch(filings, "list_for", flaky)
+        with mock.patch.object(job, "daily_request_budget", return_value=6), \
+                mock.patch.object(api.Client, "__init__", lambda c, http=None, cfg=None: _init_client(c, self.session)), \
+                self.assertLogs("stockify", "INFO") as logs:
+            daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "20:40"))
+            self.assertTrue(state.done("fundamentals", TUE))
+            self.assertTrue(any("tomorrow" in line for line in logs.output), logs.output)
+            sent_first = len(self.session.calls)
+            self.assertGreaterEqual(sent_first, 6)
+            self.calls.clear()
+            daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "21:10"))
+        self.assertEqual(len(self.session.calls), sent_first)
+        self.assertNotIn("list", self.names())
+
     def test_failures_are_retried_until_the_window_ends_then_given_up(self):
         from stockify import daemon
         state = scheduler.State()
@@ -368,25 +397,49 @@ class BudgetTests(JobCase):
         self.assertEqual(res["requests"], len(self.session.calls))
         self.assertEqual(job.listed_on("GAMMA"), OVERDUE)
 
-    def test_the_download_gets_what_is_left_of_the_budget(self):
-        seen = {}
-
-        def download(*, client, limit=None, deadline_ns=None):  # noqa: ANN001, ANN202
-            seen["limit"] = limit
-            return {"downloaded": limit, "skipped": 0, "failed": 0, "stopped": "limit"}
+    def test_the_download_asks_the_budget_before_each_request(self):
+        """Each file fetch is asked for against the requests really sent (a fetch's retries count)."""
+        def download(*, client, limit=None, deadline_ns=None, can_fetch=None):  # noqa: ANN001, ANN202
+            n = 0
+            while can_fetch():
+                for _ in range(3):                                   # a fetch with two retries
+                    client.http.get("https://nsearchives.nseindia.com/corporate/xbrl/x.xml")
+                n += 1
+            return {"downloaded": n, "skipped": 0, "failed": 0, "stopped": "limit"}
         self.patch(filings, "download_pending", download)
-        res = job.run(TUE, client=self.client, budget=50)
-        self.assertEqual(seen["limit"], 50)
+        res = job.run(TUE, client=self.client, budget=10)
+        self.assertEqual(res["download"]["downloaded"], 3)               # 4 (the warm-up too), 7, 10 sent
         self.assertTrue(res["budget_spent"])
         self.assertTrue(res["complete"])
+        self.assertLessEqual(len(self.session.calls), 10 + 3)
 
     def test_without_a_budget_nothing_is_capped(self):
         seen = {}
         self.patch(filings, "download_pending",
-                   lambda *, client, limit=None, deadline_ns=None: seen.update(limit=limit) or dict(self.download))
+                   lambda *, client, limit=None, deadline_ns=None, can_fetch=None:
+                   seen.update(limit=limit, can_fetch=can_fetch) or dict(self.download))
         res = job.run(TUE, client=self.client)
         self.assertIsNone(seen["limit"])
+        self.assertIsNone(seen["can_fetch"])
         self.assertFalse(res["budget_spent"])
+        self.assertEqual(job.spent_on(TUE), 0)                          # only budgeted runs are counted
+
+    def test_the_budget_is_per_trading_day_across_runs(self):
+        for s in ("ALPHA", "BETA", "GAMMA"):
+            job.note_listed(s, OVERDUE)
+        self.patch(filings, "list_for", self.requesting_list_for)
+        first = job.run(TUE, client=self.client, budget=6)
+        self.assertEqual(job.spent_on(TUE), len(self.session.calls))
+        sent = len(self.session.calls)
+        self.calls.clear()
+        second = job.run(TUE, client=self.client, budget=6)            # a retry the same evening
+        self.assertEqual(len(self.session.calls), sent)                 # asks NSE nothing more
+        self.assertNotIn("list", self.names())
+        self.assertNotIn("calendar", self.names())
+        self.assertTrue(second["budget_spent"])
+        self.assertIn("save", self.names())
+        self.assertTrue(first["budget_spent"])
+        self.assertEqual(job.spent_on(TUE + timedelta(days=1)), 0)      # the next day starts afresh
 
     def test_the_http_is_left_as_it_was(self):
         before = vars(self.session).get("get")
@@ -404,6 +457,14 @@ class BudgetTests(JobCase):
 
 
 class LockTests(JobCase):
+    def test_the_lock_is_kept_beside_the_daemon_lock_not_in_the_backed_up_raw_files(self):
+        from stockify import paths
+        self.assertEqual(job._lock_path(), paths.fundamentals_lock_file())
+        self.assertEqual(paths.fundamentals_lock_file().parent, paths.lab_dir())
+        with job.hold():
+            pass
+        self.assertFalse((paths.nse_raw_dir("fundamentals") / "run.lock").exists())
+
     def test_a_second_run_is_refused_while_one_holds_the_lock(self):
         with job.hold():
             with self.assertRaises(job.Busy):
@@ -427,6 +488,15 @@ class LockTests(JobCase):
         self.assertTrue(any("another fundamentals run" in line for line in logs.output), logs.output)
         self.assertFalse(any(line.startswith("ERROR") for line in logs.output), logs.output)
         self.assertEqual(self.calls, [])
+
+
+def _init_client(c, session) -> None:  # noqa: ANN001
+    """A real nse_api.Client whose Http answers from the test's FakeSession on a fresh ManualClock."""
+    c.http = nse_files.Http(session=session, clock=ManualClock(timeutil.ist_ns(TUE, "20:40")))
+    c.cfg = nse_api.config()
+    c.base = c.cfg["api"]["base"].rstrip("/")
+    c._warmed = set()
+    c.last_sha256 = None
 
 
 class OffsetClockTests(unittest.TestCase):

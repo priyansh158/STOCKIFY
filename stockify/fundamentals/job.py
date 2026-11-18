@@ -24,9 +24,12 @@ company, and handed to the download. Once it has passed, no further NSE request 
 same way (`stopped` "blocked"). Either way the run is not `complete`, and the daemon tries it again later.
 
 `budget` (ruling R12; the daemon passes fundamentals.json `daily_request_budget`, 900, about 15 minutes at one
-request a second): the NSE requests one run may make, warm-ups and retries included. Once it is spent the run asks
-NSE nothing more; what is left (companies, files) waits for the next day's run. The run still reads the figures and
-saves the day's list, and is `complete` (`budget_spent` says it stopped early).
+request a second): the NSE requests one trading day's runs may make together, warm-ups and retries included. The
+requests a budgeted run sent are added to that day's `request_budget` row, and a later run (the daemon's retry) gets
+only what is left. Each company and each file fetch is asked for against the requests really sent, so one fetch's
+retries can pass the budget by a few requests at most. Once it is spent the run asks NSE nothing more; what is left
+(companies, files) waits for the next day's run. The run still reads the figures and saves the day's list
+(`budget_spent` says it stopped early), and the daemon marks the day done.
 
 One run at a time across processes (`hold`): the daemon's job, `fundamentals refresh` and `fundamentals backfill`
 take one OS lock, so two never ask NSE at once (two throttles would make two requests a second) or race for the same
@@ -64,7 +67,6 @@ RELIST_MIN_GAP_DAYS = 3                 # on its weekday a company listed fewer 
 OVERDUE_DAYS = 14                       # a company not listed for two weeks (its weekday a holiday) is listed any day
 LOOKBACK_DAYS = 14                      # a results meeting this recent with nothing filed since is asked about daily
 DOWNLOAD_BATCH = 100                    # the backfill's XBRL files between two progress lines
-LOCK_NAME = "run.lock"
 _LOCK_OFFSET = 1 << 20                  # the locked byte lies beyond the file's end (geo_monitor/cycle_guard.py)
 
 
@@ -85,7 +87,7 @@ class Busy(Exception):
 
 
 def _lock_path():  # noqa: ANN202
-    return paths.nse_raw_dir("fundamentals") / LOCK_NAME
+    return paths.fundamentals_lock_file()
 
 
 @contextlib.contextmanager
@@ -129,6 +131,23 @@ def _counting(http) -> Iterator[list[int]]:  # noqa: ANN001
             del session.get
         else:
             session.get = own
+
+
+# ── the day's request budget ─────────────────────────────────────────────────
+
+def spent_on(day: date) -> int:
+    """NSE requests the budgeted runs for trade date `day` have sent so far."""
+    row = store._connect().execute("SELECT spent FROM request_budget WHERE day = ?", (day.isoformat(),)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _add_spent(day: date, n: int) -> None:
+    conn = store._connect()
+    with dbconn.locked_write(store._lock, conn):
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO request_budget (day, spent) VALUES (?, ?) "
+                     "ON CONFLICT(day) DO UPDATE SET spent = spent + excluded.spent", (day.isoformat(), int(n)))
+        conn.execute("COMMIT")
 
 
 # ── when each company was listed ─────────────────────────────────────────────
@@ -211,10 +230,13 @@ def run(day: date, *, client: nse_api.Client | None = None, deadline_ns: int | N
         out: dict[str, Any] = {"day": day.isoformat(), "universe": "kept", "calendar": None, "listed": 0,
                                "never_listed": 0, "failed": [], "download": None, "ingest": None, "saved": None,
                                "requests": 0, "budget_spent": False, "stopped": None, "complete": False}
+        left = None if budget is None else max(0, budget - spent_on(day))
         try:
-            _nse_steps(day, client, deadline_ns, budget, count, out)
+            _nse_steps(day, client, deadline_ns, left, budget, count, out)
         finally:
             out["requests"] = count[0]
+            if budget is not None:
+                _add_spent(day, count[0])
         if out["stopped"] is not None:
             return out
         out["ingest"] = xbrl.ingest_pending()
@@ -225,9 +247,10 @@ def run(day: date, *, client: nse_api.Client | None = None, deadline_ns: int | N
         return out
 
 
-def _nse_steps(day: date, client: nse_api.Client, deadline_ns: int | None, budget: int | None,
+def _nse_steps(day: date, client: nse_api.Client, deadline_ns: int | None, left: int | None, budget: int | None,
                count: list[int], out: dict) -> None:
-    """Steps 1 to 4's downloads; sets out["stopped"] on a deadline or a refusal, out["budget_spent"] on the budget."""
+    """Steps 1 to 4's downloads; sets out["stopped"] on a deadline or a refusal, out["budget_spent"] on the budget.
+    `left` is what remains of the day's `budget` (None: no budget)."""
     clock = client.http.clock
 
     def can_ask() -> bool:
@@ -235,7 +258,7 @@ def _nse_steps(day: date, client: nse_api.Client, deadline_ns: int | None, budge
             log.info("fundamentals for %s: too close to the next session; the rest runs later", day)
             out["stopped"] = "deadline"
             return False
-        if budget is not None and count[0] >= budget:
+        if left is not None and count[0] >= left:
             if not out["budget_spent"]:
                 log.info("fundamentals for %s: the day's %d NSE requests are spent; the rest waits for the next run",
                          day, budget)
@@ -289,15 +312,15 @@ def _nse_steps(day: date, client: nse_api.Client, deadline_ns: int | None, budge
         out["listed"] += 1
     if not can_ask():
         return
-    limit = None if budget is None else budget - count[0]
-    out["download"] = filings.download_pending(client=client, limit=limit, deadline_ns=deadline_ns)
+    can_fetch = None if left is None else (lambda: count[0] < left)
+    out["download"] = filings.download_pending(client=client, deadline_ns=deadline_ns, can_fetch=can_fetch)
     stopped = out["download"]["stopped"]
     if stopped == "blocked":
         return blocked(RuntimeError("an XBRL file was refused"), "XBRL download")
     if stopped == "deadline":
         out["stopped"] = "deadline"
         log.info("fundamentals for %s: the download stopped before the next session; the rest runs later", day)
-    elif stopped == "limit" and budget is not None:
+    elif stopped == "limit" and left is not None:
         out["budget_spent"] = True
         log.info("fundamentals for %s: the day's %d NSE requests are spent; the other files wait for the next run",
                  day, budget)

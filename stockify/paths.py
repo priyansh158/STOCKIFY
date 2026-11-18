@@ -39,6 +39,12 @@ def daemon_lock_file() -> Path:
     return lab_dir() / "daemon.lock"
 
 
+def fundamentals_lock_file() -> Path:
+    """The lock one fundamentals run holds (FS 8): the daemon's job, `fundamentals refresh` or `backfill`. Beside
+    daemon.lock, not under nse/raw (the backup's tree)."""
+    return lab_dir() / "fundamentals_run.lock"
+
+
 def daemon_status_file() -> Path:
     """What the daemon last knew when it stopped (GK 5.1): the last frame it recorded, and why it stopped."""
     return lab_dir() / "daemon_status.json"

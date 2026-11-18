@@ -25,6 +25,8 @@ deadline stops the run cleanly: what was saved stays saved, the rest stays `list
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import hashlib
 import logging
 import os
@@ -347,8 +349,8 @@ def _same_file(row: dict) -> tuple[str, str] | None:
     return None
 
 
-def download_pending(*, client: nse_api.Client, limit: int | None = None, deadline_ns: int | None = None
-                     ) -> dict:
+def download_pending(*, client: nse_api.Client, limit: int | None = None, deadline_ns: int | None = None,
+                     can_fetch: Callable[[], bool] | None = None) -> dict:
     """Fetch the XBRL file of every `listed` filing, newest broadcast first. Returns {"downloaded", "skipped" (kept
     already, no request), "failed", "stopped": None | "blocked" | "deadline" | "limit"}. `limit` caps the requests
     made; `deadline_ns` (UTC ns, the Http's clock) is checked before each one. A 404 holds the filing (NSE has no
@@ -376,7 +378,7 @@ def download_pending(*, client: nse_api.Client, limit: int | None = None, deadli
         if deadline_ns is not None and http.clock.now_ns() >= deadline_ns:
             out["stopped"] = "deadline"
             break
-        if limit is not None and fetches >= limit:
+        if (limit is not None and fetches >= limit) or (can_fetch is not None and not can_fetch()):
             out["stopped"] = "limit"
             break
         fetches += 1

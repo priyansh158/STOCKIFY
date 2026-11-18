@@ -395,7 +395,8 @@ def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
     filings, XBRL figures and the day's list. Like the desk it stops DESK_MARGIN_NS before the next session's
     preparation (the earlier of `refdata` and `day_bundles`), judged on the daemon clock: `now_ns` is the time this
     job started (the catch-up reads it per job) and the NSE client's Http runs on it, so no NSE request is made after
-    the deadline. Each run also has fundamentals.json `daily_request_budget` (R12). A stop at the deadline, NSE
+    the deadline. The day's runs share fundamentals.json `daily_request_budget` (R12): once it is spent the day's
+    list is saved and the job is marked, whatever failed (it waits for tomorrow). A stop at the deadline, NSE
     refusing (blocked), another run holding the lock (a CLI refresh or backfill) or a raised error: tried again, not
     marked. Companies that failed: tried again every `retry_every_min` until the window's `until`, then given up
     (marked)."""
@@ -422,6 +423,10 @@ def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
     if res["stopped"] is not None:
         return                                        # `job.run` logged it: tried again on a later pass
     if res["complete"]:
+        state.mark("fundamentals", day)
+    elif res.get("budget_spent"):                     # the day's requests are spent: a retry would ask nothing (R12)
+        log.warning("fundamentals for %s: the day's NSE request budget is spent; %s left for tomorrow's run", day,
+                    ", ".join(f["symbol"] for f in res["failed"]))
         state.mark("fundamentals", day)
     elif res["failed"] and now_ns >= scheduler.window_end_ns("fundamentals", day):
         log.warning("fundamentals for %s: %s still failing after the retry window; giving up for the day", day,

@@ -269,6 +269,20 @@ class DownloadTests(FilingsCase):
         self.assertEqual((got["downloaded"], got["stopped"]), (1, "limit"))
         self.assertEqual(filings.download_pending(client=client)["downloaded"], 1)
 
+    def test_can_fetch_is_asked_before_each_request(self):
+        """FS 8.3: the job's budget counts requests, retries included; the download asks before each fetch."""
+        self.list_two()
+        client, session = self.client(self.xbrl_routes())
+        asked = []
+
+        def can_fetch():  # noqa: ANN202
+            asked.append(len(session.calls))
+            return len(asked) == 1
+        got = filings.download_pending(client=client, can_fetch=can_fetch)
+        self.assertEqual((got["downloaded"], got["stopped"]), (1, "limit"))
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(asked[0], 0)
+
     def test_failures_are_counted_and_the_run_goes_on(self):
         self.list_two()
         client, _ = self.client(self.xbrl_routes(stand=[(404, b"<html>not found</html>")],
