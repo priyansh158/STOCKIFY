@@ -227,8 +227,18 @@ You can do the daily Kite login from your phone while only the laptop is on. The
    Anything that is not one lower-case `.ts.net` name is ignored with a warning, and the app stays loopback only.
 4. In the Zerodha developer console, change the redirect URL to `https://laptop.tailnet-name.ts.net/api/kite/callback` (your own host name). From then on, log in through that address on the laptop too: the old `http://127.0.0.1:8001/api/kite/callback` no longer gets the login.
 5. Restart the app (`.\run.ps1`).
+6. Keep Funnel off. Never run `tailscale funnel`: it would put the app on the public internet. Check with `tailscale serve status`; it should say "(tailnet only)" and not "Funnel on". If your tailnet policy gives the laptop the `funnel` attribute, remove it. The app also refuses any request that comes through Funnel, as a second line of defence.
+7. Restrict the tailnet policy in the Tailscale admin console so that only your phone can reach the laptop, on port 443. Do not share the laptop with other Tailscale users, and invite no one else to the tailnet.
+8. Turn on a screen lock on the phone and key expiry for both devices in Tailscale. Tailnet Lock is worth considering too.
 
-On the phone, open the address, tap "Login to Kite" on the Portfolio page, log in to Zerodha, and you land back on the app's "Logged in to Kite" page. The recorder picks up the new token as usual. The laptop has to be on and awake at login time; the recorder's wake task already wakes it at the start of the login window. Anyone holding your unlocked phone can use the app, so keep the phone locked. To turn it off, remove the line from `.env`, restart the app and set the redirect URL back.
+On the phone, open the address, tap "Login to Kite" on the Portfolio page, log in to Zerodha, and you land back on the app's "Logged in to Kite" page. The recorder picks up the new token as usual. On the first login, check that the phone's address bar shows `https://laptop.tailnet-name.ts.net/kite/callback?status=ok` (your own host name). The laptop has to be on and awake at login time; the recorder's wake task already wakes it at the start of the login window. Anyone holding your unlocked phone can use the app, so keep the phone locked.
+
+To turn it off:
+
+1. Stop publishing the app: `tailscale serve reset`.
+2. Remove the `STOCKIFY_REMOTE_HOST` line from `.env`.
+3. Restart the app (`.\run.ps1`). It clears the setting from the terminal too, so the old value is not kept.
+4. In the Zerodha developer console, set the redirect URL back to `http://127.0.0.1:8001/api/kite/callback`.
 
 ### Building the engine
 

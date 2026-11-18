@@ -78,6 +78,26 @@ class WebLoopbackHostTests(unittest.TestCase):
         wrong = [(h, a) for h, a in zip(hosts, answers) if a != (h in SERVED or h in TS_SERVED)]
         self.assertEqual(wrong, [], "(host, served)")
 
+    def test_a_funnel_request_is_refused_whatever_the_host_and_setting(self):
+        # Review I-2: Tailscale Funnel marks every request it carries from the internet with this header.
+        cases = []
+        for setting in (None, TS_HOST):
+            for host in ("127.0.0.1:3000", TS_HOST):
+                for value in ("?1", "", "0"):
+                    cases.append(([{"host": host, "tailscale-funnel-request": value}, setting], True))
+                    cases.append(([{"host": host, "Tailscale-Funnel-Request": value}, setting], True))
+        cases += [([{"host": "127.0.0.1:3000"}, None], False), ([{"host": TS_HOST}, None], True),
+                  ([{"host": TS_HOST}, TS_HOST], False), ([{"host": "evil.example"}, TS_HOST], True),
+                  ([{}, TS_HOST], True), ([{"host": "127.0.0.1:3000", "tailscale-funnel": "?1"}, None], False)]
+        answers = _node([c for c, _ in cases], "request")
+        wrong = [(c, a) for (c, want), a in zip(cases, answers) if a != want]
+        self.assertEqual(wrong, [], "(case, refused)")
+
+    def test_on_an_ipv6_literal_is_served_only_as_loopback(self):
+        # Review L-3: with the setting on, only [::1] (loopback) is served among IPv6 literals.
+        hosts = ["[::1]:3000", "[::2]:3000", "[" + TS_HOST + "]", "[0:0:0:0:0:0:0:1]"]
+        self.assertEqual(_node(hosts, json.dumps(TS_HOST)), [True, False, False, False])
+
     def test_the_setting_is_checked_as_the_api_checks_it(self):
         import os
         import stockify_paths
@@ -99,7 +119,7 @@ class WebLoopbackHostSourceTests(unittest.TestCase):
         text = PROXY.read_text(encoding="utf-8")
         self.assertRegex(text, r"export function proxy\(")
         self.assertIn('from "@/lib/loopbackHost"', text)
-        self.assertRegex(text, r"isServedHost\(request\.headers\.get\(\"host\"\), process\.env\.STOCKIFY_REMOTE_HOST\)")
+        self.assertRegex(text, r"refusesRequest\(request\.headers, process\.env\.STOCKIFY_REMOTE_HOST\)")
         self.assertIn("status: 400", text)
         self.assertNotIn("export const config", text,
                          "no matcher: the check must cover every route, pages and the /api rewrite alike")

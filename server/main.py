@@ -102,7 +102,7 @@ app = FastAPI(
 
 
 def _install_guards(app: FastAPI, web_origin: str, remote_host: str | None) -> None:
-    """CORS and the three local-only guards (server/local_only.py); `remote_host` None = loopback only."""
+    """CORS and the four local-only guards (server/local_only.py); `remote_host` None = loopback only."""
     # CORS is restricted to the configured Windows-loopback web origin (and the Tailscale one when set).
     app.add_middleware(
         CORSMiddleware,
@@ -111,12 +111,13 @@ def _install_guards(app: FastAPI, web_origin: str, remote_host: str | None) -> N
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    # The API serves this machine's own UI only. The middleware added last runs first: the Host is
-    # checked, then the X-Forwarded-Host the web server's rewrite adds, then the Origin, and only then
-    # CORS and the routes.
+    # The API serves this machine's own UI only. The middleware added last runs first: a Funnel request
+    # is refused, then the Host is checked, then the X-Forwarded-Host the web server's rewrite adds,
+    # then the Origin, and only then CORS and the routes.
     app.add_middleware(local_only.WebOriginOnly, web_origin=web_origin, remote_host=remote_host)
     app.add_middleware(local_only.ForwardedHostOnly, remote_host=remote_host)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=local_only.allowed_hosts(remote_host), www_redirect=False)
+    app.add_middleware(local_only.NoFunnel)                 # first of all: nothing from the internet via Funnel
 
 
 _install_guards(app, _WEB_ORIGIN, _REMOTE_HOST)

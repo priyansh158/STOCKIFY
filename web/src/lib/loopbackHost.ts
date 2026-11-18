@@ -44,6 +44,19 @@ export function isServedHost(host: string | null | undefined, remoteSetting: str
   return servedName(host, remoteHostSetting(remoteSetting));
 }
 
+/**
+ * True when `src/proxy.ts` must refuse the request: it came through Tailscale Funnel (from the internet;
+ * Tailscale marks each such request with `Tailscale-Funnel-Request`, any value), whatever the setting,
+ * or its `Host` is not served. The API refuses the same header (server/local_only.py, NoFunnel).
+ */
+export function refusesRequest(
+  headers: { get(name: string): string | null; has(name: string): boolean },
+  remoteSetting: string | null | undefined,
+): boolean {
+  if (headers.has("tailscale-funnel-request")) return true;
+  return !isServedHost(headers.get("host"), remoteSetting);
+}
+
 function servedName(host: string | null | undefined, remoteHost: string | null): boolean {
   if (typeof host !== "string") return false;
   // Only the whitespace HTTP allows around a header value (SP, HTAB) is ignored; nothing else is.

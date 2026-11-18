@@ -1,7 +1,7 @@
 """The API serves this machine's own UI and nothing else.
 
 uvicorn binds 127.0.0.1, but a browser on this machine will carry any web page's request to it.
-Three checks close that, and all sit outside the routers so no route can forget them:
+Four checks close that, and all sit outside the routers so no route can forget them:
 
   * the `Host` must be loopback (`LOOPBACK_HOSTS`, with or without a port; the name is what is
     compared, exactly, so `LOCALHOST`, `localhost.` and `[::1]` are refused). A page that rebinds
@@ -21,11 +21,17 @@ Three checks close that, and all sit outside the routers so no route can forget 
     out, queue a run or open the tick stream. CORS does not cover any of this: it only decides
     who may read an answer, and it never applies to WebSockets.
 
+  * `NoFunnel`: a request or handshake carrying a `Tailscale-Funnel-Request` header (any value) is
+    refused, whatever the setting below. Tailscale Funnel, if it were ever turned on, would carry
+    clients from the public internet to the laptop's Tailscale name, which the setting below lets
+    through the other three checks; Tailscale marks every such request with that header. It runs
+    first. web/src/proxy.ts refuses the same header for pages.
+
 A request with no `Origin` is served: curl, the CLI, the tests and the UI's server-side fetches
 send none, and a browser cannot be made to leave it off a cross-site POST or WebSocket. A request
 with no `X-Forwarded-Host` is checked on its `Host` alone (the same clients send none).
 
-One setting widens the three, and only by one name: `STOCKIFY_REMOTE_HOST`
+One setting widens the three host and origin checks, and only by one name: `STOCKIFY_REMOTE_HOST`
 (`stockify_paths.remote_host()`). It exists so the owner can do the daily Kite login from their
 phone through Tailscale (docs/superpowers/specs/2026-11-18-phone-login-tailscale-design.md):
 `tailscale serve` publishes the web server at the laptop's private `https://<machine>.<tailnet>.ts.net`
@@ -85,6 +91,24 @@ def allowed_hosts(remote_host: str | None) -> list[str]:
 def _is_allowed(host: str, remote_host: str | None) -> bool:
     """`_is_loopback`, or the same rule for the one remote host."""
     return _is_loopback(host) or (bool(remote_host) and host.strip().split(":")[0] == remote_host)
+
+
+class NoFunnel:
+    """Refuse a request or a WebSocket handshake that came through Tailscale Funnel (from the internet)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    def refuses(self, scope: Scope) -> bool:
+        if scope["type"] not in ("http", "websocket"):
+            return False
+        return any(name.lower() == b"tailscale-funnel-request" for name, _ in scope["headers"])
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.refuses(scope):
+            await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
 
 
 class ForwardedHostOnly:

@@ -154,16 +154,17 @@ class OriginTests(LocalOnlyBase):
         from starlette.middleware.trustedhost import TrustedHostMiddleware
         from server import local_only
         stack = self.main.app.user_middleware                   # outermost first
-        self.assertEqual([m.cls for m in stack], [TrustedHostMiddleware, local_only.ForwardedHostOnly,
-                                                  local_only.WebOriginOnly, CORSMiddleware])
+        self.assertEqual([m.cls for m in stack], [local_only.NoFunnel, TrustedHostMiddleware,
+                                                  local_only.ForwardedHostOnly, local_only.WebOriginOnly,
+                                                  CORSMiddleware])
         # The real app follows the owner's STOCKIFY_REMOTE_HOST (RemoteHost* below test both settings).
         remote = self.main._REMOTE_HOST
         extra_host, extra_origin = ([remote], [f"https://{remote}"]) if remote else ([], [])
-        self.assertEqual(list(stack[0].kwargs["allowed_hosts"]), ["127.0.0.1", "localhost", *extra_host])
-        self.assertEqual(stack[1].kwargs["remote_host"], remote)
-        self.assertEqual(stack[2].kwargs["web_origin"], self.main._WEB_ORIGIN)
+        self.assertEqual(list(stack[1].kwargs["allowed_hosts"]), ["127.0.0.1", "localhost", *extra_host])
         self.assertEqual(stack[2].kwargs["remote_host"], remote)
-        self.assertEqual(stack[3].kwargs["allow_origins"], [self.main._WEB_ORIGIN, *extra_origin])
+        self.assertEqual(stack[3].kwargs["web_origin"], self.main._WEB_ORIGIN)
+        self.assertEqual(stack[3].kwargs["remote_host"], remote)
+        self.assertEqual(stack[4].kwargs["allow_origins"], [self.main._WEB_ORIGIN, *extra_origin])
 
 
 class HostTests(LocalOnlyBase):
@@ -596,6 +597,47 @@ class RemoteHostAppTests(LocalOnlyBase):
                 self.assertTrue(kite_client._token_file().exists())
         r = client.get("/api/health", headers={"Origin": "http://" + TS_HOST})
         self.assertNotIn("access-control-allow-origin", r.headers)
+
+    def test_on_an_ipv6_literal_host_is_still_refused(self):
+        # Review L-3: Starlette's rule takes the name before the first colon, so `[::1]` never matches anything.
+        client = self._app(TS_HOST)
+        for host in ("[::1]:8001", "[::1]", "[" + TS_HOST + "]"):
+            with self.subTest(host=host):
+                self.assertEqual(client.get("/api/health", headers={"Host": host}).status_code, 400)
+                r = client.get("/api/health", headers={"Host": "127.0.0.1:8001", "X-Forwarded-Host": host})
+                self.assertEqual(r.status_code, 400)
+
+    def test_a_funnel_request_is_refused_in_both_modes(self):
+        # Review I-2: Tailscale Funnel would carry internet clients to the same host name; it marks each such
+        # request with `Tailscale-Funnel-Request`. The API refuses any request with that header, whatever its value.
+        from starlette.testclient import WebSocketDenialResponse
+        self._fake_login()
+        for remote in (None, TS_HOST):
+            client = self._app(remote)
+            for value in ("?1", "", "0", "false"):
+                for headers in ({}, {"X-Forwarded-Host": TS_HOST, "Origin": TS_ORIGIN},
+                                {"Host": TS_HOST, "Origin": TS_ORIGIN}):
+                    with self.subTest(remote=remote, value=value, headers=headers):
+                        h = {**headers, "Tailscale-Funnel-Request": value}
+                        self.assertEqual(client.get("/api/health", headers=h).status_code, 400)
+                        self.assertEqual(client.get("/api/kite/callback?request_token=t", headers=h).status_code, 400)
+                        self.assertEqual(client.post("/api/kite/logout", headers=h).status_code, 400)
+                        self.assertTrue(kite_client._token_file().exists())
+            with self.assertRaises(WebSocketDenialResponse):
+                with client.websocket_connect(WS + "/api/ws/ticks", headers={"Tailscale-Funnel-Request": "?1"}):
+                    pass  # pragma: no cover
+
+    def test_the_funnel_check_on_its_own(self):
+        from server import local_only
+        guard = local_only.NoFunnel(None)
+        for headers, refused in (([], False), ([(b"tailscale-funnel-request", b"?1")], True),
+                                 ([(b"Tailscale-Funnel-Request", b"")], True),
+                                 ([(b"host", b"127.0.0.1"), (b"tailscale-funnel-request", b"anything")], True),
+                                 ([(b"tailscale-funnel", b"?1")], False)):
+            for kind in ("http", "websocket"):
+                with self.subTest(headers=headers, kind=kind):
+                    self.assertEqual(guard.refuses({"type": kind, "method": "GET", "headers": headers}), refused)
+        self.assertFalse(guard.refuses({"type": "lifespan", "headers": [(b"tailscale-funnel-request", b"?1")]}))
 
     def test_on_the_tick_stream_opens_from_the_tailscale_origin_only(self):
         from starlette.websockets import WebSocketDisconnect

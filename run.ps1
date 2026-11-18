@@ -240,7 +240,11 @@ $env:STOCKIFY_API_ORIGIN = "http://127.0.0.1:$ApiPort"
 $env:STOCKIFY_WEB_ORIGIN = "http://127.0.0.1:$WebPort"
 # The web server reads no root .env, so the one setting it shares with the API (the laptop's Tailscale
 # address, README "Log in from your phone") is copied from there; only that line is read. Both sides
-# check the value themselves and ignore an invalid one.
+# check the value themselves and ignore an invalid one. Any value the shell already holds is dropped
+# first, so removing the line turns the phone login off (load_dotenv never clears a variable).
+# tests/test_launcher_codes.py runs the lines between the markers.
+# BEGIN remote-host
+Remove-Item Env:STOCKIFY_REMOTE_HOST -ErrorAction SilentlyContinue
 $RootEnv = Join-Path $Root ".env"
 if (Test-Path $RootEnv) {
     $remoteLine = Select-String -LiteralPath $RootEnv -Pattern '^\s*STOCKIFY_REMOTE_HOST\s*=(.*)$' | Select-Object -Last 1
@@ -250,6 +254,7 @@ if (Test-Path $RootEnv) {
         $env:STOCKIFY_REMOTE_HOST = $remoteValue
     }
 }
+# END remote-host
 $children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
 try {
