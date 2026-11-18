@@ -157,14 +157,17 @@ class VersionTests(PitCase):
         self.assertEqual(pit.basis_on("VSTIND", date(2026, 1, 1)), "standalone")
         self.assertEqual(len(pit.known_on("VSTIND", date(2024, 11, 1))["quarters"]), 1)
         self.assertEqual(pit.basis_on("NOBODY", date(2026, 1, 1)), "standalone")
-        # A held consolidated filing switches the basis from its own usable day (its figures are missing, and
-        # standalone ones are not used in their place).
-        self.put("2024-06-30", pnl(10, 1), broadcast_ns=ist(date(2024, 7, 19), "20:00"), basis="standalone",
-                 symbol="ABB")
+        # A held consolidated filing does not switch the basis (ruling R8 amended): standalone figures stay until a
+        # parsed consolidated filing is usable.
+        sa = self.put("2024-06-30", pnl(10, 1), broadcast_ns=ist(date(2024, 7, 19), "20:00"), basis="standalone",
+                      symbol="ABB")
         self.put("2024-09-30", {}, broadcast_ns=ist(date(2024, 10, 14), "20:00"), symbol="ABB", status="held")
-        self.assertEqual(pit.basis_on("ABB", date(2024, 10, 14)), "standalone")
-        self.assertEqual(pit.basis_on("ABB", date(2024, 10, 15)), "consolidated")
-        self.assertEqual(pit.known_on("ABB", date(2024, 10, 15))["quarters"], [])
+        self.assertEqual(pit.basis_on("ABB", date(2024, 10, 15)), "standalone")
+        self.assertEqual([e["filing_id"] for e in pit.known_on("ABB", date(2024, 10, 15))["quarters"]], [sa])
+        cons = self.put("2024-12-31", pnl(12, 1), broadcast_ns=ist(date(2025, 1, 16), "20:00"), symbol="ABB")
+        self.assertEqual(pit.basis_on("ABB", date(2025, 1, 16)), "standalone")
+        self.assertEqual(pit.basis_on("ABB", date(2025, 1, 17)), "consolidated")
+        self.assertEqual([e["filing_id"] for e in pit.known_on("ABB", date(2025, 1, 17))["quarters"]], [cons])
 
     def test_kinds_are_kept_apart_and_quarters_capped_at_eight(self):
         d, ends = date(2021, 6, 30), []

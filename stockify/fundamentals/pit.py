@@ -8,7 +8,7 @@
   different figures (a restatement) replaces it from its own usable day, never before. A later filing with the same
   figures is the same version: the first one (its filing_id and date) stays.
 - **Basis** (ruling R8, point in time): `basis_on(symbol, day)` is consolidated from the usable day of the
-  company's first consolidated filing (any status, so a held one counts too) onward, standalone before. Every
+  company's first parsed consolidated filing onward (a held one never switches it), standalone before. Every
   reader takes that one basis for the day, so nothing mixes bases: TTM needs four quarters of it (None until four
   consolidated quarters exist after a switch), and latest / shares read only its filings.
 - **What real filings give** (ruling R6, task-3 re-review): quarter rows (Q) carry the quarter's P&L, and the
@@ -109,10 +109,10 @@ def _cfg() -> tuple[tuple[tuple[str, Fraction], ...], Fraction, Fraction]:
 # ── versions ─────────────────────────────────────────────────────────────────
 
 def basis_on(symbol: str, day: date) -> str:
-    """'consolidated' from the usable day of the company's first consolidated filing (whatever its status; one
-    without a broadcast time never becomes usable), else 'standalone' (ruling R8)."""
+    """'consolidated' from the usable day of the company's first parsed consolidated filing, else 'standalone'
+    (ruling R8 amended: a held consolidated filing never switches the basis, so it cannot blank the figures)."""
     first = store._connect().execute(
-        "SELECT MIN(broadcast_ns) FROM filings WHERE symbol = ? AND basis = 'consolidated'"
+        "SELECT MIN(broadcast_ns) FROM filings WHERE symbol = ? AND basis = 'consolidated' AND status = 'parsed'"
         " AND broadcast_ns IS NOT NULL", (symbol,)).fetchone()[0]
     return "consolidated" if first is not None and usable_day(first) <= day else "standalone"
 
