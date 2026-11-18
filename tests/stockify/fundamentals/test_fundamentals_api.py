@@ -145,6 +145,23 @@ class ShortListTests(FundamentalsApiBase):
         self.assertIsNone(detail["left_out_reason"])
         self.assertTrue(detail["reasons"])
 
+    def test_red_flags_are_dropped_before_the_cut_so_the_list_fills_with_clean_names(self):
+        # Ruling R15a: drop the red-flag rows first, then keep the best top_kept, so red flags near the top
+        # never shorten the list while enough clean stocks exist.
+        from server.routers import fundamentals as router
+        conn = store._connect()
+        _, rows = screen.latest()
+        self.assertGreaterEqual(len(rows), 5)
+        for r in rows[:2]:                                       # the two best-placed carry a red flag
+            r["red_flags"] = ["loss-making"]
+            conn.execute("UPDATE screen_runs SET json = ? WHERE day = ? AND symbol = ?",
+                         (json.dumps(r, sort_keys=True, ensure_ascii=False), DAY.isoformat(), r["symbol"]))
+        with mock.patch.object(router, "_top_kept", return_value=3):
+            body = self.get("/api/fundamentals")
+        self.assertEqual([i["symbol"] for i in body["items"]], [r["symbol"] for r in rows[2:5]])
+        self.assertEqual([i["position"] for i in body["items"]], [1, 2, 3])
+        self.assertEqual(body["not_listed_count"], len(rows) - 3)
+
     def test_red_flagged_stocks_are_left_off_the_list_but_keep_their_details(self):
         self.company("LOSS", "Capital Goods", profit=-50, prior=-40, debt=0)
         self.company("NEGEQ", "Capital Goods", equity=-500, equity_prev=-400)

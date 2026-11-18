@@ -1,8 +1,8 @@
 """FS 9: /api/fundamentals, the fundamentals screener. Ideas to research, never orders.
 
 * `GET /api/fundamentals`: the results coming up (today through 28 days), then the newest saved list, best first
-  (`position` orders it; the page does not print it): at most its first `top_kept` (fundamentals.json), less any
-  stock with a red-flag warning (ruling R15). `held_count` is how many stocks of the universe it was computed from
+  (`position` orders it; the page does not print it): the stocks without a red-flag warning, then the first
+  `top_kept` (fundamentals.json) of those (rulings R15, R15a). `held_count` is how many stocks of the universe it was computed from
   the screen could not judge, `not_listed_count` how many it judged but the page does not list. Names and that count use the list's own universe (screen.universe_of), not a newer one.
 * `GET /api/fundamentals/test-record`: the walk-forward summary of the screen's test record, or `available: false`.
 * `GET /api/fundamentals/{symbol}`: one stock's figures against its peers' median (table and quarter-by-quarter
@@ -96,9 +96,10 @@ def _top_kept() -> int:
 
 
 def _shown(rows: list[dict]) -> list[dict]:
-    """Ruling R15: the best `top_kept` placed stocks, less any carrying a red-flag warning (loss-making, negative
-    equity). The rest stay on the saved list, so their details page still shows their figures and the warning."""
-    return [r for r in rows[:_top_kept()] if not r.get("red_flags")]
+    """Rulings R15 / R15a: the placed stocks without a red-flag warning (loss-making, negative equity), then the
+    best `top_kept` of those, so the page shows up to `top_kept` clean names. The rest stay on the saved list, so
+    their details page still shows their figures and the warning."""
+    return [r for r in rows if not r.get("red_flags")][:_top_kept()]
 
 
 @router.get("", response_model=FundamentalsListDTO)
