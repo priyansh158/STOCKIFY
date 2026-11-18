@@ -112,7 +112,7 @@
 ### Task 5: Ratios, sector comparison, order and reasons
 
 **Files:**
-- Create: `stockify/fundamentals/ratios.py`, `stockify/fundamentals/screen.py`, `stockify/data/migrations/fundamentals/0004_screen.sql`
+- Create: `stockify/fundamentals/ratios.py`, `stockify/fundamentals/screen.py`, `stockify/data/migrations/fundamentals/0005_screen.sql`
 - Test: `tests/stockify/fundamentals/test_ratios.py`, `test_screen.py`
 
 **Interfaces:**
@@ -146,7 +146,7 @@
 ### Task 7: Upcoming results calendar
 
 **Files:**
-- Create: `stockify/fundamentals/calendar.py`, `stockify/data/migrations/fundamentals/0005_calendar.sql`
+- Create: `stockify/fundamentals/calendar.py`, `stockify/data/migrations/fundamentals/0004_calendar.sql`
 - Test: `tests/stockify/fundamentals/test_calendar.py`
 
 **Interfaces:**
