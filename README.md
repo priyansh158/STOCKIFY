@@ -206,6 +206,30 @@ To check that Kite and email both work:
 .\.venv\Scripts\python.exe -m stockify notify test    # sends one test email
 ```
 
+### Log in from your phone
+
+You can do the daily Kite login from your phone while only the laptop is on. The phone reaches the laptop through Tailscale, a private network between your own devices; nothing is opened to the internet, and the API and web app still listen on 127.0.0.1 only. Set it up once:
+
+1. Install Tailscale 1.104.6 on the laptop (the installer asks for an admin click) and the Tailscale app on the phone. Sign both in to the same Tailscale account.
+2. On the laptop, publish the web app at its private address. This lasts across restarts:
+
+   ```powershell
+   tailscale serve --bg 3000
+   ```
+
+   It prints the address, which looks like `https://laptop.tailnet-name.ts.net`.
+3. Put that host name, without `https://` and without a port, in `.env`:
+
+   ```
+   STOCKIFY_REMOTE_HOST=laptop.tailnet-name.ts.net
+   ```
+
+   Anything that is not one lower-case `.ts.net` name is ignored with a warning, and the app stays loopback only.
+4. In the Zerodha developer console, change the redirect URL to `https://laptop.tailnet-name.ts.net/api/kite/callback` (your own host name). From then on, log in through that address on the laptop too: the old `http://127.0.0.1:8001/api/kite/callback` no longer gets the login.
+5. Restart the app (`.\run.ps1`).
+
+On the phone, open the address, tap "Login to Kite" on the Portfolio page, log in to Zerodha, and you land back on the app's "Logged in to Kite" page. The recorder picks up the new token as usual. The laptop has to be on and awake at login time; the recorder's wake task already wakes it at the start of the login window. Anyone holding your unlocked phone can use the app, so keep the phone locked. To turn it off, remove the line from `.env`, restart the app and set the redirect URL back.
+
 ### Building the engine
 
 If the C++ workload is missing, add it to the installed Build Tools. It needs admin rights and is a large download:
@@ -293,6 +317,7 @@ The run configs in `examples/runs/` cover a daily moving-average cross, a one-mi
 - STOCKIFY reads quotes, candles, the portfolio and margin answers from Kite. Nothing in it places, changes or cancels an order. The Kite client has its order routes removed and can only send the read-only requests on an allowlist.
 - Strategy files are checked before they run and may import only a short list of safe modules.
 - Kite keys live in `.env` and the daily token only in the token store under `%LOCALAPPDATA%\STOCKIFY\`. Neither is written to logs, files or output, and a pre-commit hook runs a secret scan that fails closed.
+- The API and the web app answer this machine only: they listen on 127.0.0.1 and refuse requests whose host or origin is not loopback. The one exception is the laptop's own Tailscale address when you set `STOCKIFY_REMOTE_HOST` (see "Log in from your phone"), and only that exact name.
 - Recorded ticks can't be replaced (Kite keeps no data for expired options), so the stores only ever change by migration, never by dropping data.
 - Charges, sessions, contract rules, freeze limits and margin settings are dated config rows with a source, in `stockify/config/`, with the facts in `docs/plan/01_facts.md`. None of them are written into the code.
 - Market data from Kite is for your own use, so recordings stay on your machine and in your backup, never in this repository.
