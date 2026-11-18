@@ -89,6 +89,19 @@ def nse_raw_dir(dataset: str | None = None) -> Path:
     return _dir(base / dataset if dataset else base)
 
 
+def fundamentals_db() -> Path:
+    """The fundamentals screener's store (FS 1): universe, sectors, filings and the figures parsed from them."""
+    return lab_dir() / "fundamentals.sqlite"
+
+
+def fundamentals_raw_dir(kind: str) -> Path:
+    """$LAB/nse/raw/fundamentals/<kind>: NSE's answers for the screener (the Nifty 500 list, quote JSON, filings
+    lists, XBRL ...) kept byte for byte. Under nse/raw, so the backup copies them. `kind` must be one safe segment."""
+    if not safe_segment(kind, 64):
+        raise ValueError(f"not a valid fundamentals raw kind: {kind!r}")
+    return _dir(nse_raw_dir("fundamentals") / kind)
+
+
 MARGIN_KINDS = ("span", "elm", "manifest")
 
 
