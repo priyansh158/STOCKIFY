@@ -396,9 +396,9 @@ def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
     preparation (the earlier of `refdata` and `day_bundles`), judged on the daemon clock: `now_ns` is the time this
     job started (the catch-up reads it per job) and the NSE client's Http runs on it, so no NSE request is made after
     the deadline. The day's runs share fundamentals.json `daily_request_budget` (R12): once it is spent the day's
-    list is saved and the job is marked, whatever failed (it waits for tomorrow). A stop at the deadline, NSE
-    refusing (blocked), another run holding the lock (a CLI refresh or backfill) or a raised error: tried again, not
-    marked. Companies that failed: tried again every `retry_every_min` until the window's `until`, then given up
+    list is saved and the job is marked, whatever failed (it waits for tomorrow). A stop at the deadline, another
+    run holding the lock (a CLI refresh or backfill) or a raised error: tried again, not marked. NSE refusing
+    (blocked): tried again until the window's `until`, then given up for the day (marked, logged). Companies that failed: tried again every `retry_every_min` until the window's `until`, then given up
     (marked)."""
     from stockify.daemon import scheduler
     from stockify.daemon.clock import OffsetClock, WallClock
@@ -420,6 +420,11 @@ def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
              "%s NSE requests%s; stopped: %s", day, res.get("universe"), res.get("calendar"), res.get("listed", 0),
              len(res["failed"]), res.get("saved"), res.get("requests"),
              " (the day's budget spent)" if res.get("budget_spent") else "", res["stopped"])
+    if res["stopped"] == "blocked" and now_ns >= scheduler.window_end_ns("fundamentals", day):
+        log.warning("fundamentals for %s: NSE still refused after the retry window; giving up for the day (the "
+                    "next evening's run picks up what is left)", day)
+        state.mark("fundamentals", day)
+        return
     if res["stopped"] is not None:
         return                                        # `job.run` logged it: tried again on a later pass
     if res["complete"]:

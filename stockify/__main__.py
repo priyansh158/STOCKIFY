@@ -320,10 +320,14 @@ _FUNDAMENTALS_BUSY = ("Another fundamentals run is in progress (the daemon's nig
 def _cmd_fundamentals_backfill(args) -> int:
     from stockify.fundamentals import job
 
+    from stockify import timeutil
+    from stockify.daemon import scheduler
+
     if _fundamentals_session_guard():
         return 1
     try:
-        res = job.backfill(since=args.from_ or job.filings_from(), limit=args.limit)
+        res = job.backfill(since=args.from_ or job.filings_from(), limit=args.limit,     # asked again between batches
+                           in_session=lambda: scheduler.session_in_progress(timeutil.now_ns()))
     except job.Busy:
         print(_FUNDAMENTALS_BUSY, file=sys.stderr)
         return 1
@@ -347,6 +351,35 @@ def _cmd_fundamentals_refresh(args) -> int:
         print("Today's NSE request budget (fundamentals.json daily_request_budget) is spent; what is left waits for "
               "tomorrow's run.", file=sys.stderr)
     return 0 if res.get("complete") else 1
+
+
+def _cmd_fundamentals_status(args) -> int:
+    """Read-only: the screener's coverage and today's state from fundamentals.sqlite (nothing asks NSE)."""
+    from stockify.fundamentals import job
+    for line in job.status_lines(job.status()):
+        print(line)
+    return 0
+
+
+def _cmd_fundamentals_reparse(args) -> int:
+    """Held filings (one symbol's, or every one with --all-held) back to `downloaded`: the next refresh or evening
+    run reads them again (after a taxonomy.json addition)."""
+    from stockify.fundamentals import job, xbrl
+    if not args.symbol and not args.all_held:
+        print("Name the filings to read again: --symbol SYMBOL, or --all-held for every held filing.", file=sys.stderr)
+        return 2
+    try:
+        with job.hold():                               # never beside a run that is parsing the same rows
+            res = xbrl.reparse(symbol=args.symbol)
+    except job.Busy:
+        print(_FUNDAMENTALS_BUSY, file=sys.stderr)
+        return 1
+    whom = f"{args.symbol.upper()}'s" if args.symbol else "the"
+    print(f"{res['reset']} of {whom} held filings will be read again by the next `fundamentals refresh` or the "
+          f"daemon's evening run.")
+    if res["no_file"]:
+        print(f"{res['no_file']} held filings have no XBRL file kept and stay held.")
+    return 0
 
 
 def _cmd_fundamentals_test_record(args) -> int:
@@ -1273,6 +1306,15 @@ def main(argv: list[str] | None = None) -> int:
     fb.set_defaults(func=_cmd_fundamentals_backfill)
     fusub.add_parser("refresh", help="one daily run now: universe (Fridays), results calendar, new filings, "
                                      "figures and today's list (within the day's NSE request budget)").set_defaults(func=_cmd_fundamentals_refresh)
+    fusub.add_parser("status", help="read-only: universe and liquid counts, the companies whose latest four "
+                                    "quarters parsed cleanly against the spec's 90 %% / 80 %% gate, held filings by "
+                                    "reason, the latest list and the NSE request budget used"
+                     ).set_defaults(func=_cmd_fundamentals_status)
+    fr = fusub.add_parser("reparse", help="set held filings back to downloaded, so the next run reads them again "
+                                          "(after a taxonomy.json addition)")
+    fr.add_argument("--symbol", metavar="S", help="only this company's held filings")
+    fr.add_argument("--all-held", action="store_true", help="every held filing")
+    fr.set_defaults(func=_cmd_fundamentals_reparse)
     fusub.add_parser("test-record", help="the screener's walk-forward test record (needs a Kite login; fetches "
                                          "daily prices for about 500 stocks)"
                      ).set_defaults(func=_cmd_fundamentals_test_record)

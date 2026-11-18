@@ -63,7 +63,9 @@ import calendar
 import functools
 import hashlib
 import json
+import logging
 import re
+import sqlite3
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date
@@ -73,6 +75,8 @@ from pathlib import Path
 
 from stockify import dbconn, paths
 from stockify.fundamentals import store
+
+log = logging.getLogger("stockify.fundamentals")
 
 FIELDS = ("revenue_ops", "other_income", "total_income", "total_expenses", "finance_costs", "depreciation",
           "profit_before_tax", "tax", "net_profit", "profit_owners", "eps_basic", "eps_diluted", "paid_up_equity",
@@ -581,15 +585,24 @@ def _add_up(conn, row, res: ParseResult) -> list[str]:
     return out
 
 
+def _retry(row, e: Exception) -> None:
+    log.warning("fundamentals: filing %s (%s %s) left downloaded for the next run (%s: %s)", row["filing_id"][:12],
+                row["symbol"], row["period_end"], type(e).__name__, e)
+
+
 def ingest_pending(*, limit: int | None = None) -> dict:
     """Parse every `downloaded` filing (oldest period first, so a year's earlier quarters are on record before its
-    later ones are checked against the year to date): clean → figures + `parsed`; problems → `held` + reason."""
+    later ones are checked against the year to date): clean → figures + `parsed`; problems → `held` + reason.
+
+    Only a problem with the filing itself holds it: a missing or mismatched file, figures that fail a check, or the
+    parser failing on its bytes. A file-system error reading the kept file (a lock by the backup or a virus scan, a
+    disk error) or a database error leaves it `downloaded`, retried next run ({"retried": n})."""
     conn = store._connect()
     rows = conn.execute("SELECT * FROM filings WHERE status = 'downloaded'"
                         " ORDER BY period_end, broadcast_ns, filing_id").fetchall()
     if limit is not None:
         rows = rows[:limit]
-    counts = {"parsed": 0, "held": 0}
+    counts = {"parsed": 0, "held": 0, "retried": 0}
     for row in rows:
         res = None
         try:
@@ -597,16 +610,48 @@ def ingest_pending(*, limit: int | None = None) -> dict:
             data = path.read_bytes()
             if row["xbrl_sha256"] and hashlib.sha256(data).hexdigest() != row["xbrl_sha256"]:
                 raise _Bad("the saved XBRL file does not match its recorded sha256")
-            res = parse(data, period_kind=row["period_kind"], basis=row["basis"], period_end=row["period_end"],
-                        hint=Path(row["xbrl_url"] or path.name).name)
-            problems = res.problems or _add_up(conn, row, res)
+            try:
+                res = parse(data, period_kind=row["period_kind"], basis=row["basis"], period_end=row["period_end"],
+                            hint=Path(row["xbrl_url"] or path.name).name)
+                problems = res.problems or _add_up(conn, row, res)
+            except (_Bad, OSError, sqlite3.Error):
+                raise
+            except Exception as e:  # noqa: BLE001 — the parser or a check failing on one filing holds that filing
+                raise _Bad(f"the parser failed on this filing ({type(e).__name__}: {e})") from e
         except _Bad as e:
             problems = [str(e)]
-        except Exception as e:  # noqa: BLE001 — one bad filing is held, never a crash of the run
-            problems = [f"the parser failed on this filing ({type(e).__name__}: {e})"]
+        except (OSError, sqlite3.Error) as e:            # not the filing's fault: try again next run
+            _retry(row, e)
+            counts["retried"] += 1
+            continue
         _record(conn, row["filing_id"], None if problems else res, "; ".join(problems))
         counts["held" if problems else "parsed"] += 1
     return counts
+
+
+def reparse(*, symbol: str | None = None) -> dict:
+    """Set held filings (one symbol's, or all) whose XBRL file is still kept back to `downloaded`, so the next
+    ingest reads them again: how a taxonomy.json addition reaches filings held before it. A held filing with no
+    kept file is left held. {"reset": n, "no_file": n}."""
+    conn = store._connect()
+    sql, args = "SELECT * FROM filings WHERE status = 'held'", ()
+    if symbol is not None:
+        sql, args = sql + " AND symbol = ?", (symbol.upper(),)
+    rows = conn.execute(sql + " ORDER BY filing_id", args).fetchall()
+    reset, no_file = [], 0
+    for row in rows:
+        try:
+            _file_for(row)
+        except _Bad:
+            no_file += 1
+            continue
+        reset.append(row["filing_id"])
+    with dbconn.locked_write(store._lock, conn):
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany("UPDATE filings SET status = 'downloaded', reason = NULL WHERE filing_id = ? "
+                         "AND status = 'held'", [(f,) for f in reset])
+        conn.execute("COMMIT")
+    return {"reset": len(reset), "no_file": no_file}
 
 
 def _record(conn, filing_id: str, res: ParseResult | None, reason: str) -> None:

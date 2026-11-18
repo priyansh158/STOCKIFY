@@ -4,8 +4,10 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.support import SandboxedDBTest
@@ -342,14 +344,14 @@ class IngestTests(SandboxedDBTest):
         _put_filing("b" * 64, "xbrl_HDFCBANK_2024-12-31_standalone.xml", symbol="HDFCBANK", period_end="2024-12-31",
                     basis="standalone")
         _put_filing("c" * 64, None, symbol="INFY", period_end="2024-12-31", status="listed")
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 2, "held": 0})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 2, "held": 0, "retried": 0})
         self.assertEqual(self.status("a" * 64), ("parsed", None))
         figs = self.figures("a" * 64)
         self.assertEqual(figs["revenue_ops"], (cr("243865"), "RevenueFromOperations 2438650000000.00"))
         self.assertEqual(figs["eps_basic"], (1370, "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations 13.70"))
         self.assertEqual(self.figures("b" * 64)["interest_earned"][0], cr("76006.88"))
         self.assertEqual(self.status("c" * 64), ("listed", None))
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 0})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 0, "retried": 0})
 
     def test_broken_filing_is_held_with_reason(self):
         broken = "xbrl_RELIANCE_20241231_standalone_broken.xml"
@@ -366,7 +368,7 @@ class IngestTests(SandboxedDBTest):
         conn.execute("UPDATE filings SET xbrl_sha256 = ? WHERE filing_id = ?", ("0" * 64, "4" * 64))
         _put_filing("5" * 64, None, symbol="X", period_end="2024-12-31", data=b"")
         conn.execute("UPDATE filings SET xbrl_file = '../../escape.xml' WHERE filing_id = ?", ("5" * 64,))
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 5})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 5, "retried": 0})
         status, reason = self.status("1" * 64)
         self.assertEqual(status, "held")
         self.assertIn("profit after tax", reason)
@@ -384,7 +386,7 @@ class IngestTests(SandboxedDBTest):
         self.assertEqual(r.problems, ["the filing is in a format this parser has no map for "
                                       "(Insurance_entry_point_2021-03-31.xsd)"])
         _put_filing("e" * 64, None, symbol="SBILIFE", period_end="2024-12-31", data=data)
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 1})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 1, "retried": 0})
         self.assertEqual(self.status("e" * 64),
                          ("held", "the filing is in a format this parser has no map for "
                                   "(Insurance_entry_point_2021-03-31.xsd)"))
@@ -401,7 +403,7 @@ class IngestTests(SandboxedDBTest):
                     xbrl_url=url)
         _put_filing("i" * 64, None, symbol="HDFCBANK", period_end="2026-09-30", data=data, source="integrated",
                     xbrl_url="https://nsearchives.nseindia.in/corporate/xbrl/SOMETHING_ELSE_1.xml", broadcast_ns=2)
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 1})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 1, "retried": 0})
         self.assertEqual(self.status("h" * 64), ("parsed", None))
         self.assertEqual(self.figures("h" * 64)["interest_earned"][0], cr("95131.63"))
         self.assertIn("no map", self.status("i" * 64)[1])
@@ -419,21 +421,68 @@ class IngestTests(SandboxedDBTest):
 
         put_q1("q" * 64, q1)
         _put_filing("s" * 64, None, symbol="RELIANCE", period_end="2024-09-30", broadcast_ns=2, data=data)
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 0})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 0, "retried": 0})
 
         # Same filing for another company whose Q1 on record is ₹5,000 crore short of the half year.
         conn.execute("UPDATE filings SET symbol = 'OTHER' WHERE filing_id = ?", ("q" * 64,))
         conn.execute("UPDATE figures SET value_paise = value_paise - ? WHERE filing_id = ? AND field = 'revenue_ops'",
                      (cr("5000"), "q" * 64))
         _put_filing("t" * 64, None, symbol="OTHER", period_end="2024-09-30", broadcast_ns=3, data=data)
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 1})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 1, "retried": 0})
         status, reason = self.status("t" * 64)
         self.assertEqual(status, "held")
         self.assertTrue(re.search(r"quarters .* do not add up: revenue from operations ₹4,66,698.00 crore", reason), reason)
 
         # Without the earlier quarter on record the check cannot run, and does not hold the filing.
         _put_filing("u" * 64, None, symbol="THIRD", period_end="2024-09-30", broadcast_ns=4, data=data)
-        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 0})
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 0, "retried": 0})
+
+
+class IngestRetryTests(SandboxedDBTest):
+    """Final review I2: a file-system or database error leaves the filing `downloaded` for the next run; only a
+    real parse or check problem holds it. `reparse` sets held filings back to `downloaded`."""
+    db_modules = (store,)
+
+    def status(self, filing_id: str) -> tuple:
+        row = store._connect().execute("SELECT status, reason FROM filings WHERE filing_id = ?", (filing_id,)).fetchone()
+        return row["status"], row["reason"]
+
+    def test_a_locked_file_is_retried_not_held(self):
+        _put_filing("a" * 64, RELIANCE_Q3, symbol="RELIANCE", period_end="2024-12-31")
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "locked by another process")):
+            self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 0, "retried": 1})
+        self.assertEqual(self.status("a" * 64), ("downloaded", None))
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 1, "held": 0, "retried": 0})
+
+    def test_a_database_error_in_the_add_up_is_retried_not_held(self):
+        _put_filing("a" * 64, RELIANCE_Q3, symbol="RELIANCE", period_end="2024-12-31")
+        with mock.patch.object(xbrl, "_add_up", side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 0, "retried": 1})
+        self.assertEqual(self.status("a" * 64), ("downloaded", None))
+
+    def test_a_parser_crash_still_holds_the_filing(self):
+        _put_filing("a" * 64, RELIANCE_Q3, symbol="RELIANCE", period_end="2024-12-31")
+        with mock.patch.object(xbrl, "parse", side_effect=KeyError("contextRef")):
+            self.assertEqual(xbrl.ingest_pending(), {"parsed": 0, "held": 1, "retried": 0})
+        status, reason = self.status("a" * 64)
+        self.assertEqual(status, "held")
+        self.assertIn("the parser failed on this filing (KeyError", reason)
+
+    def test_reparse_moves_held_filings_back_to_downloaded(self):
+        _put_filing("a" * 64, RELIANCE_Q3, symbol="RELIANCE", period_end="2024-12-31", status="held")
+        _put_filing("b" * 64, RELIANCE_Q3, symbol="INFY", period_end="2024-12-31", status="held")
+        _put_filing("c" * 64, None, symbol="RELIANCE", period_end="2024-09-30", status="held")   # no file kept
+        _put_filing("d" * 64, RELIANCE_Q3, symbol="RELIANCE", period_end="2024-06-30", status="parsed")
+        conn = store._connect()
+        conn.execute("UPDATE filings SET reason = 'a format this parser has no map for' WHERE status = 'held'")
+        self.assertEqual(xbrl.reparse(symbol="reliance"), {"reset": 1, "no_file": 1})
+        self.assertEqual(self.status("a" * 64), ("downloaded", None))
+        self.assertEqual(self.status("b" * 64)[0], "held")
+        self.assertEqual(self.status("c" * 64)[0], "held")       # nothing to read again: left as it is
+        self.assertEqual(self.status("d" * 64), ("parsed", None))
+        self.assertEqual(xbrl.reparse(), {"reset": 1, "no_file": 1})
+        self.assertEqual(self.status("b" * 64), ("downloaded", None))
+        self.assertEqual(xbrl.ingest_pending(), {"parsed": 2, "held": 0, "retried": 0})
 
 
 class MapSourcesTests(SandboxedDBTest):

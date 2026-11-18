@@ -12,6 +12,7 @@ from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.stockify.data.test_nse_files import FakeSession
+from tests.stockify.fundamentals.screen_support import CR, ScreenCase
 from tests.support import SandboxedDBTest
 
 from stockify import timeutil
@@ -278,13 +279,24 @@ class DaemonWiringTests(JobCase):
     def result(self, **kw) -> dict:
         return {"complete": False, "stopped": None, "failed": [], **kw}
 
-    def test_blocked_is_retried_not_marked(self):
+    def test_blocked_is_retried_not_marked_inside_the_window(self):
         from stockify import daemon
         state = scheduler.State()
         with mock.patch.object(job, "run", return_value=self.result(stopped="blocked")), \
                 self.assertLogs("stockify", "INFO"):
-            daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "23:45"))
+            daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "23:29"))
         self.assertFalse(state.done("fundamentals", TUE))
+
+    def test_blocked_after_the_window_gives_up_for_the_day(self):
+        # Final review minor 2: NSE refusing is not asked again every 30 minutes until the morning; after the
+        # window's `until` (23:30 IST) the day is given up, logged, as failures are.
+        from stockify import daemon
+        state = scheduler.State()
+        with mock.patch.object(job, "run", return_value=self.result(stopped="blocked")), \
+                self.assertLogs("stockify", "WARNING") as logs:
+            daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "23:30"))
+        self.assertTrue(state.done("fundamentals", TUE))
+        self.assertTrue(any("giving up for the day" in m for m in logs.output), logs.output)
 
     def test_a_deadline_stop_is_retried_not_marked(self):
         from stockify import daemon
@@ -630,6 +642,31 @@ class BackfillTests(JobCase):
         self.assertIn("no file", out)
         self.assertNotIn("save", self.names())
 
+    def test_backfill_stops_before_the_session_between_companies(self):
+        # Minor 4b: the session guard is asked again between companies; it stops cleanly (resumable).
+        asks = []
+
+        def in_session() -> bool:
+            asks.append(1)
+            return len(asks) > 2                     # the session starts after two companies
+        res, out = self.run_backfill(in_session=in_session)
+        self.assertEqual([c[1] for c in self.calls if c[0] == "list"], ["ALPHA", "BETA"])
+        self.assertEqual(res["stopped"], "session")
+        self.assertEqual(res["listed"], 2)
+        self.assertIn("session", out)
+        self.assertNotIn("download", self.names())
+        self.assertNotIn("save", self.names())
+
+    def test_backfill_stops_before_the_session_between_download_batches(self):
+        answers = [{"downloaded": 60, "skipped": 40, "failed": 0, "stopped": "limit"},
+                   {"downloaded": 3, "skipped": 0, "failed": 2, "stopped": None}]
+        batches = []
+        self.patch(filings, "download_pending", lambda **kw: batches.append(1) or answers.pop(0))
+        res, _ = self.run_backfill(in_session=lambda: len(batches) >= 1)
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(res["stopped"], "session")
+        self.assertNotIn("ingest", self.names())
+
     def test_backfill_goes_on_while_batches_make_progress(self):
         answers = [{"downloaded": 60, "skipped": 40, "failed": 0, "stopped": "limit"},
                    {"downloaded": 3, "skipped": 0, "failed": 2, "stopped": None}]
@@ -746,6 +783,51 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("bars 1", out)
         self.assertIn("wf1", out)
+
+
+class StatusTests(ScreenCase):
+    """Final review I3: `fundamentals status` reads the coverage the spec's gate is judged on (call 4: 90 % of the
+    non-financial and 80 % of the financial companies parse cleanly for their latest four quarters)."""
+
+    def test_status_counts_coverage_by_family_and_holds_by_reason(self):
+        self.company("AAA", "Capital Goods")
+        self.company("BBB", "Capital Goods")
+        self.company("CCC", "Capital Goods")
+        self.company("FIN1", "Financial Services", financial=True)
+        newest = store._connect().execute("SELECT filing_id FROM filings WHERE symbol = 'CCC' "
+                                          "ORDER BY period_end DESC LIMIT 1").fetchone()[0]
+        filings.mark(newest, "held", "total income (₹1,100.00 crore) differs from revenue plus other income")
+        self.put("SBILIFE", "2025-09-30", {})
+        store._connect().execute("UPDATE filings SET status = 'held', reason = 'the filing is in a format this "
+                                 "parser has no map for (Insurance_entry_point_2021-03-31.xsd)' WHERE symbol = 'SBILIFE'")
+        self.universe.append({"symbol": "SBILIFE", "instrument_id": None, "isin": "INE000SBIL1", "company": "SBI Life",
+                              "median_value_paise": 9 * CR, "liquid": 1, "list_industry": "Financial Services"})
+        self.universe.append({"symbol": "THIN", "instrument_id": None, "isin": "INE000THIN1", "company": "Thin",
+                              "median_value_paise": CR, "liquid": 0, "list_industry": "Capital Goods"})
+        store.put_universe("2026-07-31", self.universe)
+        job._add_spent(date(2025, 11, 28), 40)
+        job._add_spent(date(2025, 12, 1), 123)
+        s = job.status()
+        self.assertEqual((s["universe"], s["liquid"], s["with_parsed"]), (6, 5, 4))
+        self.assertEqual(s["clean"], {"non-financial": (2, 3), "financial": (1, 2)})
+        self.assertEqual(s["gate"], {"non-financial": "0.9", "financial": "0.8"})
+        self.assertEqual(s["held"], {"total income": 1, "the filing is in a format this parser has no map for": 1})
+        self.assertIsNone(s["latest_list"])
+        self.assertEqual(s["budget"], {"day": "2025-12-01", "spent": 123, "budget": job.daily_request_budget()})
+        screen.save(date(2025, 12, 1), [])
+        self.assertEqual(job.status()["latest_list"], "2025-12-01")   # a day's list, even an empty one
+        lines = job.status_lines(s)
+        text = " | ".join(lines)
+        self.assertIn("2 of 3 (66.7 %; the gate is 90 %): below the gate", text)
+        self.assertIn("1 of 2 (50.0 %; the gate is 80 %): below the gate", text)
+        self.assertIn("123 of 900", text)
+
+    def test_status_of_an_empty_store(self):
+        s = job.status()
+        self.assertEqual((s["universe"], s["liquid"], s["with_parsed"]), (0, 0, 0))
+        self.assertEqual(s["clean"], {"non-financial": (0, 0), "financial": (0, 0)})
+        self.assertIsNone(s["budget"])
+        self.assertTrue(job.status_lines(s))
 
 
 if __name__ == "__main__":

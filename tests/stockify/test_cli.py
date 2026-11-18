@@ -63,6 +63,37 @@ class CliTests(unittest.TestCase):
                 self.assertIn(f"stockify {name}", out.getvalue())
                 self.assertNotIn("not implemented", out.getvalue())
 
+    def test_fundamentals_status_is_read_only_and_plain(self):
+        from stockify.fundamentals import job
+        s = {"universe": 500, "liquid": 380, "with_parsed": 370, "clean": {"non-financial": (300, 320),
+             "financial": (40, 60)}, "gate": dict(job.GATE), "held": {"the filing is in a format this parser has no "
+             "map for": 12}, "latest_list": "2026-11-16", "budget": {"day": "2026-11-16", "spent": 410, "budget": 900}}
+        with patch.object(job, "status", return_value=s):
+            code, out, _ = self.run_cli("fundamentals", "status")
+        self.assertEqual(code, 0)
+        self.assertIn("non-financial: 300 of 320 (93.8 %; the gate is 90 %): meets the gate", out)
+        self.assertIn("financial: 40 of 60 (66.7 %; the gate is 80 %): below the gate", out)
+        self.assertIn("12  the filing is in a format this parser has no map for", out)
+        self.assertIn("Latest list: 2026-11-16.", out)
+        self.assertIn("410 of 900 requests used", out)
+
+    def test_fundamentals_reparse_needs_a_symbol_or_all_held(self):
+        from stockify.fundamentals import xbrl
+        with patch.object(xbrl, "reparse", side_effect=AssertionError("reparsed")):
+            code, _, err = self.run_cli("fundamentals", "reparse")
+        self.assertEqual(code, 2)
+        self.assertIn("--all-held", err)
+        with patch.object(xbrl, "reparse", return_value={"reset": 3, "no_file": 1}) as rp:
+            code, out, _ = self.run_cli("fundamentals", "reparse", "--symbol", "sbilife")
+        self.assertEqual(code, 0)
+        rp.assert_called_once_with(symbol="sbilife")
+        self.assertIn("3 of SBILIFE's held filings", out)
+        self.assertIn("1 held filings have no XBRL file kept", out)
+        with patch.object(xbrl, "reparse", return_value={"reset": 7, "no_file": 0}) as rp:
+            code, out, _ = self.run_cli("fundamentals", "reparse", "--all-held")
+        self.assertEqual(code, 0)
+        rp.assert_called_once_with(symbol=None)
+
     def test_daemon_once_returns(self):
         code, _, _ = self.run_cli("daemon", "--once")
         self.assertEqual(code, 0)

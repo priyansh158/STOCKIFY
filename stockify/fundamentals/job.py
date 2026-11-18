@@ -341,19 +341,21 @@ def cm_missing(start: date, end: date) -> list[date]:
 def backfill(*, since: date | None = None, limit: int | None = None, client: nse_api.Client | None = None,
              today: date | None = None, progress: Callable[[str], None] = print,
              cm_missing: Callable[[date, date], list[date]] = cm_missing,
-             cm_backfill: Callable[[date, date], Any] | None = None) -> dict:
-    """The one-off history (module doc). `limit` caps the companies listed in this run. Returns {listed, failed,
-    download, ingest, saved, stopped: None | "blocked" | "no universe" | "no progress"}. Busy when another run
-    holds the lock."""
+             cm_backfill: Callable[[date, date], Any] | None = None,
+             in_session: Callable[[], bool] = lambda: False) -> dict:
+    """The one-off history (module doc). `limit` caps the companies listed in this run. `in_session` is asked
+    before each company and each download batch: when it says the recorder's session has begun, the run stops
+    cleanly (it resumes from there). Returns {listed, failed, download, ingest, saved, stopped: None | "blocked" |
+    "no universe" | "no progress" | "session"}. Busy when another run holds the lock."""
     client = client or nse_api.Client()
     with hold():
         return _backfill(since or filings_from(), limit, client, today or timeutil.ist_today(), progress,
-                         cm_missing, cm_backfill)
+                         cm_missing, cm_backfill, in_session)
 
 
 def _backfill(since: date, limit: int | None, client: nse_api.Client, today: date,  # noqa: PLR0913
               progress: Callable[[str], None], cm_missing: Callable[[date, date], list[date]],
-              cm_backfill: Callable[[date, date], Any] | None) -> dict:
+              cm_backfill: Callable[[date, date], Any] | None, in_session: Callable[[], bool]) -> dict:
     end = today - timedelta(days=1)
     out: dict[str, Any] = {"listed": 0, "failed": [], "download": None, "ingest": None, "saved": None,
                            "stopped": None}
@@ -362,6 +364,14 @@ def _backfill(since: date, limit: int | None, client: nse_api.Client, today: dat
         progress(f"NSE refused the request ({e}). Nothing is lost: run the backfill again later and it resumes.")
         out["stopped"] = "blocked"
         return out
+
+    def session() -> bool:
+        if not in_session():
+            return False
+        progress("The recorder's session has begun: stopping here. Nothing is lost: run the backfill again after "
+                 "the close and it resumes.")
+        out["stopped"] = "session"
+        return True
 
     lacking = cm_missing(since, end)
     if lacking:
@@ -385,6 +395,8 @@ def _backfill(since: date, limit: int | None, client: nse_api.Client, today: dat
     if limit is not None:
         todo = todo[:limit]
     for i, symbol in enumerate(todo, 1):
+        if session():
+            return out
         try:
             rows = filings.list_for(symbol, client=client, since=since)
         except nse_api.Blocked as e:
@@ -399,6 +411,8 @@ def _backfill(since: date, limit: int | None, client: nse_api.Client, today: dat
     total = {"downloaded": 0, "skipped": 0, "failed": 0, "stopped": None}
     out["download"] = total
     while True:
+        if session():
+            return out
         res = filings.download_pending(client=client, limit=DOWNLOAD_BATCH)
         for k in ("downloaded", "skipped", "failed"):
             total[k] += res[k]
@@ -420,4 +434,86 @@ def _backfill(since: date, limit: int | None, client: nse_api.Client, today: dat
     screen.save(today, rows)
     out["saved"] = len(rows)
     progress(f"the list for {today}: {len(rows)} stocks")
+    return out
+
+
+# ── status (read-only) ───────────────────────────────────────────────────────
+
+# The spec's shippable gate (call 4): the share of the universe's companies whose latest four quarters parse cleanly.
+GATE = {"non-financial": "0.9", "financial": "0.8"}
+
+
+def _reason_kind(reason: str | None) -> str:
+    """A held reason without its particulars (amounts, file names, dates): the words before the first "(" or ":"."""
+    text = (reason or "no reason recorded").split("(")[0].split(":")[0].strip()
+    return text or "no reason recorded"
+
+
+def _clean_four(rows: list) -> bool:
+    """The company's latest four quarter ends (of its basis: consolidated when it filed any, else standalone) each
+    have a parsed filing."""
+    basis = "consolidated" if any(r["basis"] == "consolidated" for r in rows) else "standalone"
+    ends: dict[str, bool] = {}
+    for r in rows:
+        if r["basis"] == basis and r["period_kind"] == "Q":
+            ends[r["period_end"]] = ends.get(r["period_end"], False) or r["status"] == "parsed"
+    latest = sorted(ends, reverse=True)[:4]
+    return len(latest) == 4 and all(ends[e] for e in latest)
+
+
+def status() -> dict:
+    """What `stockify fundamentals status` prints, read from fundamentals.sqlite only (nothing asks NSE):
+    {universe, liquid, with_parsed (liquid companies with any parsed filing), clean {family: (clean, of)}, gate,
+    held {reason kind: filings}, latest_list (the newest saved list's day), budget {day, spent, budget} | None}."""
+    from stockify.fundamentals import ratios
+    conn = store._connect()
+    as_of = store.latest_as_of()
+    uni = store.universe_on(as_of) if as_of else []
+    liquid = [u for u in uni if u["liquid"]]
+    by_symbol: dict[str, list] = {}
+    for r in conn.execute("SELECT symbol, period_end, period_kind, basis, status FROM filings"):
+        by_symbol.setdefault(r["symbol"], []).append(r)
+    clean = {"non-financial": [0, 0], "financial": [0, 0]}
+    with_parsed = 0
+    for u in liquid:
+        rows = by_symbol.get(u["symbol"], [])
+        with_parsed += any(r["status"] == "parsed" for r in rows)
+        family = clean["financial" if (u["list_industry"] or None) == ratios.FINANCIAL_SECTOR else "non-financial"]
+        family[1] += 1
+        family[0] += _clean_four(rows)
+    held: dict[str, int] = {}
+    for (reason,) in conn.execute("SELECT reason FROM filings WHERE status = 'held'"):
+        held[_reason_kind(reason)] = held.get(_reason_kind(reason), 0) + 1
+    latest = conn.execute("SELECT MAX(day) FROM screen_days").fetchone()[0]
+    b = conn.execute("SELECT day, spent FROM request_budget ORDER BY day DESC LIMIT 1").fetchone()
+    return {"universe": len(uni), "liquid": len(liquid), "with_parsed": with_parsed,
+            "clean": {k: (v[0], v[1]) for k, v in clean.items()}, "gate": dict(GATE),
+            "held": dict(sorted(held.items(), key=lambda kv: (-kv[1], kv[0]))), "latest_list": latest,
+            "budget": None if b is None else {"day": b[0], "spent": int(b[1]), "budget": daily_request_budget()}}
+
+
+def status_lines(s: dict) -> list[str]:
+    """`status()` in plain lines."""
+    from decimal import Decimal
+    out = [f"Universe: {s['universe']} stocks on the newest Nifty 500 list, {s['liquid']} liquid (the screener's).",
+           f"Liquid companies with any parsed filing: {s['with_parsed']}.",
+           "Latest four quarters parsed cleanly (the spec's shippable gate, call 4):"]
+    for family in ("non-financial", "financial"):
+        n, of = s["clean"][family]
+        gate = Decimal(s["gate"][family])
+        if of == 0:
+            out.append(f"  {family}: no companies")
+            continue
+        share = Decimal(n) / Decimal(of)
+        verdict = "meets the gate" if share >= gate else "below the gate"
+        out.append(f"  {family}: {n} of {of} ({share * 100:.1f} %; the gate is {gate * 100:.0f} %): {verdict}")
+    if s["held"]:
+        out.append("Held filings by reason:")
+        out += [f"  {n:>5}  {kind}" for kind, n in s["held"].items()]
+    else:
+        out.append("Held filings: none.")
+    out.append(f"Latest list: {s['latest_list'] or 'none saved yet'}.")
+    b = s["budget"]
+    out.append("NSE request budget: no budgeted run yet." if b is None else
+               f"NSE request budget for trade date {b['day']}: {b['spent']} of {b['budget']} requests used.")
     return out
