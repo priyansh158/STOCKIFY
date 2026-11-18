@@ -39,8 +39,8 @@ The Fundamentals page (Research, then Fundamentals) lists stocks that look cheap
 The page has three parts.
 
 - **Results coming up.** The covered companies that have a board meeting for their results in the next four weeks.
-- **Worth a closer look.** The day's list, best first, each stock with a few words on why, such as "cheaper than its industry on earnings, with wider margins and no debt". A warning comes first when there is one, such as a loss over the last four quarters or rising debt. The order is the judgement; how it is worked out stays off the page.
-- **Details.** One stock's figures beside its industry's median: P/E, P/B, return on equity, debt to equity, operating margin and profit growth (a bank or other financial is judged on P/E, P/B, return on equity, profit growth and net interest income growth). A chart of each figure by quarter, and every filing the figures came from, with a link to NSE's own file. A stock that is covered but not on the list says why: its results are out of date or could not be read, or it has no price to judge it by.
+- **Worth a closer look.** The day's list, best first, at most 50 stocks, each with a few words on why, such as "cheaper than its industry on earnings, with wider margins and no debt". A warning comes first when there is one, such as falling profits or rising debt. A loss-making stock, or one with negative equity, is never listed, though its details page still shows its figures and the warning. The order is the judgement; how it is worked out stays off the page.
+- **Details.** One stock's figures beside its industry's median: P/E, P/B, return on equity, debt to equity, operating margin and profit growth (a bank or other financial is judged on P/E, price to book, return on equity and net interest income growth; its profit growth is shown, but not used for the order). A chart of each figure by quarter, and every filing the figures came from, with a link to NSE's own file. A stock that is covered but not on the list says why: its results are out of date or could not be read, or it has no price to judge it by.
 
 Where the figures come from:
 
@@ -48,7 +48,7 @@ Where the figures come from:
 - **The results.** NSE's results filings in XBRL from April 2021, and the integrated filings that companies have made since the quarter ended March 2025. Consolidated figures are used from the day a company first files them, standalone ones before that, never a mix. A figure counts from the first trading day after NSE broadcast it, so a past day's list uses only what was known on that day. A restated result is kept as a new version, never written over the old one. A filing whose figures do not add up is held back with the reason, never guessed.
 - **The prices.** NSE's end-of-day files give each day's market value. Kite's daily prices are used for the test record.
 
-The daemon brings it up to date each evening after the close, from 20:40 IST once the day's NSE files are in. It makes at most 900 NSE requests a day, about one a second, and stops 10 minutes before the next session's preparation; what is left waits for the next evening.
+The daemon brings it up to date each evening after the close, from 20:40 IST once the day's NSE files are in. It makes about 900 NSE requests per trading day at most, about one a second (a catch-up after several missed evenings can spend each missed day's budget in one sitting), and stops 10 minutes before the next session's preparation; what is left waits for the next evening.
 
 What it cannot tell you:
 
@@ -62,9 +62,11 @@ The commands:
 stockify fundamentals backfill        # the first fill: every company's filings since April 2021, a few hours (resumable; --from, --limit)
 stockify fundamentals refresh         # one evening's update now, within the day's 900 NSE requests
 stockify fundamentals test-record     # the walk-forward test record (needs a Kite login; fetches daily prices first)
+stockify fundamentals status          # read-only: coverage against the 90 % / 80 % parse gate, held filings by reason, the budget used
+stockify fundamentals reparse --all-held   # held filings read again by the next run (or --symbol S), e.g. after a taxonomy.json addition
 ```
 
-Each one refuses to start while the recorder's session is running, so run it after the close. Only one fundamentals run (the daemon's or a command's) goes at a time: a command started while another runs says so and stops.
+The backfill, refresh and test-record commands refuse to start while the recorder's session is running, so run them after the close; a backfill still going when the session begins stops there and resumes next time. Only one fundamentals run (the daemon's or a command's) goes at a time: a command started while another runs says so and stops.
 
 ## Writing your own strategy
 
