@@ -106,6 +106,14 @@ export default async function ResearchPage() {
         lede="Every idea you have tried, how often, and whether the best try beats luck."
       />
       <div className="stk-stack">
+        <Link href="/research/fundamentals" className="stk-entry" aria-labelledby="fund-entry-h" aria-describedby="fund-entry-p">
+          <div>
+            <h2 id="fund-entry-h">Fundamentals</h2>
+            <p id="fund-entry-p">Stocks that look cheap and healthy against their industry, and results coming up.</p>
+          </div>
+          <span className="stk-entry-go" aria-hidden="true">Open →</span>
+        </Link>
+
         <section className="stk-section" aria-labelledby="fam-h">
           <h2 id="fam-h">Trial families</h2>
           {!fams.ok ? (

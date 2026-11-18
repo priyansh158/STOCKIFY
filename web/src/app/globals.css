@@ -544,3 +544,23 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-link.stk-warn { color: var(--color-warn); }
 .stk-link.stk-muted { color: var(--color-muted); }
 .stk-table td.stk-desk-why { min-width: 18rem; }  /* the rule's note stays readable in a narrow window */
+
+/* Fundamentals (FS 10): the entry at the top of Research, the list and the details page */
+.stk-entry {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); text-decoration: none; color: var(--color-ink);
+  border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); background: var(--color-paper-2);
+  padding: var(--space-md) var(--space-lg); transition: border-color var(--dur-micro), background var(--dur-micro);
+}
+.stk-entry:hover { border-color: var(--color-edge); background: var(--color-paper-3); }
+.stk-entry h2 { margin: 0; }
+.stk-entry p { margin-top: var(--space-2xs); color: var(--color-ink-2); max-width: var(--measure); }
+.stk-entry-go { color: var(--color-accent); font-size: var(--text-sm); white-space: nowrap; }
+.stk-fund-h { margin-bottom: var(--space-sm); }
+.stk-fund-h > h2 { margin: 0; }
+.stk-table td.stk-fund-why { min-width: 18rem; max-width: 40rem; }
+.stk-table td.stk-fund-go { text-align: right; width: 1%; }
+.stk-fund-fine { display: flex; flex-direction: column; gap: var(--space-2xs); }
+.stk-fund-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-xl) var(--gap-columns); }
+.stk-fund-chart { min-width: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.stk-fund-chart > h3 { margin: 0; }
+.stk-table th.stk-fund-top { vertical-align: top; }
