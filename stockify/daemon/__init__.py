@@ -145,7 +145,7 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
     """Run one scheduler job for `day` (compaction, quality, nse_fetch, margin_files, prune, finalise, parity,
-    daily_summary, desk, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
+    daily_summary, desk, fundamentals, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
     tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
     windows are judged against it."""
     now_ns = timeutil.now_ns() if now_ns is None else now_ns
@@ -229,6 +229,8 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         _daily_summary(day, state)
     elif job == "desk":
         _desk_job(day, state, now_ns)
+    elif job == "fundamentals":
+        _fundamentals_job(day, state, now_ns)
     elif job == "backup":
         _backup_job(day, state)
 
@@ -386,6 +388,38 @@ def _desk_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         log.warning("desk for %s: %s still failing after the retry window; giving up for the day", day,
                     ", ".join(f["symbol"] for f in res["failed"]))
         state.mark("desk", day)
+
+
+def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """The fundamentals screener's daily run (FS 8, `stockify.fundamentals.job`): universe, results calendar,
+    filings, XBRL figures and the day's list. Like the desk it stops DESK_MARGIN_NS before the next session's
+    preparation (the earlier of `refdata` and `day_bundles`), judged on the daemon clock: the NSE client's Http runs
+    on the daemon's time, so no NSE request is made after the deadline. A stop at the deadline, NSE refusing
+    (blocked) or a raised error: tried again, not marked. Companies that failed: tried again every
+    `retry_every_min` until the window's `until`, then given up (marked)."""
+    from stockify.daemon import scheduler
+    from stockify.daemon.clock import OffsetClock, WallClock
+    from stockify.data import nse_files
+    from stockify.fundamentals import job, nse_api
+    nxt = scheduler.plan(scheduler.session_day(now_ns))
+    deadline = min(nxt.refdata_ns, nxt.day_bundles_ns) - DESK_MARGIN_NS
+    try:
+        client = nse_api.Client(nse_files.Http(clock=OffsetClock(WallClock(), now_ns)))
+        res = job.run(day, client=client, deadline_ns=deadline)
+    except Exception:  # noqa: BLE001 — the screener never costs the daemon anything
+        log.exception("the fundamentals job for %s raised; it will be tried again", day)
+        return
+    log.info("fundamentals for %s: universe %s, %s calendar meetings, %d companies listed, %d failed, list of %s; "
+             "stopped: %s", day, res.get("universe"), res.get("calendar"), res.get("listed", 0),
+             len(res["failed"]), res.get("saved"), res["stopped"])
+    if res["stopped"] is not None:
+        return                                        # `job.run` logged it: tried again on a later pass
+    if res["complete"]:
+        state.mark("fundamentals", day)
+    elif res["failed"] and now_ns >= scheduler.window_end_ns("fundamentals", day):
+        log.warning("fundamentals for %s: %s still failing after the retry window; giving up for the day", day,
+                    ", ".join(f["symbol"] for f in res["failed"]))
+        state.mark("fundamentals", day)
 
 
 SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up

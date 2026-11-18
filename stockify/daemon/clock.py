@@ -79,3 +79,22 @@ class ManualClock(Clock):
             return False
         self.set(max(self.now_ns(), t_ns))
         return True
+
+
+class OffsetClock(Clock):
+    """Another clock moved to start at `now_ns`: for a job the daemon runs on its own clock's time (a test's
+    ManualClock, a catch-up) whose waits are real. `now_ns` is the daemon's time moved on by the base clock since;
+    `sleep_until` waits on the base clock for the same span; `mono_ns` is the base clock's."""
+
+    def __init__(self, base: Clock, now_ns: int):
+        self._base = base
+        self._offset = int(now_ns) - base.now_ns()
+
+    def now_ns(self) -> int:
+        return self._base.now_ns() + self._offset
+
+    def mono_ns(self) -> int:
+        return self._base.mono_ns()
+
+    def sleep_until(self, t_ns: int, stop: threading.Event | None = None) -> bool:
+        return self._base.sleep_until(int(t_ns) - self._offset, stop)

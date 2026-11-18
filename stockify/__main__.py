@@ -283,6 +283,68 @@ def _cmd_nse_backfill(args) -> int:
     return 0 if not totals.get("error") else 1
 
 
+def _iso_day(text: str):  # noqa: ANN202
+    from datetime import date
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a date YYYY-MM-DD: {text!r}") from None
+
+
+def _positive_int(text: str) -> int:
+    try:
+        n = int(text)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"not a whole number of 1 or more: {text!r}")
+    return n
+
+
+def _cmd_fundamentals_backfill(args) -> int:
+    from stockify.fundamentals import job
+
+    res = job.backfill(since=args.from_ or job.filings_from(), limit=args.limit)
+    print(json.dumps(res, sort_keys=True, default=str))
+    return 0 if res.get("stopped") is None else 1
+
+
+def _cmd_fundamentals_refresh(args) -> int:
+    from stockify import timeutil
+    from stockify.fundamentals import job
+
+    res = job.run(timeutil.ist_today())
+    print(json.dumps(res, sort_keys=True, default=str))
+    return 0 if res.get("complete") else 1
+
+
+def _cmd_fundamentals_test_record(args) -> int:
+    _load_env()
+    import kite_client
+    from stockify.fundamentals import test_record
+
+    if not kite_client.is_authenticated():
+        print("The test record needs Kite's daily prices, and Kite is not logged in. Log in to Kite in the app, "
+              "then run this again.", file=sys.stderr)
+        return 1
+    done = [0]
+
+    def fetch(iid, interval, start, end, **kw):  # noqa: ANN001, ANN003, ANN202
+        stats = test_record.bars_history.fetch(iid, interval, start, end, **kw)
+        done[0] += 1
+        print(f"bars {done[0]}: instrument {iid} {stats.outcome}", flush=True)
+        return stats
+    print("Fetching each ranked stock's daily prices from Kite, then running the walk-forward ...", flush=True)
+    try:
+        res = test_record.run(fetch=fetch)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(f"walk-forward {res['job_id']} ({res['family_id']}): {res['start']} to {res['end']}, "
+          f"{len(res['symbols'])} stocks, {len(res['missing'])} without prices; benchmark {res['benchmark']['label']}")
+    return 0
+
+
 def _cmd_nse_margin_files(args) -> int:
     from datetime import date
 
@@ -1166,6 +1228,21 @@ def main(argv: list[str] | None = None) -> int:
     nm.add_argument("--elm-window", action="store_true",
                     help="the ELM file of every trading day back 120 days that NSE still serves")
     nm.set_defaults(func=_cmd_nse_margin_files)
+
+    fu = sub.add_parser("fundamentals", help="the fundamentals screener's NSE filings and daily list (FS 8)")
+    fusub = fu.add_subparsers(dest="fundamentals_command", required=True)
+    fb = fusub.add_parser("backfill", help="NSE's results filings of every universe company from --from, their "
+                                           "XBRL figures and today's list; first NSE's CM files when cm_eod lacks "
+                                           "days (resumable; about one request a second)")
+    fb.add_argument("--from", dest="from_", metavar="YYYY-MM-DD", type=_iso_day,
+                    help="first period end YYYY-MM-DD (default: fundamentals.json filings_from, 2021-04-01)")
+    fb.add_argument("--limit", metavar="N", type=_positive_int, help="list at most N companies in this run")
+    fb.set_defaults(func=_cmd_fundamentals_backfill)
+    fusub.add_parser("refresh", help="one daily run now: universe (Fridays), results calendar, new filings, "
+                                     "figures and today's list").set_defaults(func=_cmd_fundamentals_refresh)
+    fusub.add_parser("test-record", help="the screener's walk-forward test record (needs a Kite login; fetches "
+                                         "daily prices for about 500 stocks)"
+                     ).set_defaults(func=_cmd_fundamentals_test_record)
 
     b = sub.add_parser("bars", help="Kite historical bar cache (M1.4)")
     bsub = b.add_subparsers(dest="bars_command", required=True)
