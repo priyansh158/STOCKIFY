@@ -259,6 +259,25 @@ class TestRecordTests(FundamentalsApiBase):
         self.assertEqual(body["notes"], NOTES)
 
 
+class SaveTests(FundamentalsApiBase):
+
+    def test_a_failing_precompute_never_loses_the_days_order(self):
+        from stockify.fundamentals import series
+        rows = screen.order(DAY)
+        with mock.patch.object(series, "precompute", side_effect=RuntimeError("boom")),                 mock.patch.object(screen, "log") as log:          # a mock: other tests may reconfigure logging
+            screen.save(DAY, rows)
+        log.warning.assert_called_once()
+        self.assertEqual([r["symbol"] for r in screen.latest()[1]], [r["symbol"] for r in rows])
+        # The day's series from the earlier save are dropped, not shown beside a list they may not match.
+        self.assertEqual(store._connect().execute("SELECT COUNT(*) FROM screen_series WHERE day = ?",
+                                                  (DAY.isoformat(),)).fetchone()[0], 0)
+        listing = self.get("/api/fundamentals")
+        self.assertEqual([i["symbol"] for i in listing["items"]], [r["symbol"] for r in rows])
+        body = self.get("/api/fundamentals/BBB")                 # degrades to its own series, no medians
+        self.assertTrue(body["series"])
+        self.assertTrue(all(p["sector_median"] is None for s in body["series"] for p in s["points"]))
+
+
 class NoScoreTests(FundamentalsApiBase):
 
     def test_no_score_fields_anywhere(self):

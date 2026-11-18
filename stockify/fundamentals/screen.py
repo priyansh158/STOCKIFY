@@ -29,12 +29,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import statistics
 from datetime import date
 
 from stockify import dbconn
 from stockify.fundamentals import ratios, series, store, universe
+
+log = logging.getLogger(__name__)
 
 STALE_DAYS = 200                     # task-4 review: a newest quarter older than this is out of date
 MIN_PEERS = 5                        # ruling R3: fewer placed stocks in an industry: compare with all stocks
@@ -301,11 +304,18 @@ def order(day: date, *, balance: float = 0.5) -> list[dict]:
 
 def save(day: date, rows: list[dict]) -> None:
     """Keep the day's list (replacing one saved for that day before), position 1 first, with the universe it was
-    computed from. Each listed stock's details series are computed and kept first (series.precompute), so a list
-    is never shown without them."""
+    computed from. Each listed stock's details series are computed and kept first (series.precompute). If that
+    fails the order is still kept (it is what the page lists): the day's series are dropped and the details page
+    shows each stock's own figures without medians until the next save."""
     day = day if isinstance(day, date) else date.fromisoformat(str(day))
     iso = day.isoformat()
-    series.precompute(day, rows, min_peers=MIN_PEERS)
+    try:
+        series.precompute(day, rows, min_peers=MIN_PEERS)
+        kept = True
+    except Exception as e:  # noqa: BLE001 — the order must not be lost to the details' charts
+        log.warning("fundamentals: the details series for %s were not kept (%s: %s); the list is saved without "
+                    "them", iso, type(e).__name__, e)
+        kept = False
     values = [(iso, n, r["symbol"], json.dumps(r, sort_keys=True, ensure_ascii=False))
               for n, r in enumerate(rows, start=1)]
     as_of = store.latest_as_of()
@@ -313,6 +323,8 @@ def save(day: date, rows: list[dict]) -> None:
     with dbconn.locked_write(store._lock, conn):
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM screen_runs WHERE day = ?", (iso,))
+        if not kept:
+            conn.execute("DELETE FROM screen_series WHERE day = ?", (iso,))
         conn.executemany("INSERT INTO screen_runs (day, position, symbol, json) VALUES (?, ?, ?, ?)", values)
         conn.execute("INSERT OR REPLACE INTO screen_days (day, universe_as_of) VALUES (?, ?)", (iso, as_of))
         conn.execute("COMMIT")
