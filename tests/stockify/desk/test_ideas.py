@@ -172,6 +172,53 @@ class IdeasTests(unittest.TestCase):
         self.assertIsNone(out["Collar"].margin_paise)
         self.assertIsNone(out["Collar"].margin_ok)
 
+    def test_put_strike_never_above_the_price(self):
+        # exit level ₹1,528 rounds to ₹1,550 by nearness, but a put above the price is not a floor
+        out = by_name(I.ideas(verdict(nearest=152_800), snap(), GAUGE, SPOT, LOT, 400))
+        self.assertEqual(out["Protective put"].legs[0]["tradingsymbol"], "INFY26NOV1500PE")
+        self.assertEqual([l["tradingsymbol"] for l in out["Collar"].legs], ["INFY26NOV1500PE", "INFY26NOV1600CE"])
+        self.assertTrue(out["Collar"].possible)
+        self.assertGreater(out["Collar"].max_gain_paise, 0)
+        # exit level above the price (cannot come from decide, but stay safe): capped at the price
+        out = by_name(I.ideas(verdict(nearest=158_000), snap(), GAUGE, SPOT, LOT, 400))
+        self.assertEqual(out["Protective put"].legs[0]["tradingsymbol"], "INFY26NOV1500PE")
+
+    def test_collar_with_no_room_for_a_gain_is_not_possible(self):
+        spot = 159_900                       # call wall ₹1,600 sits ₹1 above; the put costs more than the call brings
+        out = by_name(I.ideas(verdict(), snap(), GAUGE, spot, LOT, 400))
+        col = out["Collar"]
+        self.assertFalse(col.possible)
+        self.assertEqual(col.not_possible_reason,
+                         "The call's strike is too close to the price for this to pay at these prices")
+        self.assertIsNone(col.margin_paise)
+        self.assertTrue(out["Covered call"].possible)
+
+    def test_cost_against_typical_move_caution(self):
+        small = by_name(I.ideas(verdict("Hold", 0.1), snap(), GAUGE, SPOT, LOT, 400, atr_paise=500.0))
+        # 5 trading days left: typical move ≈ ₹5 × √5 ≈ ₹11.18; long call breakeven is ₹51 away
+        self.assertIn("typical move", small["Long call"].caution)
+        self.assertIn("₹11.18", small["Long call"].caution)
+        self.assertNotIn("typical move", small["Covered call"].caution)      # nothing bought
+        big = by_name(I.ideas(verdict("Hold", 0.1), snap(), GAUGE, SPOT, LOT, 400, atr_paise=10_000.0))
+        self.assertNotIn("typical move", big["Long call"].caution)
+        none = by_name(I.ideas(verdict("Hold", 0.1), snap(), GAUGE, SPOT, LOT, 400))
+        self.assertNotIn("typical move", none["Long call"].caution)
+
+    def test_two_leg_basket_and_one_cash_read(self):
+        fake = FakeMargins()
+        fake.cash_reads = 0
+        orig = fake.margins
+
+        def counted():  # noqa: ANN202
+            fake.cash_reads += 1
+            return orig()
+        fake.margins = counted
+        I.ideas(verdict("Hold", 0.1), snap(), GAUGE, SPOT, LOT, 400, margin_client=fake)
+        collar_orders = fake.calls[1][0]
+        self.assertEqual([(o["tradingsymbol"], o["transaction_type"], o["quantity"]) for o in collar_orders],
+                         [("INFY26NOV1500PE", "BUY", 400), ("INFY26NOV1600CE", "SELL", 400)])
+        self.assertEqual(fake.cash_reads, 1)
+
     def test_high_iv_caution_on_bought_options(self):
         high = dict(GAUGE, iv_percentile=85.0)
         out = by_name(I.ideas(verdict("Hold", 0.1), snap(), high, SPOT, LOT, 400))

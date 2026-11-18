@@ -1,27 +1,42 @@
-"""HD 7.1: option ideas for one F&O holding, priced from the live chain (`chain.snapshot` / `chain.gauge`).
+"""HD 7.1, 7.2: option ideas for one F&O holding, priced from the live chain (`chain.snapshot` / `chain.gauge`).
 
 A pure function apart from the optional margin client. Ideas, in this order:
 
-* hedges, always: protective put (the put at the strike nearest the verdict's nearest exit level, else one strike
-  below the strike nearest the price), collar (that put plus a sold call at the nearest call wall);
-* covered call (a sold call at the nearest call wall), only when the free shares make at least one lot;
+* hedges, always: protective put (the put at the highest strike at or below both the verdict's nearest exit level
+  and the price, else one strike below the strike nearest the price), collar (that put plus a sold call at the
+  lowest strike above both the price and the put's strike, at or beyond the nearest call wall);
+* covered call (a sold call at the lowest strike above the price, at or beyond the nearest call wall), only when
+  the free shares make at least one lot;
 * when the rules turn down (verdict Exit or Trim): bear put spread (buy the put nearest the price, sell the put at
   the nearest put wall below it) and long put;
 * when they say stay in (verdict Hold with exit share at most 0.4, so at least 60% of the weight says In): bull
   call spread (buy the call nearest the price, sell the call at the nearest call wall above it) and long call.
 
 Without a wall, the next listed strike on that side stands in. The near expiry is used, unless it has fewer than
-MIN_DAYS_LEFT trading days left (counting the trade date and the expiry day), then the next one.
+MIN_DAYS_LEFT trading days left (counting the trade date and the expiry day), then the next one; the walls and the
+IV percentile still come from the near expiry's gauge, and the why text says so.
 
 Buys are priced at the ask, sells at the bid; a leg without that quote makes the idea not possible. Hedges and the
 covered call use floor(free shares / lot) lots, the directional ideas 1 lot. Every figure is in paise for the
 stated lots; the shares in a hedge are valued at today's price, never at what the owner paid. `max_gain_paise`
-None means no upper limit. Margin is Kite's basket margin (span + exposure + additional + option premium) for the
+None means no upper limit. A collar or covered call whose max gain is zero or less is listed not possible.
+
+Cautions: each idea carries a plain sentence on what makes it a bad idea, plus
+
+* IV: options priced high (IV percentile >= HIGH_IV) on an idea that buys one, priced low (<= LOW_IV) on one that
+  sells one;
+* typical move (only with `atr_paise`): for an idea paid for up front (net premium > 0), when the larger of the
+  breakeven's distance from the price and the premium per share is above ATR x sqrt(trading days left to the
+  expiry, counted as above), the stock's typical move by then.
+
+Margin is Kite's basket margin (span + exposure + additional + option premium) for the
 idea's option legs alone, compared with the equity segment's net available cash; both are None without a client
-or when Kite does not answer.
+or when Kite does not answer. The cash is read once per call. The covered call's margin is Kite's figure for a
+short call on its own: Kite does not count the shares unless they are pledged.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -67,18 +82,25 @@ def _days_left(trade_date: str, expiry: str) -> int:
     return len(calendar.trading_days("FO", date.fromisoformat(trade_date), date.fromisoformat(expiry)))
 
 
-def _pick_expiry(snap: dict) -> tuple[str | None, str]:
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def _pick_expiry(snap: dict) -> tuple[str | None, str, int | None]:
+    """(expiry, note for the why text, trading days left to it or None without a trade date)."""
     exps = snap.get("expiries") or []
     if not exps:
-        return None, ""
+        return None, "", None
     near = exps[0]
     td = snap.get("trade_date")
-    if td and len(exps) > 1:
-        left = _days_left(td, near)
-        if left < MIN_DAYS_LEFT:
-            return exps[1], (f" The near expiry ({_day(near)}) has only {left} trading days left, so this uses the "
-                             f"next expiry, {_day(exps[1])}.")
-    return near, ""
+    if not td:
+        return near, "", None
+    left = _days_left(td, near)
+    if left < MIN_DAYS_LEFT and len(exps) > 1:
+        return exps[1], (f" The near expiry ({_day(near)}) has only {_plural(left, 'trading day')} left, so this "
+                         f"uses the next expiry, {_day(exps[1])}; the open interest walls are still read from "
+                         f"the near expiry."), _days_left(td, exps[1])
+    return near, "", left
 
 
 def _nearest(strikes: list[int], target: int) -> int | None:
@@ -115,9 +137,21 @@ def _iv_caution(legs: list[_Leg], pct: float | None) -> str:
         return (f" Options are priced high right now (implied volatility is at or above {pct:.0f}% of the past "
                 "year's days), so buying one costs more than usual.")
     if pct <= LOW_IV and any(l.side == "SELL" for l in legs):
-        return (f" Options are priced low right now (implied volatility is at or above only {pct:.0f}% of "
-                "the past year's days), so selling one brings in less than usual.")
+        return (" Options are priced low right now (implied volatility is lower than on most days of the past "
+                "year), so selling one brings in less than usual.")
     return ""
+
+
+def _move_caution(prem: int, be: list[int], spot: int, atr_paise: float | None, days: int | None) -> str:
+    """The typical-move sentence for an idea paid for up front (see the module docstring), or ""."""
+    if atr_paise is None or not days or days <= 0 or prem <= 0 or not math.isfinite(atr_paise) or atr_paise <= 0:
+        return ""
+    move = round(atr_paise * math.sqrt(days))
+    need = max([prem] + [abs(b - spot) for b in be])
+    if need <= move:
+        return ""
+    return (f" Its breakeven is {_rupees(need)} away from today's price, more than the stock's typical move of "
+            f"about {_rupees(move)} over the {_plural(days, 'trading day')} to expiry.")
 
 
 def _cash_paise(client) -> int | None:  # noqa: ANN001
@@ -147,10 +181,10 @@ def _margin_paise(client, legs: list[_Leg], units: int) -> int | None:  # noqa: 
 
 
 def ideas(verdict: Verdict, snap: dict, gauge: dict, spot_paise: int, lot: int, free_qty: int, *,
-          margin_client=None) -> list[Idea]:  # noqa: ANN001
+          margin_client=None, atr_paise: float | None = None) -> list[Idea]:  # noqa: ANN001
     """The option ideas for one holding (see the module docstring). [] when the chain lists no expiry or the lot
-    is unknown."""
-    expiry, roll_note = _pick_expiry(snap)
+    is unknown. `atr_paise` is the stock's ATR(14), for the typical-move caution."""
+    expiry, roll_note, days_left = _pick_expiry(snap)
     if expiry is None or not lot or lot <= 0:
         return []
     rows = {(r["strike_paise"], r["kind"]): r for r in snap.get("rows") or [] if r.get("expiry") == expiry}
@@ -168,24 +202,36 @@ def ideas(verdict: Verdict, snap: dict, gauge: dict, spot_paise: int, lot: int, 
     exp_txt = f"the {_day(expiry)} expiry"
     lot_txt = f"1 lot is {fmt_qty(lot)} shares"
 
-    # strikes
+    # strikes: the put never above the price, the call always above the price and the put
     if verdict.nearest_exit_paise is not None:
-        put_k = _nearest(strikes, verdict.nearest_exit_paise)
-        put_src = f"the strike nearest the nearest exit level ({_rupees(verdict.nearest_exit_paise)})"
+        cap = min(int(verdict.nearest_exit_paise), spot)
+        under = [s for s in strikes if s <= cap]
+        put_k = under[-1] if under else None
+        put_src = f"the strike at or just below the nearest exit level ({_rupees(verdict.nearest_exit_paise)})"
     else:
-        put_k = below_atm[-1] if below_atm else atm
+        put_k = below_atm[-1] if below_atm else None
         put_src = "one strike below the price"
     wall_up = [w for w in call_walls if w > spot]
-    if wall_up:
-        call_k, call_src = _nearest(strikes, min(wall_up)), "where the most calls are open above the price"
-    else:
-        up = [s for s in strikes if s > spot]
-        call_k, call_src = (up[0] if up else None), "the first strike above the price"
+    wall = min(wall_up) if wall_up else None
+
+    def call_above(floor: int) -> int | None:
+        up = [s for s in strikes if s > floor and (wall is None or s >= wall)]
+        return up[0] if up else None
+
+    call_src = "where the most calls are open above the price" if wall else "the first strike above the price"
+    call_k = call_above(max(spot, put_k if put_k is not None else spot))
+    cover_k = call_above(spot)
+    cash_box: list = []
+
+    def cash() -> int | None:
+        if not cash_box:
+            cash_box.append(_cash_paise(margin_client))
+        return cash_box[0]
 
     out: list[Idea] = []
 
     def build(name: str, legs: list[_Leg], lots: int, figures, why: str, caution: str,  # noqa: ANN001
-              shares_needed: bool) -> None:
+              shares_needed: bool, gain_needed: bool = False) -> None:
         units = lots * lot
         reason = ""
         if shares_needed and held_lots == 0:
@@ -202,12 +248,17 @@ def ideas(verdict: Verdict, snap: dict, gauge: dict, spot_paise: int, lot: int, 
             return
         prem = sum((l.price if l.side == "BUY" else -l.price) for l in legs)   # per share
         loss, gain, be = figures(prem)
+        if gain_needed and gain is not None and gain <= 0:
+            out.append(Idea(name, [l.as_dict(lots) for l in legs], 0, None, None, [], None, None, why, caution,
+                            False, "The call's strike is too close to the price for this to pay at these prices"))
+            return
+        caution = caution + _move_caution(prem, be, spot, atr_paise, days_left)
         margin = ok = None
         if margin_client is not None:
             margin = _margin_paise(margin_client, legs, units)
             if margin is not None:
-                cash = _cash_paise(margin_client)
-                ok = None if cash is None else margin <= cash
+                have = cash()
+                ok = None if have is None else margin <= have
         out.append(Idea(name, [l.as_dict(lots) for l in legs], prem * units,
                         None if loss is None else loss * units, None if gain is None else gain * units,
                         be, margin, ok, why, caution, True, ""))
@@ -218,7 +269,7 @@ def ideas(verdict: Verdict, snap: dict, gauge: dict, spot_paise: int, lot: int, 
     pp = _Leg("BUY", "PE", put_k, rows)
     build("Protective put", [pp], hl,
           lambda p: (max(0, spot - put_k + p), None, [spot + p]),
-          f"Buying the {_rupees(put_k)} put, {put_src}, sets a floor under your shares until {exp_txt}; "
+          f"Buying the {'' if put_k is None else _rupees(put_k) + ' '}put, {put_src}, sets a floor under your shares until {exp_txt}; "
           f"{lot_txt}.",
           "The put costs money and loses value every day; if the stock does not fall below the strike it "
           "expires worth nothing.", True)
@@ -227,21 +278,22 @@ def ideas(verdict: Verdict, snap: dict, gauge: dict, spot_paise: int, lot: int, 
     cl = [_Leg("BUY", "PE", put_k, rows), _Leg("SELL", "CE", call_k, rows)]
     build("Collar", cl, hl,
           lambda p: (max(0, spot - put_k + p), call_k - spot - p, [spot + p]),
-          f"Buying the {_rupees(put_k)} put and selling a call {call_src}"
+          f"Buying the {'' if put_k is None else _rupees(put_k) + ' '}put and selling a call {call_src}"
           f"{'' if call_k is None else ' (' + _rupees(call_k) + ')'} sets a floor under your shares and pays for "
           f"some or all of it by giving up the rise above the call's strike, until {exp_txt}; {lot_txt}.",
           "If the stock rises above the call's strike your shares can be called away at that price, and you "
-          "miss any rise beyond it.", True)
+          "miss any rise beyond it.", True, gain_needed=True)
 
     # Covered call: shares plus a sold call.
-    cc = _Leg("SELL", "CE", call_k, rows)
+    cc = _Leg("SELL", "CE", cover_k, rows)
     build("Covered call", [cc], hl,
-          lambda p: (spot + p, call_k - spot - p, [spot + p]),
+          lambda p: (spot + p, cover_k - spot - p, [spot + p]),
           f"Selling a call {call_src}"
-          f"{'' if call_k is None else ' (' + _rupees(call_k) + ')'} against your shares brings in its price "
+          f"{'' if cover_k is None else ' (' + _rupees(cover_k) + ')'} against your shares brings in its price "
           f"now, until {exp_txt}; {lot_txt}.",
           "If the stock rises above the strike your shares can be called away at that price; the call's price "
-          "does little to cushion a fall.", True)
+          "does little to cushion a fall. Kite counts its margin as for a call sold on its own unless the shares "
+          "are pledged.", True, gain_needed=True)
 
     down = verdict.label in ("Exit", "Trim")
     up_ok = verdict.label == "Hold" and verdict.exit_share <= CALL_SHARE
