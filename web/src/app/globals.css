@@ -1,5 +1,5 @@
 /* Hallmark · shape: app screen · genre: modern-minimal (inferred) · theme: brand (STOCKIFY green on ink, kept) · redesign: full
- * paper: oklch(17% 0.012 160) · accent: oklch(80% 0.19 150) · display: Inter · body: Inter · figures: JetBrains Mono
+ * paper: oklch(17% 0.012 160) · accent: oklch(87% 0.05 168), a pale sage apart from the gain green (owner, 2026-11-17) · display: Inter · body: Inter · figures: JetBrains Mono
  * nav: a sticky top bar, six destinations · signature: the ledger, tabular rupee columns on every table and stat row · states: loading, empty, error, full
  * axes: dark/grotesk-sans/chromatic-green · posture: restrained, accent on the primary action and the current page only · contrast: pass · v2.0.0
  * footer: none (owner, D-141) · second pass 2026-11-13 (HM, D-148): locked by web/design.md; one containment layer, quiet ledger marks, left-aligned empty lines */
@@ -24,7 +24,7 @@
 body { min-height: 100dvh; display: flex; flex-direction: column; }
 h1 { max-width: none; font-size: var(--text-display); font-weight: 600; line-height: 1.15; text-wrap: balance; }
 h2 { max-width: none; font-size: var(--text-section); font-weight: 600; line-height: 1.25; }
-h3 { max-width: none; font-size: var(--text-md); font-weight: 600; }
+h3 { max-width: none; font-size: var(--text-title); font-weight: 600; line-height: 1.3; }  /* a size step above body, not weight alone (owner, 2026-11-17) */
 code, kbd { font-family: var(--font-outlier); }
 code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-paper-3); border-radius: var(--radius-chip); }
 
@@ -47,7 +47,7 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 }
 .stk-nav a:hover { background: var(--color-paper-2); color: var(--color-ink); }
 .stk-nav a:active { background: var(--color-paper-3); }
-.stk-nav a[aria-current="page"] { color: var(--color-ink); background: var(--color-paper-3); }  /* same weight as the others, so the bar never shifts */
+.stk-nav a[aria-current="page"] { color: var(--color-ink); background: var(--color-paper-3); box-shadow: inset 0 -2px 0 var(--color-accent); }  /* same weight as the others, so the bar never shifts */
 
 .stk-main { flex: 1 0 auto; width: 100%; }
 .stk-page { width: 100%; max-width: var(--container); margin-inline: auto; padding: var(--space-lg) var(--gutter) var(--space-2xl); }
@@ -69,6 +69,15 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 .stk-stack { display: flex; flex-direction: column; gap: var(--space-lg); }
 /* More room between sections than inside them (impeccable L1/L2): 24 px within, 40 px between */
 .stk-stack > .stk-section + .stk-section, .stk-stack > .stk-cols-split { margin-top: var(--space-md); }
+/* A ruled page (the run page, the paper session page): sections are separated by a hairline and space, not boxed. A Panel stays
+   only for notices and the chart stage, and a section right after one needs no rule of its own (owner, 2026-11-17). */
+.stk-stack[data-ruled] > :is(.stk-section, .stk-cols-split, .stk-cols-2) {
+  margin-top: var(--space-md); padding-top: var(--space-lg); border-top: var(--rule-hair) solid var(--color-rule);
+}
+.stk-stack[data-ruled] > :is(.stk-head, .stk-panel, .stk-costs-banner, [role="status"]) + :is(.stk-section, .stk-cols-split, .stk-cols-2) {
+  margin-top: 0; padding-top: 0; border-top: 0;
+}
+.stk-subblock { border-top: var(--rule-hair) solid var(--color-rule); padding-block: var(--space-md); }
 .stk-stack-s { display: flex; flex-direction: column; gap: var(--space-sm); }
 .stk-row { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
 .stk-row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); flex-wrap: wrap; }
@@ -122,6 +131,13 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
   font-variant-numeric: tabular-nums; line-height: 1.2; overflow-wrap: anywhere;
 }
 .stk-stat[data-size="s"] dd { font-size: var(--text-lg); }
+/* A figure with its recent history (owner, 2026-11-17): only where a real series reaches the page (a run's day-end money). The
+   line is the chart's NAV line in small; the dashed level and the dot mark the start. */
+.stk-stat dd:has(> .stk-spark) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-sm); }
+.stk-spark { flex: none; overflow: visible; }
+.stk-spark-line { fill: none; stroke: var(--color-accent); stroke-width: 1.5; stroke-linejoin: round; }
+.stk-spark-start { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.stk-spark-dot { fill: var(--color-ink); }
 .stk-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-lg); margin: 0; }
 .stk-stat-grid[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
@@ -186,6 +202,13 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 /* Tables: the ledger */
 .stk-table-wrap { position: relative; overflow-x: auto; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); background: var(--color-paper-2); }
 .stk-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+/* A long ledger (coverage grid, tests list, fills): the frame scrolls on its own, both ways, and the heads stick to its top. The
+   rule under the heads is a shadow, since a collapsed border does not travel with a sticky cell (owner, 2026-11-17). */
+.stk-table-wrap[data-tall] { max-height: min(75vh, 48rem); overflow: auto; }
+.stk-table-wrap[data-tall] thead th {
+  position: sticky; top: 0; z-index: var(--z-base); background: var(--color-paper-2);
+  border-bottom-color: transparent; box-shadow: inset 0 calc(var(--rule-hair) * -1) 0 var(--color-rule);
+}
 .stk-table caption { text-align: left; padding: var(--space-sm) var(--space-md); color: var(--color-muted); }
 .stk-table th {
   padding: var(--space-sm); text-align: left; font-weight: 500; color: var(--color-muted);
@@ -199,7 +222,7 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 .stk-table td > .stk-label { margin-top: var(--space-3xs); }
 .stk-table td.num .stk-label, .stk-table td.num .stk-cmp-words { font-family: var(--font-body); }  /* words under a figure are not figures (64) */
 .stk-table a { color: var(--color-ink); font-weight: 600; text-underline-offset: 0.2em; }
-.stk-table a:hover { color: var(--color-accent); }
+.stk-table a:hover { color: var(--color-accent); text-decoration-thickness: 2px; }
 .stk-table .sub td { color: var(--color-ink-2); font-weight: 600; }
 .stk-table [data-wrap] { white-space: normal; overflow-wrap: break-word; }
 .stk-table td:first-child[data-wrap] { min-width: 16rem; }
@@ -315,8 +338,8 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-lc-ytitle { margin-bottom: var(--space-3xs); }
 .stk-lc-mark { stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 1 4; stroke-linecap: round; }
 .stk-lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
-/* Series: accent, info, warn. On the dark surface the set passes the dataviz validator's colour-blind (CVD), normal-vision and contrast checks and
-   fails only the lightness band, which is informational. Series 4 to 6 reuse the three colours, so every line also carries markers of its
+/* Series: accent (pale sage since 2026-11-17, no longer the gain green), info, warn. The three now differ in lightness as well as hue
+   (87%, 76%, 80% L), so the set reads apart for colour-blind viewers too. Series 4 to 6 reuse the three colours, so every line also carries markers of its
    own shape and a dash of its own, both repeated in the legend that names it: no series depends on colour alone. */
 .stk-lc-line[data-c="0"] { stroke: var(--color-accent); }
 .stk-lc-line[data-c="1"] { stroke: var(--color-info); }
@@ -361,7 +384,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-heat-cell[data-sign="neg"][data-step="2"] { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--color-warn) 30%, var(--color-paper-2)) 0 7px, var(--color-paper) 7px 9px); }
 .stk-heat-cell[data-sign="neg"][data-step="3"] { background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--color-warn) 50%, var(--color-paper-2)) 0 7px, var(--color-paper) 7px 9px); }
 .stk-heat-cell[data-sign][data-step][data-best="true"] { outline-color: var(--color-ink); }
-.stk-heat-cell[data-best="true"][data-step="4"] { outline-color: var(--color-paper); }  /* ink on step 4 is 2.8:1, paper is above 3:1 */
+.stk-heat-cell[data-best="true"][data-step="4"] { outline-color: var(--color-paper); }  /* ink on step 4 is 2.4:1, paper 6.9:1 */
 .stk-heat-cell[data-best="true"] { outline: 2px solid var(--color-ink); outline-offset: -2px; font-weight: 700; }
 
 /* Run page: "How much to trust this result" (tests/[id]/ResearchPanel.tsx). Hairline-ruled blocks, no card inside a card. */
@@ -373,7 +396,7 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-trust-block { display: flex; flex-direction: column; gap: var(--space-sm); border-top: var(--rule-hair) solid var(--color-rule); padding-top: var(--space-lg); }
 .stk-trust-intervals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-lg); }  /* three intervals, always one row on a desktop (no orphan at 1024) */
 .stk-trust-interval { min-width: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
-.stk-trust h4 { font-size: var(--text-title); }
+.stk-trust h4 { font-size: var(--text-md); }  /* under the h3 at --text-title */
 
 /* The costs banner: a solid warn bar (paper text on warn is 10:1), loud on purpose, distinct from the tinted notes. */
 .stk-costs-banner {
@@ -459,7 +482,11 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin-bottom: var(--space-sm); }
 .stk-pick-bar p { margin: 0; }
 .stk-table td.stk-pick, .stk-table th.stk-pick { width: 1%; padding-right: 0; }
-.stk-table td.stk-pick + td[data-wrap] { min-width: 14rem; }  /* the test name, after the checkbox column (was td:first-child) */
+.stk-table td.stk-pick + td[data-wrap] { min-width: 14rem; }
+/* The whole compare cell is the tick box's label, so the target is the cell, not the 18 px box (owner, 2026-11-17) */
+.stk-table td.stk-pick { padding: 0; }
+.stk-pick-hit { display: flex; justify-content: center; min-width: var(--hit); min-height: var(--hit); padding: var(--space-sm) var(--space-xs) var(--space-sm) var(--space-md); cursor: pointer; }
+.stk-pick-hit:has(:disabled) { cursor: not-allowed; }  /* the test name, after the checkbox column (was td:first-child) */
 /* The tests list has 11 columns: let its headers and the start time wrap so the name column gets the width (no scroll at 1440 px). */
 .stk-table:has(td.stk-pick) th, .stk-table:has(td.stk-pick) th.num { white-space: normal; vertical-align: bottom; }
 .stk-table:has(td.stk-pick) th.stk-pick { white-space: nowrap; }

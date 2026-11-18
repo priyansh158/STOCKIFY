@@ -37,6 +37,26 @@ from stockify.data import calendar
 log = logging.getLogger("stockify.daemon.ticker")
 SEC = 1_000_000_000
 
+class _PlannedCloseFilter(logging.Filter):
+    """kiteconnect logs every close as ERROR ("Connection closed: ..."). When the close is the one the recorder
+    asked for (the session stopped with exit OK, at the unsubscribe time), the line is lowered to INFO, as ours is;
+    every other close keeps its ERROR (2026-11-17)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.session: "RecorderSession | None" = None
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        session = self.session
+        if (session is not None and session.planned_stop() and record.levelno == logging.ERROR
+                and record.getMessage().startswith("Connection closed")):
+            record.levelno, record.levelname = logging.INFO, "INFO"
+        return True
+
+
+_PLANNED_CLOSE = _PlannedCloseFilter()
+logging.getLogger("kiteconnect.ticker").addFilter(_PLANNED_CLOSE)
+
 RECONNECT_MAX_TRIES = 300      # library maximum (RECON M1.0)
 RECONNECT_MAX_DELAY = 60
 
@@ -130,6 +150,7 @@ class RecorderSession:
         ticker.on_close = self._on_close
         ticker.on_error = self._on_error
         ticker.on_noreconnect = self._on_noreconnect
+        _PLANNED_CLOSE.session = self                   # one recorder session per process at a time
 
     # ── subscriptions ────────────────────────────────────────────────────────
     def _apply(self, diff: Diff, ws=None) -> None:  # noqa: ANN001
@@ -204,8 +225,12 @@ class RecorderSession:
         log.info("ticker connected; %d subscriptions", len(self.manager.current))
 
     def _on_close(self, ws, code, reason) -> None:  # noqa: ANN001
-        # Every close is logged loudly (M5.14); never the websocket's URL, which carries the access token.
-        log.error("ticker closed: code %s, reason %s", code, redact(reason))
+        # Every unplanned close is logged loudly (M5.14); never the websocket's URL, which carries the access token.
+        # The close the recorder asked for at the end of the session is routine (2026-11-17).
+        if self.planned_stop():
+            log.info("ticker closed at the end of the session: code %s, reason %s", code, redact(reason))
+        else:
+            log.error("ticker closed: code %s, reason %s", code, redact(reason))
         with self._lock:
             self.connected = False
             if self.stopped.is_set() or code == 1000:
@@ -322,6 +347,10 @@ class RecorderSession:
             diff = self.manager.unsubscribe_all()
             if diff.unsubscribe and self.connected:
                 self.ticker.unsubscribe([s.token for s in diff.unsubscribe])
+
+    def planned_stop(self) -> bool:
+        """True once the session was ended on purpose (`end_session`, exit OK); a 403 or a reconnect give-up is not."""
+        return self.stopped.is_set() and self.exit_code == exitcodes.OK
 
     def stop(self, code: int) -> None:
         if self.stopped.is_set():

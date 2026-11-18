@@ -25,15 +25,40 @@ export function PageHead({ title, lede, actions }: { title: ReactNode; lede?: Re
   );
 }
 
-/** A figure with its label. Put several inside a StatGrid. */
-export function Stat({ label, value, tone, size, plain }: { label: string; value: string; tone?: Tone; size?: "s"; plain?: boolean }) {
+/** A figure with its label. Put several inside a StatGrid. `trend` is a small history drawn after the figure (a `Spark`). */
+export function Stat({ label, value, tone, size, plain, trend }: { label: string; value: string; tone?: Tone; size?: "s"; plain?: boolean; trend?: ReactNode }) {
   // a value with no digit in it ("too short to say", "Not run yet") is words: the body face, not the figure face
   const words = plain || !/\d/.test(value);
   return (
     <div className="stk-stat" data-size={size} data-plain={words ? "" : undefined}>
       <dt>{label}</dt>
-      <dd className={tone === "up" ? "stk-up" : tone === "down" ? "stk-down" : undefined}>{value}</dd>
+      <dd className={tone === "up" ? "stk-up" : tone === "down" ? "stk-down" : undefined}>
+        {trend ? <span>{value}</span> : value}
+        {trend}
+      </dd>
     </div>
+  );
+}
+
+/** A small history line beside a money figure, drawn only from a real series (never placeholder data). The dashed level and the
+ * dot mark where it started; the line ends at the figure it sits beside. `label` says the same in words for screen readers. */
+export function Spark({ values, start, label }: { values: number[]; start?: number | null; label: string }) {
+  if (values.length < 2) return null;
+  const W = 96;
+  const H = 28;
+  const from = start ?? values[0];
+  const lo = Math.min(...values, from);
+  const hi = Math.max(...values, from);
+  const span = hi - lo || 1;
+  const x = (i: number) => (i / (values.length - 1)) * (W - 4) + 2;
+  const y = (v: number) => H - 3 - ((v - lo) / span) * (H - 6);
+  const line = values.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return (
+    <svg className="stk-spark" viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label={label}>
+      <line x1={0} x2={W} y1={y(from)} y2={y(from)} className="stk-spark-start" />
+      <path d={line} className="stk-spark-line" />
+      <circle cx={x(0)} cy={y(values[0])} r={2.5} className="stk-spark-dot" />
+    </svg>
   );
 }
 
@@ -65,18 +90,21 @@ export function Empty({ children }: { children: ReactNode }) {
   );
 }
 
-/** A table frame: wide on a desktop, scrolls sideways in a narrow window rather than squeezing. */
+/** A table frame: wide on a desktop, scrolls sideways in a narrow window rather than squeezing. `tall` is for a long ledger:
+ * the frame gets its own height and vertical scroll, and the column heads stay in view while the rows move under them. */
 export function Table({
   caption,
   head,
+  tall,
   children,
 }: {
   caption: string;
   head: { label: string; sub?: string; num?: boolean }[];
+  tall?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="stk-table-wrap" tabIndex={0} role="region" aria-label={caption}>
+    <div className="stk-table-wrap" data-tall={tall ? "" : undefined} tabIndex={0} role="region" aria-label={caption}>
       <table className="stk-table">
         <caption className="sr-only">{caption}</caption>
         <thead>

@@ -629,7 +629,9 @@ class SourceScanTest(unittest.TestCase):
         self.assertEqual(self._scan([KITE_HOST], allowed_files=("kite_client.py",)), [])
 
     def test_kiteconnect_is_imported_only_for_the_ticker_and_its_version(self):
-        allowed = re.compile(r"^\s*(from kiteconnect import KiteTicker|import kiteconnect\.__version__ as \w+)\s*$")
+        # Also allowed: naming the library's logger to lower its planned-close line (RM 7.7); that is not SDK use.
+        allowed = re.compile(r"^\s*(from kiteconnect import KiteTicker|import kiteconnect\.__version__ as \w+"
+                             r'|logging\.getLogger\("kiteconnect\.ticker"\)\.addFilter\(\w+\))\s*$')
         hits = []
         for hit in self._scan([SDK_IMPORT, SDK_STRING], allowed_files=("kite_client.py",)):
             rel, no = hit.rsplit(":", 1)
