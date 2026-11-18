@@ -145,7 +145,7 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
     """Run one scheduler job for `day` (compaction, quality, nse_fetch, margin_files, prune, finalise, parity,
-    daily_summary, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
+    daily_summary, desk, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
     tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
     windows are judged against it."""
     now_ns = timeutil.now_ns() if now_ns is None else now_ns
@@ -227,6 +227,8 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         _parity_job(day, state)
     elif job == "daily_summary":
         _daily_summary(day, state)
+    elif job == "desk":
+        _desk_job(day, state, now_ns)
     elif job == "backup":
         _backup_job(day, state)
 
@@ -354,6 +356,34 @@ def _backup_job(day: date, state) -> None:  # noqa: ANN001
     if n >= BACKUP_TRIES:
         log.error("backup for %s: given up after %d tries", day, n)
         state.mark("backup", day)
+
+
+DESK_MARGIN_NS = 10 * 60 * 1_000_000_000              # the desk job stops this long before the next keep-awake time
+
+
+def _desk_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """The holdings desk's nightly grading and closing views (HD 8, `stockify.desk.nightly`). It stops between
+    holdings DESK_MARGIN_NS before the next session's keep-awake time, so it never delays the recorder; what is left
+    runs on a later pass. No Kite login, a stop at that deadline, or a raised error: tried again, not marked. Holdings
+    that failed: tried again every `retry_every_min` until the window's `until`, then given up (marked)."""
+    from stockify.daemon import scheduler
+    from stockify.desk import nightly
+    deadline = scheduler.plan(scheduler.session_day(now_ns)).keep_awake_ns - DESK_MARGIN_NS
+    try:
+        res = nightly.run(day, deadline_ns=deadline)
+    except Exception:  # noqa: BLE001 — the desk never costs the daemon anything
+        log.exception("the desk job for %s raised; it will be tried again", day)
+        return
+    if not res.get("logged_in", True):
+        return                                        # `nightly.run` logged it: tried again on a later pass
+    log.info("desk for %s: %d holdings, %d analysed, %d skipped, %d failed", day, res["holdings"], res["analysed"],
+             len(res["skipped"]), len(res["failed"]))
+    if res["complete"]:
+        state.mark("desk", day)
+    elif res["failed"] and now_ns >= scheduler.window_end_ns("desk", day):
+        log.warning("desk for %s: %s still failing after the retry window; giving up for the day", day,
+                    ", ".join(f["symbol"] for f in res["failed"]))
+        state.mark("desk", day)
 
 
 SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up

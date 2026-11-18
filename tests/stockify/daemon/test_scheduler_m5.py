@@ -58,13 +58,14 @@ class CatchUpOrderTest(JobsBase):
         for job in ("nse_fetch", "margin_files"):
             self.state.mark(job, MON)
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
-        self.assertEqual(due, [("finalise", MON), ("compaction", MON), ("parity", MON), ("daily_summary", MON), ("backup", WED)])
+        self.assertEqual(due, [("finalise", MON), ("compaction", MON), ("parity", MON), ("daily_summary", MON),
+                               ("desk", MON), ("backup", WED)])
         self.assertLess(ist(WED, "08:00"), scheduler.plan(WED).day_bundles_ns)
 
     def test_the_whole_evening_is_ordered_per_day(self):
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
         mon = [j for j, d in due if d == MON]
-        self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary"])
+        self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk"])
         days = [d for j, d in due if j != "backup"]
         self.assertEqual(days, sorted(days))                                    # oldest day first
         self.assertEqual(due[-1][0], "backup")
@@ -76,7 +77,7 @@ class CatchUpOrderTest(JobsBase):
         self.assertIn(("backup", MON), due)                                      # the latest trading day, not the 10th
 
     def test_backup_always_catch_up_after_wake(self):
-        for job in ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary"):
+        for job in ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk"):
             self.state.mark(job, MON)
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "05:44"), self.state), MON), [("backup", MON)])
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "06:00"), self.state), MON), [("backup", WED)])    # the wake time
@@ -253,8 +254,8 @@ class CatchUpWiringTest(JobsBase):
                 mock.patch.object(daemon, "_run_job", fake_job):
             daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
                               token_fresh=lambda: False, send_reminder=lambda s, b: None)
-        self.assertEqual(since(ran, MON)[:5], [("finalise", MON), ("compaction", MON), ("parity", MON),
-                                               ("daily_summary", MON), ("backup", WED)])
+        self.assertEqual(since(ran, MON)[:6], [("finalise", MON), ("compaction", MON), ("parity", MON),
+                                               ("daily_summary", MON), ("desk", MON), ("backup", WED)])
 
     def test_a_failing_job_does_not_stop_the_others(self):
         from stockify import daemon
@@ -781,6 +782,50 @@ class AllFailedSummaryTest(JobsBase):
             daemon._daily_summary(MON, self.state)
         self.assertEqual(sent, [MON])
         self.assertTrue(self.state.done("daily_summary", MON))
+
+
+class DeskJobTest(JobsBase):
+    def test_desk_job_is_held_during_the_session_and_after_nse_fetch(self):
+        """HD 8.1: the nightly desk job grades the holdings after the evening's NSE files, never beside the live
+        recorder, and is caught up like the other evening jobs."""
+        self.assertIn("desk", scheduler.CATCH_UP)
+        self.assertIn("desk", scheduler.HELD_DURING_SESSION)
+        self.assertEqual(scheduler.DEPENDS["desk"], "nse_fetch")
+        self.assertEqual(scheduler.DAY_ORDER.index("desk"), scheduler.DAY_ORDER.index("daily_summary") + 1)
+        p = scheduler.plan(MON)
+        self.assertEqual((p.desk_ns, p.desk_until_ns), (ist(MON, "20:10"), ist(MON, "23:30")))
+        self.assertEqual(scheduler.window_end_ns("desk", MON), ist(MON, "23:30"))
+        self.assertEqual(scheduler.retry_every_ns("desk"), 30 * MIN)
+        self.assertNotIn(("desk", MON), scheduler.missed_jobs(ist(MON, "20:09"), self.state))
+        self.assertIn(("desk", MON), scheduler.missed_jobs(ist(MON, "20:10"), self.state))
+        self.assertFalse(scheduler.runnable("desk", MON, self.state))
+        self.state.mark("nse_fetch", MON)
+        self.assertTrue(scheduler.runnable("desk", MON, self.state))
+        self.state.mark("desk", MON)
+        self.assertNotIn(("desk", MON), scheduler.missed_jobs(ist(WED, "08:00"), self.state))
+        self.assertNotIn("desk", scheduler.BLOCKS_SLEEP)
+
+    def test_the_desk_job_waits_for_the_close_in_the_daemon(self):
+        from stockify import daemon
+        ran = []
+        state = scheduler.State()
+        state.mark("nse_fetch", MON)
+
+        def fake_market_day(**kw):
+            kw["on_idle"]()
+            return exitcodes.TOKEN_EXPIRED
+
+        def run_at(hhmm):
+            ran.clear()
+            clock = ManualClock(ist(WED, hhmm))
+            with mock.patch.object(market_day, "run_market_day", fake_market_day), \
+                    mock.patch.object(daemon, "_run_job", lambda job, d, st, now=None: ran.append((job, d))):
+                daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
+                                  token_fresh=lambda: False, send_reminder=lambda s, b: None)
+            return ran[:]
+
+        self.assertNotIn(("desk", MON), run_at("10:00"))
+        self.assertIn(("desk", MON), run_at("08:40"))
 
 
 if __name__ == "__main__":
