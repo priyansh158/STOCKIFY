@@ -358,19 +358,21 @@ def _backup_job(day: date, state) -> None:  # noqa: ANN001
         state.mark("backup", day)
 
 
-DESK_MARGIN_NS = 10 * 60 * 1_000_000_000              # the desk job stops this long before the next keep-awake time
+DESK_MARGIN_NS = 10 * 60 * 1_000_000_000              # the desk job stops this long before the next session's preparation
 
 
 def _desk_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
     """The holdings desk's nightly grading and closing views (HD 8, `stockify.desk.nightly`). It stops between
-    holdings DESK_MARGIN_NS before the next session's keep-awake time, so it never delays the recorder; what is left
-    runs on a later pass. No Kite login, a stop at that deadline, or a raised error: tried again, not marked. Holdings
+    holdings DESK_MARGIN_NS before the next session's preparation (the earlier of `refdata` and `day_bundles` in
+    schedule.json), so it never delays the refdata, the day bundles or the recorder; what is left runs on a later pass. No Kite login, a stop at that deadline, or a raised error: tried again, not marked. Holdings
     that failed: tried again every `retry_every_min` until the window's `until`, then given up (marked)."""
     from stockify.daemon import scheduler
     from stockify.desk import nightly
-    deadline = scheduler.plan(scheduler.session_day(now_ns)).keep_awake_ns - DESK_MARGIN_NS
+    nxt = scheduler.plan(scheduler.session_day(now_ns))
+    deadline = min(nxt.refdata_ns, nxt.day_bundles_ns) - DESK_MARGIN_NS
     try:
-        res = nightly.run(day, deadline_ns=deadline)
+        started = timeutil.now_ns()                   # the daemon clock's `now_ns`, moved on by the time spent since
+        res = nightly.run(day, deadline_ns=deadline, now=lambda: now_ns + (timeutil.now_ns() - started))
     except Exception:  # noqa: BLE001 — the desk never costs the daemon anything
         log.exception("the desk job for %s raised; it will be tried again", day)
         return

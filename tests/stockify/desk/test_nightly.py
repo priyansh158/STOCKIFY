@@ -327,14 +327,39 @@ class LoginAndDeadlineTests(NightlyBase):
         with mock.patch.object(nightly, "run", side_effect=run):
             daemon._run_job("desk", DAY, scheduler.State(), timeutil.ist_ns(DAY, "20:10"))
         nxt = scheduler.plan(scheduler.session_day(timeutil.ist_ns(DAY, "20:10")))
-        self.assertEqual(seen["deadline_ns"], nxt.keep_awake_ns - daemon.DESK_MARGIN_NS)
-        self.assertLess(seen["deadline_ns"], nxt.subscribe_ns)
+        prep = min(nxt.refdata_ns, nxt.day_bundles_ns)            # the next session's preparation (08:30 IST)
+        self.assertEqual(seen["deadline_ns"], prep - daemon.DESK_MARGIN_NS)
+        self.assertEqual(daemon.DESK_MARGIN_NS, 10 * 60 * 1_000_000_000)
+
+    def test_the_deadline_follows_the_schedule_not_a_fixed_time(self):
+        from stockify import daemon
+        from stockify.config import loader
+        seen = {}
+        cfg = loader.load_json("schedule.json")
+        cfg = {**cfg, "jobs": {**cfg["jobs"], "refdata": "07:40", "day_bundles": "07:50"}}
+
+        def run(day, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen.update(kw)
+            return {"holdings": 0, "analysed": 0, "skipped": [], "failed": [], "complete": True, "logged_in": True}
+        with mock.patch.object(scheduler, "schedule", return_value=cfg),                 mock.patch.object(nightly, "run", side_effect=run):
+            daemon._run_job("desk", DAY, scheduler.State(), timeutil.ist_ns(DAY, "20:10"))
+        nxt = scheduler.session_day(timeutil.ist_ns(DAY, "20:10"))
+        self.assertEqual(seen["deadline_ns"], timeutil.ist_ns(nxt, "07:30"))
 
     def test_a_passed_deadline_leaves_the_rest_for_later(self):
         res = self.run_job(deadline_ns=1, now=lambda: 2)
         self.assertFalse(res["complete"])
         self.assertEqual(res["analysed"], 0)
         self.assertEqual(desk_store.latest_views(), [])
+
+    def test_a_passed_deadline_asks_nothing_of_kite(self):
+        """A pass after the deadline (say 08:40, before the session) returns at once: no holdings call, no bars."""
+        with mock.patch.object(portfolio_sync, "fetch_snapshot") as snap:
+            res = nightly.run(DAY, client=object(), deadline_ns=1, now=lambda: 2)
+        snap.assert_not_called()
+        self.assertEqual(self.fetches, [])
+        self.assertFalse(res["complete"])
+        self.assertTrue(res["logged_in"])
 
 
 if __name__ == "__main__":

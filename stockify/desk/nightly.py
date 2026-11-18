@@ -16,8 +16,8 @@ equities and ETFs with at least a year of daily bars, and for each one:
 
 The others are listed with a reason: "BSE only", "not an NSE stock (e.g. SGB)", "less than a year of daily prices".
 No Kite login: one log line and `logged_in` False, so the daemon tries again later. One holding's trouble is
-logged and listed under `failed`; the others carry on. `deadline_ns` (checked between holdings) stops the run
-before the next session; what is left is not `complete`, and runs on a later pass.
+logged and listed under `failed`; the others carry on. `deadline_ns` (checked before the holdings call and between
+holdings) stops the run before the next session's preparation; what is left is not `complete`, and runs on a later pass.
 
 Money paise, time UTC epoch ns; Kite's float rupees never enter (the holding's prices are not used).
 """
@@ -177,6 +177,9 @@ def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN0
     failed [{symbol, error}], complete, logged_in}; `complete` when every holding was analysed or skipped."""
     now = now or timeutil.now_ns
     out: dict = {"holdings": 0, "analysed": 0, "skipped": [], "failed": [], "complete": False, "logged_in": True}
+    if deadline_ns is not None and now() >= deadline_ns:            # past it: not even the holdings call
+        log.info("desk for %s: too close to the next session; runs later", day)
+        return out
     snap = portfolio_sync.fetch_snapshot()
     if snap.error:
         log.info("desk for %s: no holdings from Kite (%s); tried again later", day, snap.error)
