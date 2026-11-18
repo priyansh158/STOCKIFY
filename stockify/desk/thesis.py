@@ -75,7 +75,7 @@ def decide(signals: list[Signal], grades: dict[str, str], price_paise: int, atr_
     pct = round(share * 100)
     if share >= EXIT_SHARE and strong_out:
         label = "Exit"
-        reasons = [f"Rules carrying {pct}% of the weight say to be out of this stock.",
+        reasons = [f"Rules carrying {pct}% of the weight say to get out of this stock.",
                    "At least one of them has a real record on this stock."]
     elif share >= TRIM_SHARE:
         label = "Trim"

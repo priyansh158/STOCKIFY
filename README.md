@@ -24,7 +24,13 @@ It runs on Windows, on one machine, for one person. Money is in rupees, stored a
 
 **Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
 
-Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch.
+Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for stocks you hold: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit.
+
+**Holdings desk.** Open a stock on the Portfolio page and you get a page for that holding: a chart that keeps moving through the session, one suggestion (Hold, Tighten stop, Trim or Exit), the rules behind it, the stock's option chain if it has one, and a few option ideas priced from that chain with their cost, largest loss, largest gain, breakeven and margin. The desk suggests and never orders. Nothing on it can place a trade, and it only reads your holdings through Kite's read-only calls.
+
+How a suggestion is made: every night after the close the desk tests the swing rules on that stock's daily prices, with the lab's realistic costs, year by year against simply holding. Each rule gets a record on that stock (strong, some, weak or none), and during the day the rules vote, weighted by their record. The page shows the votes, the price levels that would change the suggestion, and the table that turns votes into a word. The tests stop on 31 July 2026, the day before the months the research page keeps in reserve, so the desk never looks at them to grade a rule; today's vote does use every price up to now, because it is not a test. The chain is polled about once a minute while the app is running in the session; with the app off the page shows the last snapshot and its time.
+
+Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion. Only the quantity is used, to check whether you hold at least one lot for an option idea.
 
 ## Writing your own strategy
 
@@ -279,6 +285,7 @@ web/             Next.js 16 desktop UI (types mirrored in web/src/lib/types.ts; 
 stockify/        the Python package and CLI (python -m stockify)
   config/        dated market rules (charges, sessions, contract rules, freeze limits, margin, calendar)
   data/          instruments, NSE files, the margin-file archive, bar cache, ticks, compaction, packs, quality
+  desk/          the holdings desk: nightly grading, replay of each rule, the verdict, the option chain and ideas
   daemon/        recorder, scheduler, paper sessions, journals, keep-awake, replay ticker, notifications
   oracle/        the reference Python backtester
   fno/           Black-76, rolls, the SPAN file reader, exact SPAN, the margin steps, calibration

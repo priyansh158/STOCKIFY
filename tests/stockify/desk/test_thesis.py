@@ -41,6 +41,7 @@ class VerdictTests(unittest.TestCase):
         v = thesis.decide(sigs, grades, PRICE, ATR)
         self.assertEqual(v.label, "Exit")
         self.assertAlmostEqual(v.exit_share, 5 / 6)
+        self.assertEqual(v.reasons[0], "Rules carrying 83% of the weight say to get out of this stock.")
         self.assertEqual(v.counts, "2 of 3 tested rules say exit; the 1 with the best record on this stock "
                                    "is among them")
 

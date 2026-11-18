@@ -306,14 +306,14 @@ def ideas(verdict: Verdict, snap: dict, gauge: dict, spot_paise: int, lot: int, 
         legs = [_Leg("BUY", "PE", atm, rows), _Leg("SELL", "PE", low_k, rows)]
         build("Bear put spread", legs, 1,
               lambda p: (p, atm - low_k - p, [atm - p]),
-              f"The tested rules say to be out of this stock. Buying the {_rupees(atm)} put and selling one "
+              f"The tested rules say to get out of this stock. Buying the {_rupees(atm)} put and selling one "
               f"{low_src}{'' if low_k is None else ' (' + _rupees(low_k) + ')'} gains if the stock falls, for less "
               f"than a put alone, until {exp_txt}; {lot_txt}.",
               "The most it can make is capped at the lower strike, and you lose what you paid if the stock does "
               "not fall.", False)
         build("Long put", [_Leg("BUY", "PE", atm, rows)], 1,
               lambda p: (p, atm - p, [atm - p]),
-              f"The tested rules say to be out of this stock. Buying the {_rupees(atm)} put gains if the stock "
+              f"The tested rules say to get out of this stock. Buying the {_rupees(atm)} put gains if the stock "
               f"falls below the breakeven by {exp_txt}; {lot_txt}.",
               "You lose the whole price of the put if the stock is not below the breakeven at expiry.", False)
     elif up_ok:
