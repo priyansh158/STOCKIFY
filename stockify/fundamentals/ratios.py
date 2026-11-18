@@ -5,7 +5,8 @@ Every figure is the company's one basis on the day (pit.basis_on). Amounts are i
 
 - **P/E** = market cap ÷ TTM profit to owners (four consecutive filed quarters, pit.ttm). A TTM profit of zero or
   less gives no P/E and the flag "loss-making".
-- **P/B** = market cap ÷ total equity of the balance-sheet row (below); None when equity ≤ 0.
+- **P/B** = market cap ÷ total equity of the balance-sheet row (below); None when equity ≤ 0, with the flag
+  "negative equity".
 - **Balance-sheet row** (ruling R6): the newest quarter row known on the day that carries total equity (a Sep or Mar
   quarter). Debt to equity reads its borrowings from that same row.
 - **ROE** = TTM profit to owners ÷ the mean of the total equity of the last two balance-sheet rows (just the one when
@@ -17,8 +18,9 @@ Every figure is the company's one basis on the day (pit.basis_on). Amounts are i
 - **Profit growth** = the newest quarter's profit to owners ÷ the same quarter a year earlier − 1; None when that
   earlier profit is ≤ 0 (growth from a loss means nothing) or either quarter is missing.
 - **Financials** (Industry "Financial Services"): **NII growth** = (interest earned − interest expended) of the newest
-  quarter ÷ the same of the quarter a year earlier − 1 (None when the earlier NII is ≤ 0); debt to equity, operating
-  margin and profit growth are not used (None).
+  quarter ÷ the same of the quarter a year earlier − 1 (None when the earlier NII is ≤ 0); debt to equity and
+  operating margin are None. Profit growth is computed (shown, and read for the falling-profit warning) but the
+  screen does not place financials on it.
 - **Market cap** is pit.market_cap: None when the stock has no close in the 6 trading days to the day or its share
   count is held after a fall no split explains; then there is no P/E or P/B, and the flag "no market value".
 
@@ -69,7 +71,8 @@ def _profit(q: dict | None) -> int | None:
 
 
 def detail(symbol: str, day: date, *, sector: str | None = None) -> dict:
-    """{"ratios": {KEYS: float | None}, "flags": ["loss-making", "no market value"], "financial": bool,
+    """{"ratios": {KEYS: float | None}, "flags": ["no market value", "loss-making", "negative equity"],
+    "financial": bool,
     "newest_quarter": ISO period end | None, "debt_equity_year_ago": float | None}. `sector` defaults to
     universe.sector_of(symbol)."""
     if sector is None:
@@ -93,6 +96,8 @@ def detail(symbol: str, day: date, *, sector: str | None = None) -> dict:
     sheet = sheets[0] if sheets else None
     equity = None if sheet is None else sheet["fields"]["total_equity"]
     out["pb"] = _ratio(mcap, equity)
+    if equity is not None and equity <= 0:
+        flags.append("negative equity")
     if sheets:
         last_two = [q["fields"]["total_equity"] for q in sheets[:2]]
         mean_equity = sum(last_two) / len(last_two)
@@ -100,6 +105,8 @@ def detail(symbol: str, day: date, *, sector: str | None = None) -> dict:
             out["roe"] = profit / mean_equity
 
     year_ago_de = None
+    if newest is not None:
+        out["profit_growth"] = _growth(_profit(newest), _profit(_quarter_back(quarters, newest["period_end"], 4)))
     if financial:
         if newest is not None:
             out["nii_growth"] = _growth(_nii(newest), _nii(_quarter_back(quarters, newest["period_end"], 4)))
@@ -114,8 +121,6 @@ def detail(symbol: str, day: date, *, sector: str | None = None) -> dict:
             op = (ttms["total_income"] - ttms["other_income"] - ttms["total_expenses"] + ttms["finance_costs"]
                   + ttms["depreciation"])
             out["op_margin"] = _ratio(op, ttms["revenue_ops"])
-        if newest is not None:
-            out["profit_growth"] = _growth(_profit(newest), _profit(_quarter_back(quarters, newest["period_end"], 4)))
 
     return {"ratios": out, "flags": flags, "financial": financial,
             "newest_quarter": None if newest is None else newest["period_end"],

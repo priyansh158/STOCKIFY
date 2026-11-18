@@ -47,7 +47,7 @@ class RatioTests(ScreenCase):
         self.assertAlmostEqual(r["nii_growth"], 0.2)
         self.assertIsNone(r["debt_equity"])
         self.assertIsNone(r["op_margin"])
-        self.assertIsNone(r["profit_growth"])
+        self.assertAlmostEqual(r["profit_growth"], 0.25)            # shown, not placed on (M2)
         self.assertAlmostEqual(r["pe"], 50.0)
         self.assertAlmostEqual(r["roe"], 0.2)
 

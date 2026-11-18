@@ -47,11 +47,13 @@ class ScreenCase(SandboxedDBTest):
     def company(self, symbol: str, industry: str, *, price: int | None = 50000, profit: int = 250,
                 prior: int = 200, equity: int = 6000, equity_prev: int = 4000, debt: int | None = 1500,
                 debt_prev: int | None = None, revenue: int = 1000, op: int = 300, newest: str = "2025-09-30",
-                financial: bool = False, nii: int = 300, nii_prior: int = 250, listed: bool = True) -> None:
+                financial: bool = False, nii: int = 300, nii_prior: int = 250, listed: bool = True,
+                omit: tuple[str, ...] = ()) -> None:
         """Five quarters to `newest` (amounts in ₹ crore): profit each quarter, `prior` in the quarter a year before
         the newest; the balance sheet on the Sep / Mar rows (equity on the newest, equity_prev on the two before);
         debt split 40 / 60 into current and non-current. A financial files interest earned and expended instead of
-        revenue and borrowings. `price` (paise) is the close on DAY and on the newest period end; None: no close."""
+        revenue and borrowings. `price` (paise) is the close on DAY and on the newest period end; None: no close.
+        `omit`: fields left out of every filing."""
         ends = [pit.shift_quarter(date.fromisoformat(newest), -k).isoformat() for k in range(4, -1, -1)]
         iid = len(self.universe) + 1
         for k, end in enumerate(ends):
@@ -70,7 +72,7 @@ class ScreenCase(SandboxedDBTest):
                 if d is not None and not financial:
                     f["borrowings_current"] = d * 40 // 100 * CR
                     f["borrowings_noncurrent"] = (d - d * 40 // 100) * CR
-            self.put(symbol, end, f)
+            self.put(symbol, end, {k: v for k, v in f.items() if k not in omit})
         if listed:
             refdata._connect().execute(
                 "INSERT INTO instruments (instrument_id, exchange, kind, tradingsymbol, first_seen, last_seen, "
