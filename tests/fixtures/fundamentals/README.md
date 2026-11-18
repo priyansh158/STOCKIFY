@@ -61,3 +61,15 @@ https://www.nseindia.com/api/integrated-filing-results?index=equities&symbol=<SY
 | `xbrl_HDFCBANK_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_BANKING_1740913_17102026054812_WEB.xml | 80,749 bytes; integrated filing (IFBanking V2.1), quarter ended 30-Sep-2026, consolidated | 41840bebf50eacb915fe9ddd2d7cd2bace3d6fffdaa0898a482bd56ddd94aa3b |
 | `xbrl_BAJFINANCE_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_NBFC_INDAS_1742040_19102026075918_WEB.xml | 57,385 bytes; integrated filing (IFNBFC V2.1), quarter ended 30-Sep-2026, consolidated | 3de881019f229f5fde8d2aa113ea1c71304f5225ebe6a4d192b5f4a65f54ea34 |
 | `xbrl_RELIANCE_2024-12-31_standalone_broken.xml` | (made here) | a copy of the standalone file with the quarter's ProfitBeforeTax raised from 115970000000.00 to 125970000000.00 (₹1,000 crore), so profit after tax no longer equals profit before tax minus tax | 0fe2abb77764a53cdd9c001b292609456f5ae7f2d51c48c942699202d5d1e2ac |
+## Event calendar (FS 7)
+
+Fetched on 2026-11-17 (IST) the same way, after a warm-up GET of
+https://www.nseindia.com/companies-listing/corporate-filings-event-calendar (200).
+
+| file | URL | answer | sha256 |
+|------|-----|--------|--------|
+| `event_calendar_2026-11-17.json` | https://www.nseindia.com/api/event-calendar?index=equities&from_date=17-11-2026&to_date=15-12-2026 | 200, JSON list of 21 items, keys `symbol`, `company`, `purpose`, `bm_desc`, `date` ("19-Nov-2026"); dates 17-Nov to 05-Dec | 5ff00b3a11a191ac36d5835e8f509322a4f98902c3c899c74cac7cc739d52a44 |
+
+Without the range parameters the same endpoint answered 13 items (the next few days only), so the range is needed.
+Purposes seen: "Financial Results", "Financial Results/Other business matters", "Other business matters",
+"Fund Raising", "Buyback", "Bonus/Other business matters".
