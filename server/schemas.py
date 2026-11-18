@@ -1127,6 +1127,7 @@ class CandidateDetailDTO(BaseModel):
     sector: str | None = None
     peer_group: str | None = None           # "Industry: Capital Goods"; None when the stock is not on the list
     left_out_reason: str | None = None      # why the stock is not on the list; None when it is
+    listed: bool                            # on the page's list (rulings R15, R15a); False for a placed stock left off
     reasons: list[str]
     ratios: list[RatioDTO]
     series: list[SeriesDTO]

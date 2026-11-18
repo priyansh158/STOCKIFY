@@ -66,7 +66,7 @@ stockify fundamentals status          # read-only: coverage against the 90 % / 8
 stockify fundamentals reparse --all-held   # held filings read again by the next run (or --symbol S), e.g. after a taxonomy.json addition
 ```
 
-The backfill, refresh and test-record commands refuse to start while the recorder's session is running, so run them after the close; a backfill still going when the session begins stops there and resumes next time. Only one fundamentals run (the daemon's or a command's) goes at a time: a command started while another runs says so and stops.
+The backfill, refresh and test-record commands refuse to start while the recorder's session is running, so run them after the close; a backfill still going when the session begins stops at the next batch and resumes next time. Only one fundamentals run (the daemon's or a command's) goes at a time: a command started while another runs says so and stops.
 
 ## Writing your own strategy
 

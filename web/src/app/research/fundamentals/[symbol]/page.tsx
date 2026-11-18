@@ -99,7 +99,7 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
       </div>
 
       <section className="stk-section" aria-labelledby="fund-why">
-        <h2 id="fund-why">{left ? "Why it is not on the list" : "Why it is on the list"}</h2>
+        <h2 id="fund-why">{left ? "Why it is not on the list" : d.listed ? "Why it is on the list" : "What the figures show"}</h2>
         {why.length === 0 ? (
           <Empty>No reasons were given for this stock.</Empty>
         ) : (

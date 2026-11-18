@@ -185,6 +185,7 @@ def fundamentals_detail(symbol: str) -> CandidateDetailDTO:
         points = series.peer_series(sym, day, financial=financial, peers=[])
     shown = sorted(filings.for_symbol(sym), key=lambda f: (f["period_end"], f["broadcast_ns"] or 0), reverse=True)
     return CandidateDetailDTO(symbol=sym, company=_company(sym, used, latest), sector=sector, peer_group=peer_group,
-                              left_out_reason=reason, reasons=reasons, ratios=table,
+                              left_out_reason=reason, listed=any(r["symbol"] == sym for r in _shown(rows)),
+                              reasons=reasons, ratios=table,
                               series=[SeriesDTO(**s) for s in points], filings=[_filing(f) for f in shown],
                               as_of=day_iso)

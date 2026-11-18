@@ -1083,6 +1083,7 @@ export interface CandidateDetailDTO {
   sector?: string | null;
   peer_group?: string | null;
   left_out_reason?: string | null;
+  listed: boolean;
   reasons: string[];
   ratios: RatioDTO[];
   series: SeriesDTO[];

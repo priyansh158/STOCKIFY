@@ -141,7 +141,11 @@ class ShortListTests(FundamentalsApiBase):
         self.assertEqual(body["not_listed_count"], len(rows) - 3)
         self.assertEqual(body["held_count"], 1)
         last = rows[-1]["symbol"]                                # below the cut: still has its details page
-        detail = self.get(f"/api/fundamentals/{last}")
+        with mock.patch.object(router, "_top_kept", return_value=3):
+            detail = self.get(f"/api/fundamentals/{last}")
+            first = self.get(f"/api/fundamentals/{rows[0]['symbol']}")
+        self.assertFalse(detail["listed"])                       # left off: the page heads it "What the figures show"
+        self.assertTrue(first["listed"])
         self.assertIsNone(detail["left_out_reason"])
         self.assertTrue(detail["reasons"])
 
@@ -176,6 +180,7 @@ class ShortListTests(FundamentalsApiBase):
         self.assertEqual([i["position"] for i in body["items"]], list(range(1, len(rows) - 1)))
         self.assertEqual(body["not_listed_count"], 2)
         loss = self.get("/api/fundamentals/LOSS")
+        self.assertFalse(loss["listed"])
         self.assertIsNone(loss["left_out_reason"])
         self.assertTrue(loss["reasons"][0].startswith("Loss-making"), loss["reasons"])
         self.assertTrue(loss["ratios"])
@@ -193,6 +198,7 @@ class DetailTests(FundamentalsApiBase):
         self.assertEqual((body["symbol"], body["company"], body["sector"]), ("BBB", "BBB Ltd.", "Capital Goods"))
         self.assertEqual(body["peer_group"], "Industry: Capital Goods")
         self.assertIsNone(body["left_out_reason"])
+        self.assertTrue(body["listed"])
         self.assertEqual(body["reasons"], row["reasons"])
         self.assertEqual(body["as_of"], DAY.isoformat())
         ratios = {r["key"]: r for r in body["ratios"]}
@@ -234,6 +240,7 @@ class DetailTests(FundamentalsApiBase):
         self.assertEqual(body["left_out_reason"], "its results could not be read (held back: the figures do not add "
                                                   "up: total income differs from its parts)")
         self.assertIsNone(body["peer_group"])
+        self.assertFalse(body["listed"])
         self.assertEqual(body["reasons"], [])                    # the reason is said once, in left_out_reason
         self.assertEqual(body["series"], [])
         self.assertEqual([(f["status"], f["reason"]) for f in body["filings"]],
