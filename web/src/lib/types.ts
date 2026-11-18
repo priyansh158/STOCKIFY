@@ -1017,4 +1017,84 @@ export interface DeskViewDTO {
   close_date?: string | null;
   plain: string;
 }
+
+// Fundamentals screener (FS 9): the ordered list, one stock's details, the test record. No score, rank or place
+// field anywhere: the list's order is the judgement (owner, 2026-11-17).
+export interface ResultsDateDTO {
+  symbol: string;
+  company: string;
+  date: string;
+  period_hint: string;
+}
+
+export interface CandidateDTO {
+  position: number;
+  symbol: string;
+  company: string;
+  sector?: string | null;
+  short_reason: string;
+}
+
+export interface FundamentalsListDTO {
+  as_of?: string | null;
+  upcoming: ResultsDateDTO[];
+  items: CandidateDTO[];
+  held_count: number;
+  test_record_id?: string | null;
+  notes: string[];
+}
+
+export interface RatioDTO {
+  key: string;
+  label: string;
+  value?: number | null;
+  sector_median?: number | null;
+  unit: "times" | "fraction";
+}
+
+export interface SeriesPointDTO {
+  period_end: string;
+  value?: number | null;
+  sector_median?: number | null;
+}
+
+export interface SeriesDTO {
+  key: string;
+  label: string;
+  unit: "paise" | "times" | "fraction";
+  points: SeriesPointDTO[];
+}
+
+export interface FilingDTO {
+  period_end: string;
+  period_kind: string;
+  basis: string;
+  broadcast_ist?: string | null;
+  xbrl_url?: string | null;
+  status: string;
+  reason?: string | null;
+}
+
+export interface CandidateDetailDTO {
+  symbol: string;
+  company: string;
+  sector?: string | null;
+  peer_group?: string | null;
+  left_out_reason?: string | null;
+  reasons: string[];
+  ratios: RatioDTO[];
+  series: SeriesDTO[];
+  filings: FilingDTO[];
+  as_of?: string | null;
+}
+
+export interface FundamentalsTestRecordDTO {
+  available: boolean;
+  message?: string | null;
+  job_id?: string | null;
+  summary?: WalkforwardSummaryDTO | null;
+  plain?: Record<string, string> | null;
+  benchmark?: string | null;
+  notes: string[];
+}
 // </block>

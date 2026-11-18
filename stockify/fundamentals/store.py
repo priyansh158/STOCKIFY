@@ -91,3 +91,12 @@ def universe_on(as_of: str, *, liquid_only: bool = False) -> list[dict]:
     """The universe read on `as_of`, by symbol."""
     sql = "SELECT * FROM universe WHERE as_of = ?" + (" AND liquid = 1" if liquid_only else "") + " ORDER BY symbol"
     return [dict(r) for r in _connect().execute(sql, (str(as_of),)).fetchall()]
+
+
+# ── the test record ──────────────────────────────────────────────────────────
+
+def latest_test_record() -> dict | None:
+    """The newest stored test record of the screen (FS 6: the walk-forward of the fundamentals basket), as
+    {"job_id": the walk-forward research job id, "benchmark": the benchmark's label (optional)}, or None while none
+    has been stored. FS 6 stores it; until then there is none."""
+    return None
