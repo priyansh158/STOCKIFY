@@ -907,7 +907,7 @@ export interface SessionChartDTO extends RunChartDTO {
 }
 
 // Jobs the web app starts (D-145): a sweep, a walk-forward, a cost check, an NSE download, a quality report.
-export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report" | "geo";
+export type WebJobKind = "sweep" | "walkforward" | "sensitivity" | "backfill" | "report" | "geo" | "fundamentals";
 export type WebJobStatus = "running" | "done" | "failed" | "interrupted" | "cancelled";
 export type Objective = "sharpe" | "sortino" | "calmar" | "cagr" | "net_pnl";
 export type AxisValue = string | number | boolean | null;

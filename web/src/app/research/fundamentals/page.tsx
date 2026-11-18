@@ -11,6 +11,7 @@ import { jobHref } from "@/lib/research";
 import type { FundamentalsListDTO } from "@/lib/types";
 import { Empty, PageHead, Panel } from "@/components/ui";
 import CandidateList from "./CandidateList";
+import StartDownload from "./StartDownload";
 import UpcomingResults from "./UpcomingResults";
 
 export const metadata: Metadata = { title: "Fundamentals - STOCKIFY" };
@@ -65,12 +66,13 @@ function Loaded({ list }: { list: FundamentalsListDTO }) {
           {list.as_of && <span className="stk-label">As of the close on {dayWords(list.as_of)}</span>}
         </div>
         {firstRun ? (
-          <Empty>
-            The first download of company results hasn&apos;t run yet. Run{" "}
-            <code className="stk-mono">python -m stockify fundamentals backfill</code> once: it reads every quarterly
-            result filed with NSE since April 2021, about one request a second, so it takes a few hours. After that the
-            daemon brings it up to date each evening after the close, and the list appears here.
-          </Empty>
+          <div className="stk-empty stk-stack-s">
+            <p>
+              The first download of company results hasn&apos;t run yet. After it, the daemon brings the list up to date
+              each evening after the close, and the list appears here.
+            </p>
+            <StartDownload />
+          </div>
         ) : list.items.length === 0 ? (
           <Empty>
             No stock is on the list for {dayWords(list.as_of)}: none had enough recent results and a price to compare. The

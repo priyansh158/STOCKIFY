@@ -954,7 +954,7 @@ class WebJobDTO(BaseModel):
     runs, or files for a download (None when not known); `plain` is the one sentence the page shows; `error` is a plain
     reason, never exception text."""
     job_id: str
-    kind: Literal["sweep", "walkforward", "sensitivity", "backfill", "report", "geo"]
+    kind: Literal["sweep", "walkforward", "sensitivity", "backfill", "report", "geo", "fundamentals"]
     status: Literal["running", "done", "failed", "interrupted", "cancelled"]
     target: str
     done: int | None = None

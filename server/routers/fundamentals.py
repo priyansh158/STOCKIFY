@@ -31,6 +31,7 @@ from server.schemas import (
     RatioDTO,
     ResultsDateDTO,
     SeriesDTO,
+    WebJobDTO,
 )
 from stockify import timeutil
 from stockify.fundamentals import calendar, filings, ratios, screen, series, store
@@ -116,6 +117,79 @@ def fundamentals_list() -> FundamentalsListDTO:
     return FundamentalsListDTO(as_of=day, upcoming=upcoming, items=items, held_count=held,
                                not_listed_count=len(rows) - len(shown),
                                test_record_id=_record()[0], notes=list(NOTES))
+
+
+# ── POST /api/fundamentals/backfill: the first download, as a web job ───────
+
+IN_SESSION = ("The recorder's session is in progress. The download reads NSE for a few hours, so it waits for the "
+              "close: start it after the session ends.")
+RUN_BUSY = ("Another fundamentals run is in progress (the evening update or an earlier download). Start this when "
+            "it has finished.")
+_STOPPED = {
+    "session": "Stopped because the recorder's session began. Nothing is lost: start it again after the close and "
+               "it carries on where it stopped.",
+    "blocked": "NSE refused the requests. Nothing is lost: start it again later and it carries on where it stopped.",
+    "no universe": "The list of companies could not be read from NSE yet (it needs about three months of NSE's "
+                   "daily price files). Try again later.",
+    "no progress": "NSE's archive kept failing on the same files. The rest are kept: start it again later.",
+}
+_PROGRESS = re.compile(r"^\[(\d+)/(\d+)\] ")
+
+
+def _in_session() -> bool:
+    from stockify.daemon import scheduler
+    return scheduler.session_in_progress(now_ns())
+
+
+def backfill_sentence(res: dict) -> str:
+    files = (res.get("download") or {}).get("downloaded", 0)
+    listed, saved = res.get("listed", 0), res.get("saved")
+    tail = f" The list has {saved} stocks." if saved is not None else ""
+    return (f"Finished: the filings of {listed} {'company' if listed == 1 else 'companies'} read and {files} "
+            f"result {'file' if files == 1 else 'files'} downloaded.{tail}")
+
+
+@router.post("/backfill", response_model=WebJobDTO, status_code=202)
+def start_backfill() -> WebJobDTO:
+    """`stockify fundamentals backfill` as a web job: every universe company's results filings since filings_from,
+    their XBRL figures and today's list, about one NSE request a second (resumable). 409 during the recorder's
+    session, while another fundamentals run holds the run lock, or while this download runs. Nothing is taken from
+    the client. It asks the session again before each company and file batch, and the Stop button ends it there."""
+    from server.routers.jobs import _dto_of_web
+    from server.services import web_jobs
+    from server.services.web_jobs import JobRefused, WebJob
+    from stockify.fundamentals import job as fjob
+    from stockify.research import pool
+    if _in_session():
+        raise HTTPException(status_code=409, detail=IN_SESSION)
+    try:
+        with fjob.hold():                       # the daemon's job or a command holds it: say so now, not later
+            pass
+    except fjob.Busy:
+        raise HTTPException(status_code=409, detail=RUN_BUSY) from None
+
+    def work(j: WebJob) -> None:
+        def progress(line: str) -> None:
+            m = _PROGRESS.match(line)
+            if m:
+                j.done, j.total = int(m.group(1)), int(m.group(2))
+            log.info("fundamentals download: %s", line)
+        try:
+            res = fjob.backfill(progress=progress, in_session=lambda: j.cancel.is_set() or _in_session())
+        except fjob.Busy:
+            raise web_jobs.PlainFailure(RUN_BUSY) from None
+        if j.cancel.is_set():
+            raise pool.Cancelled()
+        if res.get("stopped") is not None:
+            raise web_jobs.PlainFailure(_STOPPED.get(res["stopped"], "The download stopped before it finished. "
+                                                     "Start it again; it carries on where it stopped."))
+        j.result = backfill_sentence(res)
+
+    try:
+        job = web_jobs.get_jobs().start("fundamentals", "backfill", work)
+    except JobRefused as e:
+        raise HTTPException(status_code=e.status, detail=e.message) from None
+    return _dto_of_web(job)
 
 
 # ── GET /api/fundamentals/test-record (before /{symbol}, which would take it) ─

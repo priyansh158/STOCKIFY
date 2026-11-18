@@ -60,6 +60,7 @@ class NoTerminalCommandsInTheUi(unittest.TestCase):
             "web/src/app/research/sweeps/[id]/WalkforwardPanel.tsx": "startWalkforward",
             "web/src/app/tests/[id]/ResearchPanel.tsx": "startSensitivity",
             "web/src/app/data/DataActions.tsx": "startBackfill",
+            "web/src/app/research/fundamentals/StartDownload.tsx": "startFundamentalsBackfill",
         }
         for rel, call in wanted.items():
             with self.subTest(rel=rel):

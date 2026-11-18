@@ -1,5 +1,5 @@
 """Jobs the web app starts for the owner (D-145): a parameter sweep, a walk-forward, a sensitivity check, an NSE
-download and a data-quality report.
+download, a data-quality report, a news check and the fundamentals screener's first download (its backfill).
 
 Each runs in a thread of the API process and calls the same Python functions the command line calls (run_sweep,
 run_windows + finish + render, run_suite, nse_files.backfill, quality.report): no shell, no command string. The heavy
@@ -26,7 +26,7 @@ from typing import Any, Callable
 log = logging.getLogger(__name__)
 
 RESEARCH_KINDS = ("sweep", "walkforward", "sensitivity")
-DATA_KINDS = ("backfill", "report", "geo")
+DATA_KINDS = ("backfill", "report", "geo", "fundamentals")
 KINDS = RESEARCH_KINDS + DATA_KINDS
 INTERRUPTED = "interrupted: the API restarted"
 _ID_WAIT_S = 30.0                      # how long a request waits for a research job to get its id
@@ -209,6 +209,7 @@ _SAME = {
     "backfill": "A download of these days is already running. Its progress is on this page.",
     "report": "The quality report of this day is already being made.",
     "geo": "A news check is already running. Its progress is on this page.",
+    "fundamentals": "The download of company results is already running. Its progress is on this page.",
 }
 _OUTSIDE = ("A sweep, walk-forward or cost check started outside the app (from a terminal) is still running. Wait for "
             "it to finish, or stop it where it was started.")
@@ -218,6 +219,7 @@ _BUSY = {
     "backfill": "Another download from NSE is still running. Wait for it to finish.",
     "report": "Another quality report is still being made. Wait for it to finish.",
     "geo": "A news check is already running. Wait for it to finish.",
+    "fundamentals": "The download of company results is already running. Wait for it to finish.",
 }
 
 
@@ -346,14 +348,16 @@ def progress_words(kind: str, status: str, done: int | None, total: int | None, 
     if status == "done":
         return result or {"sweep": "Finished.", "walkforward": "Finished.", "sensitivity": "Finished.",
                           "backfill": "Finished.", "report": "The quality report is ready.",
-                          "geo": "The news check is finished."}[kind]
+                          "geo": "The news check is finished.",
+                          "fundamentals": "The download of company results is finished."}[kind]
     if total is not None and done is not None:
         unit = {"sweep": ("try", "tries"), "walkforward": ("run", "runs"), "sensitivity": ("check", "checks"),
-                "backfill": ("file", "files")}.get(kind)
+                "backfill": ("file", "files"), "fundamentals": ("company", "companies")}.get(kind)
         if unit and total > 0:
-            verb = "Downloading" if kind == "backfill" else "Running"
+            verb = {"backfill": "Downloading", "fundamentals": "Reading results"}.get(kind, "Running")
             return f"{verb}: {done} of {total} {unit[1]} finished…"
-    return {"report": "Making the report…", "geo": "Checking the news…"}.get(kind, "Running…")
+    return {"report": "Making the report…", "geo": "Checking the news…",
+            "fundamentals": "Downloading results from NSE…"}.get(kind, "Running…")
 
 
 def today_ist() -> date:

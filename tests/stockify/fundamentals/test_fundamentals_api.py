@@ -12,6 +12,7 @@ from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 from tests.stockify.fundamentals.screen_support import CR, DAY, ScreenCase
+from tests.support import SandboxedDBTest
 
 from stockify import timeutil
 from stockify.fundamentals import filings, pit, screen, store
@@ -375,6 +376,97 @@ class NoScoreTests(FundamentalsApiBase):
         self.assertTrue(saved)
         self.assertEqual([k for k in _keys([screen.latest()[1], saved]) for bad in FORBIDDEN if bad in k.lower()],
                          [])
+
+
+@support.requires_fastapi
+class BackfillJobTests(SandboxedDBTest):
+    """FS 12.6: "Start the first download" runs the backfill as a web job (no terminal command in the UI)."""
+    db_modules = (store,)
+
+    def setUp(self):
+        super().setUp()
+        import threading
+        from fastapi.testclient import TestClient
+        from server.main import app
+        from server.routers import fundamentals as router
+        from server.services import web_jobs
+        self.router, self.web_jobs, self.threading = router, web_jobs, threading
+        web_jobs.set_jobs(web_jobs.WebJobs())
+        self.addCleanup(web_jobs.set_jobs, None)
+        p = mock.patch.object(router, "_in_session", return_value=False)
+        self.session = p.start()
+        self.addCleanup(p.stop)
+        self.client = TestClient(app, base_url=support.API_BASE_URL)
+
+    def tearDown(self):
+        self.web_jobs.get_jobs().join(10)
+        super().tearDown()
+
+    def wait(self, job_id: str) -> dict:
+        import time
+        end = time.monotonic() + 20
+        while True:
+            j = self.client.get(f"/api/jobs/{job_id}").json()
+            if j["status"] != "running" or time.monotonic() > end:
+                return j
+            time.sleep(0.02)
+
+    def test_a_download_answers_202_and_ends_with_a_plain_sentence(self):
+        from stockify.fundamentals import job as fjob
+        seen = {}
+
+        def fake(*, progress, in_session):  # noqa: ANN001, ANN202
+            seen["asked"] = in_session()
+            progress("[2/3] BETA: 7 filings")
+            return {"listed": 3, "failed": [], "download": {"downloaded": 40}, "saved": 2, "stopped": None}
+        with mock.patch.object(fjob, "backfill", side_effect=fake):
+            r = self.client.post("/api/fundamentals/backfill")
+            self.assertEqual(r.status_code, 202, r.text)
+            body = r.json()
+            self.assertEqual((body["kind"], body["target"]), ("fundamentals", "backfill"))
+            done = self.wait(body["job_id"])
+        self.assertEqual(done["status"], "done")
+        self.assertEqual(done["plain"], "Finished: the filings of 3 companies read and 40 result files downloaded. "
+                                        "The list has 2 stocks.")
+        self.assertEqual(done["total"], 3)                       # counted from the companies read
+        self.assertFalse(seen["asked"])
+
+    def test_refused_during_the_session(self):
+        self.session.return_value = True
+        r = self.client.post("/api/fundamentals/backfill")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("session is in progress", r.json()["detail"])
+
+    def test_refused_while_another_fundamentals_run_holds_the_lock(self):
+        from stockify.fundamentals import job as fjob
+        with fjob.hold():
+            r = self.client.post("/api/fundamentals/backfill")
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("Another fundamentals run", r.json()["detail"])
+
+    def test_a_second_download_while_one_runs_is_refused(self):
+        from stockify.fundamentals import job as fjob
+        release = self.threading.Event()
+
+        def slow(**kw):  # noqa: ANN003, ANN202
+            release.wait(20)
+            return {"listed": 0, "download": {"downloaded": 0}, "saved": 0, "stopped": None}
+        with mock.patch.object(fjob, "backfill", side_effect=slow):
+            first = self.client.post("/api/fundamentals/backfill")
+            self.assertEqual(first.status_code, 202)
+            second = self.client.post("/api/fundamentals/backfill")
+            release.set()
+            self.wait(first.json()["job_id"])
+        self.assertEqual(second.status_code, 409)
+        self.assertIn("already running", second.json()["detail"])
+
+    def test_a_stop_at_the_session_fails_with_plain_words(self):
+        from stockify.fundamentals import job as fjob
+        with mock.patch.object(fjob, "backfill", return_value={"listed": 1, "stopped": "session"}):
+            done = self.wait(self.client.post("/api/fundamentals/backfill").json()["job_id"])
+        self.assertEqual(done["status"], "failed")
+        self.assertIn("the recorder's session began", done["plain"])
+        self.assertNotIn("python", done["plain"].lower())
 
 
 if __name__ == "__main__":
