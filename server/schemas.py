@@ -1061,4 +1061,84 @@ class DeskViewDTO(BaseModel):
     as_of_ns: int
     close_date: str | None = None
     plain: str
+
+# ── Fundamentals screener (FS 9): the ordered list, one stock's details, the test record. No score, rank or place
+#    field anywhere: the list's order is the judgement (owner, 2026-11-17). ──
+
+class ResultsDateDTO(BaseModel):
+    symbol: str
+    company: str
+    date: str                               # IST date of the board meeting, YYYY-MM-DD
+    period_hint: str                        # "Jul–Sep quarter": the period the results most likely cover
+
+
+class CandidateDTO(BaseModel):
+    position: int                           # 1 = first; orders the list, never printed
+    symbol: str
+    company: str
+    sector: str | None = None
+    short_reason: str
+
+
+class FundamentalsListDTO(BaseModel):
+    as_of: str | None = None                # IST date the list was computed for; None before the first run
+    upcoming: list[ResultsDateDTO]
+    items: list[CandidateDTO]
+    held_count: int                         # universe stocks not on the list (no usable results, no price, ...)
+    test_record_id: str | None = None
+    notes: list[str]
+
+
+class RatioDTO(BaseModel):
+    key: str
+    label: str
+    value: float | None = None
+    sector_median: float | None = None
+    unit: Literal["times", "fraction"]      # fraction: 0.153 is 15.3 %
+
+
+class SeriesPointDTO(BaseModel):
+    period_end: str
+    value: int | float | None = None        # int paise for unit "paise"
+    sector_median: int | float | None = None
+
+
+class SeriesDTO(BaseModel):
+    key: str
+    label: str
+    unit: Literal["paise", "times", "fraction"]
+    points: list[SeriesPointDTO]            # oldest quarter first
+
+
+class FilingDTO(BaseModel):
+    period_end: str
+    period_kind: str                        # Q | H | A
+    basis: str                              # consolidated | standalone
+    broadcast_ist: str | None = None        # "2025-11-09 20:00", IST
+    xbrl_url: str | None = None             # an NSE https link, else None
+    status: str                             # listed | downloaded | parsed | held
+    reason: str | None = None
+
+
+class CandidateDetailDTO(BaseModel):
+    symbol: str
+    company: str
+    sector: str | None = None
+    peer_group: str | None = None           # "Industry: Capital Goods"; None when the stock is not on the list
+    left_out_reason: str | None = None      # why the stock is not on the list; None when it is
+    reasons: list[str]
+    ratios: list[RatioDTO]
+    series: list[SeriesDTO]
+    filings: list[FilingDTO]                # newest period first
+    as_of: str | None = None
+
+
+class FundamentalsTestRecordDTO(BaseModel):
+    available: bool
+    message: str | None = None              # why it is not available, in plain words
+    job_id: str | None = None
+    summary: WalkforwardSummaryDTO | None = None
+    plain: dict[str, str] | None = None     # the walk-forward report's plain lines
+    benchmark: str | None = None
+    notes: list[str]
 # </block>

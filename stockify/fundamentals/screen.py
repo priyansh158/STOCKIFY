@@ -75,20 +75,26 @@ def _has(d: dict, k: str) -> bool:
     return d["ratios"][k] is not None or (k in WORST_FLAG and WORST_FLAG[k] in d["flags"])
 
 
+def left_out_reason(d: dict, day: date) -> str | None:
+    """Why the screen leaves a stock out on `day`, from its ratios.detail on that day; None when it is placed."""
+    if d["newest_quarter"] is None:
+        return "no results on record"
+    if (day - date.fromisoformat(d["newest_quarter"])).days > STALE_DAYS:
+        return "results are out of date"
+    if "no market value" in d["flags"]:
+        return NO_PRICE
+    if sum(1 for k in USED[d["financial"]] if _has(d, k)) < NEEDED[d["financial"]]:
+        return "too few figures"
+    return None
+
+
 def _candidates(day: date) -> tuple[list[dict], list[dict]]:
     placed, left_out = [], []
     for u in universe.current():
         sym, sector = u["symbol"], (u["list_industry"] or None)
         d = ratios.detail(sym, day, sector=sector)
-        if d["newest_quarter"] is None:
-            reason = "no results on record"
-        elif (day - date.fromisoformat(d["newest_quarter"])).days > STALE_DAYS:
-            reason = "results are out of date"
-        elif "no market value" in d["flags"]:
-            reason = NO_PRICE
-        elif sum(1 for k in USED[d["financial"]] if _has(d, k)) < NEEDED[d["financial"]]:
-            reason = "too few figures"
-        else:
+        reason = left_out_reason(d, day)
+        if reason is None:
             placed.append({"symbol": sym, "sector": sector, "detail": d, "used": USED[d["financial"]]})
             continue
         left_out.append({"symbol": sym, "reason": reason})
