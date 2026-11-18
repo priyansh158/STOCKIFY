@@ -9,7 +9,8 @@ from tests.stockify.fundamentals.screen_support import DAY, ScreenCase
 
 from stockify.fundamentals import filings, ratios, screen
 
-PUBLIC = {"symbol", "sector", "peer_group", "ratios", "sector_medians", "reasons", "short_reason"}
+PUBLIC = {"symbol", "sector", "peer_group", "ratios", "sector_medians", "reasons", "red_flags",
+          "short_reason"}
 
 
 def five_capital_goods(case: ScreenCase) -> None:
@@ -97,6 +98,10 @@ class OrderTests(ScreenCase):
         self.assertIsNone(neg["ratios"]["roe"])
         self.assertIsNone(neg["ratios"]["debt_equity"])
         self.assertTrue(neg["short_reason"].startswith("Negative equity; "), neg["short_reason"])
+        # Minor 4e: the warning states the fact, not how the order treats it; the row names its red flags.
+        self.assertEqual(neg["reasons"][0], "Negative equity: its liabilities exceed its assets.")
+        self.assertEqual(neg["red_flags"], ["negative equity"])
+        self.assertEqual(rows[names.index("GOOD")]["red_flags"], [])
 
     def test_unpriced_stocks_are_left_out(self):
         # Ruling R9 (b): no market value on the day, no place, however good the other figures.
@@ -207,6 +212,7 @@ class ReasonTests(ScreenCase):
         self.assertTrue(rows["LOSS"]["short_reason"].startswith("Loss-making; "), rows["LOSS"]["short_reason"])
         self.assertLessEqual(len(rows["LOSS"]["short_reason"]), 90)
         self.assertIn("no debt", rows["LOSS"]["short_reason"])             # D/E 0: an absolute word is true
+        self.assertEqual(rows["LOSS"]["red_flags"], ["loss-making"])
 
     def test_relative_words_for_relative_places(self):
         # I3: a power industry where everyone borrows heavily: the lowest D/E (1.5) is less debt than its

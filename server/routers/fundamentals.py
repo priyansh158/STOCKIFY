@@ -1,8 +1,9 @@
 """FS 9: /api/fundamentals, the fundamentals screener. Ideas to research, never orders.
 
 * `GET /api/fundamentals`: the results coming up (today through 28 days), then the newest saved list, best first
-  (`position` orders it; the page does not print it), with how many stocks of the universe it was computed from
-  are not on it. Names and that count use the list's own universe (screen.universe_of), not a newer one.
+  (`position` orders it; the page does not print it): at most its first `top_kept` (fundamentals.json), less any
+  stock with a red-flag warning (ruling R15). `held_count` is how many stocks of the universe it was computed from
+  the screen could not judge, `not_listed_count` how many it judged but the page does not list. Names and that count use the list's own universe (screen.universe_of), not a newer one.
 * `GET /api/fundamentals/test-record`: the walk-forward summary of the screen's test record, or `available: false`.
 * `GET /api/fundamentals/{symbol}`: one stock's figures against its peers' median (table and quarter-by-quarter
   series), the plain reasons, and the filings each figure came from. A listed stock's series and peer medians are
@@ -89,17 +90,30 @@ def _record() -> tuple[str | None, str | None]:
 
 # ── GET /api/fundamentals ────────────────────────────────────────────────────
 
+def _top_kept() -> int:
+    from stockify.fundamentals import history
+    return history.top_kept()
+
+
+def _shown(rows: list[dict]) -> list[dict]:
+    """Ruling R15: the best `top_kept` placed stocks, less any carrying a red-flag warning (loss-making, negative
+    equity). The rest stay on the saved list, so their details page still shows their figures and the warning."""
+    return [r for r in rows[:_top_kept()] if not r.get("red_flags")]
+
+
 @router.get("", response_model=FundamentalsListDTO)
 def fundamentals_list() -> FundamentalsListDTO:
     day, rows = screen.latest()
     used, latest = _universes(day)
     listed = {r["symbol"] for r in rows}
+    shown = _shown(rows)
     items = [CandidateDTO(position=n, symbol=r["symbol"], company=_company(r["symbol"], used, latest),
-                          sector=r["sector"], short_reason=r["short_reason"]) for n, r in enumerate(rows, start=1)]
+                          sector=r["sector"], short_reason=r["short_reason"]) for n, r in enumerate(shown, start=1)]
     upcoming = [ResultsDateDTO(symbol=m["symbol"], company=_company(m["symbol"], latest, used), date=m["meeting_date"],
                                period_hint=m["period_hint"]) for m in calendar.upcoming(_today())]
     held = sum(1 for s, u in used.items() if u["liquid"] and s not in listed)
     return FundamentalsListDTO(as_of=day, upcoming=upcoming, items=items, held_count=held,
+                               not_listed_count=len(rows) - len(shown),
                                test_record_id=_record()[0], notes=list(NOTES))
 
 

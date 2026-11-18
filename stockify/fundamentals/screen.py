@@ -23,7 +23,8 @@
   margins"). An absolute word is used only where it is true outright: "debt-free" / "no debt" (D/E 0), "rising profits"
   (growth > 0). A stock warned of rising debt is never also said to have less debt. `reasons` holds the warnings
   (loss-making, negative equity, a cheap P/E with falling profits or rising debt), then each filed figure against its
-  peers' median, strongest first.
+  peers' median, strongest first. `red_flags` names the red-flag warnings it carries ("loss-making", "negative
+  equity"); the page leaves such a stock off its list (ruling R15) and keeps its details page.
 
 `save(day, rows)` keeps a day's list in `screen_runs`; `latest()` reads the newest.
 """
@@ -33,7 +34,7 @@ import json
 import logging
 import math
 import statistics
-from datetime import date
+from datetime import date, timedelta
 
 from stockify import dbconn
 from stockify.fundamentals import pit, ratios, series, store, universe
@@ -48,6 +49,7 @@ DEBT_FLOOR = 0.1                     # ... when it is at least 0.1 (a rise from 
 SHORT_MAX = 90
 MISSING = 0.5                        # ruling R9 c: a missing figure counts as the peers' middle
 NO_PRICE = "no market price to judge it by on this day"
+SERIES_KEEP_DAYS = 30               # screen_series days older than this before a save's day are pruned
 MINUS = "−"                     # the true minus of the page's figures (web/src/lib/fundamentals.ts)
 
 USED = {False: ("pe", "pb", "roe", "debt_equity", "op_margin", "profit_growth"),
@@ -277,8 +279,7 @@ def _row(p: dict, filed: dict[str, float], medians: dict[str, float | None]) -> 
         warnings.append("Loss-making over its last four quarters, so it has no P/E.")
     if "negative equity" in d["flags"]:
         warns.append("negative equity")
-        warnings.append("Its liabilities exceed its assets (negative equity), so P/B, debt to equity and return "
-                        "on equity count against it.")
+        warnings.append("Negative equity: its liabilities exceed its assets.")
     if filed.get("pe", 0) >= STRONG:
         for k, name, what in (("profit_growth", "profit", "profit"), ("nii_growth", "nii", "net interest income")):
             g = r[k]
@@ -295,7 +296,7 @@ def _row(p: dict, filed: dict[str, float], medians: dict[str, float | None]) -> 
     order = sorted(filed, key=lambda k: (-filed[k], ratios.KEYS.index(k)))
     lines = [_figure_line(k, r[k], medians[k], p["whole"]) for k in order]
     return {"symbol": p["symbol"], "sector": p["sector"], "peer_group": p["peer_group"], "ratios": dict(r),
-            "sector_medians": medians, "reasons": warnings + lines,
+            "sector_medians": medians, "reasons": warnings + lines, "red_flags": list(warns),
             "short_reason": _short(p, filed, warns, traps)}
 
 
@@ -318,7 +319,8 @@ def run(day: date, *, balance: float = 0.5) -> dict:
 
 
 def order(day: date, *, balance: float = 0.5) -> list[dict]:
-    """The placed stocks best first: [{symbol, sector, peer_group, ratios, sector_medians, reasons, short_reason}].
+    """The placed stocks best first: [{symbol, sector, peer_group, ratios, sector_medians, reasons, red_flags,
+    short_reason}].
     No score, place or rank is in a row: the list's order is the judgement."""
     return run(day, balance=balance)["rows"]
 
@@ -329,7 +331,8 @@ def save(day: date, rows: list[dict]) -> None:
     """Keep the day's list (replacing one saved for that day before), position 1 first, with the universe it was
     computed from. Each listed stock's details series are computed and kept first (series.precompute). If that
     fails the order is still kept (it is what the page lists): the day's series are dropped and the details page
-    shows each stock's own figures without medians until the next save."""
+    shows each stock's own figures without medians until the next save. Series of days more than SERIES_KEEP_DAYS
+    before `day` are pruned (derived data: only the newest day is read)."""
     day = day if isinstance(day, date) else date.fromisoformat(str(day))
     iso = day.isoformat()
     try:
@@ -348,6 +351,8 @@ def save(day: date, rows: list[dict]) -> None:
         conn.execute("DELETE FROM screen_runs WHERE day = ?", (iso,))
         if not kept:
             conn.execute("DELETE FROM screen_series WHERE day = ?", (iso,))
+        conn.execute("DELETE FROM screen_series WHERE day < ?",            # derived, rebuilt by a save: kept 30 days
+                     ((day - timedelta(days=SERIES_KEEP_DAYS)).isoformat(),))
         conn.executemany("INSERT INTO screen_runs (day, position, symbol, json) VALUES (?, ?, ?, ?)", values)
         conn.execute("INSERT OR REPLACE INTO screen_days (day, universe_as_of) VALUES (?, ?)", (iso, as_of))
         conn.execute("COMMIT")

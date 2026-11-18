@@ -109,6 +109,7 @@ class ListTests(FundamentalsApiBase):
         self.assertEqual(body["upcoming"][0], {"symbol": "AAA", "company": "AAA Ltd.", "date": "2025-12-03",
                                                "period_hint": "Oct–Dec quarter"})
         self.assertEqual(body["held_count"], 1)                 # HELD: in the universe, not on the list
+        self.assertEqual(body["not_listed_count"], 0)           # every placed stock is listed
         self.assertIsNone(body["test_record_id"])
         self.assertEqual(body["notes"], NOTES)
 
@@ -118,11 +119,52 @@ class ListTests(FundamentalsApiBase):
         self.assertIsNone(body["as_of"])
         self.assertEqual(body["items"], [])
         self.assertEqual(body["held_count"], 7)
+        self.assertEqual(body["not_listed_count"], 0)
         self.assertEqual(len(body["upcoming"]), 2)
 
     def test_the_test_record_id_comes_from_the_store(self):
         with mock.patch.object(store, "latest_test_record", return_value={"job_id": "wf_abc"}):
             self.assertEqual(self.get("/api/fundamentals")["test_record_id"], "wf_abc")
+
+
+class ShortListTests(FundamentalsApiBase):
+    """Ruling R15: the page lists at most the best `top_kept` placed stocks and none with a red-flag warning
+    (loss-making, negative equity); those stay reachable by their details page."""
+
+    def test_only_the_best_top_kept_are_listed(self):
+        from server.routers import fundamentals as router
+        _, rows = screen.latest()
+        with mock.patch.object(router, "_top_kept", return_value=3):
+            body = self.get("/api/fundamentals")
+        self.assertEqual([i["symbol"] for i in body["items"]], [r["symbol"] for r in rows[:3]])
+        self.assertEqual([i["position"] for i in body["items"]], [1, 2, 3])
+        self.assertEqual(body["not_listed_count"], len(rows) - 3)
+        self.assertEqual(body["held_count"], 1)
+        last = rows[-1]["symbol"]                                # below the cut: still has its details page
+        detail = self.get(f"/api/fundamentals/{last}")
+        self.assertIsNone(detail["left_out_reason"])
+        self.assertTrue(detail["reasons"])
+
+    def test_red_flagged_stocks_are_left_off_the_list_but_keep_their_details(self):
+        self.company("LOSS", "Capital Goods", profit=-50, prior=-40, debt=0)
+        self.company("NEGEQ", "Capital Goods", equity=-500, equity_prev=-400)
+        self.prices_on_usable_days()
+        screen.save(DAY, screen.order(DAY))
+        _, rows = screen.latest()
+        flagged = {r["symbol"] for r in rows if r["red_flags"]}
+        self.assertEqual(flagged, {"LOSS", "NEGEQ"})
+        body = self.get("/api/fundamentals")
+        self.assertEqual([i["symbol"] for i in body["items"]],
+                         [r["symbol"] for r in rows if r["symbol"] not in flagged])
+        self.assertEqual([i["position"] for i in body["items"]], list(range(1, len(rows) - 1)))
+        self.assertEqual(body["not_listed_count"], 2)
+        loss = self.get("/api/fundamentals/LOSS")
+        self.assertIsNone(loss["left_out_reason"])
+        self.assertTrue(loss["reasons"][0].startswith("Loss-making"), loss["reasons"])
+        self.assertTrue(loss["ratios"])
+        neg = self.get("/api/fundamentals/NEGEQ")
+        self.assertIn("Negative equity", neg["reasons"][0])
+        self.assertNotIn("count against", neg["reasons"][0])     # the fact, not the method
 
 
 class DetailTests(FundamentalsApiBase):
@@ -277,6 +319,20 @@ class SaveTests(FundamentalsApiBase):
         body = self.get("/api/fundamentals/BBB")                 # degrades to its own series, no medians
         self.assertTrue(body["series"])
         self.assertTrue(all(p["sector_median"] is None for s in body["series"] for p in s["points"]))
+
+
+class PruneTests(FundamentalsApiBase):
+
+    def test_series_older_than_30_days_are_pruned_on_each_save(self):
+        # Minor 4d: screen_series is derived (rebuilt by any save), and only the newest day is read.
+        conn = store._connect()
+        for back in (31, 30, 5):
+            old = (DAY - timedelta(days=back)).isoformat()
+            conn.execute("INSERT INTO screen_series (day, symbol, json) VALUES (?, 'BBB', '[]')", (old,))
+        screen.save(DAY, screen.order(DAY))
+        days = {r["day"] for r in conn.execute("SELECT DISTINCT day FROM screen_series")}
+        self.assertEqual(days, {(DAY - timedelta(days=30)).isoformat(), (DAY - timedelta(days=5)).isoformat(),
+                                DAY.isoformat()})
 
 
 class NoScoreTests(FundamentalsApiBase):

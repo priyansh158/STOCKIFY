@@ -1085,6 +1085,7 @@ class FundamentalsListDTO(BaseModel):
     upcoming: list[ResultsDateDTO]
     items: list[CandidateDTO]
     held_count: int                         # universe stocks not on the list (no usable results, no price, ...)
+    not_listed_count: int = 0               # judged but not listed: below the first top_kept, or a red-flag warning
     test_record_id: str | None = None
     notes: list[str]
 

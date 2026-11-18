@@ -1041,6 +1041,7 @@ export interface FundamentalsListDTO {
   upcoming: ResultsDateDTO[];
   items: CandidateDTO[];
   held_count: number;
+  not_listed_count: number;
   test_record_id?: string | null;
   notes: string[];
 }

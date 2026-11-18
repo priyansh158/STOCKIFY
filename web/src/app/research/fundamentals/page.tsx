@@ -79,11 +79,17 @@ function Loaded({ list }: { list: FundamentalsListDTO }) {
         ) : (
           <CandidateList items={list.items} />
         )}
+        {list.not_listed_count > 0 && !firstRun && (
+          <p className="stk-fine stk-gap-xs">
+            {list.not_listed_count.toLocaleString("en-IN")} more {list.not_listed_count === 1 ? "stock was" : "stocks were"}{" "}
+            compared but {list.not_listed_count === 1 ? "is" : "are"} not listed: lower down the order, loss-making, or
+            with negative equity.
+          </p>
+        )}
         {list.held_count > 0 && !firstRun && (
           <p className="stk-fine stk-gap-xs">
             {list.held_count.toLocaleString("en-IN")} more {list.held_count === 1 ? "stock is" : "stocks are"} covered
-            but not on the list: no recent results that could be read, or no price yet.
-
+            but not compared: no recent results that could be read, or no price yet.
           </p>
         )}
       </section>
