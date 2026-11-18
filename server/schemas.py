@@ -1005,4 +1005,97 @@ class ResearchLimitsDTO(BaseModel):
     step_days: int
     wf_objective: str
     holdout_from: str | None = None
+
+# ── Holdings desk (HD 9): verdict chips, one holding's view. Never the owner's cost or P&L. ──
+
+class DeskChipDTO(BaseModel):
+    symbol: str
+    exchange: str
+    instrument_id: int
+    verdict: str
+    as_of_ns: int
+    live: bool
+
+
+class DeskSkipDTO(BaseModel):
+    symbol: str
+    reason: str
+
+
+class DeskListDTO(BaseModel):
+    items: list[DeskChipDTO]
+    skipped: list[DeskSkipDTO]
+    plain: str | None = None
+
+
+class DeskSignalDTO(BaseModel):
+    display_name: str
+    in_position: bool
+    buying_today: bool
+    exit_level_paise: int | None = None
+    grade: Literal["strong", "some", "weak", "none"]
+    trades: int | None = None
+    windows_won: int | None = None
+    windows_total: int | None = None
+    cagr: float | None = None
+    buy_hold_cagr: float | None = None
+    note: str
+
+
+class DeskGaugeDTO(BaseModel):
+    expiry: str | None = None
+    pcr_oi: float | None = None
+    call_walls: list[int]
+    put_walls: list[int]
+    max_pain_paise: int | None = None
+    atm_iv: float | None = None
+    iv_percentile: float | None = None
+    sentences: list[str]
+    taken_ns: int
+    live: bool
+
+
+class DeskIdeaLegDTO(BaseModel):
+    side: Literal["BUY", "SELL"]
+    tradingsymbol: str | None = None
+    lots: int
+    price_paise: int | None = None
+
+
+class DeskIdeaDTO(BaseModel):
+    name: str
+    legs: list[DeskIdeaLegDTO]
+    premium_paise: int
+    max_loss_paise: int | None = None
+    max_gain_paise: int | None = None
+    breakeven_paise: list[int]
+    margin_paise: int | None = None
+    margin_ok: bool | None = None
+    why: str
+    caution: str
+    possible: bool
+    not_possible_reason: str
+
+
+class DeskViewDTO(BaseModel):
+    symbol: str
+    instrument_id: int
+    verdict: str
+    exit_share: float
+    nearest_exit_paise: int | None = None
+    price_paise: int
+    counts: str
+    reasons: list[str]
+    agree: list[str]
+    disagree: list[str]
+    signals: list[DeskSignalDTO]
+    evidence_from: str | None = None
+    evidence_to: str | None = None
+    gauge: DeskGaugeDTO | None = None
+    ideas: list[DeskIdeaDTO]
+    fno: bool
+    lot: int | None = None
+    as_of_ns: int
+    live: bool
+    plain: str
 # </block>

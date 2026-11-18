@@ -28,6 +28,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from server.routers import (
     alerts,
     data as data_router,
+    desk as desk_router,
     kite as kite_router,
     portfolio,
     research as research_router,
@@ -76,7 +77,22 @@ async def lifespan(app: FastAPI):
         import logging
 
         logging.getLogger(__name__).exception("test queue recovery failed")
+    # Holdings desk (HD 9): the chain poller works only during the session and while Kite is logged in.
+    try:
+        from server.services import desk_poller
+
+        desk_poller.start()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("desk poller did not start")
     yield
+    try:
+        from server.services import desk_poller
+
+        desk_poller.stop()
+    except Exception:
+        pass
     try:
         ticker_bridge.detach()
     except Exception:
@@ -129,3 +145,4 @@ app.include_router(tests_router.router)
 app.include_router(research_router.router)
 app.include_router(jobs_router.router)
 app.include_router(trade_router.router)
+app.include_router(desk_router.router)
