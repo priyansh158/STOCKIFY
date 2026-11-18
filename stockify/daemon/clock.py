@@ -7,6 +7,8 @@ Every daemon component takes a `Clock` instead of calling `time.*`:
 * `ManualClock`: tests; time moves only when the test says so.
 * `ReplayClock` (stockify/daemon/replay_ticker.py) follows recorded receive
   times, so a replayed day reproduces the original timeline.
+* `OffsetClock`: another clock moved to start at a given time, for a job the
+  daemon runs on its own clock's time whose waits are real (FS 8).
 
 This module and `stockify/timeutil.py` are the only places that may read
 the wall clock.

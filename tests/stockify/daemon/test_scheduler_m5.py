@@ -866,7 +866,8 @@ class FundamentalsJobTest(JobsBase):
         def run_at(hhmm):
             ran.clear()
             clock = ManualClock(ist(WED, hhmm))
-            with mock.patch.object(market_day, "run_market_day", fake_market_day),                     mock.patch.object(daemon, "_run_job", lambda job, d, st, now=None: ran.append((job, d))):
+            with mock.patch.object(market_day, "run_market_day", fake_market_day), \
+                    mock.patch.object(daemon, "_run_job", lambda job, d, st, now=None: ran.append((job, d))):
                 daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
                                   token_fresh=lambda: False, send_reminder=lambda s, b: None)
             return ran[:]

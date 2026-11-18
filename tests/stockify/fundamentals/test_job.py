@@ -24,6 +24,7 @@ from stockify.fundamentals import filings, job, nse_api, screen, store, universe
 TUE = date(2026, 11, 17)
 FRI = date(2026, 11, 20)
 MIN = 60 * 1_000_000_000
+OVERDUE = TUE - timedelta(days=15)      # listed longer ago than the weekly split allows: listed whatever the weekday
 UNIVERSE = [{"symbol": s} for s in ("ALPHA", "BETA", "GAMMA")]
 ORDER = [{"symbol": "BETA"}, {"symbol": "ALPHA"}]
 
@@ -53,8 +54,8 @@ class JobCase(SandboxedDBTest):
         self.patch(screen, "order", lambda day: self.calls.append(("order", day)) or list(ORDER))
         self.patch(screen, "save", lambda day, rows: self.calls.append(("save", day, rows)))
         read_universe(TUE)          # a universe read today: no refresh owed on a Tuesday
-        for s in ("ALPHA", "BETA", "GAMMA"):            # every symbol listed lately: no weekly listing owed
-            job.note_listed(s, TUE - timedelta(days=2))
+        for s in ("ALPHA", "BETA", "GAMMA"):            # every symbol listed yesterday: no weekly listing owed
+            job.note_listed(s, TUE - timedelta(days=1))
 
     def patch(self, target, name, value):  # noqa: ANN001
         p = mock.patch.object(target, name, value)
@@ -114,7 +115,7 @@ class DailyRunTests(JobCase):
             raise universe.NotEnoughHistory("cm_eod holds 10 days")
         self.patch(universe, "refresh", refuse)
         res = job.run(FRI, client=self.client)
-        self.assertEqual(self.names(), ["calendar", "download", "ingest", "order", "save"])
+        self.assertEqual([n for n in self.names() if n != "list"], ["calendar", "download", "ingest", "order", "save"])
         self.assertTrue(res["complete"])
 
     def test_symbols_whose_results_date_passed_since_their_last_filing_are_listed(self):
@@ -131,14 +132,54 @@ class DailyRunTests(JobCase):
         job.run(TUE, client=self.client)                            # listed today: a retry does not ask again
         self.assertNotIn("list", self.names())
 
-    def test_every_symbol_is_listed_once_a_week(self):
-        job.note_listed("GAMMA", TUE - timedelta(days=7))
+    def test_every_symbol_is_listed_once_a_week_spread_over_the_weekdays(self):
+        """R12: each company is re-listed on its own weekday (a stable split by symbol), so a week's listings are
+        spread over Monday to Friday instead of all on one day."""
+        symbols = [f"S{i:03d}" for i in range(60)]
+        self.patch(universe, "current", lambda: [{"symbol": s} for s in symbols])
+        week = [date(2026, 11, 16) + timedelta(days=i) for i in range(5)]            # Monday to Friday
+        for s in symbols:
+            job.note_listed(s, week[0] - timedelta(days=3))
+        listed: dict[str, list[date]] = {}
+        for d in week:
+            self.calls.clear()
+            job.run(d, client=self.client)
+            for c in self.calls:
+                if c[0] == "list":
+                    listed.setdefault(c[1], []).append(d)
+        self.assertEqual(sorted(listed), symbols)                                       # each once ...
+        self.assertTrue(all(len(v) == 1 for v in listed.values()), listed)
+        per_day = [sum(1 for v in listed.values() if v[0] == d) for d in week]
+        self.assertTrue(all(n > 0 for n in per_day), per_day)                          # ... spread over the week
+        self.assertEqual({s: job.relist_weekday(s) for s in symbols},
+                         {s: listed[s][0].weekday() for s in symbols})                  # stable by symbol
+
+    def test_a_company_missed_on_its_weekday_is_listed_once_overdue(self):
+        other = next(s for s in ("ALPHA", "BETA", "GAMMA") if job.relist_weekday(s) != TUE.weekday())
+        job.note_listed(other, TUE - timedelta(days=9))
         job.run(TUE, client=self.client)
-        self.assertEqual([c[1] for c in self.calls if c[0] == "list"], ["GAMMA"])
+        self.assertNotIn(("list", other), self.calls)
+        job.note_listed(other, TUE - timedelta(days=14))
+        job.run(TUE, client=self.client)
+        self.assertIn(("list", other), self.calls)
+
+    def test_companies_never_listed_are_left_to_the_backfill(self):
+        import logging
+        was = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+        with store._lock:
+            store._connect().execute("DELETE FROM filings_listed WHERE symbol = 'GAMMA'")
+        self.meeting("GAMMA", TUE - timedelta(days=1))
+        with self.assertLogs("stockify.fundamentals", "INFO") as logs:
+            res = job.run(TUE, client=self.client)
+        self.assertNotIn("list", self.names())
+        self.assertEqual(res["never_listed"], 1)
+        self.assertTrue(any("stockify fundamentals backfill" in line for line in logs.output), logs.output)
 
     def test_one_symbols_trouble_is_listed_and_the_rest_go_on(self):
         for s in ("ALPHA", "BETA"):
-            job.note_listed(s, TUE - timedelta(days=8))
+            job.note_listed(s, OVERDUE)
 
         def flaky(symbol, *, client, since):  # noqa: ANN001, ANN202
             self.calls.append(("list", symbol))
@@ -151,7 +192,7 @@ class DailyRunTests(JobCase):
         self.assertEqual(res["failed"], [{"symbol": "ALPHA", "error": "NseError: HTTP 500"}])
         self.assertFalse(res["complete"])
         self.assertIn("save", self.names())                         # the list is still made from what is there
-        self.assertEqual(job.listed_on("ALPHA"), TUE - timedelta(days=8))
+        self.assertEqual(job.listed_on("ALPHA"), OVERDUE)
 
 
 class DeadlineTests(JobCase):
@@ -166,7 +207,7 @@ class DeadlineTests(JobCase):
 
     def test_the_deadline_stops_the_listing_before_the_next_request(self):
         for s in ("ALPHA", "BETA", "GAMMA"):
-            job.note_listed(s, TUE - timedelta(days=8))
+            job.note_listed(s, OVERDUE)
 
         def slow(symbol, *, client, since):  # noqa: ANN001, ANN202
             self.calls.append(("list", symbol))
@@ -180,7 +221,7 @@ class DeadlineTests(JobCase):
         self.assertNotIn("save", self.names())
         self.assertEqual(res["stopped"], "deadline")
         self.assertFalse(res["complete"])
-        self.assertEqual(job.listed_on("GAMMA"), TUE - timedelta(days=8))     # the rest runs on a later pass
+        self.assertEqual(job.listed_on("GAMMA"), OVERDUE)     # the rest runs on a later pass
 
     def test_the_deadline_is_handed_to_the_download(self):
         deadline = self.clock.now_ns() + 60 * MIN
@@ -197,8 +238,8 @@ class DeadlineTests(JobCase):
 
 class BlockedTests(JobCase):
     def test_blocked_listing_stops_the_run(self):
-        job.note_listed("ALPHA", TUE - timedelta(days=8))
-        job.note_listed("BETA", TUE - timedelta(days=8))
+        job.note_listed("ALPHA", OVERDUE)
+        job.note_listed("BETA", OVERDUE)
 
         def refuse(symbol, *, client, since):  # noqa: ANN001, ANN202
             self.calls.append(("list", symbol))
@@ -279,7 +320,7 @@ class DaemonWiringTests(JobCase):
             daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "21:00"))
         self.assertFalse(state.done("fundamentals", TUE))
 
-    def test_the_job_stops_before_the_next_session_on_the_daemon_clock(self):
+    def test_the_job_stops_before_the_next_session_within_its_budget(self):
         from stockify import daemon
         seen = {}
 
@@ -291,9 +332,7 @@ class DaemonWiringTests(JobCase):
             daemon._run_job("fundamentals", TUE, scheduler.State(), now)
         nxt = scheduler.plan(scheduler.session_day(now))
         self.assertEqual(seen["deadline_ns"], min(nxt.refdata_ns, nxt.day_bundles_ns) - daemon.DESK_MARGIN_NS)
-        http_now = seen["client"].http.clock.now_ns()                  # the Http's clock runs on the daemon's time
-        self.assertGreaterEqual(http_now, now)
-        self.assertLess(http_now, now + MIN)
+        self.assertEqual(seen["budget"], 900)
 
     def test_the_daemon_job_asks_nse_nothing_after_the_deadline(self):
         """End to end through the daemon: at 08:25 IST the next session's preparation is 5 minutes away."""
@@ -304,6 +343,90 @@ class DaemonWiringTests(JobCase):
             daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(wed, "08:25"))
         self.assertEqual(self.calls, [])
         self.assertFalse(state.done("fundamentals", TUE))
+
+
+class BudgetTests(JobCase):
+    """R12: a run's NSE requests (warm-ups and retries included) stop at its budget; what is left waits for the next
+    day, and the run still makes the day's list from what it has."""
+
+    def requesting_list_for(self, symbol, *, client, since):  # noqa: ANN001, ANN202
+        self.calls.append(("list", symbol))
+        for _ in range(4):
+            client.http.get(f"https://www.nseindia.com/api/x?symbol={symbol}")
+        return []
+
+    def test_the_listing_stops_at_the_budget(self):
+        for s in ("ALPHA", "BETA", "GAMMA"):
+            job.note_listed(s, OVERDUE)
+        self.patch(filings, "list_for", self.requesting_list_for)
+        res = job.run(TUE, client=self.client, budget=6)
+        self.assertEqual([c[1] for c in self.calls if c[0] == "list"], ["ALPHA", "BETA"])
+        self.assertNotIn("download", self.names())
+        self.assertEqual(self.names()[-3:], ["ingest", "order", "save"])
+        self.assertTrue(res["budget_spent"])
+        self.assertTrue(res["complete"])
+        self.assertEqual(res["requests"], len(self.session.calls))
+        self.assertEqual(job.listed_on("GAMMA"), OVERDUE)
+
+    def test_the_download_gets_what_is_left_of_the_budget(self):
+        seen = {}
+
+        def download(*, client, limit=None, deadline_ns=None):  # noqa: ANN001, ANN202
+            seen["limit"] = limit
+            return {"downloaded": limit, "skipped": 0, "failed": 0, "stopped": "limit"}
+        self.patch(filings, "download_pending", download)
+        res = job.run(TUE, client=self.client, budget=50)
+        self.assertEqual(seen["limit"], 50)
+        self.assertTrue(res["budget_spent"])
+        self.assertTrue(res["complete"])
+
+    def test_without_a_budget_nothing_is_capped(self):
+        seen = {}
+        self.patch(filings, "download_pending",
+                   lambda *, client, limit=None, deadline_ns=None: seen.update(limit=limit) or dict(self.download))
+        res = job.run(TUE, client=self.client)
+        self.assertIsNone(seen["limit"])
+        self.assertFalse(res["budget_spent"])
+
+    def test_the_http_is_left_as_it_was(self):
+        before = vars(self.session).get("get")
+        job.run(TUE, client=self.client, budget=5)
+        self.assertEqual(vars(self.session).get("get"), before)
+
+    def test_the_budget_is_a_checked_config_value(self):
+        from stockify.config import loader
+        doc = loader.load_json("fundamentals.json")
+        self.assertEqual(doc["daily_request_budget"], 900)
+        self.assertEqual(job.daily_request_budget(), 900)
+        for bad in (0, -1, "900", True):
+            with self.subTest(bad=bad), self.assertRaises(loader.ConfigError):
+                loader._check_fundamentals({**doc, "daily_request_budget": bad})
+
+
+class LockTests(JobCase):
+    def test_a_second_run_is_refused_while_one_holds_the_lock(self):
+        with job.hold():
+            with self.assertRaises(job.Busy):
+                job.run(TUE, client=self.client)
+            with self.assertRaises(job.Busy), redirect_stdout(io.StringIO()):
+                job.backfill(today=TUE, client=self.client, cm_missing=lambda a, b: [])
+        self.assertEqual(self.calls, [])
+        job.run(TUE, client=self.client)                                 # released: runs again
+        self.assertIn("save", self.names())
+
+    def test_the_daemon_job_leaves_a_held_run_unmarked(self):
+        import logging
+        from stockify import daemon
+        was = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+        state = scheduler.State()
+        with job.hold(), self.assertLogs("stockify.daemon", "INFO") as logs:
+            daemon._run_job("fundamentals", TUE, state, timeutil.ist_ns(TUE, "20:40"))
+        self.assertFalse(state.done("fundamentals", TUE))
+        self.assertTrue(any("another fundamentals run" in line for line in logs.output), logs.output)
+        self.assertFalse(any(line.startswith("ERROR") for line in logs.output), logs.output)
+        self.assertEqual(self.calls, [])
 
 
 class OffsetClockTests(unittest.TestCase):
@@ -317,6 +440,59 @@ class OffsetClockTests(unittest.TestCase):
         c.sleep_until(5_100)
         self.assertEqual(base.now_ns(), 1_100)
         self.assertEqual(c.mono_ns(), base.mono_ns())
+
+
+class CatchUpClockTests(JobCase):
+    """C1: every job of a catch-up pass is given the daemon clock's time when it starts, not the pass's start, so a
+    job that runs after a long one judges the next session's deadline on the real time."""
+
+    def setUp(self):
+        from stockify import store as lab_store
+        self.db_modules = (store, lab_store)
+        super().setUp()
+        import logging
+        was = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+
+    def test_a_job_after_a_long_one_asks_nse_and_kite_nothing_past_the_deadline(self):
+        import portfolio_sync
+        from stockify import daemon
+        from stockify.daemon import exitcodes, market_day
+        wed = TUE + timedelta(days=1)
+        clock = ManualClock(timeutil.ist_ns(wed, "07:00"))     # woken at 07:00: Tuesday's evening is owed
+        deadline = timeutil.ist_ns(wed, "08:20")
+        real = daemon._run_job
+        given: dict[str, int] = {}
+
+        def run_job(job_name, d, state, now=None):  # noqa: ANN001, ANN202
+            if job_name in ("desk", "fundamentals"):
+                given[job_name] = now
+                return real(job_name, d, state, now)
+            if job_name == "finalise" and d == TUE:
+                clock.advance(90 * MIN)                          # a long replay: 08:30 when it is done
+            state.mark(job_name, d)
+            return None
+
+        def fake_market_day(**kw):  # noqa: ANN003, ANN202
+            kw["on_idle"]()
+            return exitcodes.TOKEN_EXPIRED
+
+        state = scheduler.State()
+        for back in range(1, 9):                                 # the week before is done
+            for name in scheduler.CATCH_UP:
+                state.mark(name, TUE - timedelta(days=back))
+        with mock.patch.object(market_day, "run_market_day", fake_market_day), \
+                mock.patch.object(daemon, "_run_job", run_job), \
+                mock.patch.object(nse_files.Http, "get", side_effect=AssertionError("an NSE request")), \
+                mock.patch.object(portfolio_sync, "fetch_snapshot", side_effect=AssertionError("a Kite call")):
+            daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
+                              token_fresh=lambda: False, send_reminder=lambda s, b: None)
+        self.assertGreaterEqual(given["desk"], deadline)
+        self.assertGreaterEqual(given["fundamentals"], deadline)
+        self.assertFalse(state.done("desk", TUE))
+        self.assertFalse(state.done("fundamentals", TUE))
+        self.assertEqual(self.calls, [])
 
 
 class BackfillTests(JobCase):
@@ -371,6 +547,27 @@ class BackfillTests(JobCase):
         self.assertIn("63 needed", out)
         self.assertEqual(self.calls, [])
 
+    def test_backfill_stops_when_a_batch_makes_no_progress(self):
+        batches = []
+
+        def failing(*, client, limit=None, deadline_ns=None):  # noqa: ANN001, ANN202
+            batches.append(limit)
+            return {"downloaded": 0, "skipped": 0, "failed": limit, "stopped": "limit"}
+        self.patch(filings, "download_pending", failing)
+        res, out = self.run_backfill()
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(res["stopped"], "no progress")
+        self.assertIn("no file", out)
+        self.assertNotIn("save", self.names())
+
+    def test_backfill_goes_on_while_batches_make_progress(self):
+        answers = [{"downloaded": 60, "skipped": 40, "failed": 0, "stopped": "limit"},
+                   {"downloaded": 3, "skipped": 0, "failed": 2, "stopped": None}]
+        self.patch(filings, "download_pending", lambda **kw: answers.pop(0))
+        res, _ = self.run_backfill()
+        self.assertEqual(res["download"]["downloaded"], 63)
+        self.assertIsNone(res["stopped"])
+
     def test_backfill_stops_cleanly_when_blocked(self):
         def refuse(symbol, *, client, since):  # noqa: ANN001, ANN202
             raise nse_api.Blocked("HTTP 403")
@@ -393,10 +590,12 @@ class BackfillTests(JobCase):
 
 
 class CliTests(unittest.TestCase):
+    in_session = False
     def run_cli(self, argv: list[str]) -> tuple[int, str, str]:
         from stockify import __main__ as cli
         out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err), mock.patch.object(cli, "_load_env", lambda: None):
+        with redirect_stdout(out), redirect_stderr(err), mock.patch.object(cli, "_load_env", lambda: None), \
+                mock.patch.object(scheduler, "session_in_progress", lambda now, cfg=None: self.in_session):
             code = cli.main(argv)
         return code, out.getvalue(), err.getvalue()
 
@@ -431,6 +630,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(seen, [timeutil.ist_today()])
         self.assertIn('"complete": true', out)
+
+    def test_the_commands_refuse_to_start_during_the_session(self):
+        self.in_session = True
+        with mock.patch.object(job, "run") as run, mock.patch.object(job, "backfill") as bf:
+            for cmd in ("backfill", "refresh", "test-record"):
+                with self.subTest(cmd=cmd):
+                    code, _, err = self.run_cli(["fundamentals", cmd])
+                    self.assertEqual(code, 1)
+                    self.assertIn("session", err)
+        run.assert_not_called()
+        bf.assert_not_called()
+
+    def test_a_run_in_progress_is_reported_plainly(self):
+        for cmd, target in (("backfill", "backfill"), ("refresh", "run")):
+            with self.subTest(cmd=cmd), mock.patch.object(job, target, side_effect=job.Busy("held")):
+                code, _, err = self.run_cli(["fundamentals", cmd])
+            self.assertEqual(code, 1)
+            self.assertIn("Another fundamentals run is in progress", err)
 
     def test_test_record_fails_fast_without_a_kite_login(self):
         import kite_client

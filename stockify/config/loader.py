@@ -450,11 +450,11 @@ def _check_fundamentals(doc: dict) -> None:
     """fundamentals.json (stockify.fundamentals/1): every key present and none unknown; the list URLs and the API
     base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
     valuation weights) distinct decimal strings in [0, 1] and `basket_sizes` distinct whole numbers from 5 to 50 and
-    at most `top_kept`; `filings_from` a YYYY-MM-DD
+    at most `top_kept`; `daily_request_budget` a whole number of requests from 1; `filings_from` a YYYY-MM-DD
     date; each `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
     keys = ("nifty500_list_url", "nifty500_list_fallback_url", "liquidity_floor_paise", "liquidity_days",
             "filings_from", "basket_size", "top_kept", "balances", "basket_sizes", "corporate_action_ratios",
-            "corporate_action_tolerance", "corporate_action_hold_fall", "api")
+            "corporate_action_tolerance", "corporate_action_hold_fall", "daily_request_budget", "api")
     extra = set(doc) - set(keys) - {"schema", "note"}
     if extra:
         raise ConfigError(f"fundamentals.json: unknown keys {sorted(extra)}; known: {list(keys)}")
@@ -477,6 +477,7 @@ def _check_fundamentals(doc: dict) -> None:
     whole(doc["liquidity_days"], "liquidity_days", 1, 1000)
     whole(doc["basket_size"], "basket_size", 1, 500)
     whole(doc["top_kept"], "top_kept", 1, 500)
+    whole(doc["daily_request_budget"], "daily_request_budget", 1, 100_000)
     balances = doc["balances"]
     if (not isinstance(balances, list) or not balances or len(set(map(str, balances))) != len(balances)
             or not all(isinstance(b, str) and _SIGNED_DECIMAL.fullmatch(b) and 0 <= Decimal(b) <= 1 for b in balances)):

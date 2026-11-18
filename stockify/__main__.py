@@ -301,10 +301,32 @@ def _positive_int(text: str) -> int:
     return n
 
 
+def _fundamentals_session_guard() -> bool:
+    """True (with a plain message) while the recorder's session is in progress: the screener's NSE reads, XBRL
+    parsing and backtests wait for the close, as the daemon's job does (HELD_DURING_SESSION)."""
+    from stockify import timeutil
+    from stockify.daemon import scheduler
+    if scheduler.session_in_progress(timeutil.now_ns()):
+        print("The recorder's session is in progress (subscribe to unsubscribe in schedule.json, IST). Run this "
+              "after the close.", file=sys.stderr)
+        return True
+    return False
+
+
+_FUNDAMENTALS_BUSY = ("Another fundamentals run is in progress (the daemon's nightly job, a refresh or a backfill). "
+                      "Run this again when it has finished.")
+
+
 def _cmd_fundamentals_backfill(args) -> int:
     from stockify.fundamentals import job
 
-    res = job.backfill(since=args.from_ or job.filings_from(), limit=args.limit)
+    if _fundamentals_session_guard():
+        return 1
+    try:
+        res = job.backfill(since=args.from_ or job.filings_from(), limit=args.limit)
+    except job.Busy:
+        print(_FUNDAMENTALS_BUSY, file=sys.stderr)
+        return 1
     print(json.dumps(res, sort_keys=True, default=str))
     return 0 if res.get("stopped") is None else 1
 
@@ -313,12 +335,20 @@ def _cmd_fundamentals_refresh(args) -> int:
     from stockify import timeutil
     from stockify.fundamentals import job
 
-    res = job.run(timeutil.ist_today())
+    if _fundamentals_session_guard():
+        return 1
+    try:
+        res = job.run(timeutil.ist_today())
+    except job.Busy:
+        print(_FUNDAMENTALS_BUSY, file=sys.stderr)
+        return 1
     print(json.dumps(res, sort_keys=True, default=str))
     return 0 if res.get("complete") else 1
 
 
 def _cmd_fundamentals_test_record(args) -> int:
+    if _fundamentals_session_guard():
+        return 1
     _load_env()
     import kite_client
     from stockify.fundamentals import test_record
