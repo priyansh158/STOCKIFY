@@ -1,0 +1,4 @@
+# Real NSE answers, kept byte for byte (their sha256 is in README.md): never convert line endings.
+*.csv -text
+*.html -text
+*.json -text
