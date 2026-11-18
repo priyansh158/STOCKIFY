@@ -107,6 +107,18 @@ def resolved(snap, day: date) -> list[tuple]:  # noqa: ANN001
     return out
 
 
+def nse_token(h, iid: int, day: date) -> int | None:  # noqa: ANN001
+    """The NSE stock's Kite token on `day`: the desk looks at the NSE listing, so a holding bought through BSE
+    still ticks, quotes and charts on NSE. The holding's own token only when the refdata has none and it is NSE."""
+    from stockify.data import instruments
+    tok = instruments.token_at(iid, day)
+    if tok:
+        return int(tok)
+    if h is not None and (h.exchange or "").upper() == EXCHANGE and h.instrument_token:
+        return int(h.instrument_token)
+    return None
+
+
 def _symbol(h, iid: int) -> str:  # noqa: ANN001
     from stockify.data import instruments
     return (instruments.get(iid) or {}).get("tradingsymbol") or h.tradingsymbol
@@ -285,12 +297,12 @@ def _pass(t_ns: int, client, bucket, out: dict) -> dict:  # noqa: ANN001
         return out
     out["active"] = True
     day = ist_day(t_ns)
-    held = [(h, iid, _symbol(h, iid)) for h, iid in resolved(snap, day)]
+    held = [(h, iid, _symbol(h, iid), nse_token(h, iid, day)) for h, iid in resolved(snap, day)]
     if not held:
         return out
     from server.services import ticker_bridge
     try:
-        ticker_bridge.ensure_subscribed(sorted({int(h.instrument_token) for h, _i, _s in held if h.instrument_token}))
+        ticker_bridge.ensure_subscribed(sorted({tok for _h, _i, _s, tok in held if tok}))
     except Exception:  # noqa: BLE001 — the ticker is a nicety; quotes still come
         log.warning("desk: could not subscribe the holdings' ticks", exc_info=True)
     if client is None:
@@ -299,15 +311,15 @@ def _pass(t_ns: int, client, bucket, out: dict) -> dict:  # noqa: ANN001
 
     plans = []                                          # (iid, underlying, spot) of each F&O holding
     rec = _Recorder()
-    for h, iid, sym in held:
+    for _h, iid, sym, tok in held:
         if not chain.is_fno(sym, day):
             continue
-        spot = _spot_guess(iid, sym, h.instrument_token, t_ns)
+        spot = _spot_guess(iid, sym, tok, t_ns)
         if spot is None:
             continue
         chain.snapshot(sym, spot, day, t_ns, client=rec, bucket=_Free())
         plans.append((iid, sym, spot))
-    names = sorted({f"{EXCHANGE}:{sym}" for _h, _i, sym in held} | rec.names)
+    names = sorted({f"{EXCHANGE}:{sym}" for _h, _i, sym, _t in held} | rec.names)
     try:
         quotes = chain._quote_all(names, client, bucket or _bucket())
     except Exception as e:  # noqa: BLE001 — refused (the recorder shares the limit), logged out, the network
@@ -317,7 +329,7 @@ def _pass(t_ns: int, client, bucket, out: dict) -> dict:  # noqa: ANN001
             _status.update(last_error=out["error"])
         return out
     out["quoted"] = len(quotes)
-    for _h, iid, sym in held:
+    for _h, iid, sym, _t in held:
         _remember(iid, quotes.get(f"{EXCHANGE}:{sym}"), t_ns)
     canned = _Canned(quotes)
     for iid, sym, spot in plans:
@@ -330,8 +342,8 @@ def _pass(t_ns: int, client, bucket, out: dict) -> dict:  # noqa: ANN001
     with _lock:
         _views.clear()                                  # the new prices make the cached views old
         _status.update(last_pass_ns=t_ns, last_error=None)
-    for h, iid, sym in held:
-        live_view(iid, sym, h.instrument_token, t_ns, allow_call=False)
+    for _h, iid, sym, tok in held:
+        live_view(iid, sym, tok, t_ns, allow_call=False)
     return out
 
 

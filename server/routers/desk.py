@@ -129,7 +129,7 @@ def desk_list() -> DeskListDTO:
             skipped.append(DeskSkipDTO(symbol=h.tradingsymbol, reason=reason))
             continue
         sym = P._symbol(h, iid)
-        cur = _current(iid, sym, h.instrument_token, t_ns, max_age_s=2 * P.INTERVAL_S)
+        cur = _current(iid, sym, P.nse_token(h, iid, day), t_ns, max_age_s=2 * P.INTERVAL_S)
         if cur is None:
             skipped.append(DeskSkipDTO(symbol=h.tradingsymbol, reason=NOT_GRADED))
             continue
@@ -227,7 +227,7 @@ def desk_view(symbol: str) -> DeskViewDTO:
     t_ns = P.now_ns()
     h, iid, logged_in = _find(symbol, t_ns)
     sym = P._symbol(h, iid) if h is not None else (instruments.get(iid) or {}).get("tradingsymbol", symbol.upper())
-    cur = _current(iid, sym, h.instrument_token if h is not None else None, t_ns) if logged_in else None
+    cur = _current(iid, sym, P.nse_token(h, iid, P.ist_day(t_ns)), t_ns) if logged_in else None
     if cur is None:
         row = store.latest_view(iid)
         cur = (row["view"], int(row["made_ns"]), False)
@@ -281,7 +281,7 @@ def _plot_name(ref: str) -> str:
 
 def _day_chart(iid: int, sym: str, h, t_ns: int) -> RunChartDTO:  # noqa: ANN001
     bars = replay.daily_bars(iid)
-    price = P.live_price(iid, sym, h.instrument_token if h else None, t_ns, allow_call=False) \
+    price = P.live_price(iid, sym, P.nse_token(h, iid, P.ist_day(t_ns)), t_ns, allow_call=False) \
         if (h is not None and P.in_session(t_ns)) else None
     if bars and price is not None and price["t_ns"] >= bars[-1].start_ns:
         bars = replay.with_live_candle(bars, price["ltp"], price["t_ns"], price["open"], price["high"], price["low"])
@@ -359,10 +359,10 @@ class _B:
 
 
 def _minute_chart(iid: int, sym: str, h, t_ns: int, logged_in: bool) -> RunChartDTO:  # noqa: ANN001
-    token = (h.instrument_token if h is not None else None) or instruments.token_at(iid, P.ist_day(t_ns))
+    token = P.nse_token(h, iid, P.ist_day(t_ns))
     day = _minute_day(t_ns)
     bars = [_B(c) for c in _minute_candles(iid, token, day, t_ns)]
-    cur = _current(iid, sym, h.instrument_token if h is not None else None, t_ns) if logged_in else None
+    cur = _current(iid, sym, token, t_ns) if logged_in else None
     view = cur[0] if cur else (store.latest_view(iid) or {}).get("view") or {}
     plots, labels = [], {}
     if bars:

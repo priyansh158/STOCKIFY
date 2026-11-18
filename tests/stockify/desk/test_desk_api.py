@@ -397,5 +397,28 @@ class PollerTests(DeskApiBase):
         self.assertLessEqual(tp.call_count, 1)
 
 
+class BseHeldTests(DeskApiBase):
+    """I-1: a stock held through BSE and listed on NSE is the NSE stock everywhere, its live price included."""
+
+    def setUp(self):
+        super().setUp()
+        self.snap = snapshot([holding("INFY", 800001, exchange="BSE"), holding("TCS", TOKENS["TCS"])])
+
+    def test_the_live_parts_use_the_nse_token(self):
+        self.poller.take_pass(IN_SESSION, client=self.kite)
+        self.assertEqual(self.subscribed, [sorted(TOKENS.values())])
+        self.poller.reset()
+        self.now = IN_SESSION + 31 * 10**9
+        self.ticks[TOKENS["INFY"]] = {"ts": IN_SESSION // 10**9 + 30, "ltp": 1531.5, "volume": 0, "oi": 0}
+        self.ticks[800001] = {"ts": IN_SESSION // 10**9 + 30, "ltp": 999.0, "volume": 0, "oi": 0}
+        self.poller.take_pass(IN_SESSION + 10**9, client=self.kite)       # the day's range, from the quote
+        body = self.get("/api/desk/INFY")
+        self.assertTrue(body["live"])
+        self.assertEqual(body["price_paise"], 153_150)                     # the NSE tick, not the BSE one
+        self.get("/api/desk/INFY/chart?interval=minute")
+        hist = [c for c in self.kite.calls if c[0] == "historical_data"]
+        self.assertEqual([c[1] for c in hist], [TOKENS["INFY"]])
+
+
 if __name__ == "__main__":
     unittest.main()
