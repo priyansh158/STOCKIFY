@@ -11,3 +11,16 @@ requests). Kept byte for byte.
 
 The same 403 came back for HDFCBANK, and again with the quote page as Referer and a JSON Accept header. No real
 `quote-equity` JSON body could be saved on that day, so there is no sector (`industryInfo`) fixture yet.
+
+## Event calendar (FS 7)
+
+Fetched on 2026-11-17 (IST) the same way, after a warm-up GET of
+https://www.nseindia.com/companies-listing/corporate-filings-event-calendar (200).
+
+| file | URL | answer | sha256 |
+|------|-----|--------|--------|
+| `event_calendar_2026-11-17.json` | https://www.nseindia.com/api/event-calendar?index=equities&from_date=17-11-2026&to_date=15-12-2026 | 200, JSON list of 21 items, keys `symbol`, `company`, `purpose`, `bm_desc`, `date` ("19-Nov-2026"); dates 17-Nov to 05-Dec | 5ff00b3a11a191ac36d5835e8f509322a4f98902c3c899c74cac7cc739d52a44 |
+
+Without the range parameters the same endpoint answered 13 items (the next few days only), so the range is needed.
+Purposes seen: "Financial Results", "Financial Results/Other business matters", "Other business matters",
+"Fund Raising", "Buyback", "Bonus/Other business matters".
