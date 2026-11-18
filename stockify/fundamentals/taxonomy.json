@@ -1,0 +1,137 @@
+{
+  "schema": "stockify.fundamentals.taxonomy/1",
+  "note": "Element local-names (namespace ignored) per field, per NSE results format, read from real filings saved under tests/fixtures/fundamentals (2026-11-17). Each field lists candidate elements in order (the first one filed in the filing's own period wins) or a sum of parts (all parts must be filed). period: 'flow' = the filing's own quarter / half year / year, 'ytd' = financial year to date when it spans 6 or 12 months (where the cash flow statement sits), 'instant' = the period-end balance sheet. kind: 'money' (INR, converted to paise) or 'per_share' (INR per share, converted to paise per share). A family matches a filing by its schemaRef file name; the integrated filings (2025 on, SEBI's in-capmkt taxonomy) share one schemaRef for every format, so they are told apart by the generator's comment at the top of the file (e.g. '<!--IFIndAs V2.1 (26-06-2026)-->'), or failing that by the XBRL file name's prefix on nsearchives. A format that matches nothing here has no map: its filings are held.",
+  "families": {
+    "indas": {
+      "label": "Ind AS (companies other than banks and NBFCs)",
+      "match": [
+        {
+          "schema_ref": "Ind-AS_entry_point_2020-03-31.xsd"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2026-01-31.xsd",
+          "marker": "IFIndAs",
+          "url_prefix": "INTEGRATED_FILING_INDAS"
+        }
+      ],
+      "fields": {
+        "revenue_ops": {"period": "flow", "names": ["RevenueFromOperations"]},
+        "other_income": {"period": "flow", "names": ["OtherIncome"]},
+        "total_income": {"period": "flow", "names": ["Income"]},
+        "total_expenses": {"period": "flow", "names": ["Expenses"]},
+        "finance_costs": {"period": "flow", "names": ["FinanceCosts"]},
+        "depreciation": {"period": "flow", "names": ["DepreciationDepletionAndAmortisationExpense"]},
+        "profit_before_tax": {"period": "flow", "names": ["ProfitBeforeTax"]},
+        "tax": {"period": "flow", "names": ["TaxExpense"]},
+        "net_profit": {"period": "flow", "names": ["ProfitLossForPeriod"]},
+        "profit_owners": {"period": "flow", "names": ["ProfitOrLossAttributableToOwnersOfParent"]},
+        "eps_basic": {"period": "flow", "kind": "per_share", "names": ["BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "BasicEarningsLossPerShareFromContinuingOperations"]},
+        "eps_diluted": {"period": "flow", "kind": "per_share", "names": ["DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "DilutedEarningsLossPerShareFromContinuingOperations"]},
+        "paid_up_equity": {"period": "flow", "names": ["PaidUpValueOfEquityShareCapital"]},
+        "face_value": {"period": "flow", "kind": "per_share", "names": ["FaceValueOfEquityShareCapital"]},
+        "total_equity": {"period": "instant", "names": ["EquityAttributableToOwnersOfParent", "Equity"]},
+        "borrowings_current": {"period": "instant", "names": ["BorrowingsCurrent"]},
+        "borrowings_noncurrent": {"period": "instant", "names": ["BorrowingsNoncurrent"]},
+        "total_assets": {"period": "instant", "names": ["Assets"]},
+        "cash": {"period": "instant", "names": ["CashAndCashEquivalents"]},
+        "operating_cash_flow": {"period": "ytd", "names": ["CashFlowsFromUsedInOperatingActivities"]}
+      },
+      "check_inputs": {
+        "profit_after_tax": {"period": "flow", "names": ["ProfitLossForPeriodFromContinuingOperations"]},
+        "regulatory_movement": {"period": "flow", "names": ["NetMovementInRegulatoryDeferralAccountBalancesRelatedToProfitOrLossAndTheRelatedDeferredTaxMovement"]}
+      }
+    },
+    "banking": {
+      "label": "Banking format",
+      "match": [
+        {
+          "schema_ref": "banking_entry_point_2019-09-30.xsd"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2026-01-31.xsd",
+          "marker": "IFBanking",
+          "url_prefix": "INTEGRATED_FILING_BANKING"
+        }
+      ],
+      "fields": {
+        "interest_earned": {"period": "flow", "names": ["InterestEarned"]},
+        "interest_expended": {"period": "flow", "names": ["InterestExpended"]},
+        "other_income": {"period": "flow", "names": ["OtherIncome"]},
+        "total_income": {"period": "flow", "names": ["Income"]},
+        "total_expenses": {"period": "flow", "names": ["ExpenditureExcludingProvisionsAndContingencies"]},
+        "profit_before_tax": {"period": "flow", "names": ["ProfitLossFromOrdinaryActivitiesBeforeTax"]},
+        "tax": {"period": "flow", "names": ["TaxExpense"]},
+        "net_profit": {"period": "flow", "names": ["ProfitLossForThePeriod"]},
+        "profit_owners": {"period": "flow", "names": ["ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates"]},
+        "eps_basic": {"period": "flow", "kind": "per_share", "names": ["BasicEarningsPerShareAfterExtraordinaryItems", "BasicEarningsPerShareBeforeExtraordinaryItems"]},
+        "eps_diluted": {"period": "flow", "kind": "per_share", "names": ["DilutedEarningsPerShareAfterExtraordinaryItems", "DilutedEarningsPerShareBeforeExtraordinaryItems"]},
+        "paid_up_equity": {"period": "flow", "names": ["PaidUpValueOfEquityShareCapital"]},
+        "face_value": {"period": "flow", "kind": "per_share", "names": ["FaceValueOfEquityShareCapital"]},
+        "total_equity": {"period": "instant", "sum": ["Capital", "ReservesAndSurplus"]},
+        "total_assets": {"period": "instant", "names": ["Assets", "CapitalAndLiabilities"]},
+        "cash": {"period": "instant", "sum": ["CashAndBalancesWithReserveBankOfIndia", "BalancesWithBanksAndMoneyAtCallAndShortNotice"]},
+        "operating_cash_flow": {"period": "ytd", "names": ["CashFlowsFromUsedInOperatingActivities"]}
+      },
+      "check_inputs": {
+        "profit_after_tax": {"period": "flow", "names": ["ProfitLossFromOrdinaryActivitiesAfterTax"]}
+      }
+    },
+    "nbfc": {
+      "label": "NBFC Ind AS format",
+      "match": [
+        {
+          "schema_ref": "in-bse-fin-2020-03-31.xsd"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2026-01-31.xsd",
+          "marker": "IFNBFC",
+          "url_prefix": "INTEGRATED_FILING_NBFC"
+        }
+      ],
+      "fields": {
+        "interest_earned": {"period": "flow", "names": ["InterestEarned"]},
+        "interest_expended": {"period": "flow", "names": ["FinanceCosts"]},
+        "revenue_ops": {"period": "flow", "names": ["RevenueFromOperations"]},
+        "other_income": {"period": "flow", "names": ["OtherIncome"]},
+        "total_income": {"period": "flow", "names": ["Income"]},
+        "total_expenses": {"period": "flow", "names": ["Expenses"]},
+        "finance_costs": {"period": "flow", "names": ["FinanceCosts"]},
+        "depreciation": {"period": "flow", "names": ["DepreciationDepletionAndAmortisationExpense"]},
+        "profit_before_tax": {"period": "flow", "names": ["ProfitBeforeTax"]},
+        "tax": {"period": "flow", "names": ["TaxExpense"]},
+        "net_profit": {"period": "flow", "names": ["ProfitLossForPeriod"]},
+        "profit_owners": {"period": "flow", "names": ["ProfitOrLossAttributableToOwnersOfParent"]},
+        "eps_basic": {"period": "flow", "kind": "per_share", "names": ["BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "BasicEarningsLossPerShareFromContinuingOperations"]},
+        "eps_diluted": {"period": "flow", "kind": "per_share", "names": ["DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations", "DilutedEarningsLossPerShareFromContinuingOperations"]},
+        "paid_up_equity": {"period": "flow", "names": ["PaidUpValueOfEquityShareCapital"]},
+        "face_value": {"period": "flow", "kind": "per_share", "names": ["FaceValueOfEquityShareCapital"]},
+        "total_equity": {"period": "instant", "names": ["EquityAttributableToOwnersOfParent", "Equity"]},
+        "total_assets": {"period": "instant", "names": ["Assets"]},
+        "cash": {"period": "instant", "names": ["CashAndCashEquivalents"]},
+        "operating_cash_flow": {"period": "ytd", "names": ["CashFlowsFromUsedInOperatingActivities"]}
+      },
+      "check_inputs": {
+        "profit_after_tax": {"period": "flow", "names": ["ProfitLossForPeriodFromContinuingOperations"]}
+      }
+    }
+  },
+  "nse_contexts": {
+    "current_duration": "OneD",
+    "current_instant": "OneI",
+    "note": "NSE's own context ids: 'One' is the filing's current column (the quarter), 'Four' the financial year to date. Filings from 2021 reference OneD / FourD / OneI without defining them, so an undefined OneD is taken as the current quarter and an undefined OneI as the period-end balance sheet. NSE writes the quarter's dates on the year-to-date context too, so a duration context's real period is read from the DateOfStartOfReportingPeriod / DateOfEndOfReportingPeriod facts inside it."
+  },
+  "checks": {
+    "profit_pct": "0.01",
+    "income_pct": "0.01",
+    "eps_pct": "0.02",
+    "quarters_pct": "0.01",
+    "note": "Tolerances are fractions of the larger side; on top of them each compared total gets one rounding step of the filing per term it adds (Rs 1 crore when figures are rounded to crores)."
+  },
+  "rounding_levels": {
+    "Crores": 1000000000,
+    "Lakhs": 10000000,
+    "Millions": 100000000,
+    "Thousands": 100000,
+    "note": "One rounding step of the declared level (LevelOfRoundingUsedInFinancialStatements, or LevelOfRounding in integrated filings) in paise: the slack the checks allow per term. Values themselves are always filed in whole rupees (XBRL decimals is precision, never scale): Rs 2,43,865 crore is filed as 2438650000000.00 whether the filing says Crores or Lakhs."
+  }
+}
