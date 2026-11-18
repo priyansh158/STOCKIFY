@@ -2,7 +2,8 @@
 
 What is backed up, under the target folder:
 
-* `snapshots/<day>/refdata.sqlite` and `lab.sqlite`: copied with `sqlite3.Connection.backup()` from a read-only
+* `snapshots/<day>/refdata.sqlite`, `lab.sqlite` and `desk.sqlite` (the holdings desk's grades and daily views; a
+  few rows per holding per day): copied with `sqlite3.Connection.backup()` from a read-only
   connection, so a live WAL database is copied consistently (committed rows only), and then checked with
   `PRAGMA integrity_check`. One snapshot folder per day; a second run on the same day replaces that day's.
 * After a run whose snapshots all verified, the OLDEST snapshot folders beyond `storage.json` -> `backup.keep_snapshots`
@@ -42,7 +43,7 @@ from stockify.daemon import journal
 log = logging.getLogger(__name__)
 
 MANIFEST_SCHEMA = "stockify.backup/1"
-DATABASES = ("refdata.sqlite", "lab.sqlite")
+DATABASES = ("refdata.sqlite", "lab.sqlite", "desk.sqlite")      # desk.sqlite: the holdings desk (D-152)
 _CHUNK = 1 << 20
 _OPEN_JOURNAL_TRIES = 3
 DEFAULT_KEEP = 7

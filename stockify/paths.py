@@ -61,6 +61,11 @@ def lab_db() -> Path:
     return lab_dir() / "lab.sqlite"
 
 
+def desk_db() -> Path:
+    """The holdings desk's store (HD 4.1): nightly evidence and stored views."""
+    return lab_dir() / "desk.sqlite"
+
+
 def ticks_landing_dir() -> Path:
     return _dir(lab_dir() / "ticks" / "landing")
 

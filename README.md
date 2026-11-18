@@ -24,7 +24,13 @@ It runs on Windows, on one machine, for one person. Money is in rupees, stored a
 
 **Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
 
-Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch.
+Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for stocks you hold: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit.
+
+**Holdings desk.** Open a stock on the Portfolio page and you get a page for that holding: its daily chart with each rule's exit level, one suggestion (Hold, Tighten stop, Trim, Exit, or No reliable signal when no rule has a record worth weighing on that stock), and the rules behind it. The desk works on stocks only: it has no option chain and no option ideas. It suggests and never orders. Nothing on it can place a trade, and it reads only your holdings and daily prices through Kite's read-only calls.
+
+How a suggestion is made: the desk updates once a day, after the session, when the recorder has finished. That night it tests the swing rules on each held stock's daily prices, with the lab's realistic costs, year by year against simply holding. Each rule gets a record on that stock (strong, some, weak or none), and the rules vote at that day's close, weighted by their record. The page shows the suggestion as of that close and its date, the votes, the price levels that would change the suggestion, and the table that turns votes into a word. Every rule decides on daily closes, so for swing trading this is the same answer a live view would give; a move through a level during the day shows after that day's close. The tests stop on 31 July 2026, the day before the months the research page keeps in reserve, so the desk never looks at them to grade a rule; the day's vote does use every close up to that day, because it is not a test.
+
+Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion.
 
 ## Writing your own strategy
 
@@ -279,6 +285,7 @@ web/             Next.js 16 desktop UI (types mirrored in web/src/lib/types.ts; 
 stockify/        the Python package and CLI (python -m stockify)
   config/        dated market rules (charges, sessions, contract rules, freeze limits, margin, calendar)
   data/          instruments, NSE files, the margin-file archive, bar cache, ticks, compaction, packs, quality
+  desk/          the holdings desk: nightly grading, replay of each rule, the verdict, the stored daily views
   daemon/        recorder, scheduler, paper sessions, journals, keep-awake, replay ticker, notifications
   oracle/        the reference Python backtester
   fno/           Black-76, rolls, the SPAN file reader, exact SPAN, the margin steps, calibration

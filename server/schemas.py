@@ -1005,4 +1005,60 @@ class ResearchLimitsDTO(BaseModel):
     step_days: int
     wf_objective: str
     holdout_from: str | None = None
+
+# ── Holdings desk (HD 9, 12): verdict chips, one holding's view, as of the latest close. Never the owner's cost or P&L. ──
+
+class DeskChipDTO(BaseModel):
+    symbol: str
+    exchange: str
+    instrument_id: int
+    verdict: str
+    as_of_ns: int                           # when the nightly job stored the view, UTC epoch ns
+    close_date: str | None = None           # the IST date of the close the view is from
+    holding_symbol: str | None = None       # the Kite holding's own tradingsymbol (a BSE holding's may differ from NSE's)
+    holding_exchange: str | None = None     # the Kite holding's exchange; None for a stored view shown while logged out
+
+
+class DeskSkipDTO(BaseModel):
+    symbol: str
+    reason: str
+
+
+class DeskListDTO(BaseModel):
+    items: list[DeskChipDTO]
+    skipped: list[DeskSkipDTO]
+    plain: str | None = None
+
+
+class DeskSignalDTO(BaseModel):
+    display_name: str
+    in_position: bool
+    buying_today: bool
+    exit_level_paise: int | None = None
+    grade: Literal["strong", "some", "weak", "none"]
+    trades: int | None = None
+    windows_won: int | None = None
+    windows_total: int | None = None
+    cagr: float | None = None
+    buy_hold_cagr: float | None = None
+    note: str
+
+
+class DeskViewDTO(BaseModel):
+    symbol: str
+    instrument_id: int
+    verdict: str
+    exit_share: float
+    nearest_exit_paise: int | None = None
+    price_paise: int
+    counts: str
+    reasons: list[str]
+    agree: list[str]
+    disagree: list[str]
+    signals: list[DeskSignalDTO]
+    evidence_from: str | None = None
+    evidence_to: str | None = None
+    as_of_ns: int
+    close_date: str | None = None
+    plain: str
 # </block>

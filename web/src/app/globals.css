@@ -197,6 +197,7 @@ code { font-size: 0.92em; padding: 0 var(--space-2xs); background: var(--color-p
 .stk-chip[data-tone="down"] { color: var(--color-down); border-color: var(--color-down); background: var(--tint-down); }
 .stk-chip[data-tone="warn"] { color: var(--color-warn); border-color: var(--color-warn); background: var(--tint-warn); }
 .stk-chip[data-tone="info"] { color: var(--color-info); border-color: var(--color-info); background: var(--tint-info); }
+.stk-chip[data-tone="muted"] { color: var(--color-muted); }
 .stk-chips { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
 
 /* Tables: the ledger */
@@ -529,3 +530,17 @@ dialog.stk-dialog::backdrop { background: var(--color-scrim); }
 .stk-tries { font-size: var(--text-lg); font-weight: 600; }
 .stk-nowrap { white-space: nowrap; }
 .stk-stat-note { grid-column: 4; }  /* a note that belongs to the fourth tile of a stat row */
+
+/* The holdings desk page (HD 10): the chart and the suggestion side by side on a wide screen, stacked below 1280 px. */
+.stk-desk-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap-columns); align-items: start; }
+@media (min-width: 80rem) { .stk-desk-top { grid-template-columns: minmax(0, 8fr) minmax(0, 4fr); } }
+.stk-desk-verdict { font-size: var(--text-display); font-weight: 600; line-height: 1.1; }
+.stk-kv dd[data-plain] { font-family: var(--font-body); }  /* words, not a figure */
+.stk-desk-sides { display: flex; flex-direction: column; gap: var(--space-xs); margin: 0; font-size: var(--text-sm); }
+.stk-desk-sides dd { margin: 0; color: var(--color-ink-2); }
+/* A link set as a state word keeps the state's colour (a verdict in the Portfolio list). */
+.stk-link.stk-up { color: var(--color-up); }
+.stk-link.stk-down { color: var(--color-down); }
+.stk-link.stk-warn { color: var(--color-warn); }
+.stk-link.stk-muted { color: var(--color-muted); }
+.stk-table td.stk-desk-why { min-width: 18rem; }  /* the rule's note stays readable in a narrow window */

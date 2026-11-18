@@ -68,6 +68,7 @@ class BackupCase(SandboxedDBTest):
         self.addCleanup(shutil.rmtree, self.lab, ignore_errors=True)
         make_db(paths.refdata_db()).close()
         make_db(paths.lab_db(), rows=3).close()
+        make_db(paths.desk_db(), rows=2).close()          # the holdings desk's store (HD 12: bounded, so backed up)
         self.fin = paths.journal_file("s1", DAY)
         w = writer(self.fin)
         w.append(clock_records(5))
@@ -108,6 +109,7 @@ class CopyTests(BackupCase):
         snap = self.target / "snapshots" / "2026-11-11"
         self.assertEqual(count(snap / "refdata.sqlite"), 5)
         self.assertEqual(count(snap / "lab.sqlite"), 3)
+        self.assertEqual(count(snap / "desk.sqlite"), 2)
         files = self.target / "files"
         for src in (self.fin, Path(str(self.fin) + ".crc"), self.arch, self.raw, self.elm,
                     paths.journals_dir("s1") / "20261111.bundle.json"):
@@ -122,11 +124,11 @@ class CopyTests(BackupCase):
         first = self.run_backup()
         second = self.run_backup()
         self.assertEqual(second.errors, [])
-        self.assertEqual(second.copied, 2)                      # the two databases are snapshotted each run
-        self.assertEqual(second.skipped, first.copied - 2)
+        self.assertEqual(second.copied, 3)                      # the three databases are snapshotted each run
+        self.assertEqual(second.skipped, first.copied - 3)
         self.raw.write_text("a,b\n1,3\n", encoding="utf-8")
         third = self.run_backup()
-        self.assertEqual(third.copied, 3)                        # the changed file, and the two databases
+        self.assertEqual(third.copied, 4)                        # the changed file, and the three databases
         self.assertEqual(sha(self.target / "files" / self.raw.relative_to(self.lab)), sha(self.raw))
 
     def test_a_backed_up_file_that_went_missing_is_copied_again(self):
@@ -188,9 +190,9 @@ class SqliteTests(BackupCase):
             return real(database, *a, **k)
         with mock.patch.object(sqlite3, "connect", spy):
             self.run_backup()
-        lab_opens = [s for s in seen if "refdata.sqlite" in s[0] or "lab.sqlite" in s[0]
+        lab_opens = [s for s in seen if any(n in s[0] for n in ("refdata.sqlite", "lab.sqlite", "desk.sqlite"))
                      if str(self.target) not in s[0]]
-        self.assertEqual(len(lab_opens), 2)
+        self.assertEqual(len(lab_opens), 3)
         for name, uri in lab_opens:
             self.assertTrue(uri and "mode=ro" in name, name)
 

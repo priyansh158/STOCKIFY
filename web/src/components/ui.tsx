@@ -134,7 +134,7 @@ export function Field({ label, help, children }: { label: string; help?: string;
   );
 }
 
-export function Chip({ children, tone }: { children: ReactNode; tone?: "up" | "down" | "warn" | "info" }) {
+export function Chip({ children, tone }: { children: ReactNode; tone?: "up" | "down" | "warn" | "info" | "muted" }) {
   return (
     <span className="stk-chip" data-tone={tone}>
       {children}

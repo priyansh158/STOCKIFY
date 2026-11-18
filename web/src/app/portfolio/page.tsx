@@ -1,24 +1,26 @@
 import { api } from "@/lib/api";
 import { rupeesFloat } from "@/lib/format";
-import type { PortfolioSnapshot, KiteStatus } from "@/lib/types";
+import type { DeskListDTO, PortfolioSnapshot, KiteStatus } from "@/lib/types";
 import { PageHead, Panel, Stat, StatGrid } from "@/components/ui";
 import { PortfolioActions } from "./PortfolioActions";
-import { HoldingsList } from "./HoldingsList";
+import { DeskLastViews, HoldingsList } from "./HoldingsList";
 
 export const dynamic = "force-dynamic";
 
-async function loadData(): Promise<{ status: KiteStatus | null; snap: PortfolioSnapshot | null }> {
+async function loadData(): Promise<{ status: KiteStatus | null; snap: PortfolioSnapshot | null; desk: DeskListDTO | null }> {
   // status is null when the API itself could not be reached: that is not the same as "Kite is not set up".
   const status = await api<KiteStatus>("/api/kite/status").catch(() => null);
   let snap: PortfolioSnapshot | null = null;
   if (status?.authenticated) {
     snap = await api<PortfolioSnapshot>("/api/portfolio/snapshot").catch(() => null);
   }
-  return { status, snap };
+  // the desk's verdict per holding; logged out, its last closing verdicts. Null when it cannot be read.
+  const desk = status ? await api<DeskListDTO>("/api/desk").catch(() => null) : null;
+  return { status, snap, desk };
 }
 
 export default async function PortfolioPage() {
-  const { status, snap } = await loadData();
+  const { status, snap, desk } = await loadData();
 
   return (
     <div className="stk-page">
@@ -62,6 +64,8 @@ export default async function PortfolioPage() {
           </Panel>
         )}
 
+        {status && status.configured && !status.authenticated && <DeskLastViews desk={desk} />}
+
         {status?.authenticated && !snap && (
           <Panel tone="red">
             <p role="alert">
@@ -90,7 +94,7 @@ export default async function PortfolioPage() {
               </StatGrid>
             </Panel>
 
-            <HoldingsList initial={snap.holdings} />
+            <HoldingsList initial={snap.holdings} desk={desk} />
           </>
         )}
       </div>

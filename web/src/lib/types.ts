@@ -959,4 +959,62 @@ export interface ResearchLimitsDTO {
   wf_objective: string;
   holdout_from?: string | null;
 }
+
+// Holdings desk (HD 9, 12): verdict chips, one holding's view, as of the latest close. Never the owner's cost or P&L.
+export interface DeskChipDTO {
+  symbol: string;
+  exchange: string;
+  instrument_id: number;
+  verdict: string;
+  as_of_ns: number;
+  close_date?: string | null;
+  holding_symbol?: string | null;
+  holding_exchange?: string | null;
+}
+
+export interface DeskSkipDTO {
+  symbol: string;
+  reason: string;
+}
+
+export interface DeskListDTO {
+  items: DeskChipDTO[];
+  skipped: DeskSkipDTO[];
+  plain?: string | null;
+}
+
+export type DeskGrade = "strong" | "some" | "weak" | "none";
+
+export interface DeskSignalDTO {
+  display_name: string;
+  in_position: boolean;
+  buying_today: boolean;
+  exit_level_paise?: number | null;
+  grade: DeskGrade;
+  trades?: number | null;
+  windows_won?: number | null;
+  windows_total?: number | null;
+  cagr?: number | null;
+  buy_hold_cagr?: number | null;
+  note: string;
+}
+
+export interface DeskViewDTO {
+  symbol: string;
+  instrument_id: number;
+  verdict: string;
+  exit_share: number;
+  nearest_exit_paise?: number | null;
+  price_paise: number;
+  counts: string;
+  reasons: string[];
+  agree: string[];
+  disagree: string[];
+  signals: DeskSignalDTO[];
+  evidence_from?: string | null;
+  evidence_to?: string | null;
+  as_of_ns: number;
+  close_date?: string | null;
+  plain: string;
+}
 // </block>

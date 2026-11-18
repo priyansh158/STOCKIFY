@@ -78,6 +78,8 @@ export type PriceChartProps = {
   hideTradesList?: boolean;
   /** Said, as a plain note and not an error, when the server has no chart yet (it answers "not found"): a session that has not started. */
   notFoundNote?: string;
+  /** Drop the "made no trades" line: a chart that never has trades (the holdings desk draws only levels). */
+  noTrades?: boolean;
 };
 
 const PAGE_BARS = 2000;
@@ -120,7 +122,7 @@ function visibleSeconds(t: Time): number {
   return Date.UTC(t.year, t.month - 1, t.day) / 1000 - istShift;
 }
 
-export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false, notFoundNote }: PriceChartProps) {
+export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMarkerId, onMarkerClick, headingLevel = 3, hideTradesList = false, notFoundNote, noTrades = false }: PriceChartProps) {
   const Heading = headingLevel === 2 ? "h2" : "h3";
   const boxRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -666,7 +668,7 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
           {prunedWords(meta?.data_state ?? "pruned", Boolean(paperBadge), Boolean(meta?.live))}
         </p>
       )}
-      {state === "empty" && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}
+      {state === "empty" && !noTrades && <p className="stk-pricechart-empty">{paperBadge ? "This session made no trades." : "This run made no trades."}</p>}
 
       <div hidden={!drawable} className="stk-pricechart-stage">
         <div ref={boxRef} className="stk-pricechart-canvas" role="img" aria-label={summary} />

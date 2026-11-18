@@ -1473,3 +1473,9 @@ M5.13 and Task 26 step 6 are therefore closed, and M5 Definition of done item (e
 The M6 owner list above is replaced by this one. Its "push, only on the owner's word" item is done: GitHub `main` holds
 the platform. Its two page-review items (a look at each page at 1024 px, and the chart attribution) led to D-135 to D-148
 and D-141; no separate sign-off is recorded here.
+
+## 2026-11-17 - the holdings desk (HD 11.1, D-152)
+
+- New module `stockify/desk/`: `store` (the desk's own SQLite, `paths.desk_db()`), `evidence` (nightly grading through `stockify.oracle.run`, no `runs` rows), `replay` (a rule's current state via a light replay context), `thesis` (the verdict table), `nightly` (the daemon's `desk` job). HD 12 (the owner's pivot) removed the option chain and option ideas (`chain`, `ideas`) and the API's session poller: the desk is day by day, after the session. API in `server/routers/desk.py`; the page is `web/src/app/portfolio/[symbol]/`.
+- Seven swing strategies were added to `stockify/strategies/` (EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend, Chandelier Exit); shared helpers are in `_swing.py`.
+- `desk` is a catch-up job in `stockify/config/schedule.json` (20:10 IST, retry 30 minutes, until 23:30) and in `HELD_DURING_SESSION`.

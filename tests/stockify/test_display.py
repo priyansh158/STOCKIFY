@@ -131,7 +131,9 @@ class CatalogueNameTests(unittest.TestCase):
         self.assertEqual(by_ref, {
             "BuyAndHold": "Buy and Hold", "EodShortStraddle": "End-of-Day Short Straddle", "IronFly": "Iron Fly",
             "OpeningRangeBreakout": "Opening Range Breakout", "ShortStraddleStop": "Short Straddle with Stop",
-            "SmaCross": "SMA Crossover"})
+            "SmaCross": "SMA Crossover", "RsiPullback": "RSI Pullback", "MacdCross": "MACD Crossover",
+            "BollingerReversion": "Bollinger Reversion", "DonchianBreakout": "Donchian Breakout",
+            "Supertrend": "Supertrend", "EmaTrend": "EMA Trend", "ChandelierExit": "Chandelier Exit"})
 
     def test_a_ref_without_a_declared_name_is_humanized(self):
         self.assertEqual(_catalogue.display_name_of("python", "my_scripts.mean_reversion:MeanReversion"), "Mean Reversion")

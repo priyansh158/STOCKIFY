@@ -28,6 +28,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from server.routers import (
     alerts,
     data as data_router,
+    desk as desk_router,
     kite as kite_router,
     portfolio,
     research as research_router,
@@ -129,3 +130,4 @@ app.include_router(tests_router.router)
 app.include_router(research_router.router)
 app.include_router(jobs_router.router)
 app.include_router(trade_router.router)
+app.include_router(desk_router.router)
