@@ -72,3 +72,15 @@ https://www.nseindia.com/companies-listing/corporate-filings-event-calendar (200
 Without the range parameters the same endpoint answered 13 items (the next few days only), so the range is needed.
 Purposes seen: "Financial Results", "Financial Results/Other business matters", "Other business matters",
 "Fund Raising", "Buyback", "Bonus/Other business matters".
+
+## EPS check filings (FS 13.5)
+
+Copied byte for byte on 2026-11-19 from the lab's raw store (`nse/raw/fundamentals/xbrl/`), where the fundamentals
+download had saved them on 2026-11-19 (each sha256 equals the one the filings table recorded). All three were held
+with "EPS times shares ... differs from profit attributable to owners ... by more than 2 %".
+
+| file | URL | what it is | sha256 |
+|------|-----|------------|--------|
+| `xbrl_KPRMILL_2023-09-30_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_99054_978369_07112023122444.xml | 74,140 bytes; Ind AS, quarter ended 30-Sep-2023, consolidated; profit for the period ₹201.84 crore but `ProfitOrLossAttributableToOwnersOfParent` and `...NonControllingInterests` both filed as 0.00 (no split filed) | e6018459e98b354f0e52c02b38aef4e86642127446bc64b5d7338a243d45d1f8 |
+| `xbrl_RKFORGE_2023-09-30_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_97741_962424_20102023015115.xml | 68,173 bytes; Ind AS, quarter ended 30-Sep-2023, consolidated; EPS 5.14 × period-end shares = ₹84.55 crore against ₹82.20 crore to owners (2.8 %: weighted-average shares) | 552d3df1decf092682fcef3d54751d806420524c731c59763f38f7b2178422aa |
+| `xbrl_INDHOTEL_2022-03-31_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INDAS_83691_648899_28042022011324_WEB.xml | 42,424 bytes; Ind AS, quarter and year ended 31-Mar-2022, consolidated; EPS 0.56 × period-end shares = ₹79.54 crore against ₹74.19 crore to owners (6.7 %: rights issue during the quarter) | 3007a814c155374e4384b60054709fcc52df49251fa02b01c0d395096a1eafdb |

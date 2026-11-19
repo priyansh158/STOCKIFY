@@ -275,7 +275,7 @@ class ChecksTests(SandboxedDBTest):
         f = self.base() | {"eps_basic": 1700}
         self.assertEqual(xbrl.check(f, period_kind="Q"),
                          ["EPS times shares (₹170.00 crore) differs from profit attributable to owners "
-                          "(₹150.00 crore) by more than 2 %"])
+                          "(₹150.00 crore) by more than 10 %"])
         f = self.base()
         del f["revenue_ops"]
         problems = xbrl.check(f, period_kind="Q")

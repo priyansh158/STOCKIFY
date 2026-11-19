@@ -395,6 +395,14 @@ class _Parser:
                 res.raw.pop(name, None)
         if res.fields.get("operating_cash_flow") == 0:
             del res.fields["operating_cash_flow"], res.raw["operating_cash_flow"]
+        if res.fields.get("profit_owners") == 0 and res.fields.get("net_profit"):
+            # Owners filed as 0 against a non-zero profit (KPRMILL, SAIL, CRISIL ...): the split was not filed, so
+            # owners = profit - minority (minority 0 or absent: the whole profit).
+            nci = self.one("ProfitOrLossAttributableToNonControllingInterests", ctx_for["flow"], False,
+                           "profit_owners", quiet=True)
+            res.fields["profit_owners"] = res.fields["net_profit"] - (nci[0] if nci else 0)
+            res.raw["profit_owners"] = ("= net_profit - " + nci[1] if nci and nci[0] else "= net_profit") \
+                + " (owners filed as 0)"
         if self.basis == "standalone" and "profit_owners" not in res.fields and "net_profit" in res.fields:
             res.fields["profit_owners"] = res.fields["net_profit"]
             res.raw["profit_owners"] = "= net_profit (standalone)"
