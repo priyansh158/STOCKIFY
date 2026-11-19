@@ -153,9 +153,9 @@
   "checks": {
     "profit_pct": "0.01",
     "income_pct": "0.01",
-    "eps_pct": "0.02",
+    "eps_pct": "0.10",
     "quarters_pct": "0.01",
-    "note": "Tolerances are fractions of the larger side; on top of them each compared total gets one rounding step of the filing per term it adds (Rs 1 crore when figures are rounded to crores)."
+    "note": "Tolerances are fractions of the larger side; on top of them each compared total gets one rounding step of the filing per term it adds (Rs 1 crore when figures are rounded to crores). eps_pct is wide (FS 13.5): EPS uses weighted-average shares, paid-up / face value period-end shares, so share issues, rights and ESOP-trust shares put real filings 3-10 % apart (RKFORGE Q2 FY24 2.8 %, INDHOTEL Q4 FY22 6.7 %); the check is for scale slips (100x, lakhs read as crores), and anything 1.5x or more apart still holds."
   },
   "rounding_levels": {
     "Crores": 1000000000,
