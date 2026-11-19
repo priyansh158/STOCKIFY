@@ -7,7 +7,8 @@ Flow:
      POST /api/kite/exchange with the request_token — see below).
   3. /api/kite/exchange exchanges request_token → access_token, persists
      the token to disk, returns success.
-  4. /api/kite/status is a cheap auth-state probe.
+  4. /api/kite/status is a cheap auth-state probe: a stored, fresh token, then (at most once a minute per login)
+     one profile() call to Kite, so a token Zerodha refused reads as expired, not logged in.
 
 `/api/kite/callback` is kept as a GET passthrough that 302-redirects back to
 the Next.js `/kite/callback` page (with `?status=ok|err` flags) so the user's
@@ -15,6 +16,7 @@ browser ends up on a friendly UI page, not a JSON response.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -118,16 +120,27 @@ async def logout() -> dict:
 
 @router.get("/status")
 async def status() -> dict:
-    """Cheap auth-state check — safe to call frequently."""
+    """Is the Kite login usable? Safe to call often: Kite itself is asked at most once a minute per login
+    (`kite_client.login_validity`, in a thread). `expired`: a login was made but no longer works (Kite refused the
+    token, or it is past the 06:00 IST expiry). A network failure keeps the stored answer."""
     try:
+        configured = kite_client.is_enabled()
         authenticated = kite_client.is_authenticated()
+        expired = False
+        if authenticated:
+            if await asyncio.to_thread(kite_client.login_validity) == "rejected":
+                authenticated, expired = False, True
+        elif configured:
+            expired = kite_client.has_stale_token()
         return {
-            "configured":    kite_client.is_enabled(),
+            "configured":    configured,
             "authenticated": authenticated,
+            "expired":       expired,
             "daemon_waiting_for_login": _daemon_waiting_for_login(),
         }
     except Exception as e:
-        return {"configured": False, "authenticated": False, "daemon_waiting_for_login": False, "error": str(e)}
+        return {"configured": False, "authenticated": False, "expired": False, "daemon_waiting_for_login": False,
+                "error": type(e).__name__}
 
 
 def _daemon_waiting_for_login() -> bool:

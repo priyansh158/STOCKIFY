@@ -627,6 +627,171 @@ class RestWrapperTests(KiteClientTest):
             with self.assertRaises(kite_client.KiteAuthError):
                 kite_client.holdings()
 
+    def test_holdings_turns_the_sdks_token_rejection_into_an_auth_error(self):
+        """2026-11-18: a TokenException was swallowed into [] and read as "no holdings"."""
+        fake = _FakeClient(holdings=SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))
+        for strict in (False, True):
+            with self.subTest(strict=strict), patch.object(kite_client, "get_client", return_value=fake):
+                with self.assertRaises(kite_client.KiteTokenRejected) as cm:
+                    kite_client.holdings(strict=strict)
+                self.assertNotIn("access_token", str(cm.exception))
+                self.assertIsNone(cm.exception.__cause__)
+
+    def test_positions_turns_the_sdks_token_rejection_into_an_auth_error(self):
+        fake = _FakeClient(positions=SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))
+        with patch.object(kite_client, "get_client", return_value=fake):
+            with self.assertRaises(kite_client.KiteTokenRejected):
+                kite_client.positions()
+
+    def test_strict_holdings_raises_a_network_failure_instead_of_returning_empty(self):
+        with patch.object(kite_client, "get_client", return_value=_FakeClient(holdings=OSError("timed out"))):
+            with self.assertRaises(OSError):
+                kite_client.holdings(strict=True)
+            self.assertEqual(kite_client.holdings(), [])
+
+
+# kiteconnect's typed error, by class name and module (the SDK itself is absent in tests)
+SDK_TOKEN_ERROR = type("TokenException", (Exception,), {"__module__": "kiteconnect.exceptions"})
+
+
+class _FakeClient:
+    """A Kite client whose calls return or raise what it was given, and count themselves."""
+
+    def __init__(self, **answers):
+        self.answers = answers
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):  # noqa: ANN204
+        if name.startswith("_") or name not in self.answers:
+            raise AttributeError(name)
+
+        def call(*a, **k):  # noqa: ANN002, ANN003, ANN202
+            self.calls.append(name)
+            answer = self.answers[name]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+        return call
+
+
+class LoginValidityTests(KiteClientTest):
+    """`login_validity`: one cheap profile() per login per minute says whether Kite still accepts the token."""
+
+    def setUp(self):
+        super().setUp()
+        self.enable_kite()
+        kite_client.reset_login_validity()
+        self.addCleanup(kite_client.reset_login_validity)
+        self.save("tok-one")
+        self.clock = [1000.0]
+        p = patch.object(kite_client, "_monotonic", side_effect=lambda: self.clock[0])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def save(self, token: str) -> None:
+        kite_client.save_token({"access_token": token, "obtained_at": int(time.time()),
+                                "api_key_fingerprint": kite_client._api_key_fingerprint()})
+
+    def check(self, fake):  # noqa: ANN001
+        with patch.object(kite_client, "get_client", return_value=fake):
+            return kite_client.login_validity()
+
+    def test_accepted_token_is_ok(self):
+        self.assertEqual(self.check(_FakeClient(profile={"user_id": "AB1234"})), "ok")
+
+    def test_rejected_token_is_rejected(self):
+        self.assertEqual(self.check(_FakeClient(profile=SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))),
+                         "rejected")
+
+    def test_a_network_failure_is_unknown_not_rejected(self):
+        self.assertEqual(self.check(_FakeClient(profile=OSError("timed out"))), "unknown")
+
+    def test_the_answer_is_cached_for_a_minute(self):
+        fake = _FakeClient(profile={"user_id": "AB1234"})
+        self.check(fake)
+        self.clock[0] += 59
+        self.check(fake)
+        self.assertEqual(fake.calls, ["profile"])
+        self.clock[0] += 2
+        self.check(fake)
+        self.assertEqual(fake.calls, ["profile", "profile"])
+
+    def test_a_new_login_is_checked_again(self):
+        bad = _FakeClient(profile=SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))
+        self.assertEqual(self.check(bad), "rejected")
+        self.save("tok-two")
+        self.assertEqual(self.check(_FakeClient(profile={"user_id": "AB1234"})), "ok")
+
+    def test_a_rejection_seen_elsewhere_is_remembered(self):
+        with patch.object(kite_client, "get_client",
+                          return_value=_FakeClient(holdings=SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))):
+            with self.assertRaises(kite_client.KiteTokenRejected):
+                kite_client.holdings()
+        fake = _FakeClient(profile={"user_id": "AB1234"})
+        self.assertEqual(self.check(fake), "rejected")
+        self.assertEqual(fake.calls, [])
+
+    def test_no_check_without_a_fresh_login(self):
+        kite_client.clear_token()
+        with patch.object(kite_client, "get_client", side_effect=AssertionError("must not build a client")):
+            self.assertEqual(kite_client.login_validity(), "unknown")
+
+    def test_has_stale_token(self):
+        self.assertFalse(kite_client.has_stale_token())
+        kite_client.save_token({"access_token": "old", "obtained_at": 1,
+                                "api_key_fingerprint": kite_client._api_key_fingerprint()})
+        self.assertTrue(kite_client.has_stale_token())
+        kite_client.clear_token()
+        self.assertFalse(kite_client.has_stale_token())
+
+    def test_token_fingerprint_is_a_short_hash_not_the_token(self):
+        fp = kite_client.token_fingerprint()
+        self.assertTrue(fp)
+        self.assertNotIn("tok-one", fp)
+        kite_client.clear_token()
+        self.assertEqual(kite_client.token_fingerprint(), "")
+
+
+@support.requires_fastapi
+class StatusRouteTests(KiteClientTest):
+    """GET /api/kite/status says whether the login is usable, not only whether a token is stored."""
+
+    def status(self, *, authenticated: bool, validity: str = "ok", stale: bool = False) -> dict:
+        import asyncio
+        from server.routers import kite as router
+        with patch.object(kite_client, "is_enabled", return_value=True), \
+             patch.object(kite_client, "is_authenticated", return_value=authenticated), \
+             patch.object(kite_client, "has_stale_token", return_value=stale), \
+             patch.object(kite_client, "login_validity", return_value=validity) as v:
+            got = asyncio.run(router.status())
+        self.validity_calls = v.call_count
+        return got
+
+    def test_an_accepted_login_is_authenticated(self):
+        got = self.status(authenticated=True)
+        self.assertEqual((got["authenticated"], got["expired"]), (True, False))
+
+    def test_a_rejected_login_is_expired_not_authenticated(self):
+        got = self.status(authenticated=True, validity="rejected")
+        self.assertEqual((got["configured"], got["authenticated"], got["expired"]), (True, False, True))
+
+    def test_a_network_failure_keeps_the_stored_answer(self):
+        got = self.status(authenticated=True, validity="unknown")
+        self.assertEqual((got["authenticated"], got["expired"]), (True, False))
+
+    def test_no_check_without_a_login(self):
+        got = self.status(authenticated=False)
+        self.assertEqual((got["authenticated"], got["expired"]), (False, False))
+        self.assertEqual(self.validity_calls, 0)
+
+    def test_a_login_past_the_morning_expiry_is_expired(self):
+        got = self.status(authenticated=False, stale=True)
+        self.assertEqual((got["authenticated"], got["expired"]), (False, True))
+
+    def test_the_fields(self):
+        self.assertEqual(set(self.status(authenticated=True)),
+                         {"configured", "authenticated", "expired", "daemon_waiting_for_login"})
+
 
 if __name__ == "__main__":
     unittest.main()

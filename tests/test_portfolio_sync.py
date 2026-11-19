@@ -16,6 +16,10 @@ import portfolio_sync
 from portfolio_sync import Holding, PortfolioSnapshot
 
 
+# kiteconnect's typed error, by class name and module (the SDK itself is absent in tests)
+SDK_TOKEN_ERROR = type("TokenException", (Exception,), {"__module__": "kiteconnect.exceptions"})
+
+
 def holding(**kw) -> Holding:
     base = dict(
         tradingsymbol="RELIANCE",
@@ -171,7 +175,67 @@ class FetchSnapshotTests(PortfolioSyncTest):
              patch.object(portfolio_sync.kite_client, "holdings",
                           side_effect=RuntimeError("holdings 500")):
             snap = portfolio_sync.fetch_snapshot()
-        self.assertIn("holdings 500", snap.error)
+        self.assertEqual(snap.error, portfolio_sync.UNAVAILABLE)      # a plain sentence, not the raw error text
+        self.assertFalse(snap.expired)
+        self.assertEqual(snap.holdings, [])
+
+    def test_holdings_are_asked_for_strictly(self):
+        """The non-strict wrapper turns a network failure into [], which would read as "no holdings"."""
+        with patch.object(portfolio_sync.kite_client, "is_authenticated", return_value=True), \
+             patch.object(portfolio_sync.kite_client, "holdings", return_value=[]) as h, \
+             patch.object(portfolio_sync.kite_client, "positions", return_value={"net": []}):
+            portfolio_sync.fetch_snapshot()
+        h.assert_called_once_with(strict=True)
+
+
+class RejectedLoginTests(PortfolioSyncTest):
+    """2026-11-18: Kite refused the stored token and the page showed "No holdings." instead of "log in again"."""
+
+    def fetch_raising(self, exc):  # noqa: ANN001
+        with patch.object(portfolio_sync.kite_client, "is_authenticated", return_value=True), \
+             patch.object(portfolio_sync.kite_client, "holdings", side_effect=exc), \
+             patch.object(portfolio_sync.kite_client, "positions", return_value={"net": []}):
+            return portfolio_sync.fetch_snapshot()
+
+    def test_an_sdk_token_exception_is_an_expired_login_not_empty_holdings(self):
+        snap = self.fetch_raising(SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))
+        self.assertTrue(snap.expired)
+        self.assertEqual(snap.error, portfolio_sync.EXPIRED)
+        self.assertIn("Log in again", snap.error)
+        self.assertEqual(snap.holdings, [])
+
+    def test_the_clients_own_auth_errors_are_an_expired_login(self):
+        for exc in (portfolio_sync.kite_client.KiteTokenRejected("Kite refused the stored login"),
+                    portfolio_sync.kite_client.KiteTokenExpired("past 06:00")):
+            with self.subTest(type(exc).__name__):
+                snap = self.fetch_raising(exc)
+                self.assertTrue(snap.expired)
+                self.assertEqual(snap.error, portfolio_sync.EXPIRED)
+
+    def test_a_403_is_an_expired_login(self):
+        exc = RuntimeError("Forbidden")
+        exc.code = 403
+        self.assertTrue(self.fetch_raising(exc).expired)
+
+    def test_the_error_never_carries_the_raw_text(self):
+        snap = self.fetch_raising(SDK_TOKEN_ERROR("access_token=SECRET123tok rejected"))
+        self.assertNotIn("SECRET123tok", snap.error)
+
+    def test_a_new_login_does_not_reuse_the_rejected_snapshot(self):
+        with patch.object(portfolio_sync.kite_client, "token_fingerprint", return_value="old"):
+            self.fetch_raising(SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))
+        fresh = PortfolioSnapshot(fetched_at=int(time.time()))
+        with patch.object(portfolio_sync.kite_client, "token_fingerprint", return_value="new"), \
+             patch.object(portfolio_sync, "fetch_snapshot", return_value=fresh) as m:
+            self.assertIs(portfolio_sync.cached_snapshot(60), fresh)
+        m.assert_called_once()
+
+    def test_the_same_login_reuses_its_cached_snapshot(self):
+        with patch.object(portfolio_sync.kite_client, "token_fingerprint", return_value="same"):
+            first = self.fetch_raising(SDK_TOKEN_ERROR("Incorrect `api_key` or `access_token`."))
+            with patch.object(portfolio_sync, "fetch_snapshot") as m:
+                self.assertIs(portfolio_sync.cached_snapshot(60), first)
+            m.assert_not_called()
 
 
 class CacheTests(PortfolioSyncTest):

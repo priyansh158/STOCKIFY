@@ -49,6 +49,7 @@ class PortfolioSnapshotDTO(BaseModel):
     fetched_at: int
     stale: bool = False
     error: str | None = None
+    expired: bool = False
 
 
 # ── Kite ─────────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ class PortfolioSnapshotDTO(BaseModel):
 class KiteStatusResponse(BaseModel):
     configured: bool
     authenticated: bool
+    expired: bool = False
     daemon_waiting_for_login: bool = False
     error: str | None = None
 

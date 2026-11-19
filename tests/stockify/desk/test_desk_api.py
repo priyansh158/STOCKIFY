@@ -264,6 +264,16 @@ class DegradeTests(DeskApiBase):
         self.assertEqual(self.kite.calls, [])
 
 
+    def test_an_expired_login_says_so_and_claims_nothing_is_ungraded(self):
+        self.snap = snapshot([], error=portfolio_sync.EXPIRED)
+        self.snap.expired = True
+        body = self.get("/api/desk")
+        self.assertEqual(sorted(c["symbol"] for c in body["items"]), ["INFY", "TCS"])
+        self.assertEqual(body["skipped"], [])
+        self.assertIn("expired", body["plain"])
+        self.assertNotIn("not graded", body["plain"])
+
+
 class BseHeldTests(DeskApiBase):
     """I-1: a stock held through BSE and listed on NSE is the NSE stock everywhere."""
 
