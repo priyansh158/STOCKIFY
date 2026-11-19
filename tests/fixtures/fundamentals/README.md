@@ -60,6 +60,18 @@ standalone) is the Task 2 pair `xbrl_RELIANCE_20241231_*.xml` above, the same by
 | `xbrl_HDFCBANK_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_BANKING_1740913_17102026054812_WEB.xml | 80,749 bytes; integrated filing (IFBanking V2.1), quarter ended 30-Sep-2026, consolidated | 41840bebf50eacb915fe9ddd2d7cd2bace3d6fffdaa0898a482bd56ddd94aa3b |
 | `xbrl_BAJFINANCE_20260930_integrated_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_NBFC_INDAS_1742040_19102026075918_WEB.xml | 57,385 bytes; integrated filing (IFNBFC V2.1), quarter ended 30-Sep-2026, consolidated | 3de881019f229f5fde8d2aa113ea1c71304f5225ebe6a4d192b5f4a65f54ea34 |
 | `xbrl_RELIANCE_20241231_standalone_broken.xml` | (made here) | a copy of `xbrl_RELIANCE_20241231_standalone.xml` (above, from Task 2) with the quarter's ProfitBeforeTax raised from 115970000000.00 to 125970000000.00 (₹1,000 crore), so profit after tax no longer equals profit before tax minus tax | 0fe2abb77764a53cdd9c001b292609456f5ae7f2d51c48c942699202d5d1e2ac |
+## Integrated filings on the 2025 schema (FS 13.4)
+
+Copied on 2026-11-19 (read only) from the lab's raw XBRL folder (`nse\raw\fundamentals\xbrl\2025\`), where the
+fundamentals backfill had saved them from nsearchives; byte for byte, sha256 equal to the store's `xbrl_sha256`.
+Both are integrated filings made before SEBI's 2026 taxonomy (`in-capmkt-ent-2025-01-31.xsd`), quarter and year
+ended 31-Mar-2025 (the Q4 and Annual listings share the file).
+
+| file | URL | what it is | sha256 |
+|------|-----|------------|--------|
+| `xbrl_MRF_20250331_integrated2025_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_INDAS_1433671_08052025111355_WEB.xml | 44,649 bytes; comment `<!--IFFIndAs-->`, Ind AS element names, rounding Crores, consolidated | ad2c304e2269392dbafe16dfffa87f8281c3d775861cf8ed0d6c6d04c9f74533 |
+| `xbrl_BANKINDIA_20250331_integrated2025_consolidated.xml` | https://nsearchives.nseindia.in/corporate/xbrl/INTEGRATED_FILING_BANKING_1435260_09052025072716_WEB.xml | 59,944 bytes; comment `<!--FRBanking-->`, banking element names, rounding Lakhs, consolidated | d0dc62048c674431e4c2be503a2418a64a36e6b86cc0883c0c1b8925a879d76e |
+
 ## Event calendar (FS 7)
 
 Fetched on 2026-11-17 (IST) the same way, after a warm-up GET of

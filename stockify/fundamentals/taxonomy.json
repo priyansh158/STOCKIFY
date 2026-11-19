@@ -1,6 +1,6 @@
 {
   "schema": "stockify.fundamentals.taxonomy/1",
-  "note": "Element local-names (namespace ignored) per field, per NSE results format, read from real filings saved under tests/fixtures/fundamentals (2026-11-17). Each field lists candidate elements in order (the first one filed in the filing's own period wins) or a sum of parts (all parts must be filed). period: 'flow' = the filing's own quarter / half year / year, 'ytd' = the financial year to date, read only for an H or A filing whose own period it is (the cash flow statement is filed only year to date, so a quarterly row never carries it), 'instant' = the period-end balance sheet. kind: 'money' (INR, converted to paise) or 'per_share' (INR per share, converted to paise per share). A family matches a filing by its schemaRef file name; the integrated filings (2025 on, SEBI's in-capmkt taxonomy) share one schemaRef for every format, so they are told apart by the generator's comment at the top of the file (e.g. '<!--IFIndAs V2.1 (26-06-2026)-->'), or failing that by the XBRL file name's prefix on nsearchives. A format that matches nothing here has no map: its filings are held.",
+  "note": "Element local-names (namespace ignored) per field, per NSE results format, read from real filings saved under tests/fixtures/fundamentals (2026-11-17). Each field lists candidate elements in order (the first one filed in the filing's own period wins) or a sum of parts (all parts must be filed). period: 'flow' = the filing's own quarter / half year / year, 'ytd' = the financial year to date, read only for an H or A filing whose own period it is (the cash flow statement is filed only year to date, so a quarterly row never carries it), 'instant' = the period-end balance sheet. kind: 'money' (INR, converted to paise) or 'per_share' (INR per share, converted to paise per share). A family matches a filing by its schemaRef file name; the integrated filings (2025 on, SEBI's in-capmkt taxonomy) share one schemaRef for every format, so they are told apart by the generator's comment at the top of the file (e.g. '<!--IFIndAs V2.1 (26-06-2026)-->'; earlier filings on in-capmkt-ent-2025-01-31.xsd use the same element names under the comments 'IFIndAs V1.x', 'IFFIndAs', 'IFBanking V1.x', 'FRBanking', 'IFNBFC V1.x', 'FRNBFC'), or failing that by the XBRL file name's prefix on nsearchives. A format that matches nothing here has no map: its filings are held.",
   "families": {
     "indas": {
       "label": "Ind AS (companies other than banks and NBFCs)",
@@ -11,6 +11,16 @@
         {
           "schema_ref": "in-capmkt-ent-2026-01-31.xsd",
           "marker": "IFIndAs",
+          "url_prefix": "INTEGRATED_FILING_INDAS"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2025-01-31.xsd",
+          "marker": "IFIndAs",
+          "url_prefix": "INTEGRATED_FILING_INDAS"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2025-01-31.xsd",
+          "marker": "IFFIndAs",
           "url_prefix": "INTEGRATED_FILING_INDAS"
         }
       ],
@@ -51,6 +61,16 @@
           "schema_ref": "in-capmkt-ent-2026-01-31.xsd",
           "marker": "IFBanking",
           "url_prefix": "INTEGRATED_FILING_BANKING"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2025-01-31.xsd",
+          "marker": "IFBanking",
+          "url_prefix": "INTEGRATED_FILING_BANKING"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2025-01-31.xsd",
+          "marker": "FRBanking",
+          "url_prefix": "INTEGRATED_FILING_BANKING"
         }
       ],
       "fields": {
@@ -85,6 +105,16 @@
         {
           "schema_ref": "in-capmkt-ent-2026-01-31.xsd",
           "marker": "IFNBFC",
+          "url_prefix": "INTEGRATED_FILING_NBFC"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2025-01-31.xsd",
+          "marker": "IFNBFC",
+          "url_prefix": "INTEGRATED_FILING_NBFC"
+        },
+        {
+          "schema_ref": "in-capmkt-ent-2025-01-31.xsd",
+          "marker": "FRNBFC",
           "url_prefix": "INTEGRATED_FILING_NBFC"
         }
       ],
