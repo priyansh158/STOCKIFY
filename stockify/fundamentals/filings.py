@@ -55,6 +55,10 @@ STATUSES = ("listed", "downloaded", "parsed", "held")
 COLUMNS = ("filing_id", "symbol", "period_start", "period_end", "period_kind", "basis", "broadcast_ns",
            "broadcast_source", "source", "seq_number", "xbrl_url", "xbrl_sha256", "xbrl_file", "status", "reason")
 
+# An integrated original has broadcast_Date; a correction has it null and carries revised_Date (upper-case month)
+# and creation_Date instead.
+INTEGRATED_TIME_FIELDS = ("broadcast_Date", "revised_Date", "creation_Date")
+
 _MONTHS = {m: n for n, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV",
                                        "DEC"), start=1)}
 _DT = re.compile(r"^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?: (\d{1,2}):(\d{2})(?::(\d{2}))?)?$")
@@ -176,7 +180,7 @@ def parse_integrated(symbol: str, doc: Any, since: date) -> list[dict]:
         if end < since:
             continue
         common = dict(period_end=end.isoformat(), consolidated=e.get("consolidated"),
-                      broadcast=broadcast_of(e, ("broadcast_Date",)), source="integrated", seq=e.get("seq_Id"),
+                      broadcast=broadcast_of(e, INTEGRATED_TIME_FIELDS), source="integrated", seq=e.get("seq_Id"),
                       xbrl=e.get("xbrl"))
         out.append(_row(symbol, period_start=None, period_kind="Q", **common))
         if end.month == 3:                    # the March filing is the year's too: an A row on the same file

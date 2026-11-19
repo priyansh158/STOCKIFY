@@ -13,7 +13,7 @@ from tests.support import SandboxedDBTest
 from stockify import paths, timeutil
 from stockify.daemon.clock import ManualClock
 from stockify.data import nse_files
-from stockify.fundamentals import filings, nse_api, store
+from stockify.fundamentals import filings, nse_api, pit, store
 
 FIX = Path(__file__).resolve().parents[2] / "fixtures" / "fundamentals"
 DAY = date(2026, 11, 17)
@@ -172,6 +172,48 @@ class ListTests(FilingsCase):
         # ... even if NSE gave both the same time and link.
         self.assertNotEqual(filings.filing_id("X", "2024-03-31", "Q", "consolidated", 1, Q3_CONS),
                             filings.filing_id("X", "2024-03-31", "A", "consolidated", 1, Q3_CONS))
+
+    def test_upper_case_month_times_parse(self):
+        self.assertEqual(filings.parse_ist("16-JUL-2026 19:53:03"), timeutil.ist_ns(date(2026, 7, 16), "19:53:03"))
+        self.assertEqual(filings.parse_ist("16-Jul-2026 19:53:06"), timeutil.ist_ns(date(2026, 7, 16), "19:53:06"))
+        self.assertEqual(filings.broadcast_of({"revised_Date": "16-JUL-2026 19:53:03"}, ("revised_Date",)),
+                         (timeutil.ist_ns(date(2026, 7, 16), "19:53:03"), "revised_Date"))
+
+    def _integrated_with_correction(self, revised: str = "02-NOV-2026 19:53:03", created: str = "02-Nov-2026 19:53:06"):
+        """The consolidated Q2 original plus a correction shaped like NSE's: no broadcast_Date, an upper-case
+        revised_Date, a creation_Date, its own sequence id and XBRL file."""
+        doc = json.loads(fixture("filings_integrated_RELIANCE.json"))
+        orig = next(e for e in doc["data"] if e["consolidated"] == "Consolidated" and e["qe_Date"] == "30-SEP-2026")
+        fix = {**orig, "broadcast_Date": None, "revised_Date": revised, "creation_Date": created,
+               "type_Sub": "Revised", "seq_Id": "207999", "xbrl": IF_CONS.replace("1750537", "1750999")}
+        doc["data"].append(fix)
+        return json.dumps(doc).encode()
+
+    def test_integrated_correction_without_broadcast_date_uses_revised_date(self):
+        client, _ = self.client(listing_routes(integrated=self._integrated_with_correction()))
+        filings.list_for("RELIANCE", client=client, since=SINCE)
+        cons = self.rows(period_end="2026-09-30", period_kind="Q", basis="consolidated", source="integrated")
+        fixed = [r for r in cons if r["xbrl_url"] != IF_CONS]
+        self.assertEqual(len(fixed), 1)
+        self.assertEqual((fixed[0]["broadcast_source"], fixed[0]["broadcast_ns"]),
+                         ("revised_Date", timeutil.ist_ns(date(2026, 11, 2), "19:53:03")))
+        self.assertNotIn("no broadcast time", str(fixed[0]["reason"]))
+
+    def test_integrated_creation_date_is_the_last_resort(self):
+        e = {"broadcast_Date": None, "revised_Date": None, "creation_Date": "16-Jul-2026 19:53:06"}
+        self.assertEqual(filings.broadcast_of(e, filings.INTEGRATED_TIME_FIELDS),
+                         (timeutil.ist_ns(date(2026, 7, 16), "19:53:06"), "creation_Date"))
+
+    def test_original_and_its_correction_both_list_original_usable_first(self):
+        client, _ = self.client(listing_routes(integrated=self._integrated_with_correction()))
+        filings.list_for("RELIANCE", client=client, since=SINCE)
+        cons = self.rows(period_end="2026-09-30", period_kind="Q", basis="consolidated", source="integrated")
+        self.assertEqual(len(cons), 2)
+        self.assertEqual(len({r["filing_id"] for r in cons}), 2)
+        by_ns = sorted(cons, key=lambda r: r["broadcast_ns"])
+        self.assertEqual([r["broadcast_source"] for r in by_ns], ["broadcast_Date", "revised_Date"])
+        self.assertEqual(by_ns[0]["xbrl_url"], IF_CONS)
+        self.assertLess(pit.usable_day(by_ns[0]["broadcast_ns"]), pit.usable_day(by_ns[1]["broadcast_ns"]))
 
     def test_blocked_listing_records_nothing(self):
         routes = listing_routes()
