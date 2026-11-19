@@ -451,10 +451,12 @@ def _check_fundamentals(doc: dict) -> None:
     base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
     valuation weights) decimal strings in [0, 1], no two equal as numbers, and `basket_sizes` distinct whole numbers from 5 to 50 and
     at most `top_kept`; `daily_request_budget` a whole number of requests from 1; `filings_from` a YYYY-MM-DD
-    date; each `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
+    date; `session_rotate_requests` (NS 2.1) a whole number from 10 and `session_slow_s` whole seconds from 1 to 600; each
+    `api.<name>` an object {path: "/api/...", warmup: an https://www.nseindia.com/ page}."""
     keys = ("nifty500_list_url", "nifty500_list_fallback_url", "liquidity_floor_paise", "liquidity_days",
             "filings_from", "basket_size", "top_kept", "balances", "basket_sizes", "corporate_action_ratios",
-            "corporate_action_tolerance", "corporate_action_hold_fall", "daily_request_budget", "api")
+            "corporate_action_tolerance", "corporate_action_hold_fall", "daily_request_budget",
+            "session_rotate_requests", "session_slow_s", "api")
     extra = set(doc) - set(keys) - {"schema", "note"}
     if extra:
         raise ConfigError(f"fundamentals.json: unknown keys {sorted(extra)}; known: {list(keys)}")
@@ -478,6 +480,8 @@ def _check_fundamentals(doc: dict) -> None:
     whole(doc["basket_size"], "basket_size", 1, 500)
     whole(doc["top_kept"], "top_kept", 1, 500)
     whole(doc["daily_request_budget"], "daily_request_budget", 1, 100_000)
+    whole(doc["session_rotate_requests"], "session_rotate_requests", 10, 100_000)
+    whole(doc["session_slow_s"], "session_slow_s", 1, 600)
     balances = doc["balances"]
     if (not isinstance(balances, list) or not balances
             or not all(isinstance(b, str) and _SIGNED_DECIMAL.fullmatch(b) and 0 <= Decimal(b) <= 1 for b in balances)

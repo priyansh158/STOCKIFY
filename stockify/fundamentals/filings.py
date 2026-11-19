@@ -293,7 +293,10 @@ REFUSED = (401, 403, 429)
 
 def _get_xbrl(client: nse_api.Client, url: str) -> tuple[int, bytes]:
     """(status, body) of one XBRL file through the client's Http. A 401 / 403 is NSE's cookies expiring (Akamai's
-    within hours): the warm-up runs again and the request is retried once, as `nse_api.Client.fetch` does."""
+    within hours): the warm-up runs again and the request is retried once, as `nse_api.Client.fetch` does. The
+    client's session rotation (NS 2.1) applies: before the request when due, and before a retry after a slow or
+    broken attempt."""
+    client.rotate_if_due()
     status, body = client.http.get(url)
     if status in (401, 403):
         client._rewarm(None)

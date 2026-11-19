@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -26,6 +27,8 @@ from urllib.parse import urlencode
 from stockify import paths, timeutil
 from stockify.config import loader
 from stockify.data import nse_files
+
+log = logging.getLogger(__name__)
 
 
 class Blocked(nse_files.NseError):
@@ -100,7 +103,18 @@ def _default_name(day: str, params: dict) -> str:
 
 class Client:
     """`json(path, params, warmup=...)` for www.nseindia.com/api, `get(url, kind=, name=)` for static files.
-    `last_sha256` is the hash of the last body kept."""
+    `last_sha256` is the hash of the last body kept.
+
+    NS 2.1, session rotation: NSE throttles one requests session after some hundreds of requests (2026-11-18: ~600
+    at 1 s, then every request hung to its deadline) while a fresh session is answered at once. When the Http can
+    start fresh sessions (`can_rotate`: the default Http can), the Client starts one, with its own homepage and page
+    warm-ups, every `session_rotate_requests` requests (warm-ups and retries included), before the next request
+    after an answer slower than `session_slow_s`, and (once per request, through the Http) before the retry after a
+    broken or slow attempt. Spacing, the request count and retries are the Http's and carry on across a rotation."""
+
+    _page: str | None = None              # the page warm-up of the request in progress, warmed again on a rotation
+    _rotated_at = 0                       # http.requests when the session last started
+    rotate_every = 0
 
     def __init__(self, http: nse_files.Http | None = None, cfg: dict | None = None):
         self.http = http or nse_files.Http()
@@ -108,6 +122,35 @@ class Client:
         self.base = self.cfg["api"]["base"].rstrip("/")
         self._warmed: set[str] = set()
         self.last_sha256: str | None = None
+        can_rotate = getattr(self.http, "can_rotate", None)
+        if can_rotate is not None and can_rotate():
+            self.rotate_every = int(self.cfg["session_rotate_requests"])
+            self._rotated_at = self.http.requests
+            self.http.slow_ns = int(float(self.cfg["session_slow_s"]) * 1_000_000_000)
+            self.http.on_bad_attempt = self._rotate_mid_request
+
+    def _rotate(self, why: str) -> None:
+        self.http.new_session()
+        self._warmed.clear()                       # the page cookies were the old session's
+        self._rotated_at = self.http.requests
+        log.info("NSE: a fresh session (%s; %d requests sent so far)", why, self.http.requests)
+
+    def _rotate_mid_request(self) -> list[str]:
+        """The Http's call before a retry after a broken or slow attempt: rotate; the pages to warm again now."""
+        self._rotate("an attempt was slow or broke")
+        if self._page is None:
+            return []
+        self._warmed.add(self._page)
+        return [self._page]
+
+    def rotate_if_due(self) -> None:
+        """Before each request: a fresh session after `session_rotate_requests`, or after a slow answer."""
+        if getattr(self.http, "on_bad_attempt", None) is None:
+            return
+        if self.http.rotate_due:
+            self._rotate("the last answer was slow")
+        elif self.rotate_every and self.http.requests - self._rotated_at >= self.rotate_every:
+            self._rotate(f"{self.rotate_every} requests on the last one")
 
     def _warm(self, page: str) -> None:
         if page in self._warmed:
@@ -143,11 +186,21 @@ class Client:
             raise Blocked(f"{url}: NSE sent an HTML page (HTTP {status}) instead of {what}: {body.lstrip()[:80]!r}")
         return body
 
-    def get(self, url: str, *, kind: str, name: str, warmup: str | None = None) -> bytes:
-        """A static file (e.g. the Nifty 500 list on nsearchives), kept as `<kind>/<name>`."""
+    def _request(self, url: str, what: str, warmup: str | None) -> bytes:
+        """`fetch` after a due rotation and the page warm-up (`warmup` is warmed again if the session rotates)."""
+        self.rotate_if_due()
         if warmup:
             self._warm(warmup)
-        body = self.fetch(url, "the file", warmup=warmup)
+            self._warmed.add(warmup)               # its own retry got a fresh session's cookies if it rotated
+        self._page = warmup
+        try:
+            return self.fetch(url, what, warmup=warmup)
+        finally:
+            self._page = None
+
+    def get(self, url: str, *, kind: str, name: str, warmup: str | None = None) -> bytes:
+        """A static file (e.g. the Nifty 500 list on nsearchives), kept as `<kind>/<name>`."""
+        body = self._request(url, "the file", warmup)
         self.last_sha256 = save_raw(kind, name, body)
         return body
 
@@ -158,8 +211,7 @@ class Client:
         if not path.startswith("/api/"):
             raise ValueError(f"not an NSE API path: {path!r}")
         url = self.base + path + ("?" + urlencode(params) if params else "")
-        self._warm(warmup)
-        body = self.fetch(url, "JSON", warmup=warmup)
+        body = self._request(url, "JSON", warmup)
         try:
             doc = json.loads(body)
         except ValueError as e:

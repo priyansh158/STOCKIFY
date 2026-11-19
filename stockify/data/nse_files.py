@@ -122,27 +122,65 @@ class Http:
     could block for ever. Each read waits at most (`connect_timeout_s`, `read_timeout_s`), and one attempt stops at
     `request_deadline_s` in all (checked between chunks; the connection is closed and the attempt retried).
     The deadline runs on real monotonic time (`monotonic_ns`, default the wall clock's), never the daemon clock:
-    a ManualClock or replay clock does not move while a socket blocks. Tests pass their clock's `mono_ns`."""
+    a ManualClock or replay clock does not move while a socket blocks. Tests pass their clock's `mono_ns`.
+
+    NS 2.1: NSE throttles one requests session after some hundreds of requests while a fresh one is answered at
+    once. An Http with a `session_factory` (the default when no `session` is given: requests.Session) can
+    `new_session()`: the old session is closed, a fresh one gets the same headers and its own homepage warm-up, and
+    the spacing and the `requests` count carry on (they belong to the Http). A caller that sets `on_bad_attempt`
+    (nse_api.Client) is asked to rotate, at most once per `get`, before the retry that follows a broken attempt
+    (connection error, timeout, deadline) or one slower than `slow_ns`; a slow answer that succeeded sets
+    `rotate_due` for the caller's next request. Each of `session_listeners` is called with (old, new) sessions."""
 
     def __init__(self, session=None, clock=None, cfg: dict | None = None,  # noqa: ANN001
-                 max_bytes: int = DEFAULT_MAX_BODY_BYTES, monotonic_ns=None):  # noqa: ANN001
+                 max_bytes: int = DEFAULT_MAX_BODY_BYTES, monotonic_ns=None, session_factory=None):  # noqa: ANN001
         self.cfg = (cfg or config())["http"]
         if session is None:
-            import requests
-            session = requests.Session()
+            if session_factory is None:
+                import requests
+                session_factory = requests.Session
+            session = session_factory()
+        self._session_factory = session_factory
         from stockify.daemon.clock import WallClock
         if clock is None:
             clock = WallClock()
         self._elapsed_clock = monotonic_ns or WallClock().mono_ns
         self.timeout = (float(self.cfg["connect_timeout_s"]), float(self.cfg["read_timeout_s"]))
         self.deadline_ns = int(float(self.cfg["request_deadline_s"]) * 1_000_000_000)
-        session.headers.update({"User-Agent": self.cfg["user_agent"], "Referer": self.cfg["referer"],
-                                "Accept": "*/*"})
+        self._headers = {"User-Agent": self.cfg["user_agent"], "Referer": self.cfg["referer"], "Accept": "*/*"}
+        session.headers.update(self._headers)
         self.session, self.clock = session, clock
         self._last_mono: int | None = None
         self._warmed = False
         self.requests = 0
         self.max_bytes = max_bytes
+        self.rotations = 0
+        self.slow_ns: int | None = None
+        self.on_bad_attempt = None          # () -> pages to warm on the new session; it calls new_session() itself
+        self.rotate_due = False
+        self.session_listeners: list = []
+
+    def can_rotate(self) -> bool:
+        return self._session_factory is not None
+
+    def new_session(self) -> bool:
+        """Replace the session with a fresh one (same headers; the homepage warm-up runs again on the next GET).
+        False, and nothing changed, when the Http has no session factory."""
+        if self._session_factory is None:
+            return False
+        old, new = self.session, self._session_factory()
+        new.headers.update(self._headers)
+        self.session, self._warmed, self.rotate_due = new, False, False
+        self.rotations += 1
+        for listener in list(self.session_listeners):
+            listener(old, new)
+        close = getattr(old, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception as e:                           # the old session is done with either way
+                log.debug("closing the old session failed: %s", e)
+        return True
 
     def _throttle(self) -> None:
         gap = int(self.cfg["min_interval_ms"]) * 1_000_000
@@ -157,12 +195,16 @@ class Http:
         if self._warmed or not self.cfg.get("warmup_url"):
             return
         self._warmed = True
+        self._courtesy_get(self.cfg["warmup_url"])
+
+    def _courtesy_get(self, url: str) -> None:
+        """One spaced GET for its cookies only: the body is not read, a failure is ignored."""
         self._throttle()
         try:
-            r = self.session.get(self.cfg["warmup_url"], timeout=self.timeout, stream=True)
+            r = self.session.get(url, timeout=self.timeout, stream=True)
             _close(r)                                        # the cookies are in; the body is not wanted
         except Exception as e:                               # cookies are a courtesy, not a requirement
-            log.debug("warm-up request failed: %s", e)
+            log.debug("warm-up request %s failed: %s", url, e)
 
     def get(self, url: str, *, max_bytes: int | None = None) -> tuple[int, bytes]:
         """(http status, body). 404 returns at once; errors and 5xx are retried; a body over `max_bytes`
@@ -172,11 +214,19 @@ class Http:
         tries = int(self.cfg["retries"])
         backoff = int(self.cfg["backoff_ms"]) * 1_000_000
         last_error = "no attempt"
+        bad = rotated = False
         for attempt in range(tries):
             if attempt:
                 self.clock.sleep_until(self.clock.now_ns() + backoff * (2 ** (attempt - 1)))
+                if bad and not rotated and self.on_bad_attempt is not None:
+                    rotated = True                             # NS 2.1: once per request, then the usual retries
+                    pages = self.on_bad_attempt() or ()
+                    self._warm_up()
+                    for page in pages:
+                        self._courtesy_get(page)
             self._throttle()
             started = self._elapsed_clock()
+            bad = True                                         # until the attempt is known to be whole
             try:
                 r = self.session.get(url, timeout=self.timeout, stream=True)
             except Exception as e:
@@ -185,9 +235,13 @@ class Http:
             if r.status_code >= 500:
                 _close(r)
                 last_error = f"HTTP {r.status_code}"
+                bad = self._slow(started)                      # a quick 5xx is NSE's answer, not this session's
                 continue
             try:
-                return r.status_code, _read_capped(r, cap, url, self._past_deadline(started))
+                body = _read_capped(r, cap, url, self._past_deadline(started))
+                if self._slow(started):
+                    self.rotate_due = True
+                return r.status_code, body
             except NseError:
                 raise
             except Exception as e:                             # broke mid-body or ran past the deadline: retried
@@ -195,6 +249,9 @@ class Http:
             finally:
                 _close(r)
         raise NseError(f"{url}: {last_error} after {tries} attempts")
+
+    def _slow(self, started: int) -> bool:
+        return self.slow_ns is not None and self._elapsed_clock() - started > self.slow_ns
 
     def _past_deadline(self, started: int):  # noqa: ANN202
         """A check `_read_capped` calls between chunks: raises DeadlineExceeded once the attempt is over time."""
