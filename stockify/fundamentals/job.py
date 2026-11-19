@@ -329,13 +329,17 @@ def _nse_steps(day: date, client: nse_api.Client, deadline_ns: int | None, left:
 # ── the backfill ─────────────────────────────────────────────────────────────
 
 def cm_missing(start: date, end: date) -> list[date]:
-    """The CM trading days from `start` to `end` that refdata cm_eod has no EQ row for."""
+    """The CM trading days from `start` to `end` that refdata cm_eod has no EQ row for, leaving out the days NSE
+    already answered "no file" (nse_fetch_log outcome missing) so a start does not ask again."""
     from stockify.data import calendar as dcal
     from stockify.data import refdata
     have = {r[0] for r in refdata._connect().execute(
         "SELECT DISTINCT trade_date FROM cm_eod WHERE trade_date >= ? AND trade_date <= ? AND series = 'EQ'",
         (start.isoformat(), end.isoformat()))}
-    return [d for d in dcal.trading_days("CM", start, end) if d.isoformat() not in have]
+    gone = {r[0] for r in refdata._connect().execute(
+        "SELECT trade_date FROM nse_fetch_log WHERE dataset = 'cm' AND outcome = 'missing' "
+        "AND trade_date >= ? AND trade_date <= ?", (start.isoformat(), end.isoformat()))}     # NSE answered 404: no file
+    return [d for d in dcal.trading_days("CM", start, end) if d.isoformat() not in have | gone]
 
 
 def backfill(*, since: date | None = None, limit: int | None = None, client: nse_api.Client | None = None,
@@ -378,9 +382,10 @@ def _backfill(since: date, limit: int | None, client: nse_api.Client, today: dat
         progress(f"cm_eod lacks {len(lacking)} trading days from {since} to {end}: fetching NSE's CM files first")
         if cm_backfill is None:
             def cm_backfill(start: date, stop: date) -> Any:
-                return nse_files.backfill(start, stop, ("cm",), http=client.http,
-                                          progress=lambda r: progress(f"cm {r.trade_date} {r.outcome} {r.detail}"))
-        cm_backfill(since, end)
+                r = nse_files.fetch_one("cm", start, client.http)
+                return progress(f"cm {r.trade_date} {r.outcome} {r.detail}")
+        for day in lacking:                      # only the lacking days, never the whole range
+            cm_backfill(day, day)
     if not universe.current():
         try:
             universe.refresh(today, client=client)
