@@ -211,6 +211,54 @@ class ParseIntegratedTests(SandboxedDBTest):
                        hint="INTEGRATED_FILING_BANKING_1740913_17102026054812_WEB.xml")
         self.assertEqual((r.problems, r.taxonomy), ([], "banking"))
 
+    def test_integrated_2025_schema_ind_as(self):
+        """Integrated filings before SEBI's 2026 taxonomy: in-capmkt-ent-2025-01-31.xsd, comment '<!--IFFIndAs-->'
+        (no version, no space), the same element names. MRF Q4 FY25, figures as filed (rounding Crores)."""
+        data = fixture("xbrl_MRF_20250331_integrated2025_consolidated.xml")
+        q = xbrl.parse(data, period_kind="Q", basis="consolidated", period_end="2025-03-31")
+        self.assertEqual((q.problems, q.taxonomy, q.format), ([], "indas", "in-capmkt-ent-2025-01-31.xsd (IFFIndAs)"))
+        self.assertEqual(q.fields, {
+            "revenue_ops": cr("7074.82"), "other_income": cr("112.78"), "total_income": cr("7187.60"),
+            "total_expenses": cr("6526.87"), "finance_costs": cr("97.93"), "depreciation": cr("432.75"),
+            "profit_before_tax": cr("660.73"), "tax": cr("148.62"), "net_profit": cr("512.11"),
+            "eps_basic": 120748, "eps_diluted": 120748, "paid_up_equity": cr("4.24"), "face_value": 1000,
+            "total_equity": cr("18488.46"), "borrowings_current": cr("2530.47"), "borrowings_noncurrent": cr("374.43"),
+            "total_assets": cr("29566.99"), "cash": cr("370.64"),
+        })
+        self.assertEqual((q.period_end, q.fy_start, q.ytd_months, q.step_paise), ("2025-03-31", "2024-04-01", 12, cr("1")))
+        a = xbrl.parse(data, period_kind="A", basis="consolidated", period_end="2025-03-31")
+        self.assertEqual(a.problems, [])
+        self.assertEqual((a.fields["revenue_ops"], a.fields["net_profit"], a.fields["eps_basic"],
+                          a.fields["operating_cash_flow"]), (cr("28153.18"), cr("1869.29"), 440751, cr("1867.80")))
+
+    def test_integrated_2025_schema_bank(self):
+        """Bank of India Q4 FY25: in-capmkt-ent-2025-01-31.xsd with the comment '<!--FRBanking-->' (rounding Lakhs)."""
+        data = fixture("xbrl_BANKINDIA_20250331_integrated2025_consolidated.xml")
+        q = xbrl.parse(data, period_kind="Q", basis="consolidated", period_end="2025-03-31")
+        self.assertEqual((q.problems, q.taxonomy, q.format), ([], "banking", "in-capmkt-ent-2025-01-31.xsd (FRBanking)"))
+        self.assertEqual(q.fields, {
+            "interest_earned": cr("18478.96"), "interest_expended": cr("12332.62"), "other_income": cr("3454.59"),
+            "total_income": cr("21933.55"), "total_expenses": cr("17016.03"), "profit_before_tax": cr("3551.26"),
+            "tax": cr("903.64"), "net_profit": cr("2647.62"), "profit_owners": cr("2601.98"),
+            "eps_basic": 572, "eps_diluted": 572, "paid_up_equity": cr("4553.41"), "face_value": 1000,
+            "total_equity": cr("4553.41") + cr("76172.35"), "total_assets": cr("1056425.01"),
+            "cash": cr("52125.83") + cr("48711.33"),
+        })
+        a = xbrl.parse(data, period_kind="A", basis="consolidated", period_end="2025-03-31")
+        self.assertEqual(a.problems, [])
+        self.assertEqual((a.fields["interest_earned"], a.fields["profit_owners"], a.fields["eps_basic"],
+                          a.fields["operating_cash_flow"]), (cr("71307.71"), cr("9548.28"), 2097, cr("18534.45")))
+
+    def test_integrated_2025_schema_format_without_a_map_stays_held(self):
+        """'IFFNonBanking' (old Schedule III names) on the 2025 schema has no map: held, even with an INDAS file name."""
+        data = fixture("xbrl_MRF_20250331_integrated2025_consolidated.xml").replace(
+            b"<!--IFFIndAs-->", b"<!--IFFNonBanking-->", 1)
+        r = xbrl.parse(data, period_kind="Q", basis="consolidated",
+                       hint="INTEGRATED_FILING_INDAS_1433671_08052025111355_WEB.xml")
+        self.assertEqual((r.taxonomy, r.fields), ("", {}))
+        self.assertEqual(r.problems, ["the filing is in a format this parser has no map for "
+                                      "(in-capmkt-ent-2025-01-31.xsd (IFFNonBanking))"])
+
 
 class ParseFinancialsTests(SandboxedDBTest):
     db_modules = (store,)

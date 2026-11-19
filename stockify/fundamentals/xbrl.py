@@ -12,6 +12,9 @@ What the real files look like (fixtures in tests/fixtures/fundamentals, fetched 
   `in-bse-fin-2020-03-31.xsd` (nbfc). Integrated filings (2025 on) all use SEBI's `in-capmkt-ent-2026-01-31.xsd`
   and are told apart by the generator's comment opening the file (`<!--IFIndAs V2.1 ...-->`, `IFBanking`,
   `IFNBFC`), or by the file name's prefix on nsearchives (`hint`). The element names are the same in both.
+  Integrated filings made before SEBI's 2026 taxonomy (quarters to 2025-12-31, read from the lab 2026-11-19) use
+  `in-capmkt-ent-2025-01-31.xsd` with the same element names; their comments are `IFIndAs V1.x`, `IFFIndAs`,
+  `IFBanking V1.x`, `FRBanking`, `IFNBFC V1.x`, `FRNBFC`. `IFFNonBanking` (old Schedule III names) has no map.
 - Contexts. NSE's own ids: `OneD` = the quarter, `FourD` = the financial year to date, `OneI` = the balance sheet
   at the period end; integrated files add `PY_I` (the previous year end, a comparative). Legacy files write the
   quarter's dates on `FourD` too, and 2021 files reference OneD / FourD / OneI without defining them, so a duration
@@ -101,7 +104,7 @@ _BALANCE_SHEET = ("total_equity", "borrowings_current", "borrowings_noncurrent",
 _PL = ("revenue_ops", "interest_earned", "other_income", "total_income", "total_expenses", "profit_before_tax",
        "tax", "net_profit")
 _YTD_CORE = ("revenue_ops", "interest_earned", "profit_before_tax", "net_profit")
-_MARKER = re.compile(rb"<!--\s*(IF[A-Za-z]+)\s+V?([0-9.]*)")
+_MARKER = re.compile(rb"<!--\s*((?:IF|FR)[A-Za-z]+)\b")    # 'IFIndAs V2.1 (...)', 'IFFIndAs', 'FRBanking'
 
 
 @functools.lru_cache(maxsize=1)
