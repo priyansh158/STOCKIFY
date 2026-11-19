@@ -616,7 +616,30 @@ class BackfillTests(JobCase):
             job.backfill(today=TUE, client=self.client, since=date(2021, 4, 1),
                          cm_missing=lambda start, end: [date(2021, 4, 1)],
                          cm_backfill=lambda start, end: self.cm_calls.append((start, end)))
-        self.assertEqual(self.cm_calls, [(date(2021, 4, 1), TUE - timedelta(days=1))])
+        self.assertEqual(self.cm_calls, [(date(2021, 4, 1), date(2021, 4, 1))])
+
+    def test_backfill_asks_cm_only_for_the_lacking_days(self):
+        lacking = [date(2026, 11, 5), date(2026, 11, 6)]
+
+        def fake(start, stop):  # noqa: ANN001, ANN202
+            self.assertEqual(start, stop)
+            self.assertIn(start, lacking)
+            self.cm_calls.append(start)
+        with redirect_stdout(io.StringIO()):
+            job.backfill(today=TUE, client=self.client, since=date(2021, 4, 1),
+                         cm_missing=lambda start, end: lacking, cm_backfill=fake)
+        self.assertEqual(self.cm_calls, lacking)
+
+    def test_cm_missing_skips_days_nse_answered_no_file(self):
+        from stockify.data import calendar as dcal
+        from stockify.data import refdata
+        support.reset_sqlite_singleton(refdata)
+        self.addCleanup(support.reset_sqlite_singleton, refdata)
+        days = dcal.trading_days("CM", date(2026, 11, 2), date(2026, 11, 6))
+        conn = refdata._connect()
+        conn.execute("INSERT INTO nse_fetch_log (dataset, trade_date, url, http_status, outcome, fetched_at_ns) "
+                     "VALUES ('cm', ?, 'u', 404, 'missing', 1)", (days[-1].isoformat(),))
+        self.assertEqual(job.cm_missing(date(2026, 11, 2), date(2026, 11, 6)), days[:-1])
 
     def test_backfill_without_a_universe_stops_with_plain_words(self):
         self.patch(universe, "current", lambda: [])
