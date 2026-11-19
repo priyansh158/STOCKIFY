@@ -460,13 +460,43 @@ class BackfillJobTests(SandboxedDBTest):
         self.assertEqual(second.status_code, 409)
         self.assertIn("already running", second.json()["detail"])
 
-    def test_a_stop_at_the_session_fails_with_plain_words(self):
+    def test_a_stop_at_the_session_is_a_pause_not_a_failure(self):
+        from stockify.fundamentals import job as fjob
+        with mock.patch.object(fjob, "backfill", return_value={"listed": 1, "stopped": "session"}),                 mock.patch.object(self.router, "_files_kept", return_value=3182):
+            done = self.wait(self.client.post("/api/fundamentals/backfill").json()["job_id"])
+        self.assertEqual(done["status"], "paused")
+        self.assertEqual(done["plain"], "Paused for the market session: 3,182 filing files saved so far. Start it "
+                         "again after the close and it carries on where it stopped.")
+        self.assertNotIn("Failed", done["plain"])
+
+    def test_one_filing_file_is_said_in_the_singular(self):
+        from stockify.fundamentals import job as fjob
+        with mock.patch.object(fjob, "backfill", return_value={"listed": 1, "stopped": "session"}),                 mock.patch.object(self.router, "_files_kept", return_value=1):
+            done = self.wait(self.client.post("/api/fundamentals/backfill").json()["job_id"])
+        self.assertIn("1 filing file saved so far", done["plain"])
+
+    def test_a_paused_download_can_be_started_again(self):
         from stockify.fundamentals import job as fjob
         with mock.patch.object(fjob, "backfill", return_value={"listed": 1, "stopped": "session"}):
+            self.wait(self.client.post("/api/fundamentals/backfill").json()["job_id"])
+        with mock.patch.object(fjob, "backfill", return_value={"listed": 2, "download": {"downloaded": 2}, "saved": 5}):
+            r = self.client.post("/api/fundamentals/backfill")
+        self.assertEqual(r.status_code, 202)
+        self.assertEqual(self.wait(r.json()["job_id"])["status"], "done")
+
+    def test_a_refusal_by_nse_still_fails(self):
+        from stockify.fundamentals import job as fjob
+        with mock.patch.object(fjob, "backfill", return_value={"listed": 1, "stopped": "blocked"}):
             done = self.wait(self.client.post("/api/fundamentals/backfill").json()["job_id"])
         self.assertEqual(done["status"], "failed")
-        self.assertIn("the recorder's session began", done["plain"])
-        self.assertNotIn("python", done["plain"].lower())
+        self.assertTrue(done["plain"].startswith("Failed: NSE refused"))
+
+    def test_a_real_error_still_fails(self):
+        from stockify.fundamentals import job as fjob
+        with mock.patch.object(fjob, "backfill", side_effect=RuntimeError("boom")):
+            done = self.wait(self.client.post("/api/fundamentals/backfill").json()["job_id"])
+        self.assertEqual(done["status"], "failed")
+        self.assertNotIn("paused", done["plain"].lower())
 
 
 if __name__ == "__main__":

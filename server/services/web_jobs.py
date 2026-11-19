@@ -37,6 +37,10 @@ class PlainFailure(Exception):
     """A job that failed with a sentence already fit to show; the sentence is the message."""
 
 
+class PlannedPause(Exception):
+    """A planned, resumable stop (the recorder's session began): not a failure. The sentence is the message."""
+
+
 class JobRefused(Exception):
     """A request the API answers with `status` and a plain `message` (422 not allowed, 404 unknown, 409 busy)."""
 
@@ -50,7 +54,7 @@ class WebJob:
     ref: str
     kind: str
     target: str                         # what makes two jobs "the same": a run id, a sweep id, a date range
-    status: str = "running"             # running | done | failed | cancelled
+    status: str = "running"             # running | done | failed | cancelled | paused
     started_ns: int = 0
     finished_ns: int | None = None
     research_job_id: str | None = None
@@ -145,6 +149,8 @@ class WebJobs:
         except pool.Cancelled:
             status, error = "cancelled", "Stopped by you before it finished. The tries that had finished are kept."
             self._mark_cancelled(job)
+        except PlannedPause as e:
+            status, error = "paused", str(e)
         except Exception as e:  # noqa: BLE001 — a job's failure is its status, never a crashed thread
             log.exception("web job %s (%s) failed", job.ref, job.kind)
             status, error = "failed", reason_of(e)
@@ -339,6 +345,8 @@ def progress_words(kind: str, status: str, done: int | None, total: int | None, 
     """One plain sentence for the page: what the job is doing, did, or why it stopped."""
     if status == "failed":
         return f"Failed: {error}" if error else "Failed."
+    if status == "paused":
+        return error or "Paused. Start it again and it carries on where it stopped."
     if status == "cancelled":
         return error or "Stopped by you before it finished."
     if status == "running" and stopping:

@@ -126,13 +126,24 @@ IN_SESSION = ("The recorder's session is in progress. The download reads NSE for
 RUN_BUSY = ("Another fundamentals run is in progress (the evening update or an earlier download). Start this when "
             "it has finished.")
 _STOPPED = {
-    "session": "Stopped because the recorder's session began. Nothing is lost: start it again after the close and "
-               "it carries on where it stopped.",
     "blocked": "NSE refused the requests. Nothing is lost: start it again later and it carries on where it stopped.",
     "no universe": "The list of companies could not be read from NSE yet (it needs about three months of NSE's "
                    "daily price files). Try again later.",
     "no progress": "NSE's archive kept failing on the same files. The rest are kept: start it again later.",
 }
+
+
+def _files_kept() -> int:
+    """Filing files saved so far, over every run of the download."""
+    from stockify.fundamentals import filings
+    return len(filings.by_status("downloaded")) + len(filings.by_status("parsed"))
+
+
+def paused_sentence(n: int) -> str:
+    return (f"Paused for the market session: {n:,} filing {'file' if n == 1 else 'files'} saved so far. Start it "
+            "again after the close and it carries on where it stopped.")
+
+
 _PROGRESS = re.compile(r"^\[(\d+)/(\d+)\] ")
 
 
@@ -180,6 +191,8 @@ def start_backfill() -> WebJobDTO:
             raise web_jobs.PlainFailure(RUN_BUSY) from None
         if j.cancel.is_set():
             raise pool.Cancelled()
+        if res.get("stopped") == "session":     # planned and resumable: a pause, not a failure
+            raise web_jobs.PlannedPause(paused_sentence(_files_kept()))
         if res.get("stopped") is not None:
             raise web_jobs.PlainFailure(_STOPPED.get(res["stopped"], "The download stopped before it finished. "
                                                      "Start it again; it carries on where it stopped."))
