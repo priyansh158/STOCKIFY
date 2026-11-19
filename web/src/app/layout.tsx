@@ -29,6 +29,9 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${inter.variable} ${jetbrainsMono.variable}`}
+      // Phone browsers (Chrome / the Google app) add their own attributes to <html> before React loads; ignore
+      // those on this one tag only, so the dev overlay doesn't flag them. Children are still checked.
+      suppressHydrationWarning
     >
       <body>
         <a href="#main" className="stk-skip">
