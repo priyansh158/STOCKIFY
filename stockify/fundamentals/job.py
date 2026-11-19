@@ -114,23 +114,38 @@ def hold() -> Iterator[None]:
 @contextlib.contextmanager
 def _counting(http) -> Iterator[list[int]]:  # noqa: ANN001
     """[requests sent through `http`] for the block, counted on its session, so the Http's own homepage warm-up,
-    page warm-ups and retries all count; the session is left as it was after."""
+    page warm-ups and retries all count; each session is left as it was after. NS 2.1: a fresh session the Http
+    starts in the block (session rotation) is counted from its first request too."""
     count = [0]
-    session = http.session
-    real = session.get
-    own = vars(session).get("get") if hasattr(session, "__dict__") else None
+    patched: list[tuple[Any, Any]] = []                  # (session, its own instance-level `get` or None)
 
-    def get(*a, **kw):  # noqa: ANN002, ANN003, ANN202
-        count[0] += 1
-        return real(*a, **kw)
-    session.get = get
+    def watch(session) -> None:  # noqa: ANN001
+        real = session.get
+        own = vars(session).get("get") if hasattr(session, "__dict__") else None
+
+        def get(*a, **kw):  # noqa: ANN002, ANN003, ANN202
+            count[0] += 1
+            return real(*a, **kw)
+        session.get = get
+        patched.append((session, own))
+
+    listeners = getattr(http, "session_listeners", None)
+
+    def on_new(old, new) -> None:  # noqa: ANN001
+        watch(new)
+    watch(http.session)
+    if listeners is not None:
+        listeners.append(on_new)
     try:
         yield count
     finally:
-        if own is None:
-            del session.get
-        else:
-            session.get = own
+        if listeners is not None:
+            listeners.remove(on_new)
+        for session, own in reversed(patched):
+            if own is None:
+                del session.get
+            else:
+                session.get = own
 
 
 # ── the day's request budget ─────────────────────────────────────────────────

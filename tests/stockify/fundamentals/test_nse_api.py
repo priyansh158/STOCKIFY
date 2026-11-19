@@ -207,5 +207,154 @@ class WarmupTests(ClientCase):
         self.assertTrue(all(g >= 1_000_000_000 for g in gaps), gaps)
 
 
+# ── NS 2.1: session rotation ────────────────────────────────────────────────
+
+HOME = "https://www.nseindia.com/"
+SEC = 1_000_000_000
+
+
+class _Session(FakeSession):
+    """One requests session of a rotating Http: answers from the shared routes, logs (session no., url, mono) to a
+    shared list; a call whose url ends in a `slow` suffix first takes the next listed number of seconds."""
+
+    def __init__(self, n: int, routes: dict, clock: ManualClock, log: list, slow: dict):
+        super().__init__(routes, clock)
+        self.n, self.log, self.slow, self.closed = n, log, slow, False
+
+    def get(self, url, timeout=None, **kw):  # noqa: ANN001
+        self.log.append((self.n, url, self.clock.mono_ns()))
+        for suffix, seconds in self.slow.items():
+            if url.endswith(suffix) and seconds:
+                self.clock.advance(int(seconds.pop(0) * SEC))
+        return super().get(url, timeout=timeout, **kw)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class RotationTests(unittest.TestCase):
+    """NS 2.1: NSE throttles one requests session after ~600 requests (2026-11-18) while a fresh one is answered at
+    once, so the Client starts a fresh session every `session_rotate_requests`, and after an attempt slower than
+    `session_slow_s` or broken (timeout, deadline, connection)."""
+
+    def setUp(self):
+        support.fresh_cache_dir(self.id().rsplit(".", 1)[-1])
+        self.clock = ManualClock(timeutil.ist_ns(DAY, "20:00"))
+        self.log: list = []
+        self.sessions: list[_Session] = []
+
+    def client(self, routes: dict, *, every: int = 250, slow_s: int = 20,
+               slow: dict | None = None) -> nse_api.Client:
+        slow = slow if slow is not None else {}
+
+        def factory() -> _Session:
+            s = _Session(len(self.sessions), routes, self.clock, self.log, slow)
+            self.sessions.append(s)
+            return s
+        http = nse_files.Http(clock=self.clock, session_factory=factory, monotonic_ns=self.clock.mono_ns)
+        cfg = {**nse_api.config(), "session_rotate_requests": every, "session_slow_s": slow_s}
+        return nse_api.Client(http, cfg)
+
+    def sent(self, n: int) -> list[str]:
+        return [url for s, url, _ in self.log if s == n]
+
+    def url(self, client: nse_api.Client, symbol: str) -> str:
+        return client.base + QUOTE + "?symbol=" + symbol
+
+    def spaced(self) -> bool:
+        times = [t for _, _, t in self.log]
+        return all(b - a >= SEC for a, b in zip(times, times[1:]))
+
+    def test_config_defaults(self):
+        cfg = nse_api.config()
+        self.assertEqual(cfg["session_rotate_requests"], 250)
+        self.assertEqual(cfg["session_slow_s"], 20)
+        from stockify.config import loader
+        for key, bad in (("session_rotate_requests", 0), ("session_rotate_requests", 9), ("session_rotate_requests",
+                         "250"), ("session_slow_s", 0), ("session_slow_s", 601), ("session_slow_s", True)):
+            with self.subTest(key=key, bad=bad), self.assertRaises(loader.ConfigError):
+                loader._check_fundamentals({**cfg, key: bad})
+        for key in ("session_rotate_requests", "session_slow_s"):
+            with self.subTest(missing=key), self.assertRaises(loader.ConfigError):
+                loader._check_fundamentals({k: v for k, v in cfg.items() if k != key})
+
+    def test_a_fresh_session_every_n_requests(self):
+        client = self.client({"quote-equity?symbol=A": [(200, b"{}")]}, every=6)
+        for _ in range(4):
+            client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertEqual(self.sent(0), [HOME, PAGE] + [self.url(client, "A")] * 4)     # 6 requests
+        self.assertEqual(len(self.sessions), 1)
+        client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertEqual(len(self.sessions), 2)
+        self.assertTrue(self.sessions[0].closed)
+        self.assertEqual(self.sent(1), [HOME, PAGE, self.url(client, "A")])           # its own warm-ups
+        self.assertEqual(self.sessions[1].headers["User-Agent"], self.sessions[0].headers["User-Agent"])
+
+    def test_spacing_holds_across_a_rotation_warm_up_included(self):
+        client = self.client({"quote-equity?symbol=A": [(200, b"{}")]}, every=3)
+        for _ in range(4):
+            client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertEqual(len(self.sessions), 4)
+        self.assertTrue(self.spaced(), self.log)
+
+    def test_a_slow_answer_rotates_before_the_next_request(self):
+        client = self.client({"quote-equity?symbol=A": [(200, b"{}")], "quote-equity?symbol=B": [(200, b"{}")]},
+                             slow={"symbol=A": [25]})
+        client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)          # answered, but in 25 s
+        self.assertEqual(len(self.sessions), 1)
+        client.json(QUOTE, {"symbol": "B"}, warmup=PAGE)
+        self.assertEqual(len(self.sessions), 2)
+        self.assertEqual(self.sent(1), [HOME, PAGE, self.url(client, "B")])
+
+    def test_a_quick_answer_does_not_rotate(self):
+        client = self.client({"quote-equity?symbol=A": [(200, b"{}")]}, slow={"symbol=A": [19]})
+        client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertEqual(len(self.sessions), 1)
+
+    def test_a_broken_attempt_rotates_once_before_the_retry(self):
+        import requests
+        timeout = requests.exceptions.ReadTimeout("read timed out")
+        client = self.client({"quote-equity?symbol=A": [timeout, timeout, (200, b'{"ok":1}')]})
+        self.assertEqual(client.json(QUOTE, {"symbol": "A"}, warmup=PAGE), {"ok": 1})
+        self.assertEqual(len(self.sessions), 2)                     # at most once per request
+        self.assertEqual(self.sent(0), [HOME, PAGE, self.url(client, "A")])
+        self.assertEqual(self.sent(1), [HOME, PAGE, self.url(client, "A"), self.url(client, "A")])
+        self.assertTrue(self.spaced(), self.log)
+
+    def test_a_slow_failed_attempt_rotates_before_the_retry(self):
+        client = self.client({"quote-equity?symbol=A": [(503, b""), (200, b"{}")]}, slow={"symbol=A": [30]})
+        client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertEqual(len(self.sessions), 2)
+        self.assertEqual(self.sent(1), [HOME, PAGE, self.url(client, "A")])
+
+    def test_an_http_without_a_session_factory_never_rotates(self):
+        session = FakeSession({"quote-equity?symbol=A": [(200, b"{}")]}, self.clock)
+        cfg = {**nse_api.config(), "session_rotate_requests": 2}
+        client = nse_api.Client(nse_files.Http(session=session, clock=self.clock), cfg)
+        for _ in range(3):
+            client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertIs(client.http.session, session)
+
+    def test_the_budget_count_continues_across_rotations(self):
+        from stockify.fundamentals import job
+        client = self.client({"quote-equity?symbol=A": [(200, b"{}")]}, every=3)
+        with job._counting(client.http) as count:
+            for _ in range(5):
+                client.json(QUOTE, {"symbol": "A"}, warmup=PAGE)
+        self.assertEqual(len(self.sessions), 5)
+        self.assertEqual(count[0], len(self.log))
+        self.assertEqual(client.http.requests, len(self.log))
+        for s in self.sessions:                                      # every session left as it was
+            self.assertNotIn("get", vars(s))
+
+    def test_xbrl_downloads_rotate_too(self):
+        from stockify.fundamentals import filings
+        client = self.client({"x.xml": [(200, b"<xbrl/>")]}, every=3)
+        for _ in range(4):
+            filings._get_xbrl(client, "https://nsearchives.nseindia.com/x.xml")
+        self.assertEqual(len(self.sessions), 2)          # home + 2 files, then a fresh session
+
+
 if __name__ == "__main__":
     unittest.main()

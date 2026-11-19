@@ -67,6 +67,7 @@ def fetch_list(day: date, *, client: nse_api.Client) -> bytes:
     last: Exception | None = None
     for url in (cfg["nifty500_list_url"], cfg["nifty500_list_fallback_url"]):
         try:
+            client.rotate_if_due()
             body = client.fetch(url, "the Nifty 500 list")
             parse_list(body)
         except (nse_files.NseError, ValueError) as e:
