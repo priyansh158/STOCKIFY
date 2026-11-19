@@ -109,20 +109,33 @@ DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024
 _CHUNK = 1 << 16
 
 
+class DeadlineExceeded(Exception):
+    """One attempt took longer than `request_deadline_s` in all: a failed attempt, retried like a broken one."""
+
+
 class Http:
     """Throttled GET with retries. `session` needs `.get(url, timeout=, stream=)` and
     `.headers`; `clock` is a daemon Clock (tests pass a ManualClock). Bodies are streamed and
-    counted after any Content-Encoding is decoded: more than `max_bytes` raises NseError."""
+    counted after any Content-Encoding is decoded: more than `max_bytes` raises NseError.
+
+    NS 1.1: requests' timeout bounds each socket read, not the whole body, so a trickling or half-open connection
+    could block for ever. Each read waits at most (`connect_timeout_s`, `read_timeout_s`), and one attempt stops at
+    `request_deadline_s` in all (checked between chunks; the connection is closed and the attempt retried).
+    The deadline runs on real monotonic time (`monotonic_ns`, default the wall clock's), never the daemon clock:
+    a ManualClock or replay clock does not move while a socket blocks. Tests pass their clock's `mono_ns`."""
 
     def __init__(self, session=None, clock=None, cfg: dict | None = None,  # noqa: ANN001
-                 max_bytes: int = DEFAULT_MAX_BODY_BYTES):
+                 max_bytes: int = DEFAULT_MAX_BODY_BYTES, monotonic_ns=None):  # noqa: ANN001
         self.cfg = (cfg or config())["http"]
         if session is None:
             import requests
             session = requests.Session()
+        from stockify.daemon.clock import WallClock
         if clock is None:
-            from stockify.daemon.clock import WallClock
             clock = WallClock()
+        self._elapsed_clock = monotonic_ns or WallClock().mono_ns
+        self.timeout = (float(self.cfg["connect_timeout_s"]), float(self.cfg["read_timeout_s"]))
+        self.deadline_ns = int(float(self.cfg["request_deadline_s"]) * 1_000_000_000)
         session.headers.update({"User-Agent": self.cfg["user_agent"], "Referer": self.cfg["referer"],
                                 "Accept": "*/*"})
         self.session, self.clock = session, clock
@@ -146,7 +159,8 @@ class Http:
         self._warmed = True
         self._throttle()
         try:
-            self.session.get(self.cfg["warmup_url"], timeout=float(self.cfg["timeout_s"]))
+            r = self.session.get(self.cfg["warmup_url"], timeout=self.timeout, stream=True)
+            _close(r)                                        # the cookies are in; the body is not wanted
         except Exception as e:                               # cookies are a courtesy, not a requirement
             log.debug("warm-up request failed: %s", e)
 
@@ -162,8 +176,9 @@ class Http:
             if attempt:
                 self.clock.sleep_until(self.clock.now_ns() + backoff * (2 ** (attempt - 1)))
             self._throttle()
+            started = self._elapsed_clock()
             try:
-                r = self.session.get(url, timeout=float(self.cfg["timeout_s"]), stream=True)
+                r = self.session.get(url, timeout=self.timeout, stream=True)
             except Exception as e:
                 last_error = f"{type(e).__name__}: {e}"
                 continue
@@ -172,14 +187,23 @@ class Http:
                 last_error = f"HTTP {r.status_code}"
                 continue
             try:
-                return r.status_code, _read_capped(r, cap, url)
+                return r.status_code, _read_capped(r, cap, url, self._past_deadline(started))
             except NseError:
                 raise
-            except Exception as e:                             # the connection broke mid-body: retried
+            except Exception as e:                             # broke mid-body or ran past the deadline: retried
                 last_error = f"{type(e).__name__}: {e}"
             finally:
                 _close(r)
         raise NseError(f"{url}: {last_error} after {tries} attempts")
+
+    def _past_deadline(self, started: int):  # noqa: ANN202
+        """A check `_read_capped` calls between chunks: raises DeadlineExceeded once the attempt is over time."""
+        def check() -> None:
+            spent = self._elapsed_clock() - started
+            if spent > self.deadline_ns:
+                raise DeadlineExceeded(f"request deadline {self.deadline_ns / 1e9:g} s passed "
+                                       f"({spent / 1e9:.1f} s spent on one attempt)")
+        return check
 
 
 def _close(r) -> None:  # noqa: ANN001
@@ -188,8 +212,9 @@ def _close(r) -> None:  # noqa: ANN001
         close()
 
 
-def _read_capped(r, cap: int, url: str) -> bytes:  # noqa: ANN001
-    """The decoded body, reading at most `cap` + one chunk before giving up."""
+def _read_capped(r, cap: int, url: str, check=None) -> bytes:  # noqa: ANN001
+    """The decoded body, reading at most `cap` + one chunk before giving up. `check()` runs before the first chunk
+    and after each one (the deadline: it raises to stop the read)."""
     chunks = getattr(r, "iter_content", None)
     if chunks is None:                                         # a plain response object (no streaming)
         body = r.content
@@ -197,10 +222,14 @@ def _read_capped(r, cap: int, url: str) -> bytes:  # noqa: ANN001
             raise NseError(f"{url}: body over {cap} bytes")
         return body
     buf = bytearray()
+    if check is not None:
+        check()
     for chunk in chunks(_CHUNK):
         buf += chunk
         if len(buf) > cap:
             raise NseError(f"{url}: body over {cap} bytes")
+        if check is not None:
+            check()
     return bytes(buf)
 
 

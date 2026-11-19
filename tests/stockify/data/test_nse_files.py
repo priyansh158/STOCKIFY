@@ -327,6 +327,81 @@ class BodyCapTests(NseTest):
         self.assertEqual(http.get("https://h/a", max_bytes=5), (200, b"12345"))
 
 
+class SlowResponse(FakeResponse):
+    """Streams its body in chunks, moving `clock` on `gap_ns` before each one: a trickling connection."""
+
+    def __init__(self, status: int, content: bytes, clock: ManualClock, gap_ns: int, chunk: int = 10):
+        super().__init__(status, content)
+        self.clock, self.gap_ns, self.chunk = clock, gap_ns, chunk
+
+    def iter_content(self, chunk_size=1):  # noqa: ANN001, ARG002
+        for i in range(0, len(self.content), self.chunk):
+            self.clock.advance(self.gap_ns)
+            self.streamed += len(self.content[i:i + self.chunk])
+            yield self.content[i:i + self.chunk]
+
+
+class DeadlineTests(NseTest):
+    """NS 1.1: one attempt has a hard overall deadline (`request_deadline_s`) on top of the per-read timeout, so a
+    trickling or half-open connection fails the attempt (retried, then NseError) instead of blocking for ever."""
+
+    def deadline_http(self, answers: list) -> tuple[nse_files.Http, list]:
+        session = FakeSession({}, self.clock)
+        calls: list = []
+
+        def get(url, timeout=None, **kw):  # noqa: ANN001
+            calls.append(timeout)
+            if url == nse_files.config()["http"]["warmup_url"]:
+                return FakeResponse(200, b"<html>home</html>")
+            answer = answers.pop(0) if len(answers) > 1 else answers[0]
+            return answer() if callable(answer) else answer
+        session.get = get
+        return nse_files.Http(session=session, clock=self.clock, monotonic_ns=self.clock.mono_ns), calls
+
+    def test_the_shipped_config_sets_a_deadline_and_split_timeouts(self):
+        cfg = nse_files.config()["http"]
+        self.assertEqual(cfg["request_deadline_s"], 120)
+        self.assertLessEqual(cfg["read_timeout_s"], 30)
+        self.assertLessEqual(cfg["connect_timeout_s"], 15)
+
+    def test_a_connect_read_tuple_is_passed_to_session_get(self):
+        http, calls = self.deadline_http([FakeResponse(200, b"ok")])
+        self.assertEqual(http.get("https://h/a"), (200, b"ok"))
+        self.assertEqual(calls[-1], (15.0, 30.0))
+        self.assertEqual(calls[0], (15.0, 30.0))                              # the warm-up too
+
+    def test_a_trickling_body_fails_the_attempt_and_is_retried(self):
+        slow = SlowResponse(200, b"x" * 1000, self.clock, gap_ns=5_000_000_000)   # 100 chunks, 5 s apart
+        http, calls = self.deadline_http([lambda: slow, FakeResponse(200, b"done")])
+        self.assertEqual(http.get("https://h/a"), (200, b"done"))
+        self.assertTrue(slow.closed)
+        self.assertLess(slow.streamed, 1000)                                  # stopped mid-body
+        self.assertEqual(len(calls), 3)                                       # warm-up, slow try, good try
+
+    def test_a_body_that_always_trickles_raises_nse_error_after_the_tries(self):
+        bodies: list = []
+
+        def slow():
+            r = SlowResponse(200, b"x" * 1000, self.clock, gap_ns=5_000_000_000)
+            bodies.append(r)
+            return r
+        http, calls = self.deadline_http([slow])
+        with self.assertRaisesRegex(nse_files.NseError, r"deadline .*after 3 attempts"):
+            http.get("https://h/a")
+        self.assertEqual(len(bodies), 3)
+        self.assertTrue(all(b.closed for b in bodies))
+
+    def test_a_slow_but_in_time_body_is_unaffected(self):
+        ok = SlowResponse(200, b"y" * 100, self.clock, gap_ns=1_000_000_000)    # 10 chunks, 10 s in all
+        http, calls = self.deadline_http([lambda: ok])
+        self.assertEqual(http.get("https://h/a"), (200, b"y" * 100))
+        self.assertEqual(len(calls), 2)
+
+    def test_the_deadline_uses_real_monotonic_time_by_default(self):
+        http = nse_files.Http(session=FakeSession({}, self.clock), clock=self.clock)
+        self.assertIsNot(http._elapsed_clock, self.clock.mono_ns)             # a ManualClock never stops a real hang
+
+
 class LoadTests(NseTest):
     def setUp(self):
         super().setUp()
