@@ -21,13 +21,16 @@ async function loadData(): Promise<{ status: KiteStatus | null; snap: PortfolioS
 
 export default async function PortfolioPage() {
   const { status, snap, desk } = await loadData();
+  // Kite refused the stored login (the status check, or the holdings call itself): "log in again", never "No holdings".
+  const expired = !!status?.expired || !!snap?.expired;
+  const loggedIn = !!status?.authenticated && !snap?.expired;
 
   return (
     <div className="stk-page">
       <PageHead
         title="Portfolio"
         lede="Read-only Zerodha holdings. A price is marked Live when live prices are on."
-        actions={status ? <PortfolioActions authenticated={status.authenticated} /> : undefined}
+        actions={status ? <PortfolioActions authenticated={loggedIn} /> : undefined}
       />
 
       <div className="stk-stack">
@@ -49,13 +52,14 @@ export default async function PortfolioPage() {
           </Panel>
         )}
 
-        {status && status.configured && !status.authenticated && (
-          <Panel>
+        {status && status.configured && !loggedIn && (
+          <Panel tone={expired ? "amber" : undefined}>
             <div className="stk-stack-s">
-              <h2>Not logged in to Kite</h2>
+              <h2>{expired ? "Your Kite login has expired" : "Not logged in to Kite"}</h2>
               <p className="stk-lede">
-                Your Kite login runs out each morning; log in again after 6:00 IST. You&apos;ll be sent back here when
-                you are done.
+                {expired
+                  ? "Your Kite login has expired or was ended by Zerodha. Log in again on this page, and you'll be sent back here when you are done."
+                  : "Your Kite login runs out each morning; log in again after 6:00 IST. You'll be sent back here when you are done."}
               </p>
               <div>
                 <PortfolioActions authenticated={false} compact={false} primary />
@@ -64,9 +68,9 @@ export default async function PortfolioPage() {
           </Panel>
         )}
 
-        {status && status.configured && !status.authenticated && <DeskLastViews desk={desk} />}
+        {status && status.configured && !loggedIn && <DeskLastViews desk={desk} />}
 
-        {status?.authenticated && !snap && (
+        {loggedIn && !snap && (
           <Panel tone="red">
             <p role="alert">
               Could not load your holdings. Reload the page to try again. If it keeps failing, sign out and log in to
@@ -75,14 +79,15 @@ export default async function PortfolioPage() {
           </Panel>
         )}
 
-        {status?.authenticated && snap && (
-          <>
-            {snap.error && (
-              <Panel tone="red">
-                <p role="alert">{snap.error}</p>
-              </Panel>
-            )}
+        {loggedIn && snap?.error && (
+          <Panel tone="red">
+            <p role="alert">{snap.error}</p>
+          </Panel>
+        )}
 
+        {/* an errored snapshot has no holdings to show: an empty table would read as "No holdings." */}
+        {loggedIn && snap && !snap.error && (
+          <>
             <Panel>
               <StatGrid cols={2}>
                 <Stat label="Total value" value={rupeesFloat(snap.total_value, true)} />

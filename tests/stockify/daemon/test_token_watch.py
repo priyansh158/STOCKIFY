@@ -172,11 +172,11 @@ class ApiStatusTest(unittest.TestCase):
     def status(self, authenticated: bool) -> dict:
         import asyncio
         from server.routers import kite as router
-        with mock.patch.object(kite_client, "is_authenticated", return_value=authenticated),                 mock.patch.object(kite_client, "is_enabled", return_value=True):
+        with mock.patch.object(kite_client, "is_authenticated", return_value=authenticated),                 mock.patch.object(kite_client, "is_enabled", return_value=True),                 mock.patch.object(kite_client, "login_validity", return_value="ok"):
             return asyncio.run(router.status())
 
     def test_not_waiting_by_default(self):
-        self.assertEqual(self.status(True), {"configured": True, "authenticated": True,
+        self.assertEqual(self.status(True), {"configured": True, "authenticated": True, "expired": False,
                                              "daemon_waiting_for_login": False})
 
     def test_waiting_while_the_rejected_token_is_the_only_one(self):
@@ -189,7 +189,7 @@ class ApiStatusTest(unittest.TestCase):
 
     def test_the_answer_never_carries_a_token(self):
         token_watch.write_status(waiting_for_login=True)
-        self.assertEqual(set(self.status(False)), {"configured", "authenticated", "daemon_waiting_for_login"})
+        self.assertEqual(set(self.status(False)), {"configured", "authenticated", "expired", "daemon_waiting_for_login"})
 
 
 def decode(sid: str) -> list[dict]:

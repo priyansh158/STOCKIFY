@@ -21,6 +21,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -38,6 +39,8 @@ try:
 except ImportError:
     KiteConnect = None  # type: ignore
     KITECONNECT_AVAILABLE = False
+
+_log = logging.getLogger("stockify.kite_client")
 
 
 # ── Cache paths ───────────────────────────────────────────────────────────────
@@ -67,6 +70,19 @@ class KiteNotAuthenticated(KiteAuthError):
 
 class KiteTokenExpired(KiteAuthError):
     """Token was valid but has crossed the daily 06:00 IST expiry boundary."""
+
+
+class KiteTokenRejected(KiteAuthError):
+    """Kite refused the stored token (the SDK's TokenException or a 403): Zerodha ended the login early."""
+
+
+def is_token_rejection(e: BaseException) -> bool:
+    """True for a failure about the login: this module's KiteAuthError, or the SDK's TokenException / a 403
+    (the daemon's `is_auth_failure`, which matches the SDK's class by name and never imports it)."""
+    if isinstance(e, KiteAuthError):
+        return True
+    from stockify.daemon.ticker import is_auth_failure
+    return is_auth_failure(getattr(e, "code", None), e)
 
 
 # ── Env / config ──────────────────────────────────────────────────────────────
@@ -127,6 +143,7 @@ def save_token(payload: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, default=str, indent=2), encoding="utf-8")
     tmp.replace(path)
+    reset_login_validity()
 
 
 def load_cached_token() -> dict | None:
@@ -150,6 +167,7 @@ def clear_token() -> None:
         _token_file().unlink(missing_ok=True)
     except Exception:
         pass
+    reset_login_validity()
 
 
 # ── Token freshness ───────────────────────────────────────────────────────────
@@ -179,6 +197,66 @@ def token_is_fresh(payload: dict | None) -> bool:
 def is_authenticated() -> bool:
     """True if we have a fresh cached token (no network call)."""
     return is_enabled() and token_is_fresh(load_cached_token())
+
+
+def has_stale_token() -> bool:
+    """True when a login was made but its token is past the daily 06:00 IST expiry (no network call)."""
+    payload = load_cached_token() if is_enabled() else None
+    return bool(payload and payload.get("access_token")) and not token_is_fresh(payload)
+
+
+def token_fingerprint() -> str:
+    """A short hash naming the stored login ("" when none), for caches keyed by login. Never the token itself."""
+    token = (load_cached_token() or {}).get("access_token") or ""
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:16] if token else ""
+
+
+# ── Does Kite still accept the stored token? (one profile() per login per minute) ──
+
+LOGIN_CHECK_TTL_S = 60.0
+_monotonic = time.monotonic
+_validity_lock = threading.Lock()
+_validity: tuple[str, float, str] | None = None      # (token fingerprint, checked at, "ok" | "rejected" | "unknown")
+
+
+def reset_login_validity() -> None:
+    """Forget the last answer (a login or logout changes it)."""
+    global _validity
+    _validity = None
+
+
+def note_token_rejected() -> None:
+    """Kite refused the stored token on some other call: remember it, so the status check need not ask again."""
+    global _validity
+    fp = token_fingerprint()
+    if fp:
+        _validity = (fp, _monotonic(), "rejected")
+
+
+def login_validity() -> str:
+    """"ok" when Kite accepted the stored token, "rejected" when it refused it, "unknown" when there is no fresh
+    login or Kite could not be asked (a network failure is not an expiry). A blocking network call at most once per
+    login per LOGIN_CHECK_TTL_S; callers on an event loop run it in a thread."""
+    global _validity
+    if not is_authenticated():
+        return "unknown"
+    fp = token_fingerprint()
+    with _validity_lock:
+        cached = _validity
+        if cached is not None and cached[0] == fp and _monotonic() - cached[1] < LOGIN_CHECK_TTL_S:
+            return cached[2]
+        try:
+            client = get_client()
+        except KiteAuthError:
+            return "unknown"
+        try:
+            client.profile()
+            verdict = "ok"
+        except Exception as e:  # noqa: BLE001 - only the class name is logged: SDK text can carry request details
+            verdict = "rejected" if is_token_rejection(e) else "unknown"
+            _log.info("kite: login check failed (%s)", type(e).__name__)
+        _validity = (fp, _monotonic(), verdict)
+        return verdict
 
 
 # ── Paper only: Kite's order routes are stripped from every client ───────────
@@ -895,25 +973,40 @@ def historical(instrument_token: int, from_dt: datetime, to_dt: datetime,
         return []
 
 
-def holdings() -> list[dict]:
-    """Long-term holdings from the user's Zerodha account."""
+def _raise_if_rejected(e: BaseException) -> None:
+    """Kite refused the token: raise KiteTokenRejected (a fixed message, no chained SDK text) and remember it."""
+    if is_token_rejection(e):
+        note_token_rejected()
+        raise KiteTokenRejected("Kite refused the stored login") from None
+
+
+def holdings(strict: bool = False) -> list[dict]:
+    """Long-term holdings from the user's Zerodha account.
+
+    A refused login raises KiteTokenRejected (never [], which reads as "no holdings"). Other failures return []
+    unless `strict`, which re-raises them so the caller can tell "empty" from "Kite did not answer".
+    """
     try:
         kite = get_client()
         return kite.holdings() or []
     except KiteAuthError:
         raise
-    except Exception:
+    except Exception as e:
+        _raise_if_rejected(e)
+        if strict:
+            raise
         return []
 
 
 def positions() -> dict:
-    """Day + net positions."""
+    """Day + net positions. A refused login raises KiteTokenRejected; other failures return the empty shape."""
     try:
         kite = get_client()
         return kite.positions() or {"day": [], "net": []}
     except KiteAuthError:
         raise
-    except Exception:
+    except Exception as e:
+        _raise_if_rejected(e)
         return {"day": [], "net": []}
 
 

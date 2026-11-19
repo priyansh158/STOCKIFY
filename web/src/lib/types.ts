@@ -40,6 +40,8 @@ export interface PortfolioSnapshot {
   fetched_at: number;
   stale?: boolean;
   error?: string | null;
+  /** Kite refused the stored login: show "log in again", not an empty holdings table. */
+  expired?: boolean;
 }
 
 // ── Kite ─────────────────────────────────────────────────────────────────────
@@ -47,6 +49,8 @@ export interface PortfolioSnapshot {
 export interface KiteStatus {
   configured: boolean;
   authenticated: boolean;
+  /** A login was made but no longer works (Kite refused it, or it is past 06:00 IST). */
+  expired?: boolean;
   daemon_waiting_for_login: boolean;
   error?: string | null;
 }

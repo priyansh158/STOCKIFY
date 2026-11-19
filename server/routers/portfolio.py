@@ -35,6 +35,7 @@ def _to_dto(snap: portfolio_sync.PortfolioSnapshot) -> PortfolioSnapshotDTO:
         fetched_at=snap.fetched_at,
         stale=False,
         error=snap.error,
+        expired=snap.expired,
     )
 
 
@@ -42,7 +43,8 @@ def _to_dto(snap: portfolio_sync.PortfolioSnapshot) -> PortfolioSnapshotDTO:
 async def snapshot() -> PortfolioSnapshotDTO:
     """Returns the cached (≤60 s old) portfolio snapshot. When Kite isn't
     authenticated, `error` is set and `holdings` is empty — clients should
-    treat that as a 'log in first' state, not a 500."""
+    treat that as a 'log in first' state, not a 500. `expired` is true when
+    Kite refused the stored login: show "log in again", not "no holdings"."""
     # `portfolio_sync.cached_snapshot` is sync + hits the Kite REST API on a
     # cache miss — bounce to a worker thread so we don't block the loop.
     snap = await asyncio.to_thread(portfolio_sync.cached_snapshot, 60)

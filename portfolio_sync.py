@@ -5,10 +5,14 @@ Phase 4 of the Kite Roadmap.
 
 Wraps kite.holdings() and kite.positions() with a 60-second cache so the
 portfolio page does not hit the API on every request.
+
+A refused Kite login is never an empty portfolio: the snapshot carries `expired=True` and the plain EXPIRED sentence,
+and the cache is keyed by the stored login, so a new login fetches again at once.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -16,6 +20,10 @@ from typing import Optional
 
 import kite_client
 
+log = logging.getLogger("stockify.portfolio_sync")
+
+EXPIRED = "Your Kite login has expired or was ended by Zerodha. Log in again on this page."
+UNAVAILABLE = "Kite did not send your holdings just now, so they cannot be shown. Reload the page in a minute."
 
 @dataclass
 class Holding:
@@ -56,6 +64,8 @@ class PortfolioSnapshot:
     positions_net: list[dict] = field(default_factory=list)
     fetched_at: int = 0
     error: Optional[str] = None
+    expired: bool = False      # Kite refused the stored login: log in again (error is EXPIRED)
+    token_fp: str = ""         # which stored login made this snapshot (a hash, never the token)
 
     @property
     def total_invested(self) -> float:
@@ -82,13 +92,13 @@ def fetch_snapshot() -> PortfolioSnapshot:
     """Always fetch fresh; populates _cache. Returns a snapshot, with
     snapshot.error set when the underlying calls failed."""
     global _cache
-    snap = PortfolioSnapshot(fetched_at=int(time.time()))
+    snap = PortfolioSnapshot(fetched_at=int(time.time()), token_fp=kite_client.token_fingerprint())
     if not kite_client.is_authenticated():
         snap.error = "Kite not authenticated"
         _cache = snap
         return snap
     try:
-        raw_h = kite_client.holdings()
+        raw_h = kite_client.holdings(strict=True)
         for r in raw_h or []:
             try:
                 snap.holdings.append(Holding(
@@ -109,20 +119,28 @@ def fetch_snapshot() -> PortfolioSnapshot:
             snap.positions_net = (pos or {}).get("net", []) or []
         except Exception:
             snap.positions_net = []
-    except Exception as e:
-        snap.error = str(e)
+    except Exception as e:  # noqa: BLE001 - only the class name is logged: SDK text can carry request details
+        snap.holdings = []
+        if kite_client.is_token_rejection(e):
+            snap.error, snap.expired = EXPIRED, True
+            log.info("portfolio: Kite refused the stored login (%s)", type(e).__name__)
+        else:
+            snap.error = UNAVAILABLE
+            log.warning("portfolio: holdings fetch failed (%s)", type(e).__name__)
     _cache = snap
     return snap
 
 
 def cached_snapshot(max_age_seconds: int = 60) -> PortfolioSnapshot:
-    """Return _cache if still fresh, else re-fetch.
+    """Return _cache if still fresh and made by the same stored login, else re-fetch.
 
     Always returns a PortfolioSnapshot (possibly empty) — never None.
     """
     global _cache
-    if _cache is not None and (int(time.time()) - _cache.fetched_at) < max_age_seconds:
-        return _cache
+    cached = _cache
+    if (cached is not None and (int(time.time()) - cached.fetched_at) < max_age_seconds
+            and cached.token_fp == kite_client.token_fingerprint()):
+        return cached
     return fetch_snapshot()
 
 

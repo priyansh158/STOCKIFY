@@ -99,9 +99,11 @@ def desk_list() -> DeskListDTO:
         items = [DeskChipDTO(symbol=r["symbol"], exchange="NSE", instrument_id=r["instrument_id"],
                              verdict=r["verdict"], as_of_ns=int(r["made_ns"]), close_date=r["view"].get("close_date"))
                  for r in store.latest_views()]
-        return DeskListDTO(items=sorted(items, key=lambda c: c.symbol), skipped=[],
-                           plain="Kite is not logged in, so these are the last closing views of the stocks the desk "
-                                 "has graded; log in to see your current holdings.")
+        plain = ("Your Kite login has expired, so these are the last closing views of the stocks the desk has graded; "
+                 "log in again to see your current holdings." if getattr(snap, "expired", False) else
+                 "Kite is not logged in, so these are the last closing views of the stocks the desk has graded; "
+                 "log in to see your current holdings.")
+        return DeskListDTO(items=sorted(items, key=lambda c: c.symbol), skipped=[], plain=plain)
     day = ist_day(t_ns)
     items, skipped = [], []
     for h in snap.holdings:
