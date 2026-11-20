@@ -33,11 +33,13 @@ class MergedTests(StoreCase):
     def test_at_most_max_stocks(self):
         for s in ("RELIANCE", "INFY", "TCS"):
             store.add(s)
-        with mock.patch.object(store, "max_stocks", return_value=2):
+        real = loader.load_json
+        with mock.patch.object(loader, "load_json", lambda name, *a, **kw: {**real(name), "max_stocks": 2}
+                               if name == "watchlist.json" else real(name, *a, **kw)):
             self.assertEqual(feed.merged(BASE, DAY)["watchlist_quote"], ["NSE:RELIANCE", "NSE:INFY"])
 
     def test_any_error_logs_and_returns_the_universe_unchanged(self):
-        with mock.patch.object(store, "symbols", side_effect=RuntimeError("disk")), \
+        with mock.patch.object(feed, "_read_symbols", side_effect=RuntimeError("disk")), \
                 self.assertLogs("stockify.watchlist.feed", "ERROR") as cm:
             self.assertIs(feed.merged(BASE, DAY), BASE)
         self.assertIn("recording goes on", "\n".join(cm.output))
@@ -47,6 +49,42 @@ class MergedTests(StoreCase):
         store._db_path().write_bytes(b"this is not a database" * 64)
         with self.assertLogs("stockify.watchlist.feed", "ERROR"):
             self.assertIs(feed.merged(BASE, DAY), BASE)
+
+    def test_no_store_yet_is_an_empty_list_and_creates_nothing(self):
+        support.reset_sqlite_singleton(store)
+        for f in store._db_path().parent.glob(store._db_path().name + "*"):
+            f.unlink()
+        self.assertIs(feed.merged(BASE, DAY), BASE)
+        self.assertFalse(store._db_path().exists())
+
+    def test_a_hanging_read_returns_within_the_budget(self):
+        import threading
+        import time
+        release = threading.Event()
+        self.addCleanup(release.set)
+        store.add("RELIANCE")
+        with mock.patch.object(feed, "_read_symbols", lambda cap: (release.wait(30), ["RELIANCE"])[1]), \
+                self.assertLogs("stockify.watchlist.feed", "ERROR") as cm:
+            started = time.monotonic()
+            self.assertIs(feed.merged(BASE, DAY, budget_s=0.2), BASE)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertIn("did not answer within 0.2 s", "\n".join(cm.output))
+
+    def test_a_write_lock_never_makes_the_read_wait(self):
+        """The read is on its own read-only connection with no busy wait: a writer mid-transaction (a migration, an
+        add from the API) does not hold the recorder's start."""
+        import sqlite3
+        import time
+        store.add("RELIANCE")
+        writer = sqlite3.connect(str(store._db_path()), timeout=0, isolation_level=None)
+        self.addCleanup(writer.close)
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("UPDATE meta SET version = version + 1")
+        self.addCleanup(lambda: writer.execute("ROLLBACK"))
+        started = time.monotonic()
+        out = feed.merged(BASE, DAY)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn(out.get("watchlist_quote"), (None, ["NSE:RELIANCE"]))     # WAL readers may read the old state
 
 
 class RoomTests(StoreCase):

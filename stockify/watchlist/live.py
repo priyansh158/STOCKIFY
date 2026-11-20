@@ -2,15 +2,19 @@
 
 Safety first: the recording must never depend on this. The parts and their threads:
 
-    main thread     `HighLowWatch.build(day, tokens)` before the ticker connects: the watched stocks (watchlist.sqlite),
-                    their Kite tokens (the day's token map, `daemon._token_map`) and their prior 52-week ranges from the
-                    daily-candle cache (`ranges.prior_range(bars, day, ...)` with `day` the IST session date, so the
-                    range ends the trading day before). Registered with `recorder.add_tap(watch)` before the connect.
+    main thread     `HighLowWatch(day, tokens, clock=...)` before the ticker connects: no store and no lab file (only
+                    watchlist.json, from the repo). Registered with `recorder.add_tap(watch)` before the connect;
+                    `start()` after `recorder.start()`; `stop()` before the shutdown sets a flag and joins JOIN_S.
     ticker thread   `watch.put_nowait(item)` is `deque(maxlen=tap_frames).append`: O(1), no lock, cannot raise. When
                     the evaluator falls behind, the oldest frames fall off; harmless, because a quote packet carries the
                     day's running high and low.
-    watch-alerts    every POLL_S: walk each frame's packet headers, decode only the watched 44- and 184-byte packets
-                    (`kite_packets.parse_packet`, unchanged), judge, record, batch, send.
+    watch-alerts    first `prepare()`: the watched stocks (watchlist.sqlite), their Kite tokens (the day's token map,
+                    `daemon._token_map`) and their prior 52-week ranges from the daily-candle cache
+                    (`ranges.prior_range(bars, day, ...)` with `day` the IST session date, so the range ends the
+                    trading day before); frames tapped meanwhile are dropped. A slow or locked store delays only this
+                    thread. Then every POLL_S: walk each frame's packet headers, decode only the watched 44- and
+                    184-byte packets (`kite_packets.parse_packet`, unchanged), judge, record, batch, send. On `stop()`
+                    one last pass, on this thread, posts the waiting digest.
 
 Judging. Only frames received in the CM CONTINUOUS phase (`calendar.phase_at`), only positive values. A stock is
 switched off for the day, with a log line, when its candles are stale (the last daily bar is not the previous trading
@@ -18,17 +22,20 @@ day: the nightly candle fetch did not run) or on a basis mismatch: the packet's 
 the cached last close by more than `basis_tolerance`, which points to a split or bonus ex-date (the cached range is on
 the old basis). A new 52-week high is the day's high strictly above the prior high; a new low strictly below the prior
 low. One alert per stock, side and day: `store.record_alert` is the once-only record (its unique key survives a
-restart), and only a row this run inserted goes into a digest.
+restart), and only a row this run inserted goes into a digest. A failed write is tried again on a later packet. A row
+an earlier run of the day left `pending` (it ended before its digest) goes in this run's first digest.
 
 Delivery. One digest email per `alert_batch_s` through `notify.post("watch_high_low", ..., key="52w:<day>:<n>")`, at
 most `max_alert_emails_per_day` a day; the last one says so and points to the Watchlist page, and later alerts are
 stored as `capped`. The day's email count is kept in the lab (`watch_alerts_state.json`) so a restart cannot pass the
-cap. Each alert row's delivery becomes `sent` or `failed` once notify has tried.
+cap. Each alert row's delivery becomes `sent` or `failed` once notify has tried (`sent` when notify kept the message in
+its outbox for a later try). A replay never emails (owner, 2026-11-19): its digests are only logged (`replay_post`),
+and its rows stay `pending`.
 
-Containment. Each pass is in a try/except; after MAX_ERRORS errors the evaluator switches itself off for the day (the
-tap goes on appending to its bounded deque, which nobody reads). Nothing here calls the recorder, the ticker or the
-landing file. A removed stock stops alerting within VERSION_EVERY_S (the evaluator polls `store.version()`); a stock
-added during the session is judged from the next session.
+Containment. Each pass is in a try/except; after MAX_ERRORS failed passes in a row the evaluator switches itself off
+for the day (the tap goes on appending to its bounded deque, which nobody reads). Nothing here calls the recorder, the
+ticker or the landing file. A removed stock stops alerting within VERSION_EVERY_S (the evaluator polls
+`store.version()`); a stock added during the session is judged from the next session.
 """
 from __future__ import annotations
 
@@ -48,12 +55,14 @@ log = logging.getLogger("stockify.watchlist.live")
 
 POLL_S = 1.0                  # how often the evaluator reads the tap
 VERSION_EVERY_S = 10          # how often it checks the list for removals (the spec allows 60 s)
-MAX_ERRORS = 5                # errors in a day before the evaluator switches itself off
+MAX_ERRORS = 5                # failed passes in a row before the evaluator switches itself off for the day
+TAP_FRAMES = 64               # the tap's length when watchlist.json cannot be read (the evaluator is then off)
 JOIN_S = 2.0                  # how long the shutdown waits for the evaluator's thread
 WATCHED_LENGTHS = (44, 184)   # equity quote and full packets (kite_packets.LENGTHS)
 GROUP = "CM"
 PAGE = "/watchlist"
 SEC = 1_000_000_000
+EVENT = "watch_high_low"
 
 _U16 = struct.Struct(">H")
 _U32 = struct.Struct(">I")
@@ -101,55 +110,88 @@ def _default_post(event: str, subject: str, body: str, *, key: str, on_done: Cal
     return notify.post(event, subject, body, key=key, on_done=on_done)
 
 
+def replay_post(event: str, subject: str, body: str, *, key: str, on_done: Callable) -> bool:
+    """A replay's digest: logged, never emailed (owner, 2026-11-19). The alert rows stay `pending`."""
+    log.info("NOTIFY %s (replay, not sent): %s", event, subject)
+    return True
+
+
+def _queued(event: str, key: str) -> bool:
+    """True when notify kept the message in its outbox, to send it when the connection returns."""
+    try:
+        from stockify.daemon import notify
+        return notify.queued(event, key)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _default_bars(instrument_id: int) -> list[dict]:
     from stockify.data import history
     return history.bars(instrument_id, "day")
 
 
 class HighLowWatch:
-    def __init__(self, day: date, watched: dict[int, Watched], *, cfg: dict, clock, version: int,  # noqa: ANN001
-                 post: Callable | None = None, phase_at: Callable | None = None) -> None:
+    def __init__(self, day: date, tokens: dict[int, int], *, clock, cfg: dict | None = None,  # noqa: ANN001
+                 post: Callable | None = None, phase_at: Callable | None = None,
+                 bars_of: Callable[[int], list[dict]] | None = None) -> None:
+        """Cheap and safe on the main thread: no store, no lab file. `tokens` is the day's token map (Kite token ->
+        instrument id). The store and the candles are read by `prepare()`, on the evaluator's own thread."""
         self.day = day
-        self.watched = watched                   # token -> Watched; only the evaluator's thread changes it
+        self.tokens = tokens
         self.clock = clock
-        self.batch_ns = int(cfg["alert_batch_s"]) * SEC
-        self.cap = int(cfg["max_alert_emails_per_day"])
-        self.tol_ppm = numerics.to_ppm(str(cfg["basis_tolerance"]))
-        self.frames: collections.deque = collections.deque(maxlen=int(cfg["tap_frames"]))
+        if cfg is None:
+            try:
+                from stockify.config import loader
+                cfg = loader.load_json("watchlist.json")
+            except Exception:  # noqa: BLE001 — `prepare` says so and the evaluator stays off
+                cfg = None
+        self.cfg = cfg
+        self.frames: collections.deque = collections.deque(maxlen=int(cfg["tap_frames"]) if cfg else TAP_FRAMES)
         self.put_nowait = self.frames.append     # the recorder's tap (`Recorder.add_tap`): cannot raise
         self.post = post or _default_post
         if phase_at is None:
             from stockify.data import calendar
             phase_at = calendar.phase_at
         self.phase_at = phase_at
-        self.version = version
-        self.emails = _emails_sent(day)
+        self.bars_of = bars_of or _default_bars
+        self.watched: dict[int, Watched] = {}    # token -> Watched; only the evaluator's thread changes it
+        self.ready = False
+        self.version = 0
+        self.emails = 0
+        self.cap = 0
+        self.batch_ns = 0
+        self.tol_ppm = 0
         self.batch: list[dict] = []
         self.batch_started: int | None = None
         self.errors = 0
         self.disabled = False
-        self._next_version_ns = clock.mono_ns() + VERSION_EVERY_S * SEC
+        self._next_version_ns = 0
         self._phase_cache: tuple[int, bool] = (-1, False)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    # ── build (main thread, before the connect) ─────────────────────────────────────────────────────────────────────
     @classmethod
-    def build(cls, day: date, tokens: dict[int, int], *, clock, cfg: dict | None = None,  # noqa: ANN001
-              bars_of: Callable[[int], list[dict]] | None = None, **kw) -> "HighLowWatch | None":
-        """The evaluator for `day`, or None when nothing is watched or no watched stock can be judged today.
-        `tokens` is the day's token map (Kite token -> instrument id). Raises on a broken store: the caller logs it
-        and records without alerts."""
-        from stockify.config import loader
+    def build(cls, day: date, tokens: dict[int, int], *, clock, **kw) -> "HighLowWatch | None":  # noqa: ANN001
+        """An evaluator prepared on the calling thread (tests and tools); None when nothing can be judged today.
+        Raises what `prepare` raises."""
+        w = cls(day, tokens, clock=clock, **kw)
+        return w if w.prepare() else None
+
+    # ── prepare (the evaluator's thread) ────────────────────────────────────────────────────────────────────────────
+    def prepare(self) -> bool:
+        """Read the list, the tokens and the ranges; True when at least one stock can be judged today (else the
+        evaluator is off for the day). Raises on a broken store or config: the thread logs it and stays off."""
         from stockify.data import calendar
         from stockify.watchlist import ranges, store
-        cfg = cfg or loader.load_json("watchlist.json")
-        bars_of = bars_of or _default_bars
-        version = store.version()
+        cfg, day = self.cfg, self.day
+        if cfg is None:
+            raise RuntimeError("watchlist.json could not be read")
+        self.batch_ns = int(cfg["alert_batch_s"]) * SEC
+        self.cap = int(cfg["max_alert_emails_per_day"])
+        self.tol_ppm = numerics.to_ppm(str(cfg["basis_tolerance"]))
+        self.version = store.version()
         rows = store.rows()[:int(cfg["max_stocks"])]
-        if not rows:
-            return None
-        token_of = {iid: tok for tok, iid in tokens.items()}
+        token_of = {iid: tok for tok, iid in self.tokens.items()}
         previous = calendar.previous_trading_day(GROUP, day).isoformat()
         watched: dict[int, Watched] = {}
         for r in rows:
@@ -158,7 +200,7 @@ class HighLowWatch:
             if token is None:
                 log.warning("watchlist: %s has no Kite token on %s; no alerts for it today", sym, day)
                 continue
-            rng = ranges.prior_range(bars_of(iid), day, int(cfg["lookback_days"]), int(cfg["min_history_days"]))
+            rng = ranges.prior_range(self.bars_of(iid), day, int(cfg["lookback_days"]), int(cfg["min_history_days"]))
             if rng is None:
                 log.info("watchlist: %s has less than a year of daily prices; no 52-week alerts for it yet", sym)
                 continue
@@ -169,10 +211,34 @@ class HighLowWatch:
             watched[token] = Watched(iid, sym, token, rng["high_paise"], rng["high_date"], rng["low_paise"],
                                      rng["low_date"], rng["last_close_paise"])
         if not watched:
-            log.info("watchlist: no watched stock can be judged today; no 52-week alerts")
-            return None
+            if rows:
+                log.info("watchlist: no watched stock can be judged today; no 52-week alerts")
+            self.disabled = True
+            self.frames.clear()
+            return False
+        self.watched = watched
+        self.emails = _emails_sent(day)
+        self._requeue(store)
+        self._next_version_ns = self.clock.mono_ns() + VERSION_EVERY_S * SEC
+        self.frames.clear()                      # what was tapped before the evaluator was ready is not judged
+        self.ready = True
         log.info("watchlist: 52-week alerts on %d stock(s) today", len(watched))
-        return cls(day, watched, cfg=cfg, clock=clock, version=version, **kw)
+        return True
+
+    def _requeue(self, store) -> None:  # noqa: ANN001
+        """Today's alerts already recorded (an earlier run of the day) are never told again; a `pending` one (that
+        run ended before its digest) goes in this run's first digest."""
+        by_iid = {w.instrument_id: w for w in self.watched.values()}
+        ref = self.day.isoformat()
+        for a in sorted(store.alerts(timeutil.ist_ns(self.day, "00:00")), key=lambda a: a["at_ns"]):
+            w = by_iid.get(a["instrument_id"])
+            if w is None or a["ref"] != ref or a["kind"] not in ("high52", "low52"):
+                continue
+            w.alerted.add(a["kind"])
+            if a["delivery"] == "pending":
+                self._queue({"instrument_id": w.instrument_id, "symbol": w.symbol, "kind": a["kind"],
+                             "level": a["level_paise"], "prior": a["prior_paise"], "prior_date": a["prior_date"],
+                             "at_ns": a["at_ns"]})
 
     # ── the thread ──────────────────────────────────────────────────────────────────────────────────────────────────
     def start(self) -> None:
@@ -182,25 +248,38 @@ class HighLowWatch:
 
     def _run(self) -> None:
         try:
-            while not self._stop.wait(POLL_S) and not self.disabled:
-                self.step()
+            if not self.ready:
+                try:
+                    if not self.prepare():
+                        return
+                except Exception:  # noqa: BLE001 — off for the day; the recording never knew
+                    self.disabled = True
+                    self.frames.clear()
+                    log.error("watchlist: 52-week alerts are off for %s: the watchlist could not be read; the "
+                              "recording is not affected", self.day, exc_info=True)
+                    return
+            while not self.disabled:
+                final = self._stop.wait(POLL_S)
+                self.step(final=final)
+                if final:
+                    return
         except BaseException:  # noqa: BLE001 — nothing may leave this thread
             log.critical("watchlist: the alert thread stopped", exc_info=True)
 
-    def stop(self, timeout: float = JOIN_S) -> None:
-        """Stop the thread (a short join: it is a daemon thread), then read what is left and send the waiting digest."""
+    def stop(self, timeout: float | None = None) -> None:
+        """Ask the thread for its last pass (it posts the waiting digest) and wait at most JOIN_S for it. Nothing here
+        reads the store: a thread still stuck is left behind (it is a daemon thread)."""
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout)
+            limit = JOIN_S if timeout is None else timeout
+            self._thread.join(limit)
             if self._thread.is_alive():
-                log.warning("watchlist: the alert thread did not stop within %.0f s; left behind", timeout)
-                return
-        self.step(final=True)
+                log.warning("watchlist: the alert thread did not stop within %.0f s; left behind", limit)
 
     # ── one pass ────────────────────────────────────────────────────────────────────────────────────────────────────
     def step(self, *, final: bool = False) -> None:
         """Read the tap, judge, and send a digest that is due (every waiting one when `final`). Never raises."""
-        if self.disabled:
+        if self.disabled or not self.ready:
             return
         try:
             self._poll_version()
@@ -212,14 +291,16 @@ class HighLowWatch:
                 self._frame(item)
             if self.batch and (final or self.clock.mono_ns() - self.batch_started >= self.batch_ns):
                 self._send()
+            self.errors = 0                     # the budget is for failed passes in a row
         except Exception:  # noqa: BLE001 — never the recorder's problem
             self.errors += 1
-            log.error("watchlist: the alert pass failed (%d of %d)", self.errors, MAX_ERRORS, exc_info=True)
+            log.error("watchlist: the alert pass failed (%d in a row; off at %d)", self.errors, MAX_ERRORS,
+                      exc_info=True)
             if self.errors >= MAX_ERRORS:
                 self.disabled = True
                 self.frames.clear()
-                log.error("watchlist: 52-week alerts are off for the rest of %s after %d errors; the recording is "
-                          "not affected", self.day, self.errors)
+                log.error("watchlist: 52-week alerts are off for the rest of %s after %d failed passes in a row; the "
+                          "recording is not affected", self.day, self.errors)
 
     def _poll_version(self) -> None:
         now = self.clock.mono_ns()
@@ -282,26 +363,34 @@ class HighLowWatch:
 
     def _cross(self, w: Watched, kind: str, level: int, prior: int, prior_date: str, recv_ns: int) -> None:
         from stockify.watchlist import store
-        w.alerted.add(kind)
         capped = self.emails >= self.cap
         inserted = store.record_alert(w.instrument_id, w.symbol, kind, self.day.isoformat(), level_paise=level,
                                       prior_paise=prior, prior_date=prior_date, at_ns=recv_ns,
                                       delivery="capped" if capped else "pending")
+        w.alerted.add(kind)                     # only once the row is written: a failed write is tried again
         if not inserted:
             return                              # already recorded today (a restart): never told twice
-        log.info("watchlist: %s made a new 52-week %s (%d paise, above/below %d of %s)%s", w.symbol,
+        log.info("watchlist: %s made a new 52-week %s (%d paise, beyond %d of %s)%s", w.symbol,
                  "high" if kind == "high52" else "low", level, prior, prior_date,
                  "; today's alert emails are used up, so it is on the page only" if capped else "")
         if capped:
             return
+        self._queue({"instrument_id": w.instrument_id, "symbol": w.symbol, "kind": kind, "level": level,
+                     "prior": prior, "prior_date": prior_date, "at_ns": recv_ns})
+
+    def _queue(self, alert: dict) -> None:
         if not self.batch:
             self.batch_started = self.clock.mono_ns()
-        self.batch.append({"instrument_id": w.instrument_id, "symbol": w.symbol, "kind": kind, "level": level,
-                           "prior": prior, "prior_date": prior_date, "at_ns": recv_ns})
+        self.batch.append(alert)
 
     # ── delivery ────────────────────────────────────────────────────────────────────────────────────────────────────
     def _send(self) -> None:
         items, self.batch, self.batch_started = self.batch, [], None
+        if self.emails >= self.cap:              # re-queued rows after the cap was reached: on the page only
+            from stockify.watchlist import store
+            for a in items:
+                store.set_delivery(a["instrument_id"], a["kind"], self.day.isoformat(), "capped")
+            return
         n = self.emails + 1
         self.emails = n
         try:
@@ -309,14 +398,17 @@ class HighLowWatch:
         except OSError:
             log.warning("watchlist: the day's email count could not be saved", exc_info=True)
         subject, body = digest(items, last=n >= self.cap, cap=self.cap)
-        posted = self.post("watch_high_low", subject, body, key=f"52w:{self.day.isoformat()}:{n}",
-                           on_done=lambda error: self._delivered(items, error))
+        key = f"52w:{self.day.isoformat()}:{n}"
+        posted = self.post(EVENT, subject, body, key=key, on_done=lambda error: self._delivered(items, error, key))
         if not posted:
-            self._delivered(items, "queue full")
+            self._delivered(items, "queue full", key)
 
-    def _delivered(self, items: list[dict], error) -> None:  # noqa: ANN001
-        """On notify's thread: each alert row says how it went."""
+    def _delivered(self, items: list[dict], error, key: str) -> None:  # noqa: ANN001
+        """On notify's thread: each alert row says how it went (a message notify kept in its outbox counts as sent:
+        it goes out when the connection returns)."""
         from stockify.watchlist import store
+        if error is not None and _queued(EVENT, key):
+            error = None
         for a in items:
             try:
                 store.set_delivery(a["instrument_id"], a["kind"], self.day.isoformat(),

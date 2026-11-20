@@ -702,6 +702,16 @@ class OutboxTests(NotifyTestBase):
         self.assertIsNone(notify.send("recorder_stall", "s", "b", sender=again, key="k"))
         self.assertEqual(again.calls, [])                         # delivered late: never sent a second time
 
+    def test_queued_says_whether_a_keyed_message_waits_in_the_outbox(self):
+        """CW 3: a caller can tell 'kept for later' from 'lost', so it does not send the same reminder again."""
+        self.assertFalse(notify.queued("watch_results", "results:2026-11-20"))
+        notify.send("watch_results", "s", "b", sender=Recorder(fail=OSError()), key="results:2026-11-20")
+        self.assertTrue(notify.queued("watch_results", "results:2026-11-20"))
+        self.assertFalse(notify.queued("watch_results", "results:2026-11-21"))
+        self.assertFalse(notify.queued("watch_high_low", "results:2026-11-20"))
+        notify.retry_outbox(sender=Recorder())
+        self.assertFalse(notify.queued("watch_results", "results:2026-11-20"))
+
     def test_a_callers_retry_that_works_removes_the_waiting_copy(self):
         notify.send("recorder_stall", "s", "b", sender=Recorder(fail=OSError()), key="k")
         notify.send("recorder_stall", "s", "b", sender=Recorder(), key="k")

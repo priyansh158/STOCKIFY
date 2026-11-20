@@ -231,9 +231,38 @@ class DeliveryTests(WatchCase):
         self.post.error = "SMTPAuthenticationError"
         w = self.build()
         self.feed(w, packet(TOKENS["RELIANCE"], high=HIGH + 5))
-        w.stop()                                                         # never started: stop still sends the batch
+        w.start()
+        w.stop()                                                         # the thread's last pass sends the batch
+        self.assertFalse(w._thread.is_alive())
         self.assertEqual(len(self.post.calls), 1)
         self.assertEqual(self.rows()[0]["delivery"], "failed")
+
+    def test_a_message_kept_in_notifys_outbox_counts_as_sent(self):
+        self.post.error = "gaierror"
+        w = self.build()
+        self.feed(w, packet(TOKENS["RELIANCE"], high=HIGH + 5))
+        with mock.patch("stockify.daemon.notify.queued", return_value=True) as queued:
+            self.flush(w)
+        queued.assert_called_once_with("watch_high_low", f"52w:{DAY.isoformat()}:1")
+        self.assertEqual(self.rows()[0]["delivery"], "sent")
+
+    def test_a_pending_alert_left_by_a_crash_goes_in_the_next_runs_first_digest(self):
+        w = self.build()
+        self.feed(w, packet(TOKENS["RELIANCE"], high=HIGH + 5))         # recorded, then the process died
+        self.assertEqual(self.post.calls, [])
+        again = self.build()
+        self.feed(again, packet(TOKENS["RELIANCE"], high=HIGH + 9))     # already told today: not a second row
+        self.flush(again)
+        [mail] = self.post.calls
+        self.assertIn("RELIANCE: a new 52-week high of ₹110.05", mail["body"])
+        self.assertEqual([a["delivery"] for a in self.rows()], ["sent"])
+
+    def test_a_replay_post_logs_and_never_emails(self):
+        with mock.patch("stockify.daemon.notify.post") as post, \
+                self.assertLogs("stockify.watchlist.live", "INFO") as cm:
+            self.assertTrue(live.replay_post("watch_high_low", "[STOCKIFY] s", "b", key="k", on_done=None))
+        post.assert_not_called()
+        self.assertIn("NOTIFY watch_high_low (replay, not sent)", "\n".join(cm.output))
 
 
 class ContainmentTests(WatchCase):
@@ -260,13 +289,60 @@ class ContainmentTests(WatchCase):
         self.assertEqual(landing.packet_count(), live.MAX_ERRORS + 3)
         self.assertEqual(self.rows(), [])
 
-    def test_a_broken_store_mid_day_is_contained(self):
+    def test_a_broken_store_mid_day_is_contained_and_the_alert_is_tried_again(self):
         store.add("RELIANCE")
         w = self.build()
         with mock.patch.object(store, "record_alert", side_effect=OSError("disk")):
             self.feed(w, packet(TOKENS["RELIANCE"], high=HIGH + 5))
         self.assertEqual(w.errors, 1)
         self.assertFalse(w.disabled)
+        self.feed(w, packet(TOKENS["RELIANCE"], high=HIGH + 7))          # the write works again
+        self.assertEqual([a["level_paise"] for a in self.rows()], [HIGH + 7])
+        self.assertEqual(w.errors, 0)                                    # a clean pass resets the budget
+
+    def test_only_failures_in_a_row_switch_the_evaluator_off(self):
+        store.add("RELIANCE")
+        w = self.build()
+        for _ in range(3 * live.MAX_ERRORS):
+            with mock.patch.object(w, "_frame", side_effect=RuntimeError("one bad frame")):
+                for _ in range(live.MAX_ERRORS - 1):
+                    w.put_nowait(item([packet(TOKENS["RELIANCE"])]))
+                    w.step()
+            w.step()                                                     # a clean pass
+        self.assertFalse(w.disabled)
+
+    def test_nothing_on_the_main_thread_reads_the_store(self):
+        """The constructor (before the connect) and stop() (before the shutdown) never touch watchlist.sqlite: a
+        store that hangs or breaks costs only the evaluator's own thread."""
+        store.add("RELIANCE")
+        with mock.patch.object(store, "rows", side_effect=AssertionError("store read")), \
+                mock.patch.object(store, "version", side_effect=AssertionError("store read")):
+            w = live.HighLowWatch(DAY, self.tokens, clock=self.clock, cfg=self.cfg, post=self.post,
+                                  bars_of=lambda iid: self.bars.get(iid, []))
+            w.put_nowait(item([packet(TOKENS["RELIANCE"])]))
+            w.stop()
+        self.assertFalse(w.ready)
+
+    def test_a_store_that_cannot_be_read_turns_the_evaluator_off_on_its_thread(self):
+        store.add("RELIANCE")
+        w = live.HighLowWatch(DAY, self.tokens, clock=self.clock, cfg=self.cfg, post=self.post,
+                              bars_of=lambda iid: self.bars.get(iid, []))
+        with mock.patch.object(store, "rows", side_effect=OSError("locked")), \
+                self.assertLogs("stockify.watchlist.live", "ERROR") as cm:
+            w.start()
+            w._thread.join(5)
+        self.assertTrue(w.disabled)
+        self.assertIn("recording is not affected", "\n".join(cm.output))
+        self.assertEqual(len(w.frames), 0)
+
+    def test_frames_tapped_before_the_evaluator_is_ready_are_dropped(self):
+        store.add("RELIANCE")
+        w = live.HighLowWatch(DAY, self.tokens, clock=self.clock, cfg=self.cfg, post=self.post,
+                              bars_of=lambda iid: self.bars.get(iid, []))
+        w.put_nowait(item([packet(TOKENS["RELIANCE"], high=HIGH + 5)]))
+        self.assertTrue(w.prepare())
+        w.step()
+        self.assertEqual(self.rows(), [])
 
     def test_the_thread_is_named_and_stops_quickly(self):
         store.add("RELIANCE")

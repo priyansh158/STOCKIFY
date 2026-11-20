@@ -206,6 +206,17 @@ def _outbox_write(recs: list[dict]) -> None:
     os.replace(tmp, p)
 
 
+def queued(event: str, key: str) -> bool:
+    """True when a message of `event` with `key` waits in the outbox (it goes out when the connection returns), so a
+    caller that saw the send fail does not send it again (CW 3). Never raises."""
+    try:
+        with _outbox_lock:
+            return any(r["event"] == event and r.get("key") == key for r in _outbox_read())
+    except Exception as e:  # noqa: BLE001
+        log.error("the notification outbox could not be read: %s", type(e).__name__)
+        return False
+
+
 def _outbox_discard(event: str, key: str) -> None:
     try:
         with _outbox_lock:
