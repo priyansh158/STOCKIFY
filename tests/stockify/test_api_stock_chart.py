@@ -73,7 +73,13 @@ class StockChartTests(SandboxedDBTest):
         body = self.get("NEWCO")
         self.assertEqual((body["data_state"], body["plots"]), ("ok", []))
         self.assertTrue(body["bars"])
-        self.assertIn("no 52-week lines", body["notice"])
+        self.assertEqual(body["notice"], "Less than a year of daily prices, so no 52-week range yet")
+
+    def test_a_stock_whose_last_candle_is_over_a_year_old_says_so(self):
+        put_bars(self.ids["TCS"], DAY - timedelta(days=900), 420)                 # the last candle is about 480 days back
+        body = self.get("TCS")
+        self.assertEqual((body["data_state"], body["plots"]), ("ok", []))
+        self.assertEqual(body["notice"], "No daily prices in the last year")
 
     def test_no_bars_is_no_data_with_the_plain_notice(self):
         body = self.get("INFY")

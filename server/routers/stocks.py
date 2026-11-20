@@ -14,6 +14,7 @@ from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException
 
+from server.routers.watchlist import NO_RECENT, SHORT_HISTORY      # the watchlist's words for the same two cases
 from server.schemas import RunChartDTO
 from server.services import charts
 from stockify import timeutil
@@ -23,7 +24,6 @@ from stockify.data import instruments
 router = APIRouter(prefix="/api/stocks", tags=["stocks"])
 
 NO_DATA = "No daily prices yet: they are fetched each evening for the screener's stocks and your watchlist."
-SHORT_HISTORY = "Less than a year of daily prices, so no 52-week lines yet"
 DAY_S = 86_400
 _CACHE = "stock"
 _SYMBOL = re.compile(r"^[A-Za-z0-9&_.\-]{1,40}$")
@@ -42,14 +42,15 @@ def _build(iid: int, sym: str, candles: list, rows: list[dict], today, cfg: dict
         return charts.dto(charts.model(iid, sym, DAY_S, "adjusted", [], [], data_state="no_data", notice=NO_DATA), {})
     first = timeutil.ist_ns(today - timedelta(days=cfg["lookback_days"]), "00:00")
     shown = [c for c in candles if c.start_ns >= first] or candles[-1:]
-    _last, rng = charts.stock_range(rows, today, cfg)
+    last, rng = charts.stock_range(rows, today, cfg)
     plots, labels = [], {}
     if rng:
         for name, label, key in (("high52", "52-week high", "high_paise"), ("low52", "52-week low", "low_paise")):
             plots.append({"name": name, "kind": "price", "instrument_id": iid,
                           "points": [[c.start_ns, rng[key]] for c in shown]})
             labels[name] = label
-    m = charts.model(iid, sym, DAY_S, "adjusted", shown, plots, notice=None if rng else SHORT_HISTORY)
+    stale = last is not None and last[1] < (today - timedelta(days=cfg["lookback_days"])).isoformat()
+    m = charts.model(iid, sym, DAY_S, "adjusted", shown, plots, notice=None if rng else NO_RECENT if stale else SHORT_HISTORY)
     return charts.dto(m, labels)
 
 

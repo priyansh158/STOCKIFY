@@ -173,7 +173,7 @@ function PriceSection({ d }: { d: CandidateDetailDTO }) {
     <section className="stk-section stk-stack-s" aria-labelledby="fund-price">
       <h2 id="fund-price">Price</h2>
       {facts.length > 0 && (
-        <dl className="stk-row-between" style={{ justifyContent: "flex-start", gap: "var(--space-lg)" }}>
+        <dl className="stk-facts">
           {facts.map((f) => (
             <div key={f.label}>
               <dt className="stk-label">{f.label}</dt>
