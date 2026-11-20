@@ -285,6 +285,7 @@ out.wordsNoPackPaper = chart.prunedWords("no_pack", true);
 out.wordsNoPackRun = chart.prunedWords("no_pack", false);
 out.wordsUnreadable = chart.prunedWords("pack unreadable", true);
 out.wordsNoData = chart.prunedWords("no_data", false);
+out.noDataNotice = [chart.showsModelNotice({ notice: "x", pnl_complete: true, data_state: "no_data" }), chart.showsModelNotice({ notice: "x", pnl_complete: true, data_state: "ok" }), chart.showsModelNotice({ notice: null, pnl_complete: false, data_state: "ok" }), chart.showsModelNotice(null)];
 out.noDataState = chart.chartViewState(model({ data_state: "no_data", bars: [], markers: [] }));
 out.wordsPruned = chart.prunedWords("pruned", false);
 

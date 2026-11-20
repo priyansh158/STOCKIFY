@@ -499,6 +499,13 @@ export function nextDelay(base: number, failures: number, cap = 30_000): number 
   return Math.max(base, Math.min(cap, base * 2 ** failures));
 }
 
+/** Whether the line under the chart title shows the model's own notice. A "no_data" chart says its one sentence in the
+ *  empty-state line (prunedWords), so the server's notice for the same words is not shown a second time. */
+export function showsModelNotice(meta: Pick<ChartModel, "notice" | "pnl_complete" | "data_state"> | null | undefined): boolean {
+  if (!meta || meta.data_state === "no_data") return false;
+  return Boolean(meta.notice) || meta.pnl_complete === false;
+}
+
 /** The plain sentence for a chart with no price data (state "pruned"). */
 export function prunedWords(dataState: ChartModel["data_state"], paper: boolean, live = false): string {
   // a session still open (the server's `live` flag) has no recording yet because prices have not arrived, not because none was made
