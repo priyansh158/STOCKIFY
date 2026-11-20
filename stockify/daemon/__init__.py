@@ -145,7 +145,7 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
     """Run one scheduler job for `day` (compaction, candles, quality, nse_fetch, margin_files, prune, finalise, parity,
-    daily_summary, desk, fundamentals, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
+    daily_summary, desk, fundamentals, watch_results, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
     tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
     windows are judged against it."""
     now_ns = timeutil.now_ns() if now_ns is None else now_ns
@@ -233,6 +233,8 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         _desk_job(day, state, now_ns)
     elif job == "fundamentals":
         _fundamentals_job(day, state, now_ns)
+    elif job == "watch_results":
+        _watch_results_job(day, state, now_ns)
     elif job == "backup":
         _backup_job(day, state)
 
@@ -487,6 +489,33 @@ def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         log.warning("fundamentals for %s: %s still failing after the retry window; giving up for the day", day,
                     ", ".join(f["symbol"] for f in res["failed"]))
         state.mark("fundamentals", day)
+
+
+WATCH_RESULTS_TRIES = 3                             # failed attempts of one day's results reminder before it is given up
+
+
+def _watch_results_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """The watchlist's results reminder (CW 3, `stockify.watchlist.reminders`): after the fundamentals job refreshed
+    the results calendar, one digest of the watched stocks' coming meetings. Sent, or nothing due: marked. A failed
+    send or a raised error is tried again every `retry_every_min`, at most WATCH_RESULTS_TRIES times a day, then given
+    up (logged); the reminders a failed email held are tried again by the next day's run while still ahead."""
+    from stockify.watchlist import reminders
+    try:
+        res = reminders.run(day, now_ns=now_ns)
+        error = res["error"]
+        if error is None:
+            if res["told"]:
+                log.info("watchlist: results reminder for %s: %d meeting(s) told", day, len(res["told"]))
+            state.mark("watch_results", day)
+            return
+    except Exception as e:  # noqa: BLE001 — a reminder never costs the daemon anything
+        log.exception("the results reminder for %s raised", day)
+        error = type(e).__name__
+    n = _tries(state, "watch_results", day, WATCH_RESULTS_TRIES) + 1
+    state.mark(f"watch_results_try{n}", day)
+    if n >= WATCH_RESULTS_TRIES:
+        log.error("watchlist: the results reminder for %s was not sent after %d tries (%s): giving up", day, n, error)
+        state.mark("watch_results", day)
 
 
 SUMMARY_TRIES = 5                                   # sends of one day's summary before the daemon gives up

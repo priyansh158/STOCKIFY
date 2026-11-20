@@ -40,6 +40,7 @@ from server.routers import (
     tests as tests_router,
     trade as trade_router,
     ticks,
+    watchlist as watchlist_router,
 )
 from server import local_only, log_redaction
 
@@ -142,3 +143,4 @@ app.include_router(jobs_router.router)
 app.include_router(trade_router.router)
 app.include_router(desk_router.router)
 app.include_router(fundamentals_router.router)
+app.include_router(watchlist_router.router)

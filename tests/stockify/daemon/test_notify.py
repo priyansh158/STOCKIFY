@@ -71,6 +71,21 @@ class SendTests(NotifyTestBase):
         self.assertEqual(set(doc["events"].values()), {True})
         self.assertEqual(sorted(doc["events"]), sorted(loader.NOTIFY_EVENTS))
 
+    def test_the_watchlist_events_are_shipped_in_both_places(self):
+        """CW 3: the 52-week alerts and the results reminders have their own switches, in notify.json and in
+        loader.NOTIFY_EVENTS (the loader refuses a notify.json whose keys differ)."""
+        for event in ("watch_high_low", "watch_results"):
+            self.assertIn(event, loader.NOTIFY_EVENTS)
+            self.assertIn(event, notify.EVENTS)
+            self.assertIs(loader.load_json("notify.json")["events"][event], True)
+
+    def test_a_watchlist_event_is_sent_like_any_other(self):
+        self.configured(channel="email")
+        sender = Recorder()
+        self.assertIsNone(notify.send("watch_high_low", "s", "b", sender=sender, key="52w:2026-11-17:1"))
+        self.assertIsNone(notify.send("watch_high_low", "s", "b", sender=sender, key="52w:2026-11-17:1"))
+        self.assertEqual(len(sender.calls), 1)
+
     def test_default_is_log_only(self):
         self.configured(channel=None)
         sender = Recorder()
@@ -686,6 +701,16 @@ class OutboxTests(NotifyTestBase):
         again = Recorder()
         self.assertIsNone(notify.send("recorder_stall", "s", "b", sender=again, key="k"))
         self.assertEqual(again.calls, [])                         # delivered late: never sent a second time
+
+    def test_queued_says_whether_a_keyed_message_waits_in_the_outbox(self):
+        """CW 3: a caller can tell 'kept for later' from 'lost', so it does not send the same reminder again."""
+        self.assertFalse(notify.queued("watch_results", "results:2026-11-20"))
+        notify.send("watch_results", "s", "b", sender=Recorder(fail=OSError()), key="results:2026-11-20")
+        self.assertTrue(notify.queued("watch_results", "results:2026-11-20"))
+        self.assertFalse(notify.queued("watch_results", "results:2026-11-21"))
+        self.assertFalse(notify.queued("watch_high_low", "results:2026-11-20"))
+        notify.retry_outbox(sender=Recorder())
+        self.assertFalse(notify.queued("watch_results", "results:2026-11-20"))
 
     def test_a_callers_retry_that_works_removes_the_waiting_copy(self):
         notify.send("recorder_stall", "s", "b", sender=Recorder(fail=OSError()), key="k")

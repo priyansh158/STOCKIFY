@@ -36,6 +36,7 @@ VERIFY = "VERIFY"
 
 # file name -> expected schema tag
 SCHEMAS = {
+    "watchlist.json": "stockify.watchlist/1",
     "universe.json": "stockify.universe/1",
     "charges.json": "stockify.charges/1",
     "sessions.json": "stockify.sessions/1",
@@ -195,7 +196,8 @@ def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
 
 
 NOTIFY_CHANNELS = (None, "email")                  # email only (owner, 2026-11-11)
-NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary")
+NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary",
+                 "watch_high_low", "watch_results")      # CW 3: the watchlist's 52-week alerts and results reminders
 
 
 def _check_notify(doc: dict) -> None:
@@ -447,6 +449,31 @@ def _check_research(doc: dict) -> None:
                           f"coverage.max_days ({maximum})")
 
 
+def _check_watchlist(doc: dict) -> None:
+    """watchlist.json (stockify.watchlist/1): every key present and none unknown; counts and seconds are whole
+    numbers within sanity bounds; `min_history_days` at most `lookback_days`; `basis_tolerance` a decimal string in
+    (0, 0.1]."""
+    bounds = {"max_stocks": (1, 500), "lookback_days": (1, 3650), "min_history_days": (1, 3650),
+              "alert_batch_s": (1, 3600), "max_alert_emails_per_day": (1, 100),
+              "results_lead_trading_days": (1, 10), "tap_frames": (8, 100_000)}
+    keys = (*bounds, "basis_tolerance")
+    extra = set(doc) - set(keys) - {"schema", "note"}
+    if extra:
+        raise ConfigError(f"watchlist.json: unknown keys {sorted(extra)}; known: {list(keys)}")
+    for key in keys:
+        if key not in doc:
+            raise ConfigError(f"watchlist.json: {key} is missing")
+    for key, (low, high) in bounds.items():
+        v = doc[key]
+        if isinstance(v, bool) or not isinstance(v, int) or not low <= v <= high:
+            raise ConfigError(f"watchlist.json: {key} must be a whole number from {low} to {high}, got {v!r}")
+    if doc["min_history_days"] > doc["lookback_days"]:
+        raise ConfigError("watchlist.json: min_history_days must not exceed lookback_days")
+    tol = doc["basis_tolerance"]
+    if not isinstance(tol, str) or _SIGNED_DECIMAL.fullmatch(tol) is None or not 0 < Decimal(tol) <= Decimal("0.1"):
+        raise ConfigError(f"watchlist.json: basis_tolerance must be a decimal string in (0, 0.1], got {tol!r}")
+
+
 def _check_fundamentals(doc: dict) -> None:
     """fundamentals.json (stockify.fundamentals/1): every key present and none unknown; the list URLs and the API
     base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
@@ -595,6 +622,8 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
         _check_research(doc)
     if name == "storage.json":
         _check_storage(doc)
+    if name == "watchlist.json":
+        _check_watchlist(doc)
     if name == "fundamentals.json":
         _check_fundamentals(doc)
     if name == "candles.json":

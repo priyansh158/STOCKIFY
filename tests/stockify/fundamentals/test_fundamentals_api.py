@@ -114,6 +114,17 @@ class ListTests(FundamentalsApiBase):
         self.assertIsNone(body["test_record_id"])
         self.assertEqual(body["notes"], NOTES)
 
+    def test_watched_stocks_outside_the_universe_never_reach_the_screeners_upcoming_list(self):
+        """CW 3: the results calendar also keeps the watchlist's stocks (their reminders read it); the screener's
+        page lists only its own universe's meetings."""
+        store._connect().executemany(
+            "INSERT INTO results_calendar (symbol, meeting_date, purpose, period_hint, read_on) VALUES (?, ?, ?, ?, ?)",
+            [("WATCHED", "2025-12-04", "Financial Results", "Oct–Dec quarter", "2025-12-01"),
+             ("THIN", "2025-12-04", "Financial Results", "Oct–Dec quarter", "2025-12-01")])     # on the list, not liquid
+        body = self.get("/api/fundamentals")
+        self.assertEqual([(u["symbol"], u["date"]) for u in body["upcoming"]],
+                         [("AAA", "2025-12-03"), ("BBB", "2025-12-05")])
+
     def test_before_the_first_screen_the_list_is_empty_not_an_error(self):
         store._connect().execute("DELETE FROM screen_runs")
         body = self.get("/api/fundamentals")

@@ -1104,4 +1104,48 @@ export interface FundamentalsTestRecordDTO {
   benchmark?: string | null;
   notes: string[];
 }
+
+// ── Watchlist (CW 2) ─────────────────────────────────────────────────────────
+
+/** POST /api/watchlist: the NSE symbol to watch. */
+export interface WatchAddIn {
+  symbol: string;
+}
+
+/** One watched stock: its last close and its 52-week range from the daily candles (null while they are missing). */
+export interface WatchRowDTO {
+  symbol: string;
+  instrument_id: number;
+  /** Today's Kite token, for live prices; null when unknown. */
+  token?: number | null;
+  added_ns: number;
+  last_close_paise?: number | null;
+  /** ISO day of that close. */
+  last_close_date?: string | null;
+  /** 52-week high and low, with the days they were made. */
+  high_paise?: number | null;
+  high_date?: string | null;
+  low_paise?: number | null;
+  low_date?: string | null;
+  /** Plain words for why there is no 52-week range yet. */
+  note?: string | null;
+}
+
+export interface WatchlistDTO {
+  items: WatchRowDTO[];
+  max_stocks: number;
+}
+
+/** An alert the recorder raised on a watched stock. */
+export interface WatchAlertDTO {
+  symbol: string;
+  kind: "high52" | "low52" | "results";
+  /** The IST day of a 52-week cross, or the results meeting date. */
+  ref: string;
+  level_paise?: number | null;
+  prior_paise?: number | null;
+  prior_date?: string | null;
+  at_ns: number;
+  delivery: string;
+}
 // </block>

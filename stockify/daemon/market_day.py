@@ -580,6 +580,9 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         try:
             tokens = daemon._token_map(day)
             universe = loader.load_json("universe.json")
+            from stockify.watchlist import feed
+            universe = feed.merged(universe, day)      # CW 3, live only (a replay builds from universe.json alone);
+                                                       # bounded (feed.BUDGET_S) and never raises
             manager = SubscriptionManager(day, universe, clock)
         except BaseException:
             daemon._release_ticket(ticker)
@@ -719,9 +722,15 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         ticker.on_kill = kill_flush
         ticker.terminate = replay_ticker.terminate_process
 
+    watch = _watch_alerts(day, tokens, clock, recorder, replay=replay)   # CW 3: a tap before the connect; None when off
     recorder.start()
     session.start()
     ticker.connect(threaded=True)
+    if watch is not None:                       # after the connect: the evaluator reads the store on its own thread
+        try:
+            watch.start()
+        except Exception:  # noqa: BLE001
+            log.exception("the watchlist alerts did not start; the recording goes on")
     if engine_thread is not None:               # after the ticker: a live run's sessions open (and recover) from here
         engine_thread.start()
     log.info("recording %s: %d instruments, landing %s; %d paper session(s)", day, len(manager.current), landing.path,
@@ -781,6 +790,11 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         idle_stop.set()
         if idle_thread is not None:
             idle_thread.join(2.0)               # a daemon thread: a job still running is left to the crash-safe steps
+        if watch is not None:                   # a short join; its waiting digest is posted (only enqueued)
+            try:
+                watch.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("stopping the watchlist alerts failed; the shutdown goes on")
         try:                                    # the handlers stay until shutdown is over: a second Ctrl+C is ignored
             stuck = _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing,
                               clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,
@@ -790,6 +804,23 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         finally:
             restore_signals()
     return exitcodes.ENGINE_STUCK if stuck else session.exit_code
+
+
+def _watch_alerts(day: date, tokens: dict[int, int], clock, recorder, *, replay: bool):  # noqa: ANN001, ANN202
+    """The watchlist's 52-week alerts (CW 3, `stockify.watchlist.live`), registered as a recorder tap before the ticker
+    connects. Live, nothing here reads the store: the evaluator prepares on its own thread once started, so a slow or
+    broken watchlist.sqlite costs the recording nothing. A replay prepares it here, before its frames flow (a replay is
+    a sandboxed tool, not the live start), and never emails: its digests are only logged. None when off (logged)."""
+    try:
+        from stockify.watchlist import live
+        watch = live.HighLowWatch(day, tokens, clock=clock, post=live.replay_post if replay else None)
+        if replay and not watch.prepare():
+            return None
+        recorder.add_tap(watch)
+        return watch
+    except Exception:  # noqa: BLE001 — the recording goes on without alerts
+        log.exception("the watchlist alerts are off today; the recording goes on")
+        return None
 
 
 def _engine_died(dispatcher, engine_thread, engine_failed: list[str], clock) -> None:  # noqa: ANN001

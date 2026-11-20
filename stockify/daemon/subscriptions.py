@@ -7,7 +7,9 @@ Tiers (from `universe.json`, A1 §7.1):
   futures the owner intends to trade, and anything pinned (M5 pins open
   paper positions).
 * QUOTE: chain strikes from `n_full + 1` out to `n_quote`, plus context
-  equities. LTP mode is never used.
+  equities, plus the owner's watched stocks (`watchlist_quote`, reason
+  `watch:SYMBOL`, CW 3: a stock already in a tier keeps it). LTP mode is
+  never used.
 
 Option chains are centred on an ATM reference: the same-expiry future's price
 when one exists, otherwise the index. A chain re-centres when ATM moves by at
@@ -133,6 +135,9 @@ class SubscriptionManager:
             self._futures(f["underlying"], f["months"], FULL)
         for s in u.get("equities_quote", []):
             self._add_static(self._symbol(s), QUOTE, f"equity:{s}")
+        for s in u.get("watchlist_quote", []):          # CW 3, live only (`watchlist.feed.merged`); last, so a stock
+            self._add_static(self._symbol(s), QUOTE,    # already in a tier keeps its own mode and reason
+                             f"watch:{s.split(':', 1)[1]}")
 
     def _resolve_expiry(self, underlying: str, selector: str) -> str | None:
         kind, _, k = selector.partition(":")

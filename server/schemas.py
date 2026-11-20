@@ -1145,4 +1145,43 @@ class FundamentalsTestRecordDTO(BaseModel):
     plain: dict[str, str] | None = None     # the walk-forward report's plain lines
     benchmark: str | None = None
     notes: list[str]
+
+
+# ── Watchlist (CW 2) ─────────────────────────────────────────────────────────
+
+class WatchAddIn(BaseModel):
+    """POST /api/watchlist: the NSE symbol to watch."""
+    symbol: str = Field(..., min_length=1, max_length=40, pattern=r"^[A-Za-z0-9&_. \-]+$")
+
+
+class WatchRowDTO(BaseModel):
+    """One watched stock: its last close and its 52-week range from the daily candles (None while they are missing)."""
+    symbol: str
+    instrument_id: int
+    token: int | None = None                # today's Kite token, for live prices; None when unknown
+    added_ns: int
+    last_close_paise: int | None = None
+    last_close_date: str | None = None      # ISO day of that close
+    high_paise: int | None = None           # 52-week high and low, with the days they were made
+    high_date: str | None = None
+    low_paise: int | None = None
+    low_date: str | None = None
+    note: str | None = None                 # plain words for why there is no 52-week range yet
+
+
+class WatchlistDTO(BaseModel):
+    items: list[WatchRowDTO]
+    max_stocks: int
+
+
+class WatchAlertDTO(BaseModel):
+    """An alert the recorder raised on a watched stock."""
+    symbol: str
+    kind: Literal["high52", "low52", "results"]
+    ref: str                                # the IST day of a 52-week cross, or the results meeting date
+    level_paise: int | None = None
+    prior_paise: int | None = None
+    prior_date: str | None = None
+    at_ns: int
+    delivery: str
 # </block>
