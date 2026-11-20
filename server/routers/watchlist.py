@@ -1,7 +1,8 @@
 """CW 2: /api/watchlist, the stocks the owner watches.
 
 * `GET /api/watchlist`: the list in the order added, each stock with its last close and its 52-week high and low, read
-  from the bar cache (the nightly daily candles). Nothing here calls Kite: live prices come from the ticks socket on the
+  from the bar cache (the nightly daily candles), and the desk's verdict at the last close (CW 6; absent until the
+  nightly desk has graded the stock). Nothing here calls Kite: live prices come from the ticks socket on the
   page, and the page falls back to the last close here.
 * `POST /api/watchlist` {symbol}: 404 when NSE has no such symbol, 422 when it is not an NSE share (an index, a bond),
   409 when it is already on the list or the list is full.
@@ -22,6 +23,7 @@ from server.schemas import WatchAddIn, WatchAlertDTO, WatchlistDTO, WatchRowDTO
 from stockify import timeutil
 from stockify.config import loader
 from stockify.data import history, instruments
+from stockify.desk import store as desk_store
 from stockify.watchlist import ranges, store
 
 log = logging.getLogger("stockify.watchlist")
@@ -39,7 +41,16 @@ def now_ns() -> int:
     return timeutil.now_ns()
 
 
-def _row(r: dict, today, cfg: dict) -> WatchRowDTO:
+def _verdicts() -> dict[int, dict]:
+    """The desk's newest closing view per stock, by instrument id (CW 6); empty when it cannot be read."""
+    try:
+        return {int(v["instrument_id"]): v for v in desk_store.latest_views()}
+    except Exception as e:  # noqa: BLE001 — a missing verdict is "not graded yet", never a failed list
+        log.warning("watchlist: the desk's verdicts could not be read (%s)", type(e).__name__)
+        return {}
+
+
+def _row(r: dict, today, cfg: dict, verdicts: dict[int, dict] | None = None) -> WatchRowDTO:
     iid = r["instrument_id"]
     bars = history.bars(iid, "day")
     # The range is judged as of today, like the live evaluator's (365 days before today), so intraday the page agrees
@@ -55,13 +66,17 @@ def _row(r: dict, today, cfg: dict) -> WatchRowDTO:
     else:
         stale = last is not None and last[1] < (today - timedelta(days=cfg["lookback_days"])).isoformat()
         dto["note"] = NO_CANDLES if not bars else NO_RECENT if stale else SHORT_HISTORY
+    v = (verdicts if verdicts is not None else _verdicts()).get(iid)
+    if v:
+        dto.update(desk_verdict=v["verdict"], desk_close_date=(v.get("view") or {}).get("close_date"))
     return WatchRowDTO(**dto)
 
 
 def _list() -> WatchlistDTO:
     cfg = loader.load_json("watchlist.json")
     today = timeutil.ns_to_ist(now_ns()).date()
-    return WatchlistDTO(items=[_row(r, today, cfg) for r in store.rows()], max_stocks=cfg["max_stocks"])
+    verdicts = _verdicts()
+    return WatchlistDTO(items=[_row(r, today, cfg, verdicts) for r in store.rows()], max_stocks=cfg["max_stocks"])
 
 
 @router.get("", response_model=WatchlistDTO)

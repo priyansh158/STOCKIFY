@@ -1178,6 +1178,8 @@ class WatchRowDTO(BaseModel):
     low_paise: int | None = None
     low_date: str | None = None
     note: str | None = None                 # plain words for why there is no 52-week range yet
+    desk_verdict: str | None = None         # the desk's verdict label at the last close; None while not graded yet
+    desk_close_date: str | None = None      # ISO day of the close that verdict is from
 
 
 class WatchlistDTO(BaseModel):

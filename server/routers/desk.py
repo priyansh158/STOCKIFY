@@ -3,7 +3,8 @@
 * `GET /api/desk`: a chip per holding the desk looks at (its verdict and the close it is from), and the others with
   the reason (BSE only, not an NSE stock, not graded yet).
 * `GET /api/desk/{symbol}`: the verdict with its reasons, the agreeing and disagreeing rules, each rule's signal and
-  record on the stock.
+  record on the stock. A stock on the watchlist that is not held is served too, from the nightly watchlist pass (CW 6);
+  it has no holding, so nothing of the owner's is in it.
 * `GET /api/desk/{symbol}/chart`: the daily candles as the RunChartDTO the price chart reads; no markers; one line
   per voting rule that plots an exit level.
 
@@ -66,6 +67,18 @@ def _symbol(h, iid: int) -> str:  # noqa: ANN001
     return (instruments.get(iid) or {}).get("tradingsymbol") or (h.tradingsymbol if h is not None else "")
 
 
+def _watched_id(sym: str) -> int | None:
+    """The instrument id of a stock on the watchlist, or None (not watched, or the list cannot be read)."""
+    try:
+        from stockify.watchlist import store as watch_store
+        for r in watch_store.rows():
+            if str(r["symbol"]).upper() == sym:
+                return int(r["instrument_id"])
+    except Exception as e:  # noqa: BLE001 — the watchlist is an extra here, never a 500
+        log.info("desk: the watchlist could not be read (%s)", type(e).__name__)
+    return None
+
+
 def _find(symbol: str, t_ns: int):  # noqa: ANN202
     """(holding or None, instrument_id, logged_in) for a symbol in the URL; 404 when the desk has nothing on it."""
     if not _SYMBOL.match(symbol):
@@ -80,6 +93,9 @@ def _find(symbol: str, t_ns: int):  # noqa: ANN202
                 if reason is None and store.latest_view(iid) is not None:
                     return h, iid, True
                 raise HTTPException(status_code=404, detail=reason or NOT_GRADED)
+        iid = _watched_id(sym)                          # CW 6: a watched stock that is not held has its view too
+        if iid is not None and store.latest_view(iid) is not None:
+            return None, iid, True
         raise HTTPException(status_code=404, detail="not one of your holdings")
     iid = instruments.find("NSE", sym)                 # logged out: the last stored view, if there is one
     if iid is None or store.latest_view(iid) is None:

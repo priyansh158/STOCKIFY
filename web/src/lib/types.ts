@@ -1143,6 +1143,10 @@ export interface WatchRowDTO {
   low_date?: string | null;
   /** Plain words for why there is no 52-week range yet. */
   note?: string | null;
+  /** The desk's verdict label at the last close; null while the desk has not graded the stock yet. */
+  desk_verdict?: string | null;
+  /** ISO day of the close that verdict is from. */
+  desk_close_date?: string | null;
 }
 
 export interface WatchlistDTO {

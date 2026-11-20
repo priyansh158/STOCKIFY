@@ -17,6 +17,7 @@ import portfolio_sync
 from stockify import kite_readonly, timeutil
 from stockify.data import history, instruments, refdata
 from stockify.desk import nightly, replay
+from stockify.watchlist import store as watch_store
 from stockify.desk import store as desk_store
 from tests.stockify.test_bundle import HEADER
 
@@ -111,7 +112,7 @@ def _keys(obj, out=None):  # noqa: ANN001
 
 @support.requires_fastapi
 class DeskApiBase(SandboxedDBTest):
-    db_modules = (refdata, history, desk_store)
+    db_modules = (refdata, history, desk_store, watch_store)
     viewed = ("INFY", "TCS")                   # the holdings with a stored closing view
 
     def setUp(self):
@@ -219,6 +220,44 @@ class ViewTests(DeskApiBase):
     def test_unknown_or_unheld_symbols_are_404(self):
         self.get("/api/desk/NOSUCH", 404)
         self.get("/api/desk/bad%20name!", 404)
+
+
+class WatchedStockTests(DeskApiBase):
+    """CW 6: a stock on the watchlist that is not held is served from the nightly watchlist pass."""
+    viewed = ("INFY", "TCS")
+
+    def setUp(self):
+        super().setUp()
+        self.snap = snapshot([holding("INFY", TOKENS["INFY"])])             # TCS is not held any more
+        watch_store.add("TCS", now_ns=1)
+
+    def test_a_watched_stock_that_is_not_held_has_its_view_and_chart(self):
+        body = self.get("/api/desk/TCS")
+        self.assertEqual((body["symbol"], body["verdict"]), ("TCS", self.views["TCS"]["verdict"]))
+        self.assertEqual(body["close_date"], "2026-11-16")
+        self.assertTrue(body["signals"])
+        self.assertFalse(FORBIDDEN_IN(body))
+        self.assertTrue(self.get("/api/desk/tcs/chart")["bars"])
+        self.assertEqual(self.kite.calls, [])
+
+    def test_the_holdings_list_does_not_gain_the_watched_stock(self):
+        self.assertEqual([c["symbol"] for c in self.get("/api/desk")["items"]], ["INFY"])
+
+    def test_a_stock_neither_held_nor_watched_is_still_404(self):
+        watch_store.remove("TCS")
+        self.get("/api/desk/TCS", 404)
+
+    def test_a_watched_stock_the_desk_has_not_graded_is_404(self):
+        with mock.patch.object(desk_store, "latest_view", return_value=None):
+            self.get("/api/desk/TCS", 404)
+
+    def test_an_unreadable_watchlist_is_a_404_not_a_500(self):
+        with mock.patch.object(watch_store, "rows", side_effect=OSError("locked")):
+            self.get("/api/desk/TCS", 404)
+
+    def test_logged_out_it_is_served_as_before(self):
+        self.snap = snapshot(error="Kite not authenticated")
+        self.assertEqual(self.get("/api/desk/TCS")["symbol"], "TCS")
 
 
 class ChartTests(DeskApiBase):

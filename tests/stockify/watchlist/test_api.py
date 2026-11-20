@@ -13,6 +13,7 @@ from tests.stockify.test_bundle import HEADER
 import kite_client
 from stockify import kite_readonly, timeutil
 from stockify.data import history, instruments, refdata
+from stockify.desk import store as desk_store
 from stockify.watchlist import store
 
 DAY = date(2026, 11, 17)                                   # a Tuesday
@@ -51,7 +52,7 @@ def put_bars(iid: int, first: date, n: int, *, close=100_000, spike: tuple[int, 
 
 @support.requires_fastapi
 class WatchlistApiTests(SandboxedDBTest):
-    db_modules = (refdata, history, store)
+    db_modules = (refdata, history, store, desk_store)
 
     def setUp(self):
         super().setUp()
@@ -89,6 +90,34 @@ class WatchlistApiTests(SandboxedDBTest):
         self.assertEqual((row["high_paise"], row["low_paise"]), (190_000, 60_000))
         self.assertEqual(row["high_date"], (DAY - timedelta(days=420) + timedelta(days=300)).isoformat())
         self.assertIsNone(row["note"])
+
+    def test_a_graded_stock_carries_the_desks_verdict_and_an_ungraded_one_does_not(self):
+        """CW 6: the row has the desk's verdict label at the last close; none while the desk has not graded it."""
+        self.add("INFY")
+        self.add("TCS")
+        desk_store.put_view("2026-11-16", self.ids["INFY"], "INFY", "Hold",
+                            {"verdict": "Hold", "close_date": "2026-11-16"}, AFTER_CLOSE)
+        rows = {r["symbol"]: r for r in self.client.get("/api/watchlist").json()["items"]}
+        self.assertEqual((rows["INFY"]["desk_verdict"], rows["INFY"]["desk_close_date"]), ("Hold", "2026-11-16"))
+        self.assertIsNone(rows["TCS"]["desk_verdict"])
+        self.assertIsNone(rows["TCS"]["desk_close_date"])
+        self.assertFalse({"pnl", "average_price", "quantity"} & set(rows["INFY"]))
+
+    def test_the_newest_verdict_is_the_one_shown(self):
+        self.add("INFY")
+        for day, label in (("2026-11-13", "Hold"), ("2026-11-16", "Consider exiting")):
+            desk_store.put_view(day, self.ids["INFY"], "INFY", label, {"verdict": label, "close_date": day}, 1)
+        (row,) = self.client.get("/api/watchlist").json()["items"]
+        self.assertEqual((row["desk_verdict"], row["desk_close_date"]), ("Consider exiting", "2026-11-16"))
+
+    def test_an_unreadable_desk_store_leaves_the_list_whole(self):
+        self.add("INFY")
+        with mock.patch.object(desk_store, "latest_views", side_effect=OSError("locked")):
+            r = self.client.get("/api/watchlist")
+        self.assertEqual(r.status_code, 200)
+        (row,) = r.json()["items"]
+        self.assertEqual(row["symbol"], "INFY")
+        self.assertIsNone(row["desk_verdict"])
 
     def test_a_bar_dated_today_is_in_the_range(self):
         first = DAY - timedelta(days=420)
