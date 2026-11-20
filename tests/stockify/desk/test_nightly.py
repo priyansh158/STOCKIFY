@@ -281,6 +281,36 @@ class ViewTests(NightlyBase):
         self.assertEqual([c[0] for c in calls], [self.ids["MOVEDCO"]])
 
 
+class StoppedRefetchTests(NightlyBase):
+    def test_a_split_refetch_cut_short_by_the_deadline_regrades_on_the_next_pass(self):
+        """Fix round 1 (6): a split found tonight, then the deadline inside the refill: the run stops; the next pass
+        tops up with no new adjustment, but the grades are still remade (the adjustment row is newer than them)."""
+        calls = []
+        self.run_job(calls=calls)
+        calls.clear()
+        iid = self.ids["MOVEDCO"]
+        seen = []
+
+        def stop_after_split(i, interval, from_day, to_day, **kw):  # noqa: ANN001, ANN003, ANN202
+            st = history.FetchStats(i, interval)
+            if i == iid:
+                with history._Tx() as conn:
+                    conn.execute("INSERT OR REPLACE INTO adjustments_detected VALUES (?, ?, 2.0, 0, 'refetched')",
+                                 (iid, DAY.isoformat()))
+                st.adjustment, st.outcome = "refetched", "stopped"
+            return st
+        with mock.patch.object(history, "fetch", side_effect=stop_after_split):
+            res = self.run_job([holding("MOVEDCO", 123456)], calls=calls, deadline_ns=10 ** 30)
+        self.assertFalse(res["complete"])
+        self.assertEqual(calls, [])
+        self.assertEqual(res["refetched"], ["MOVEDCO"])                  # the signal survives the stop
+        self.run_job([holding("MOVEDCO", 123456)], calls=calls)          # no adjustment tonight: still regraded
+        self.assertEqual([c[0] for c in calls], [iid])
+        calls.clear()
+        self.run_job([holding("LONGCO", 500001)], calls=calls)           # an unadjusted stock keeps its grades
+        self.assertEqual(calls, [])
+
+
 class LoginAndDeadlineTests(NightlyBase):
     def setUp(self):
         super().setUp()

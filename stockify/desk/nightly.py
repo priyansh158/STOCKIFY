@@ -48,7 +48,7 @@ SHORT_HISTORY = "less than a year of daily prices"
 
 def _is_government_security(h) -> bool:  # noqa: ANN001
     """Sovereign gold bonds and other government securities: NSE lists them, but they are not stocks."""
-    return h.tradingsymbol.upper().startswith("SGB") or (h.isin or "").upper().startswith("IN00")
+    return instruments.is_government_security(h.tradingsymbol, h.isin)
 
 
 def resolve(h, day: date) -> tuple[int | None, str | None]:  # noqa: ANN001
@@ -77,16 +77,22 @@ def has_a_year(bars: list[S.Bar], day: date) -> bool:
 # ── bars ─────────────────────────────────────────────────────────────────────
 
 class _Stopped(Exception):
-    """The bar top-up reached the deadline between its chunks: the run stops, and the rest runs later."""
+    """The bar top-up reached the deadline between its chunks: the run stops, and the rest runs later. `refetched`
+    keeps whether a split or bonus refetch happened first (the next pass regrades from the adjustment row)."""
+
+    def __init__(self, refetched: bool = False):
+        super().__init__("stopped at the deadline")
+        self.refetched = refetched
 
 
 def ensure_bars(instrument_id: int, day: date, *, client=None, deadline_ns: int | None = None) -> bool:  # noqa: ANN001
     """Six years of daily bars up to `day` in the cache (`history.top_up_daily`); only what is missing is asked for.
     True when the history was refetched for a split or bonus (so the grades must be remade). A stop at
     `deadline_ns` inside the top-up raises `_Stopped`, so nothing is graded on a part-fetched history."""
-    res = history.top_up_daily(instrument_id, day, years=HISTORY_YEARS, client=client, deadline_ns=deadline_ns)
+    res = history.top_up_daily(instrument_id, day, years=HISTORY_YEARS, client=client, deadline_ns=deadline_ns,
+                               today=day)
     if res.outcome == "stopped":
-        raise _Stopped
+        raise _Stopped(res.refetched)
     return res.refetched
 
 
@@ -143,26 +149,40 @@ def closing_view(instrument_id: int, symbol: str, bars: list[S.Bar], rows: list[
 
 # ── the job ──────────────────────────────────────────────────────────────────
 
+def _adjusted_since_grades(instrument_id: int) -> bool:
+    """True when a split or bonus refetch was recorded on or after the day of the stored grades: a pass whose refill
+    stopped at the deadline did not regrade, and the next pass's top-up finds no new adjustment. (On that day's later
+    passes the grades are remade again; rare, and only for that stock.)"""
+    stored = store.latest_evidence(instrument_id)
+    if not stored:
+        return False
+    graded = max(r["trade_date"] for r in stored)
+    return any(a["action"] == "refetched" and a["detected_on"] >= graded for a in history.adjustments(instrument_id))
+
+
 def _one(h, iid: int, day: date, client, now: Callable[[], int],  # noqa: ANN001
-         deadline_ns: int | None = None) -> str | None:
-    """Bars, grades and the closing view of one resolved holding; a skip reason, or None when the view is stored."""
+         deadline_ns: int | None = None) -> tuple[str | None, bool]:
+    """Bars, grades and the closing view of one resolved holding: (a skip reason, or None when the view is stored;
+    whether its history was refetched)."""
     refetched = ensure_bars(iid, day, client=client, deadline_ns=deadline_ns)
     bars = replay.daily_bars(iid, until_ns=timeutil.ist_ns(day, "00:00"))
     if not has_a_year(bars, day):
-        return SHORT_HISTORY
+        return SHORT_HISTORY, refetched
     symbol = (instruments.get(iid) or {}).get("tradingsymbol") or h.tradingsymbol
-    rows = grades_for(iid, symbol, day, force=refetched)
+    rows = grades_for(iid, symbol, day, force=refetched or _adjusted_since_grades(iid))
     label, view = closing_view(iid, symbol, bars, rows)
     store.put_view(day.isoformat(), iid, symbol, label, view, now())
-    return None
+    return None, refetched
 
 
 def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN001
         now: Callable[[], int] | None = None) -> dict:
     """The nightly desk run for IST trade date `day`. Returns {holdings, analysed, skipped [{symbol, reason}],
-    failed [{symbol, error}], complete, logged_in}; `complete` when every holding was analysed or skipped."""
+    failed [{symbol, error}], refetched [symbols whose history a split or bonus refetch replaced], complete,
+    logged_in}; `complete` when every holding was analysed or skipped."""
     now = now or timeutil.now_ns
-    out: dict = {"holdings": 0, "analysed": 0, "skipped": [], "failed": [], "complete": False, "logged_in": True}
+    out: dict = {"holdings": 0, "analysed": 0, "skipped": [], "failed": [], "refetched": [], "complete": False,
+                 "logged_in": True}
     if deadline_ns is not None and now() >= deadline_ns:            # past it: not even the holdings call
         log.info("desk for %s: too close to the next session; runs later", day)
         return out
@@ -184,8 +204,12 @@ def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN0
         try:
             iid, reason = resolve(h, day)           # inside the try: a lookup that raises fails this holding only
             if reason is None:
-                reason = _one(h, iid, day, client, now, deadline_ns)
-        except _Stopped:
+                reason, refetched = _one(h, iid, day, client, now, deadline_ns)
+                if refetched:
+                    out["refetched"].append(h.tradingsymbol)
+        except _Stopped as e:
+            if e.refetched:
+                out["refetched"].append(h.tradingsymbol)
             log.info("desk for %s: stopping before the next session; the rest runs later", day)
             stopped = True
             break
