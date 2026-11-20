@@ -563,6 +563,93 @@ CANDLES_KEYS = ("history_years", "rps", "rate_limit_backoff_s")
 CANDLES_BOUNDS = {"history_years": (1, 20), "rps": (0, 10), "backoff_s": (1, 600)}
 
 
+_HHMM = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+_HHMMSS = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]")
+# schedule.json jobs: a job is a bare "HH:MM" (`plain`), or {"start", "retry_every_min", "until"} where "until" is
+# required for the jobs whose window the scheduler reads (`windowed`)
+_SCHED_PLAIN = ("refdata", "subscribe", "unsubscribe", "compaction")
+_SCHED_EITHER = ("day_bundles", "finalise", "parity", "daily_summary", "watch_results", "backup")
+_SCHED_WINDOWED = ("candles", "nse_fetch", "margin_files", "desk", "fundamentals")
+
+
+def _check_schedule(doc: dict) -> None:
+    """schedule.json (stockify.schedule/1): the daemon's day. Every job present, none unknown; a time is "HH:MM" (the
+    day's end "HH:MM:SS"); a windowed job has start, retry_every_min (whole minutes from 1) and until, no other key;
+    the other jobs are a bare time or a dict with start and optionally retry_every_min; the rest of the file (login
+    window, reminders, sleep, keep_awake, owner_tz) is checked key by key. A typo fails here, not in the daemon's loop."""
+    def fail(msg: str) -> None:
+        raise ConfigError(f"schedule.json: {msg}")
+
+    def hhmm(v, where: str, pattern=_HHMM) -> None:  # noqa: ANN001
+        if not isinstance(v, str) or pattern.fullmatch(v) is None:
+            fail(f"{where} must be a time like \"16:40\", got {v!r}")
+
+    def whole(v, where: str, low: int, high: int) -> None:  # noqa: ANN001
+        if isinstance(v, bool) or not isinstance(v, int) or not low <= v <= high:
+            fail(f"{where} must be a whole number from {low} to {high}, got {v!r}")
+
+    def keys(d, where: str, required: tuple, optional: tuple = ()) -> None:  # noqa: ANN001
+        if not isinstance(d, dict):
+            fail(f"{where} must be an object")
+        extra = set(d) - set(required) - set(optional)
+        if extra:
+            fail(f"{where}: unknown keys {sorted(extra)}; known: {[*required, *optional]}")
+        for k in required:
+            if k not in d:
+                fail(f"{where}.{k} is missing")
+
+    top = ("jobs", "keep_awake", "sleep_after_close", "owner_tz", "kite_login_window_ist", "login_reminders_ist")
+    keys(doc, "the file", top, ("schema", "note"))
+    jobs = doc["jobs"]
+    keys(jobs, "jobs", (*_SCHED_PLAIN, *_SCHED_EITHER, *_SCHED_WINDOWED, "token_dependent_retry", "day_end"))
+    for name in _SCHED_PLAIN:
+        hhmm(jobs[name], f"jobs.{name}")
+    for name in _SCHED_EITHER:
+        spec = jobs[name]
+        if isinstance(spec, str):
+            hhmm(spec, f"jobs.{name}")
+            continue
+        keys(spec, f"jobs.{name}", ("start",), ("retry_every_min",))
+        hhmm(spec["start"], f"jobs.{name}.start")
+        if "retry_every_min" in spec:
+            whole(spec["retry_every_min"], f"jobs.{name}.retry_every_min", 1, 1440)
+    for name in _SCHED_WINDOWED:
+        spec = jobs[name]
+        keys(spec, f"jobs.{name}", ("start", "retry_every_min", "until"))
+        hhmm(spec["start"], f"jobs.{name}.start")
+        whole(spec["retry_every_min"], f"jobs.{name}.retry_every_min", 1, 1440)
+        hhmm(spec["until"], f"jobs.{name}.until")
+    keys(jobs["token_dependent_retry"], "jobs.token_dependent_retry", ("every_min", "until"))
+    whole(jobs["token_dependent_retry"]["every_min"], "jobs.token_dependent_retry.every_min", 1, 1440)
+    hhmm(jobs["token_dependent_retry"]["until"], "jobs.token_dependent_retry.until")
+    hhmm(jobs["day_end"], "jobs.day_end", _HHMMSS)
+    keys(doc["keep_awake"], "keep_awake", ("from",))
+    hhmm(doc["keep_awake"]["from"], "keep_awake.from")
+    sleep = doc["sleep_after_close"]
+    keys(sleep, "sleep_after_close", ("enabled", "mode", "not_before", "idle_minutes", "wake_ist"))
+    if not isinstance(sleep["enabled"], bool):
+        fail("sleep_after_close.enabled must be true or false")
+    if not isinstance(sleep["mode"], str) or not sleep["mode"]:
+        fail("sleep_after_close.mode must be a word")
+    hhmm(sleep["not_before"], "sleep_after_close.not_before")
+    hhmm(sleep["wake_ist"], "sleep_after_close.wake_ist")
+    whole(sleep["idle_minutes"], "sleep_after_close.idle_minutes", 1, 1440)
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(doc["owner_tz"])
+    except Exception:  # noqa: BLE001 — any lookup failure is the same plain message
+        fail(f"owner_tz must be a time zone name like \"America/Los_Angeles\", got {doc['owner_tz']!r}")
+    window = doc["kite_login_window_ist"]
+    keys(window, "kite_login_window_ist", ("from", "until"))
+    hhmm(window["from"], "kite_login_window_ist.from")
+    hhmm(window["until"], "kite_login_window_ist.until")
+    reminders = doc["login_reminders_ist"]
+    if not isinstance(reminders, list):
+        fail("login_reminders_ist must be a list of times")
+    for i, r in enumerate(reminders):
+        hhmm(r, f"login_reminders_ist[{i}]")
+
+
 def _check_candles(doc: dict, config_dir: Path | None = None) -> None:
     """candles.json (stockify.candles/1, CW 1): every key present and none unknown (`note` allowed, a string);
     `history_years` a whole number from 1 to 20; `rps` a decimal string above 0, at most 10 and at most
@@ -629,6 +716,8 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
         _check_fundamentals(doc)
     if name == "candles.json":
         _check_candles(doc, config_dir)
+    if name == "schedule.json":
+        _check_schedule(doc)
     return doc
 
 

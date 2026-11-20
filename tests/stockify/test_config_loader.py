@@ -233,6 +233,47 @@ class LoaderRuleTests(unittest.TestCase):
                 with self.assertRaisesRegex(loader.ConfigError, f"{key} is missing"):
                     loader.load_json("watchlist.json", self.dir)
 
+    def test_schedule_json_is_checked(self):
+        """CW 6: every job's keys and times are checked, candles and watch_results included, so a typo fails
+        `stockify config` and not the daemon's loop."""
+        import copy
+        good = json.loads((loader.CONFIG_DIR / "schedule.json").read_text(encoding="utf-8"))
+
+        def with_(path, value):
+            doc = copy.deepcopy(good)
+            node = doc
+            for k in path[:-1]:
+                node = node[k]
+            if value is KeyError:
+                del node[path[-1]]
+            else:
+                node[path[-1]] = value
+            return doc
+
+        bad = [
+            (("jobs", "candles", "start"), "16.40"), (("jobs", "candles", "start"), "25:00"),
+            (("jobs", "candles", "until"), "6:30pm"), (("jobs", "candles", "until"), KeyError),
+            (("jobs", "candles", "retry_every_min"), 0), (("jobs", "candles", "retry_every_min"), "15"),
+            (("jobs", "candles", "retry_every_mn"), 15), (("jobs", "candles"), "16:40"),
+            (("jobs", "watch_results", "start"), "21:0"), (("jobs", "watch_results", "retry_every_min"), True),
+            (("jobs", "watch_results"), {"begin": "21:00"}), (("jobs", "watch_results"), KeyError),
+            (("jobs", "desk", "until"), "24:00"), (("jobs", "refdata"), "8:30"), (("jobs", "refdata"), {"start": "08:30"}),
+            (("jobs", "backup"), 545), (("jobs", "day_end"), "23:59"), (("jobs", "day_endd"), "23:59:59"),
+            (("jobs", "token_dependent_retry", "every_min"), 0), (("jobs", "token_dependent_retry", "until"), "9am"),
+            (("keep_awake", "from"), "8:45"), (("sleep_after_close", "enabled"), "yes"),
+            (("sleep_after_close", "idle_minutes"), 0), (("sleep_after_close", "wake_ist"), "6"),
+            (("owner_tz",), "Nowhere/Land"), (("kite_login_window_ist", "from"), "06:00:00"),
+            (("login_reminders_ist",), "06:05"), (("login_reminders_ist",), ["06:05", "8"]),
+            (("surprise",), 1),
+        ]
+        for path, value in bad:
+            with self.subTest(path=path, value=value):
+                (self.dir / "schedule.json").write_text(json.dumps(with_(path, value)), encoding="utf-8")
+                with self.assertRaisesRegex(loader.ConfigError, "schedule.json"):
+                    loader.load_json("schedule.json", self.dir)
+        (self.dir / "schedule.json").write_text(json.dumps(good), encoding="utf-8")
+        self.assertEqual(loader.load_json("schedule.json", self.dir)["jobs"]["candles"]["start"], "16:40")
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")
