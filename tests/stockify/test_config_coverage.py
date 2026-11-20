@@ -58,6 +58,15 @@ class ConfigCoverageTests(unittest.TestCase):
         self.assertGreater(len(docs["charges.json"]["components"]["stt"]), 0)
         self.assertGreater(len(docs["sessions.json"]["versions"]), 0)
 
+    def test_watchlist_config_values(self):
+        """CW 2: every key the later phases read is in the shipped watchlist.json."""
+        doc = loader.load_json("watchlist.json")
+        self.assertEqual(doc["max_stocks"], 50)
+        self.assertEqual((doc["lookback_days"], doc["min_history_days"]), (365, 365))
+        self.assertEqual(doc["basis_tolerance"], "0.02")
+        self.assertEqual((doc["alert_batch_s"], doc["max_alert_emails_per_day"]), (60, 6))
+        self.assertEqual((doc["results_lead_trading_days"], doc["tap_frames"]), (2, 64))
+
     def test_each_component_resolves_to_exactly_one_row(self):
         for name, profile in PROFILES.items():
             for day in SAMPLE_DATES:

@@ -162,6 +162,32 @@ class LoaderRuleTests(unittest.TestCase):
         (self.dir / "fundamentals.json").write_text(json.dumps(extra_api), encoding="utf-8")
         self.assertIn("results", loader.load_json("fundamentals.json", self.dir)["api"])
 
+    def test_watchlist_json_is_checked(self):
+        """CW 2: whole numbers within bounds, decimal strings for the tolerance, no unknown or missing keys."""
+        good = json.loads((loader.CONFIG_DIR / "watchlist.json").read_text(encoding="utf-8"))
+        bad_cases = (
+            {"max_stocks": 0}, {"max_stocks": 501}, {"max_stocks": "50"}, {"max_stocks": True},
+            {"lookback_days": 0}, {"lookback_days": 3651}, {"min_history_days": 0},
+            {"min_history_days": 400, "lookback_days": 365},
+            {"basis_tolerance": 0.02}, {"basis_tolerance": "0"}, {"basis_tolerance": "0.5"}, {"basis_tolerance": "-0.01"},
+            {"alert_batch_s": 0}, {"alert_batch_s": 3601}, {"max_alert_emails_per_day": 0},
+            {"max_alert_emails_per_day": 101}, {"results_lead_trading_days": 0}, {"results_lead_trading_days": 11},
+            {"tap_frames": 7}, {"tap_frames": 100_001}, {"surprise": 1},
+        )
+        for change in bad_cases:
+            with self.subTest(change=change):
+                (self.dir / "watchlist.json").write_text(json.dumps({**good, **change}), encoding="utf-8")
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("watchlist.json", self.dir)
+        for key in good:
+            if key in ("schema", "note"):
+                continue
+            with self.subTest(missing=key):
+                (self.dir / "watchlist.json").write_text(
+                    json.dumps({k: v for k, v in good.items() if k != key}), encoding="utf-8")
+                with self.assertRaisesRegex(loader.ConfigError, f"{key} is missing"):
+                    loader.load_json("watchlist.json", self.dir)
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")
