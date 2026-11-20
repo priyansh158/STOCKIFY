@@ -455,7 +455,8 @@ def _check_watchlist(doc: dict) -> None:
     (0, 0.1]."""
     bounds = {"max_stocks": (1, 500), "lookback_days": (1, 3650), "min_history_days": (1, 3650),
               "alert_batch_s": (1, 3600), "max_alert_emails_per_day": (1, 100),
-              "results_lead_trading_days": (1, 10), "tap_frames": (8, 100_000)}
+              "results_lead_trading_days": (1, 10), "tap_frames": (8, 100_000),
+              "desk_watch_new_grades_per_night": (0, 500)}
     keys = (*bounds, "basis_tolerance")
     extra = set(doc) - set(keys) - {"schema", "note"}
     if extra:

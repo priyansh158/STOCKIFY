@@ -66,6 +66,7 @@ class ConfigCoverageTests(unittest.TestCase):
         self.assertEqual(doc["basis_tolerance"], "0.02")
         self.assertEqual((doc["alert_batch_s"], doc["max_alert_emails_per_day"]), (60, 6))
         self.assertEqual((doc["results_lead_trading_days"], doc["tap_frames"]), (2, 64))
+        self.assertEqual(doc["desk_watch_new_grades_per_night"], 10)
 
     def test_each_component_resolves_to_exactly_one_row(self):
         for name, profile in PROFILES.items():

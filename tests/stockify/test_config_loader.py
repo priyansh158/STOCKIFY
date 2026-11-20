@@ -216,6 +216,8 @@ class LoaderRuleTests(unittest.TestCase):
             {"alert_batch_s": 0}, {"alert_batch_s": 3601}, {"max_alert_emails_per_day": 0},
             {"max_alert_emails_per_day": 101}, {"results_lead_trading_days": 0}, {"results_lead_trading_days": 11},
             {"tap_frames": 7}, {"tap_frames": 100_001}, {"surprise": 1},
+            {"desk_watch_new_grades_per_night": -1}, {"desk_watch_new_grades_per_night": 501},
+            {"desk_watch_new_grades_per_night": "10"}, {"desk_watch_new_grades_per_night": True},
         )
         for change in bad_cases:
             with self.subTest(change=change):
