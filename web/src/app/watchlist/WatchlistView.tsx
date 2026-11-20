@@ -1,7 +1,9 @@
 "use client";
 
 import { Fragment, useCallback, useMemo, useState } from "react";
+import Link from "next/link";
 import { dayWords, pct, rupees } from "@/lib/format";
+import { verdictClass } from "@/lib/desk";
 import { useTicks } from "@/lib/useTicks";
 import type { WatchRowDTO, WatchlistDTO } from "@/lib/types";
 import { addWatched, aboveLow, belowHigh, getWatchlist, ltpPaise, problemWords, removeWatched } from "@/lib/watchlist";
@@ -14,6 +16,27 @@ function Distance({ fraction, at }: { fraction: number | null; at: string }) {
   if (fraction === null) return <>—</>;
   if (fraction <= 0) return <span className="stk-label">{at}</span>;
   return <>{pct(fraction)}</>;
+}
+
+/** The desk's verdict for a watched stock, linking to its desk page; plain words while the desk has not graded it. */
+function DeskVerdict({ row }: { row: WatchRowDTO }) {
+  if (!row.desk_verdict) {
+    return (
+      <span className="stk-label" title="The desk grades watched stocks after the close, a few new ones each night">
+        Not graded yet
+      </span>
+    );
+  }
+  return (
+    <Link
+      href={`/portfolio/${encodeURIComponent(row.symbol)}`}
+      className={`stk-link ${verdictClass(row.desk_verdict)}`}
+      title={row.desk_close_date ? `The desk's view at the close on ${dayWords(row.desk_close_date)}` : undefined}
+      aria-label={`${row.symbol}: the desk says ${row.desk_verdict}. Open its desk page`}
+    >
+      {row.desk_verdict}
+    </Link>
+  );
 }
 
 function Price({ row, livePaise }: { row: WatchRowDTO; livePaise: number | null }) {
@@ -121,6 +144,7 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                 { label: "Below the high", num: true },
                 { label: "52-week low", num: true },
                 { label: "Above the low", num: true },
+                { label: "Desk view" },
                 { label: "Chart" },
                 { label: "Remove" },
               ]}
@@ -152,6 +176,9 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                       <Distance fraction={aboveLow(price, r.low_paise)} at="At a new low" />
                     </td>
                     <td>
+                      <DeskVerdict row={r} />
+                    </td>
+                    <td>
                       <button
                         type="button"
                         className="stk-btn"
@@ -179,7 +206,7 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                   </tr>
                   {showing && (
                     <tr>
-                      <td colSpan={8} id={`chart-${r.symbol}`} data-wrap>
+                      <td colSpan={9} id={`chart-${r.symbol}`} data-wrap>
                         <StockChart symbol={r.symbol} />
                       </td>
                     </tr>
