@@ -144,7 +144,7 @@ RETRY_SLEEP_CHECK_S = 15 * 60
 
 
 def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # noqa: ANN001
-    """Run one scheduler job for `day` (compaction, quality, nse_fetch, margin_files, prune, finalise, parity,
+    """Run one scheduler job for `day` (compaction, candles, quality, nse_fetch, margin_files, prune, finalise, parity,
     daily_summary, desk, fundamentals, backup). A job marks itself done in `state` when it is finished or has given up; one that is to be
     tried again returns without marking. `now_ns` is the daemon clock's time (default: the wall clock): the retry
     windows are judged against it."""
@@ -227,6 +227,8 @@ def _run_job(job: str, day: date, state, now_ns: int | None = None) -> None:  # 
         _parity_job(day, state)
     elif job == "daily_summary":
         _daily_summary(day, state)
+    elif job == "candles":
+        _candles_job(day, state, now_ns)
     elif job == "desk":
         _desk_job(day, state, now_ns)
     elif job == "fundamentals":
@@ -388,6 +390,54 @@ def _desk_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         log.warning("desk for %s: %s still failing after the retry window; giving up for the day", day,
                     ", ".join(f["symbol"] for f in res["failed"]))
         state.mark("desk", day)
+
+
+def _candles_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
+    """The nightly daily candles (CW 1, `stockify.data.daily_candles`), at 16:40 on the day's Kite login. Like the
+    desk it stops DESK_MARGIN_NS before the next session's preparation (the earlier of `refdata` and `day_bundles`),
+    judged on the daemon clock: the job's clock starts at `now_ns`, and its waits are real.
+
+    An older day whose newer day's 16:40 has passed is not fetched on its own: the newer day's top-up runs through
+    it, so it is marked (superseded) once that newer day is done, and the newer run marks it when it completes. No
+    Kite login (before the run or during it), a stop at the deadline, or a raised error: tried again, not marked (the
+    morning catch-up runs it after the login). Stocks that failed, or Kite still saying too many requests: tried
+    again every `retry_every_min` until the window's `until`, then given up (marked, the stocks logged)."""
+    from stockify.daemon import scheduler
+    from stockify.daemon.clock import OffsetClock, WallClock
+    from stockify.data import daily_candles
+    newest = scheduler.latest_due_day("candles", now_ns)
+    if newest is not None and newest > day:
+        if state.done("candles", newest):
+            log.info("candles for %s: superseded by the run for %s, which topped up through it", day, newest)
+            state.mark("candles", day)
+        return                                        # the newer day's run covers this one
+    nxt = scheduler.plan(scheduler.session_day(now_ns))
+    deadline = min(nxt.refdata_ns, nxt.day_bundles_ns) - DESK_MARGIN_NS
+    if now_ns >= deadline:
+        log.info("candles for %s: too close to the next session; runs after it", day)
+        return
+    try:
+        res = daily_candles.run(day, deadline_ns=deadline, clock=OffsetClock(WallClock(), now_ns))
+    except Exception:  # noqa: BLE001 — the candles never cost the daemon anything
+        log.exception("the candles job for %s raised; it will be tried again", day)
+        return
+    if not res.get("logged_in", True):
+        return                                        # `daily_candles.run` logged it: tried again after the login
+    if res["complete"]:
+        state.mark("candles", day)
+        for job, older in scheduler.missed_jobs(now_ns, state):
+            if job == "candles" and older < day:
+                log.info("candles for %s: superseded by the run for %s, which topped up through it", older, day)
+                state.mark("candles", older)
+        return
+    if res["stopped"] == "deadline":
+        return                                        # the rest runs on a later pass
+    if now_ns >= scheduler.window_end_ns("candles", day) and (res["failed"] or res["stopped"] == "rate_limited"):
+        why = (", ".join(f["symbol"] for f in res["failed"]) + " still failing" if res["failed"]
+               else "Kite still saying too many requests")
+        log.warning("candles for %s: %s after the retry window; giving up for the day (the next evening's top-up "
+                    "fetches what is missing)", day, why)
+        state.mark("candles", day)
 
 
 def _fundamentals_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
@@ -574,20 +624,25 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
                     return code
                 continue                                          # now situation 1
 
-        result = _sleep_or_wait(clock, power, state, obligations, stop)
+        result = _sleep_or_wait(clock, power, state, obligations, stop, token_fresh)
         if result is not None:
             return result
     return exitcodes.OK
 
 
-def _sleep_or_wait(clock, power, state, day, stop):  # noqa: ANN001
-    """Hibernate when allowed (return SLEEP), or wait and return None to re-plan."""
+def _sleep_or_wait(clock, power, state, day, stop, token_fresh=None):  # noqa: ANN001
+    """Hibernate when allowed (return SLEEP), or wait and return None to re-plan. `token_fresh` (default the Kite
+    token store) says whether Kite is logged in: without a login the candles do not hold sleep (CW 1)."""
     from stockify.daemon import scheduler
 
     now = clock.now_ns()
     flag = scheduler.stay_awake_flag()
+    try:
+        logged_in = bool((token_fresh or _kite_token_fresh)())
+    except Exception:  # noqa: BLE001 — unknown: the candles keep their hold
+        logged_in = None
     ok, why = scheduler.should_sleep(now, day, state, idle_s=power.idle_seconds(),
-                                     stay_awake=flag.exists())
+                                     stay_awake=flag.exists(), logged_in=logged_in)
     wake = scheduler.next_wake_ns(now)
     if ok:
         scheduler.write_next_wake(wake)

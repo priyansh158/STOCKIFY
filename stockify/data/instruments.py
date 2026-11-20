@@ -343,6 +343,12 @@ def get(instrument_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def is_government_security(tradingsymbol: str | None, isin: str | None = None) -> bool:
+    """Sovereign gold bonds and other government securities: NSE lists them, but they are not stocks. By the SGB
+    symbol, or an IN00 ISIN (the Government of India's) when one is known."""
+    return (tradingsymbol or "").upper().startswith("SGB") or (isin or "").upper().startswith("IN00")
+
+
 def find(exchange: str, tradingsymbol: str) -> int | None:
     """Instrument id by exchange + tradingsymbol (latest seen if a symbol was reused)."""
     row = refdata._connect().execute(

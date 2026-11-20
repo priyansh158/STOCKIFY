@@ -173,6 +173,185 @@ class AdjustmentTests(HistoryTest):
         self.assertEqual([(s.instrument_id, s.adjustment) for s in out], [(self.rel, "refetched")])
 
 
+class FailingKite(FakeKite):
+    """FakeKite whose `fail_at`-th call (1-based) raises."""
+
+    def __init__(self, clock, fail_at: int, **kw):  # noqa: ANN001
+        super().__init__(clock, **kw)
+        self.fail_at = fail_at
+
+    def historical_data(self, *args, **kw):  # noqa: ANN002, ANN003, ANN201
+        if len(self.calls) + 1 == self.fail_at:
+            self.calls.append({"failed": True})
+            raise RuntimeError("Kite went away")
+        return super().historical_data(*args, **kw)
+
+
+class DeadlineAndBucketTests(HistoryTest):
+    """CW 1.2: `fetch` takes the caller's bucket and a deadline checked between chunks."""
+
+    def test_a_given_bucket_paces_the_calls_and_its_clock_stamps_the_log(self):
+        kite = FakeKite(self.clock)
+        bkt = history.TokenBucket(2, self.clock)
+        self.fetch(kite, "minute", date(2026, 1, 1), date(2026, 5, 31), bkt=bkt)     # 3 chunks
+        monos = [c["mono"] for c in kite.calls]
+        self.assertEqual(len(monos), 3)
+        for a, b in zip(monos, monos[1:]):
+            self.assertGreaterEqual(b - a, SEC // 2 - 1_000)                         # 2 a second, not 3
+        stamps = [r[0] for r in history._connect().execute(
+            "SELECT fetched_at_ns FROM bar_fetch_log ORDER BY from_ns").fetchall()]
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertGreater(stamps[-1], stamps[0])                                    # each chunk at its own time
+
+    def test_a_deadline_between_chunks_stops_with_an_honest_log(self):
+        kite = FakeKite(self.clock)
+        bkt = history.TokenBucket(1, self.clock)                                     # 1 s between calls
+        deadline = self.clock.now_ns() + SEC // 2                                    # after the first chunk only
+        stats = self.fetch(kite, "minute", date(2026, 1, 1), date(2026, 5, 31), bkt=bkt, deadline_ns=deadline)
+        self.assertEqual((stats.outcome, stats.chunks, stats.requests), ("stopped", 1, 1))
+        self.assertIn("deadline", stats.detail)
+        log_rows = history._connect().execute("SELECT from_ns, to_ns, rows FROM bar_fetch_log").fetchall()
+        self.assertEqual(len(log_rows), 1)                                           # only what was fetched
+        bars = history.bars(self.rel, "minute")
+        self.assertEqual(len(bars), log_rows[0]["rows"])
+        self.assertTrue(all(log_rows[0]["from_ns"] <= b["ts_ns"] <= log_rows[0]["to_ns"] for b in bars))
+
+    def test_a_passed_deadline_asks_nothing(self):
+        kite = FakeKite(self.clock)
+        stats = self.fetch(kite, deadline_ns=self.clock.now_ns())
+        self.assertEqual((stats.outcome, kite.calls), ("stopped", []))
+
+
+class TopUpTests(HistoryTest):
+    """CW 1.2: `top_up_daily` (moved from the desk): `years` of daily candles up to `day`, only what is missing."""
+    DAY = date(2026, 11, 13)
+
+    def top_up(self, kite, day=None, **kw):
+        bkt = history.TokenBucket(3, self.clock)
+        kw.setdefault("today", day or self.DAY)
+        return history.top_up_daily(self.rel, day or self.DAY, years=6, client=kite, bkt=bkt, **kw)
+
+    def test_the_first_fill_takes_the_years_then_a_top_up_takes_the_last_bar_on(self):
+        kite = FakeKite(self.clock)
+        first = self.top_up(kite)
+        self.assertEqual((first.outcome, first.refetched), ("ok", False))
+        self.assertEqual(first.requests, len(kite.calls))
+        self.assertEqual(kite.calls[0]["from"], datetime(2020, 11, 13))               # six years back
+        self.assertEqual(first.requests, 2)                                          # 2,000-day chunks (K-8 limits)
+        self.assertTrue(history.fetched_back_to(self.rel, date(2020, 11, 13)))
+        kite.calls.clear()
+        nxt = self.top_up(kite, date(2026, 11, 16))
+        froms = [c["from"].date() for c in kite.calls]
+        self.assertEqual(froms[-1], self.DAY)                                       # from the last cached bar
+        self.assertEqual(nxt.requests, 2)                                            # the adjustment check + top-up
+        self.assertEqual(history.bars(self.rel, "day")[-1]["ts_ns"], timeutil.ist_ns(date(2026, 11, 16), "00:00"))
+
+    def test_a_split_wipes_and_refills_the_years(self):
+        self.top_up(FakeKite(self.clock))
+        split = FakeKite(self.clock, factor=0.5)
+        res = self.top_up(split, date(2026, 11, 16))
+        self.assertTrue(res.refetched)
+        self.assertIn(datetime(2020, 11, 16), [c["from"] for c in split.calls])      # the six years again
+        self.assertEqual(res.requests, len(split.calls))
+        days = history.bars(self.rel, "day")
+        self.assertEqual(timeutil.ns_to_ist(days[0]["ts_ns"]).date(), date(2020, 11, 16))
+        self.assertTrue(all(d["fetched_on"] == "2026-11-16" for d in days))
+
+    def test_a_wipe_then_a_refill_cut_short_leaves_no_gap(self):
+        """Fix round 1 (1): after a split wipe the cache restarts at the years' first day, so a refill stopped in its
+        second chunk is finished by the next top-up, and the day does not look fetched in between."""
+        from stockify.data import daily_candles
+        self.top_up(FakeKite(self.clock))
+        nxt = date(2026, 11, 16)
+        cut = FailingKite(self.clock, factor=0.5, fail_at=4)      # check, first fetch, refill chunk 1, chunk 2
+        with self.assertRaises(RuntimeError):
+            self.top_up(cut, nxt)
+        self.assertFalse(daily_candles.up_to_date(self.rel, nxt))
+        days = [timeutil.ns_to_ist(b["ts_ns"]).date() for b in history.bars(self.rel, "day")]
+        self.assertEqual(days[0], date(2020, 11, 16))
+        self.assertLess(days[-1], nxt)                                  # nothing after the stop: no hole to hide
+        res = self.top_up(FakeKite(self.clock, factor=0.5), nxt)
+        self.assertEqual(res.outcome, "ok")
+        bars = history.bars(self.rel, "day")
+        days = [timeutil.ns_to_ist(b["ts_ns"]).date() for b in bars]
+        want = [date(2020, 11, 16) + timedelta(days=i) for i in range((nxt - date(2020, 11, 16)).days + 1)]
+        self.assertEqual(days, [d for d in want if d.weekday() < 5])    # every weekday, no gap
+        self.assertTrue(all(b["fetched_on"] == nxt.isoformat() for b in bars))
+        self.assertTrue(daily_candles.up_to_date(self.rel, nxt))
+
+    def test_a_wipe_with_a_deadline_in_the_refill_resumes_too(self):
+        from stockify.data import daily_candles
+        self.top_up(FakeKite(self.clock))
+        nxt = date(2026, 11, 16)
+        split = FakeKite(self.clock, factor=0.5)
+        res = self.top_up(split, nxt, deadline_ns=self.clock.now_ns() + SEC)     # 3 a second: after refill chunk 1
+        self.assertEqual((res.outcome, res.refetched), ("stopped", True))
+        self.assertFalse(daily_candles.up_to_date(self.rel, nxt))
+        res = self.top_up(FakeKite(self.clock, factor=0.5), nxt)
+        days = [timeutil.ns_to_ist(b["ts_ns"]).date() for b in history.bars(self.rel, "day")]
+        self.assertEqual((days[0], days[-1], len(days), len(set(days))), (date(2020, 11, 16), nxt, len(days),
+                                                                         len(days)))
+        self.assertTrue(daily_candles.up_to_date(self.rel, nxt))
+
+    def test_today_is_apart_from_the_range_end(self):
+        """Fix round 1 (3): a range that ends in the past is fetched with today's token and stamped today."""
+        kite = FakeKite(self.clock)
+        self.top_up(kite, date(2026, 7, 31), today=TODAY)
+        bars = history.bars(self.rel, "day")
+        self.assertEqual(timeutil.ns_to_ist(bars[-1]["ts_ns"]).date(), date(2026, 7, 31))
+        self.assertTrue(all(b["fetched_on"] == TODAY.isoformat() for b in bars))
+
+    def test_a_history_held_further_back_is_only_topped_up(self):
+        """Fix round 1 (3): the nightly job holds six years to TODAY; a top-up to an earlier end over fewer years asks
+        only for the check and the end's day, not the years again."""
+        self.top_up(FakeKite(self.clock), TODAY)
+        kite = FakeKite(self.clock)
+        res = history.top_up_daily(self.rel, date(2026, 7, 31), years=5, client=kite,
+                                   bkt=history.TokenBucket(3, self.clock), today=TODAY)
+        self.assertEqual((res.outcome, res.requests), ("ok", 2))
+        self.assertGreaterEqual(min(c["from"] for c in kite.calls).date(), date(2026, 7, 1))
+
+    def test_a_split_found_by_a_top_up_to_a_past_end_refills_through_today(self):
+        """Fix round 2: the cache reached past `day` (the nightly candles to TODAY); a split found by a top-up to an
+        earlier end must not cut it short at that end: the refill runs to today."""
+        self.top_up(FakeKite(self.clock), TODAY)
+        split = FakeKite(self.clock, factor=0.5)
+        res = history.top_up_daily(self.rel, date(2026, 7, 31), years=5, client=split,
+                                   bkt=history.TokenBucket(3, self.clock), today=TODAY)
+        self.assertEqual((res.outcome, res.refetched), ("ok", True))
+        bars = history.bars(self.rel, "day")
+        days = [timeutil.ns_to_ist(b["ts_ns"]).date() for b in bars]
+        self.assertEqual((days[0], days[-1]), (date(2021, 7, 31) if date(2021, 7, 31).weekday() < 5
+                                                else date(2021, 8, 2), TODAY))
+        want = [date(2021, 7, 31) + timedelta(days=i) for i in range((TODAY - date(2021, 7, 31)).days + 1)]
+        self.assertEqual(days, [d for d in want if d.weekday() < 5])          # no hole after the end either
+        self.assertTrue(all(b["close_paise"] == round((100 + timeutil.ns_to_ist(b["ts_ns"]).date().toordinal() % 7)
+                                                      * 0.5, 2) * 100 for b in bars))
+
+    def test_a_29_february_goes_back_to_the_28th(self):
+        self.assertEqual(history.years_before(date(2028, 2, 29), 6), date(2022, 2, 28))
+
+    def test_a_deadline_mid_fill_leaves_a_top_up_that_finishes_it(self):
+        kite = FakeKite(self.clock)
+        res = self.top_up(kite, deadline_ns=self.clock.now_ns() + SEC // 10)        # after the first chunk
+        self.assertEqual(res.outcome, "stopped")
+        self.assertEqual(res.requests, 1)
+        kite.calls.clear()
+        res = self.top_up(kite)
+        self.assertEqual(res.outcome, "ok")
+        days = [timeutil.ns_to_ist(b["ts_ns"]).date() for b in history.bars(self.rel, "day")]
+        self.assertEqual((days[0], days[-1]), (date(2020, 11, 13), self.DAY))
+        self.assertEqual(len(days), len(set(days)))
+        expected = sum(1 for i in range((self.DAY - date(2020, 11, 13)).days + 1)
+                       if (date(2020, 11, 13) + timedelta(days=i)).weekday() < 5)
+        self.assertEqual(len(days), expected)                                        # no gap left behind
+
+    def test_an_expired_instrument_has_no_token(self):
+        res = history.top_up_daily(self.old_fut, TODAY, years=6, client=FakeKite(self.clock),
+                                   bkt=history.TokenBucket(3, self.clock))
+        self.assertEqual(res.outcome, "no_token")
+
+
 class ContinuousTests(HistoryTest):
     def test_continuous_day_bars_on_synthetic_instrument(self):
         kite = FakeKite(self.clock)

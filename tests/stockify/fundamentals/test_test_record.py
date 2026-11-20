@@ -47,9 +47,9 @@ class TestRecordTests(SandboxedDBTest):
         self.fetched: list[tuple] = []
         self.walked: list[tuple] = []
 
-    def fetch(self, iid, interval, from_day, to_day, **kw):  # noqa: ANN001, ANN201
-        self.fetched.append((iid, interval, from_day, to_day))
-        return bars_history.FetchStats(iid, interval, rows=10)
+    def top_up(self, iid, day, *, years, client, **kw):  # noqa: ANN001, ANN201
+        self.fetched.append((iid, day, years, kw.get("today")))
+        return bars_history.TopUp(requests=1)
 
     def walk(self, spec, **kw):  # noqa: ANN001, ANN201
         """As run_windows: the job row first (its name, family and span), then the runs (none here)."""
@@ -61,7 +61,7 @@ class TestRecordTests(SandboxedDBTest):
         return _Done(job, f"walkforward/{job}")
 
     def _run(self, **kw):  # noqa: ANN003, ANN202
-        return test_record.run(rank=lambda start, end: RANKING, fetch=self.fetch, walk=self.walk, client=object(),
+        return test_record.run(rank=lambda start, end: RANKING, top_up=self.top_up, walk=self.walk, client=object(),
                                **kw)
 
     def test_test_record_ends_before_the_holdout(self):
@@ -90,9 +90,14 @@ class TestRecordTests(SandboxedDBTest):
                                             start=date(2022, 1, 1), end=end)
         self.assertEqual(grid, 9)
         self.assertLessEqual(max(w.test_to for w in wins), end)
-        # bars for the ranked stocks and the benchmark, never past the end
+        # bars for the ranked stocks and the benchmark, never past the end: the nightly candles' top-up (CW 1b),
+        # back at least to START (candles.json history_years, or more for a start further back)
         self.assertEqual(sorted(f[0] for f in self.fetched), [1, 2, 3, 4])
-        self.assertTrue(all(f[1] == "day" and f[3] <= end for f in self.fetched))
+        self.assertTrue(all(f[1] == end for f in self.fetched))
+        self.assertTrue(all(bars_history.years_before(end, f[2]) <= date(2022, 1, 1) for f in self.fetched))
+        self.assertEqual({f[2] for f in self.fetched}, {5})          # the fewest years that reach START
+        from stockify import timeutil
+        self.assertEqual({f[3] for f in self.fetched}, {timeutil.ist_today()})   # today, apart from the end
         self.assertEqual(out["missing"], ["GONE"])
         self.assertEqual(out["benchmark"], {"symbol": "NSE:NIFTY 500", "label": "price index, without dividends",
                                             "source": "kite"})
@@ -119,5 +124,23 @@ class TestRecordTests(SandboxedDBTest):
     def test_no_ranked_stock_with_data_is_refused(self):
         with self.assertRaisesRegex(ValueError, "no ranked stock"):
             test_record.run(rank=lambda start, end: {"0.5": [{"date": "2022-01-03", "symbols": ["GONE"]}]},
-                            fetch=self.fetch, walk=self.walk, client=object())
+                            top_up=self.top_up, walk=self.walk, client=object())
         self.assertEqual(self.walked, [])
+
+    def test_the_top_up_reaches_back_to_the_start_for_a_far_end(self):
+        self.assertEqual(test_record.years_needed(date(2026, 7, 31)), 5)          # 2021-07-31 <= 2022-01-01
+        self.assertEqual(test_record.years_needed(date(2029, 7, 31)), 8)
+        self.assertEqual(test_record.years_needed(date(2023, 1, 1)), 1)           # 2022-01-01 reaches START
+        self.assertEqual(test_record.years_needed(date(2023, 1, 2)), 2)           # 2022-01-02 does not
+        self.assertLessEqual(bars_history.years_before(date(2029, 7, 31), 8), test_record.START)
+
+    def test_a_stock_kite_cannot_give_is_missing(self):
+        def top_up(iid, day, *, years, client, **kw):  # noqa: ANN001, ANN202
+            if iid == 2:
+                return bars_history.TopUp(outcome="no_token")
+            if iid == 3:
+                raise RuntimeError("Kite said no")
+            return bars_history.TopUp()
+        out = test_record.run(rank=lambda start, end: RANKING, top_up=top_up, walk=self.walk, client=object())
+        self.assertEqual(out["symbols"], ["AAA"])
+        self.assertEqual(out["missing"], ["BBB", "CCC", "GONE"])

@@ -70,6 +70,7 @@ class SleepDecisionTests(unittest.TestCase):
 
     def test_blocked_until_compaction_is_done(self):
         self.state.mark("margin_files", self.day)
+        self.state.mark("candles", self.day)                                 # CW 1: they hold sleep too
         self.assertEqual(self.decide(), (False, "compaction for 2026-11-09 not done"))
         self.state.mark("compaction", self.day)
         self.assertEqual(self.decide(), (True, "ok"))
@@ -77,6 +78,7 @@ class SleepDecisionTests(unittest.TestCase):
     def test_the_margin_files_keep_the_laptop_up_until_done_or_22_00(self):
         """M-3: the day's SPAN and ELM files are fetched the same evening, not once the next morning."""
         self.state.mark("compaction", self.day)
+        self.state.mark("candles", self.day)                                 # CW 1: they hold sleep too
         self.assertEqual(self.decide("16:31"), (False, "margin_files for 2026-11-09 not done (window until 22:00 IST)"))
         self.assertEqual(self.decide("21:59")[0], False)
         self.assertEqual(self.decide("22:00"), (True, "ok"))                 # the window is over: sleep anyway
