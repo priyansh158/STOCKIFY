@@ -52,19 +52,24 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
   const watched = useMemo(() => new Set(data.items.map((r) => r.symbol.toUpperCase())), [data.items]);
   const full = data.items.length >= data.max_stocks;
 
-  const reload = useCallback(async () => {
-    setData(await getWatchlist());
+  /** Reads the list again. A failure here is its own problem: the add or removal before it did work. */
+  const reload = useCallback(async (): Promise<string | null> => {
+    try {
+      setData(await getWatchlist());
+      return null;
+    } catch {
+      return "Done, but the list could not be read again. Reload the page to see it.";
+    }
   }, []);
 
   const onAdd = useCallback(
     async (symbol: string): Promise<string | null> => {
       try {
         await addWatched(symbol);
-        await reload();
-        return null;
       } catch (e) {
         return problemWords(e, "add that stock");
       }
+      return reload();
     },
     [reload],
   );
@@ -74,7 +79,7 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
     setProblem(null);
     try {
       await removeWatched(symbol);
-      await reload();
+      setProblem(await reload());
     } catch (e) {
       setProblem(problemWords(e, `remove ${symbol}`));
     } finally {
