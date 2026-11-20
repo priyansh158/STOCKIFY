@@ -71,6 +71,21 @@ class SendTests(NotifyTestBase):
         self.assertEqual(set(doc["events"].values()), {True})
         self.assertEqual(sorted(doc["events"]), sorted(loader.NOTIFY_EVENTS))
 
+    def test_the_watchlist_events_are_shipped_in_both_places(self):
+        """CW 3: the 52-week alerts and the results reminders have their own switches, in notify.json and in
+        loader.NOTIFY_EVENTS (the loader refuses a notify.json whose keys differ)."""
+        for event in ("watch_high_low", "watch_results"):
+            self.assertIn(event, loader.NOTIFY_EVENTS)
+            self.assertIn(event, notify.EVENTS)
+            self.assertIs(loader.load_json("notify.json")["events"][event], True)
+
+    def test_a_watchlist_event_is_sent_like_any_other(self):
+        self.configured(channel="email")
+        sender = Recorder()
+        self.assertIsNone(notify.send("watch_high_low", "s", "b", sender=sender, key="52w:2026-11-17:1"))
+        self.assertIsNone(notify.send("watch_high_low", "s", "b", sender=sender, key="52w:2026-11-17:1"))
+        self.assertEqual(len(sender.calls), 1)
+
     def test_default_is_log_only(self):
         self.configured(channel=None)
         sender = Recorder()

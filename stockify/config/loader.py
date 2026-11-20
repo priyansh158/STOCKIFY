@@ -195,7 +195,8 @@ def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
 
 
 NOTIFY_CHANNELS = (None, "email")                  # email only (owner, 2026-11-11)
-NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary")
+NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary",
+                 "watch_high_low", "watch_results")      # CW 3: the watchlist's 52-week alerts and results reminders
 
 
 def _check_notify(doc: dict) -> None:
