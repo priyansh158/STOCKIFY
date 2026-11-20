@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 from datetime import date
 
 from fastapi import APIRouter, HTTPException
 
 import portfolio_sync
+from server.services import charts
 from server.schemas import DeskChipDTO, DeskListDTO, DeskSignalDTO, DeskSkipDTO, DeskViewDTO, RunChartDTO
 from stockify import timeutil
 from stockify.data import instruments
@@ -36,13 +36,11 @@ NOT_GRADED = "not graded yet: the desk grades each holding after the close"
 CHART_DAYS = 500                                # about two years of daily candles
 _SYMBOL = re.compile(r"^[A-Za-z0-9&_.\-]{1,40}$")
 
-_lock = threading.Lock()
-_charts: dict[int, tuple[tuple, RunChartDTO]] = {}     # iid -> (key, chart)
+_CACHE = "desk"                                  # this router's namespace in server.services.charts
 
 
 def reset() -> None:
-    with _lock:
-        _charts.clear()
+    charts.reset(_CACHE)
 
 
 def now_ns() -> int:
@@ -169,23 +167,6 @@ def desk_view(symbol: str) -> DeskViewDTO:
 
 # ── GET /api/desk/{symbol}/chart ─────────────────────────────────────────────
 
-def _model(iid: int, sym: str, interval_s: int, basis: str, bars: list, plots: list[dict]) -> dict:
-    return {"instruments": [{"id": iid, "symbol": sym, "kind": "equity"}], "instrument_id": iid, "basis": basis,
-            "interval_s": interval_s,
-            "bars": [{"start_ns": b.start_ns, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
-                      "volume": b.volume} for b in bars],
-            "markers": [], "omitted_markers": 0, "plots": plots, "truncated": False, "next_from_ns": None,
-            "data_state": "ok", "notice": None, "pnl_complete": True, "skipped_settlements": 0,
-            "idle_settlements": 0}
-
-
-def _dto(model: dict, labels: dict[str, str]) -> RunChartDTO:
-    from server.routers.tests import _chart_dto
-    dto = _chart_dto(model)
-    plots = [p.model_copy(update={"label": labels.get(p.name, p.label)}) for p in dto.plots]
-    return dto.model_copy(update={"plots": plots})
-
-
 def _plot_name(ref: str) -> str:
     return ref.rpartition(".")[2].partition(":")[0]
 
@@ -195,12 +176,10 @@ def _day_chart(iid: int, sym: str) -> RunChartDTO:
     replayed with `replay.window` bars of warm-up before the first candle shown, so its line says what a replay over
     the whole history says. Cached until the bar cache's candles change."""
     bars = replay.daily_bars(iid)
-    # the first close too: a split or bonus refetch rewrites the older (adjusted) candles
-    key = (len(bars), bars[-1].start_ns, bars[-1].close, bars[0].close) if bars else (0,)
-    with _lock:
-        hit = _charts.get(iid)
-    if hit is not None and hit[0] == key:
-        return hit[1]
+    return charts.cached(_CACHE, iid, charts.bars_key(bars), lambda: _build(iid, sym, bars))
+
+
+def _build(iid: int, sym: str, bars: list) -> RunChartDTO:
     shown = bars[-CHART_DAYS:]
     first = shown[0].start_ns if shown else None
     plots, labels = [], {}
@@ -216,10 +195,7 @@ def _day_chart(iid: int, sym: str) -> RunChartDTO:
             name = _plot_name(ref)
             plots.append({"name": name, "kind": "price", "instrument_id": iid, "points": pts})
             labels[name] = f"{steps[-1].display_name} exit level"
-    dto = _dto(_model(iid, sym, replay.DAY_S, "adjusted", shown, plots), labels)
-    with _lock:
-        _charts[iid] = (key, dto)
-    return dto
+    return charts.dto(charts.model(iid, sym, replay.DAY_S, "adjusted", shown, plots), labels)
 
 
 @router.get("/{symbol}/chart", response_model=RunChartDTO)
