@@ -330,6 +330,9 @@ class ChartHelperChecks(unittest.TestCase):
         self.assertEqual(r["wordsNoPackPaper"], "No price data was recorded for this day. The trades are listed below.")
         self.assertEqual(r["wordsNoPackRun"], "There is no price recording for this day. The trades are listed below.")
         self.assertEqual(r["wordsUnreadable"], "The price recording for this day cannot be read right now. Reload to try again; the trades are listed below.")
+        self.assertEqual(r["wordsNoData"], "No daily prices yet: they are fetched each evening for the screener's stocks and your watchlist.")
+        self.assertEqual(r["noDataState"], "pruned")
+        self.assertEqual(r["noDataNotice"], [False, True, True, False])      # a no_data chart says its words once
         self.assertEqual(r["wordsPruned"], "The price data for this run is no longer on disk. The trades are listed below.")
 
 

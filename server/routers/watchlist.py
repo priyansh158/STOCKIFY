@@ -44,9 +44,7 @@ def _row(r: dict, today, cfg: dict) -> WatchRowDTO:
     bars = history.bars(iid, "day")
     # The range is judged as of today, like the live evaluator's (365 days before today), so intraday the page agrees
     # with the alerts. Once the evening fetch has put today's candle in, it is folded in too (as of tomorrow).
-    last = ranges.last_close(bars, today)
-    day = today + timedelta(days=1) if last and last[1] == today.isoformat() else today
-    rng = ranges.prior_range(bars, day, cfg["lookback_days"], cfg["min_history_days"])
+    last, rng = ranges.stock_range(bars, today, cfg["lookback_days"], cfg["min_history_days"])
     dto = {"symbol": r["symbol"], "instrument_id": iid, "added_ns": r["added_ns"],
            "token": instruments.token_at(iid, today)}
     if last:

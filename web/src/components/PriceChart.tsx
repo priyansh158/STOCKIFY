@@ -57,6 +57,7 @@ import {
   type ChartPlot,
   type ChartWindow,
   prunedWords,
+  showsModelNotice,
   nextDelay,
 } from "@/lib/chart";
 import { Loading, Panel, Skeleton } from "./ui";
@@ -638,9 +639,9 @@ export function PriceChart({ load, title, paperBadge, pollMs, windows, focusMark
           Live updates paused. Retrying…
         </p>
       )}
-      {(meta?.notice || meta?.pnl_complete === false) && (
+      {showsModelNotice(meta) && (
         <p className="stk-pricechart-notice" role="note">
-          {meta.notice || "Some profit and loss figures are incomplete for this chart."}
+          {meta?.notice || "Some profit and loss figures are incomplete for this chart."}
         </p>
       )}
 

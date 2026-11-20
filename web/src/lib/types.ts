@@ -876,7 +876,7 @@ export interface RunChartDTO {
   plots: ChartPlotDTO[];
   truncated: boolean;
   next_from_ns: number | null;
-  data_state: "ok" | "pruned" | "no_pack" | "pack unreadable";
+  data_state: "ok" | "pruned" | "no_pack" | "pack unreadable" | "no_data";
   omitted_markers: number;
   notice: string | null;
   pnl_complete: boolean;
@@ -1081,6 +1081,18 @@ export interface FilingDTO {
   reason?: string | null;
 }
 
+/** The stock's last close and 52-week range from its daily candles: facts only (null while a part is missing). */
+export interface PriceContextDTO {
+  last_close_paise?: number | null;
+  /** ISO day of that close. */
+  last_close_date?: string | null;
+  /** 52-week high and low, with the days they were made. */
+  high_paise?: number | null;
+  high_date?: string | null;
+  low_paise?: number | null;
+  low_date?: string | null;
+}
+
 export interface CandidateDetailDTO {
   symbol: string;
   company: string;
@@ -1093,6 +1105,8 @@ export interface CandidateDetailDTO {
   series: SeriesDTO[];
   filings: FilingDTO[];
   as_of?: string | null;
+  /** Null when the stock has no daily candles yet. */
+  price?: PriceContextDTO | null;
 }
 
 export interface FundamentalsTestRecordDTO {

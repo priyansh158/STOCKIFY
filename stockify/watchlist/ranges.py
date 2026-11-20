@@ -38,6 +38,15 @@ def prior_range(bars: list[dict], day: date, lookback_days: int, min_history_day
             "last_close_paise": int(last_b["close_paise"]), "last_close_date": last_d.isoformat()}
 
 
+def stock_range(bars: list[dict], today: date, lookback_days: int, min_history_days: int) -> tuple[tuple[int, str] | None, dict | None]:
+    """(last close, 52-week range) of a stock as of `today`, the one rule the watchlist page, the stock chart and the
+    price context share: the range is judged as of today (like the live evaluator's, `lookback_days` before today), and
+    once today's own candle is in, it is folded in too (judged as of tomorrow). Either part is None when it is unknown."""
+    last = last_close(bars, today)
+    day = today + timedelta(days=1) if last and last[1] == today.isoformat() else today
+    return last, prior_range(bars, day, lookback_days, min_history_days)
+
+
 def last_close(bars: list[dict], day: date) -> tuple[int, str] | None:
     """(close in paise, ISO date) of the latest bar dated on or before `day`, or None."""
     best = None

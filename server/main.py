@@ -37,6 +37,7 @@ from server.routers import (
     research as research_router,
     jobs as jobs_router,
     search,
+    stocks as stocks_router,
     tests as tests_router,
     trade as trade_router,
     ticks,
@@ -144,3 +145,4 @@ app.include_router(trade_router.router)
 app.include_router(desk_router.router)
 app.include_router(fundamentals_router.router)
 app.include_router(watchlist_router.router)
+app.include_router(stocks_router.router)
