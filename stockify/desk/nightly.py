@@ -151,8 +151,9 @@ def closing_view(instrument_id: int, symbol: str, bars: list[S.Bar], rows: list[
 
 def _adjusted_since_grades(instrument_id: int) -> bool:
     """True when a split or bonus refetch was recorded on or after the day of the stored grades: a pass whose refill
-    stopped at the deadline did not regrade, and the next pass's top-up finds no new adjustment. (On that day's later
-    passes the grades are remade again; rare, and only for that stock.)"""
+    stopped at the deadline did not regrade, and the next pass's top-up finds no new adjustment. Known cost, for that
+    stock only: a refetch recorded on day D also remakes the grades on D's later passes and once more on D + 1 (the
+    grades made on D carry D's date, which is not after the adjustment's); from then on the grades are newer.)"""
     stored = store.latest_evidence(instrument_id)
     if not stored:
         return False

@@ -44,7 +44,8 @@ CLOSE_GROUP = "CM"                       # the cash market's session close ends 
 NOT_IN_INSTRUMENTS = "not in instruments"
 NOT_NSE_STOCK = "not an NSE equity or ETF"
 GOVERNMENT_SECURITY = "a government security, not a stock"
-STOCK_KINDS = ("EQ", "ETF")              # refdata kinds a stock can have (an ETF is an EQ row in Kite's dump)
+STOCK_KINDS = ("EQ", "ETF")              # refdata stores an ETF as EQ (Kite's dump); "ETF" is defensive, for a
+                                         # refdata that one day tells them apart
 NO_TOKEN = "no Kite token (delisted or suspended)"
 
 
