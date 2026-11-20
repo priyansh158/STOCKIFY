@@ -196,7 +196,8 @@ class DeliveryTests(WatchCase):
         self.assertEqual(self.post.calls, [])
         self.flush(w)
         [mail] = self.post.calls
-        self.assertEqual((mail["event"], mail["key"]), ("watch_high_low", f"52w:{DAY.isoformat()}:1"))
+        self.assertEqual(mail["event"], "watch_high_low")
+        self.assertEqual(mail["key"], f"52w:{DAY.isoformat()}:1:g{w.generation}")
         self.assertIn("RELIANCE, INFY", mail["subject"])
         self.assertIn("RELIANCE: a new 52-week high of ₹110.05", mail["body"])
         self.assertIn("INFY: a new 52-week low of ₹89.95", mail["body"])
@@ -243,7 +244,7 @@ class DeliveryTests(WatchCase):
         self.feed(w, packet(TOKENS["RELIANCE"], high=HIGH + 5))
         with mock.patch("stockify.daemon.notify.queued", return_value=True) as queued:
             self.flush(w)
-        queued.assert_called_once_with("watch_high_low", f"52w:{DAY.isoformat()}:1")
+        queued.assert_called_once_with("watch_high_low", f"52w:{DAY.isoformat()}:1:g{w.generation}")
         self.assertEqual(self.rows()[0]["delivery"], "sent")
 
     def test_a_pending_alert_left_by_a_crash_goes_in_the_next_runs_first_digest(self):
@@ -263,6 +264,55 @@ class DeliveryTests(WatchCase):
             self.assertTrue(live.replay_post("watch_high_low", "[STOCKIFY] s", "b", key="k", on_done=None))
         post.assert_not_called()
         self.assertIn("NOTIFY watch_high_low (replay, not sent)", "\n".join(cm.output))
+
+
+class SupersededTests(WatchCase):
+    def test_an_evaluator_stopped_mid_prepare_and_released_later_never_sends(self):
+        """A same-process restart: the first evaluator's prepare is stuck, its stop() times out, a second one takes
+        over and sends the crash's pending alert. When the first wakes it exits without a pass or a digest."""
+        import threading
+        store.add("RELIANCE")
+        store.record_alert(self.ids["RELIANCE"], "RELIANCE", "high52", DAY.isoformat(), level_paise=HIGH + 5,
+                           prior_paise=HIGH, prior_date=(DAY - timedelta(days=1)).isoformat(),
+                           at_ns=timeutil.ist_ns(DAY, "10:00:00"))                  # left pending by a crash
+        release, entered = threading.Event(), threading.Event()
+        first = live.HighLowWatch(DAY, self.tokens, clock=self.clock, cfg=self.cfg, post=self.post,
+                                  bars_of=lambda iid: self.bars.get(iid, []))
+        real = first.prepare
+
+        def stuck():
+            entered.set()
+            release.wait(30)
+            return real()
+
+        first.prepare = stuck
+        first.start()
+        self.assertTrue(entered.wait(5))
+        first.stop(timeout=0.1)
+        self.assertTrue(first._thread.is_alive())
+        second = self.build()
+        self.flush(second)
+        self.assertEqual(len(self.post.calls), 1)
+        release.set()
+        first._thread.join(5)
+        self.assertFalse(first._thread.is_alive())
+        self.assertEqual(len(self.post.calls), 1)                        # the first sent nothing
+        self.assertNotEqual(first.generation, second.generation)
+
+    def test_a_superseded_evaluator_never_sends_and_keys_never_collide(self):
+        store.add("RELIANCE")
+        store.add("INFY")
+        old = self.build()
+        self.feed(old, packet(TOKENS["RELIANCE"], high=HIGH + 5))
+        new = self.build()                                               # same day, same process: takes over
+        self.flush(old)
+        self.assertEqual(self.post.calls, [])
+        self.feed(new, packet(TOKENS["INFY"], high=HIGH + 5))
+        self.flush(new)
+        [mail] = self.post.calls
+        self.assertTrue(mail["key"].endswith(f":g{new.generation}"))
+        self.assertIn("RELIANCE", mail["body"])                         # re-queued from the store, sent once
+        self.assertIn("INFY", mail["body"])
 
 
 class ContainmentTests(WatchCase):

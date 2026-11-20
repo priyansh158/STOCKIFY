@@ -25,12 +25,17 @@ low. One alert per stock, side and day: `store.record_alert` is the once-only re
 restart), and only a row this run inserted goes into a digest. A failed write is tried again on a later packet. A row
 an earlier run of the day left `pending` (it ended before its digest) goes in this run's first digest.
 
-Delivery. One digest email per `alert_batch_s` through `notify.post("watch_high_low", ..., key="52w:<day>:<n>")`, at
+Delivery. One digest email per `alert_batch_s` through `notify.post("watch_high_low", ..., key=...)` (the key below), at
 most `max_alert_emails_per_day` a day; the last one says so and points to the Watchlist page, and later alerts are
 stored as `capped`. The day's email count is kept in the lab (`watch_alerts_state.json`) so a restart cannot pass the
 cap. Each alert row's delivery becomes `sent` or `failed` once notify has tried (`sent` when notify kept the message in
 its outbox for a later try). A replay never emails (owner, 2026-11-19): its digests are only logged (`replay_post`),
 and its rows stay `pending`.
+
+Delivery is at least once: a digest handed to notify just before a crash, whose rows are still `pending`, is sent
+again by the next run. Every evaluator has a generation (one per process, counted up); the newest for a day is the
+only one that judges or sends: an older one (a same-process restart whose stuck `prepare` wakes later) exits without a
+pass, and the digest key `52w:<day>:<n>:g<generation>` never collides between two evaluators.
 
 Containment. Each pass is in a try/except; after MAX_ERRORS failed passes in a row the evaluator switches itself off
 for the day (the tap goes on appending to its bounded deque, which nobody reads). Nothing here calls the recorder, the
@@ -40,6 +45,7 @@ ticker or the landing file. A removed stock stops alerting within VERSION_EVERY_
 from __future__ import annotations
 
 import collections
+import itertools
 import json
 import logging
 import struct
@@ -63,6 +69,9 @@ GROUP = "CM"
 PAGE = "/watchlist"
 SEC = 1_000_000_000
 EVENT = "watch_high_low"
+
+_generations = itertools.count(1)
+_newest: dict[date, int] = {}                # IST day -> the generation of its newest evaluator
 
 _U16 = struct.Struct(">H")
 _U32 = struct.Struct(">I")
@@ -139,6 +148,8 @@ class HighLowWatch:
         self.day = day
         self.tokens = tokens
         self.clock = clock
+        self.generation = next(_generations)
+        _newest[day] = self.generation           # a newer evaluator of the day supersedes this one
         if cfg is None:
             try:
                 from stockify.config import loader
@@ -176,6 +187,10 @@ class HighLowWatch:
         Raises what `prepare` raises."""
         w = cls(day, tokens, clock=clock, **kw)
         return w if w.prepare() else None
+
+    def superseded(self) -> bool:
+        """True once a newer evaluator of the same day exists in this process: this one must not judge or send."""
+        return _newest.get(self.day) != self.generation
 
     # ── prepare (the evaluator's thread) ────────────────────────────────────────────────────────────────────────────
     def prepare(self) -> bool:
@@ -258,6 +273,10 @@ class HighLowWatch:
                     log.error("watchlist: 52-week alerts are off for %s: the watchlist could not be read; the "
                               "recording is not affected", self.day, exc_info=True)
                     return
+                if self._stop.is_set() or self.superseded():
+                    log.info("watchlist: an alert evaluator that was stopped while preparing exits without a pass")
+                    self.disabled = True
+                    return
             while not self.disabled:
                 final = self._stop.wait(POLL_S)
                 self.step(final=final)
@@ -280,6 +299,11 @@ class HighLowWatch:
     def step(self, *, final: bool = False) -> None:
         """Read the tap, judge, and send a digest that is due (every waiting one when `final`). Never raises."""
         if self.disabled or not self.ready:
+            return
+        if self.superseded():                   # a newer evaluator of the day owns the alerts and the digests
+            self.disabled = True
+            self.frames.clear()
+            log.info("watchlist: a newer alert evaluator took over %s; this one stops without sending", self.day)
             return
         try:
             self._poll_version()
@@ -385,6 +409,8 @@ class HighLowWatch:
 
     # ── delivery ────────────────────────────────────────────────────────────────────────────────────────────────────
     def _send(self) -> None:
+        if self.superseded():
+            return
         items, self.batch, self.batch_started = self.batch, [], None
         if self.emails >= self.cap:              # re-queued rows after the cap was reached: on the page only
             from stockify.watchlist import store
@@ -398,7 +424,7 @@ class HighLowWatch:
         except OSError:
             log.warning("watchlist: the day's email count could not be saved", exc_info=True)
         subject, body = digest(items, last=n >= self.cap, cap=self.cap)
-        key = f"52w:{self.day.isoformat()}:{n}"
+        key = f"52w:{self.day.isoformat()}:{n}:g{self.generation}"
         posted = self.post(EVENT, subject, body, key=key, on_done=lambda error: self._delivered(items, error, key))
         if not posted:
             self._delivered(items, "queue full", key)

@@ -173,7 +173,7 @@ class LiveMergeTests(WatchMarketDayCase):
         self.assertEqual(code, exitcodes.OK)
         [call] = post.call_args_list
         self.assertEqual(call.args[0], "watch_high_low")
-        self.assertEqual(call.kwargs["key"], f"52w:{DAY.isoformat()}:1")
+        self.assertTrue(call.kwargs["key"].startswith(f"52w:{DAY.isoformat()}:1:g"))
         self.assertIn("RELIANCE: a new 52-week high of ₹2,510", call.args[2])
         self.assertEqual(stats[0].tap_errors, 0)
         self.assertEqual([a["kind"] for a in wstore.alerts()], ["high52"])
