@@ -494,7 +494,8 @@ def top_up_daily(instrument_id: int, day: date, *, years: int, client, bkt: Toke
     for. A history already fetched back to the range's first day, or further, is fetched from its last cached bar on
     (at most `day`; an earlier provisional close is replaced). A split or bonus refetch (C-5) takes the years again:
     the cache is cleared once more before that refill, so it always starts at the first day with no hole, and a refill
-    cut short (the deadline, a 429, an error) is finished by the next top-up. `today` (default the IST today) picks
+    cut short (the deadline, a 429, an error) is finished by the next top-up; a cache that reached past `day` is
+    refilled through `today`, not cut at `day`. `today` (default the IST today) picks
     the Kite token and stamps the bars, apart from `day`. `bkt` and `deadline_ns` go to `fetch`."""
     today = today or timeutil.ist_today()
     from_day = years_before(day, years)
@@ -506,9 +507,12 @@ def top_up_daily(instrument_id: int, day: date, *, years: int, client, bkt: Toke
     out = TopUp(refetched=getattr(stats, "adjustment", None) == "refetched",
                 requests=int(getattr(stats, "requests", 0) or 0), outcome=getattr(stats, "outcome", "ok"),
                 detail=getattr(stats, "detail", ""))
-    if out.refetched and start != from_day and out.outcome == "ok":      # the cache was cleared: the years again
+    # A cache that reached past `day` (the nightly candles, for a top-up to an earlier end) is refilled through today,
+    # so the wipe does not cut it short at `day`.
+    refill_to = max(day, today) if last is not None and last > day else day
+    if out.refetched and out.outcome == "ok" and (start != from_day or refill_to != day):   # cleared: the years again
         _clear_daily(instrument_id)              # drop the short range just stored, so a cut refill leaves no hole
-        again = fetch(instrument_id, "day", from_day, day, client=client, today=today, check_adjustments=False,
+        again = fetch(instrument_id, "day", from_day, refill_to, client=client, today=today, check_adjustments=False,
                       bkt=bkt, deadline_ns=deadline_ns)
         out.requests += int(getattr(again, "requests", 0) or 0)
         out.outcome, out.detail = getattr(again, "outcome", "ok"), getattr(again, "detail", "")

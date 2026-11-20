@@ -311,6 +311,23 @@ class TopUpTests(HistoryTest):
         self.assertEqual((res.outcome, res.requests), ("ok", 2))
         self.assertGreaterEqual(min(c["from"] for c in kite.calls).date(), date(2026, 7, 1))
 
+    def test_a_split_found_by_a_top_up_to_a_past_end_refills_through_today(self):
+        """Fix round 2: the cache reached past `day` (the nightly candles to TODAY); a split found by a top-up to an
+        earlier end must not cut it short at that end: the refill runs to today."""
+        self.top_up(FakeKite(self.clock), TODAY)
+        split = FakeKite(self.clock, factor=0.5)
+        res = history.top_up_daily(self.rel, date(2026, 7, 31), years=5, client=split,
+                                   bkt=history.TokenBucket(3, self.clock), today=TODAY)
+        self.assertEqual((res.outcome, res.refetched), ("ok", True))
+        bars = history.bars(self.rel, "day")
+        days = [timeutil.ns_to_ist(b["ts_ns"]).date() for b in bars]
+        self.assertEqual((days[0], days[-1]), (date(2021, 7, 31) if date(2021, 7, 31).weekday() < 5
+                                                else date(2021, 8, 2), TODAY))
+        want = [date(2021, 7, 31) + timedelta(days=i) for i in range((TODAY - date(2021, 7, 31)).days + 1)]
+        self.assertEqual(days, [d for d in want if d.weekday() < 5])          # no hole after the end either
+        self.assertTrue(all(b["close_paise"] == round((100 + timeutil.ns_to_ist(b["ts_ns"]).date().toordinal() % 7)
+                                                      * 0.5, 2) * 100 for b in bars))
+
     def test_a_29_february_goes_back_to_the_28th(self):
         self.assertEqual(history.years_before(date(2028, 2, 29), 6), date(2022, 2, 28))
 
