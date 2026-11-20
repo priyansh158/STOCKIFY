@@ -162,6 +162,118 @@ class LoaderRuleTests(unittest.TestCase):
         (self.dir / "fundamentals.json").write_text(json.dumps(extra_api), encoding="utf-8")
         self.assertIn("results", loader.load_json("fundamentals.json", self.dir)["api"])
 
+    def test_candles_json_is_checked(self):
+        """CW 1: candles.json: history_years a whole number of years, rps a decimal string above 0, the 429 backoff a
+        non-empty list of whole seconds that never shrinks; unknown or missing keys refused, naming them."""
+        good = json.loads((loader.CONFIG_DIR / "candles.json").read_text(encoding="utf-8"))
+        bad_cases = (
+            {"history_years": 0}, {"history_years": 21}, {"history_years": "6"}, {"history_years": True},
+            {"history_years": 6.5}, {"rps": 2}, {"rps": "0"}, {"rps": "-1"}, {"rps": "abc"}, {"rps": "11"},
+            {"rate_limit_backoff_s": []}, {"rate_limit_backoff_s": [0]}, {"rate_limit_backoff_s": [4, 2]},
+            {"rate_limit_backoff_s": ["1"]}, {"rate_limit_backoff_s": [1, 601]}, {"rate_limit_backoff_s": 1},
+            {"note": 5}, {"surprise": 1},
+        )
+        for change in bad_cases:
+            with self.subTest(change=change):
+                (self.dir / "candles.json").write_text(json.dumps({**good, **change}), encoding="utf-8")
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("candles.json", self.dir)
+        for key in ("history_years", "rps", "rate_limit_backoff_s"):
+            missing = {k: v for k, v in good.items() if k != key}
+            (self.dir / "candles.json").write_text(json.dumps(missing), encoding="utf-8")
+            with self.subTest(missing=key), self.assertRaisesRegex(loader.ConfigError, f"{key} is missing"):
+                loader.load_json("candles.json", self.dir)
+        (self.dir / "candles.json").write_text(json.dumps({**good, "rps": "0.5", "rate_limit_backoff_s": [2, 2]}),
+                                               encoding="utf-8")
+        self.assertEqual(loader.load_json("candles.json", self.dir)["rps"], "0.5")
+
+    def test_candles_rps_never_exceeds_kites_historical_limit(self):
+        """Fix round 1 (5): candles.json rps at most kite_limits.json historical_rps (K-8), read from the same folder
+        when it has one, else the shipped one."""
+        good = json.loads((loader.CONFIG_DIR / "candles.json").read_text(encoding="utf-8"))
+        for rps, ok in (("3", True), ("3.5", False), ("2.99", True)):
+            with self.subTest(rps=rps):
+                (self.dir / "candles.json").write_text(json.dumps({**good, "rps": rps}), encoding="utf-8")
+                if ok:
+                    loader.load_json("candles.json", self.dir)
+                else:
+                    with self.assertRaisesRegex(loader.ConfigError, "historical_rps"):
+                        loader.load_json("candles.json", self.dir)
+        limits = json.loads((loader.CONFIG_DIR / "kite_limits.json").read_text(encoding="utf-8"))
+        (self.dir / "kite_limits.json").write_text(json.dumps({**limits, "historical_rps": 1}), encoding="utf-8")
+        (self.dir / "candles.json").write_text(json.dumps({**good, "rps": "2"}), encoding="utf-8")
+        with self.assertRaisesRegex(loader.ConfigError, "historical_rps"):
+            loader.load_json("candles.json", self.dir)
+
+    def test_watchlist_json_is_checked(self):
+        """CW 2: whole numbers within bounds, decimal strings for the tolerance, no unknown or missing keys."""
+        good = json.loads((loader.CONFIG_DIR / "watchlist.json").read_text(encoding="utf-8"))
+        bad_cases = (
+            {"max_stocks": 0}, {"max_stocks": 501}, {"max_stocks": "50"}, {"max_stocks": True},
+            {"lookback_days": 0}, {"lookback_days": 3651}, {"min_history_days": 0},
+            {"min_history_days": 400, "lookback_days": 365},
+            {"basis_tolerance": 0.02}, {"basis_tolerance": "0"}, {"basis_tolerance": "0.5"}, {"basis_tolerance": "-0.01"},
+            {"alert_batch_s": 0}, {"alert_batch_s": 3601}, {"max_alert_emails_per_day": 0},
+            {"max_alert_emails_per_day": 101}, {"results_lead_trading_days": 0}, {"results_lead_trading_days": 11},
+            {"tap_frames": 7}, {"tap_frames": 100_001}, {"surprise": 1},
+            {"desk_watch_new_grades_per_night": -1}, {"desk_watch_new_grades_per_night": 501},
+            {"desk_watch_new_grades_per_night": "10"}, {"desk_watch_new_grades_per_night": True},
+        )
+        for change in bad_cases:
+            with self.subTest(change=change):
+                (self.dir / "watchlist.json").write_text(json.dumps({**good, **change}), encoding="utf-8")
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("watchlist.json", self.dir)
+        for key in good:
+            if key in ("schema", "note"):
+                continue
+            with self.subTest(missing=key):
+                (self.dir / "watchlist.json").write_text(
+                    json.dumps({k: v for k, v in good.items() if k != key}), encoding="utf-8")
+                with self.assertRaisesRegex(loader.ConfigError, f"{key} is missing"):
+                    loader.load_json("watchlist.json", self.dir)
+
+    def test_schedule_json_is_checked(self):
+        """CW 6: every job's keys and times are checked, candles and watch_results included, so a typo fails
+        `stockify config` and not the daemon's loop."""
+        import copy
+        good = json.loads((loader.CONFIG_DIR / "schedule.json").read_text(encoding="utf-8"))
+
+        def with_(path, value):
+            doc = copy.deepcopy(good)
+            node = doc
+            for k in path[:-1]:
+                node = node[k]
+            if value is KeyError:
+                del node[path[-1]]
+            else:
+                node[path[-1]] = value
+            return doc
+
+        bad = [
+            (("jobs", "candles", "start"), "16.40"), (("jobs", "candles", "start"), "25:00"),
+            (("jobs", "candles", "until"), "6:30pm"), (("jobs", "candles", "until"), KeyError),
+            (("jobs", "candles", "retry_every_min"), 0), (("jobs", "candles", "retry_every_min"), "15"),
+            (("jobs", "candles", "retry_every_mn"), 15), (("jobs", "candles"), "16:40"),
+            (("jobs", "watch_results", "start"), "21:0"), (("jobs", "watch_results", "retry_every_min"), True),
+            (("jobs", "watch_results"), {"begin": "21:00"}), (("jobs", "watch_results"), KeyError),
+            (("jobs", "desk", "until"), "24:00"), (("jobs", "refdata"), "8:30"), (("jobs", "refdata"), {"start": "08:30"}),
+            (("jobs", "backup"), 545), (("jobs", "day_end"), "23:59"), (("jobs", "day_endd"), "23:59:59"),
+            (("jobs", "token_dependent_retry", "every_min"), 0), (("jobs", "token_dependent_retry", "until"), "9am"),
+            (("keep_awake", "from"), "8:45"), (("sleep_after_close", "enabled"), "yes"),
+            (("sleep_after_close", "idle_minutes"), 0), (("sleep_after_close", "wake_ist"), "6"),
+            (("owner_tz",), "Nowhere/Land"), (("kite_login_window_ist", "from"), "06:00:00"),
+            (("login_reminders_ist",), "06:05"), (("login_reminders_ist",), ["06:05", "8"]),
+            (("surprise",), 1),
+        ]
+        for path, value in bad:
+            with self.subTest(path=path, value=value):
+                (self.dir / "schedule.json").write_text(json.dumps(with_(path, value)), encoding="utf-8")
+                with self.assertRaisesRegex(loader.ConfigError, "schedule.json"):
+                    loader.load_json("schedule.json", self.dir)
+        (self.dir / "schedule.json").write_text(json.dumps(good), encoding="utf-8")
+        self.assertEqual(loader.load_json("schedule.json", self.dir)["jobs"]["candles"]["start"], "16:40")
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")

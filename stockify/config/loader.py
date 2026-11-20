@@ -36,6 +36,7 @@ VERIFY = "VERIFY"
 
 # file name -> expected schema tag
 SCHEMAS = {
+    "watchlist.json": "stockify.watchlist/1",
     "universe.json": "stockify.universe/1",
     "charges.json": "stockify.charges/1",
     "sessions.json": "stockify.sessions/1",
@@ -53,6 +54,7 @@ SCHEMAS = {
     "research.json": "stockify.research/1",
     "paper.json": "stockify.paper/1",
     "fundamentals.json": "stockify.fundamentals/1",
+    "candles.json": "stockify.candles/1",
 }
 
 CSV_HEADERS = {
@@ -194,7 +196,8 @@ def _bounded_int(value, where: str, key: str) -> int:  # noqa: ANN001
 
 
 NOTIFY_CHANNELS = (None, "email")                  # email only (owner, 2026-11-11)
-NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary")
+NOTIFY_EVENTS = ("login_needed", "session_error", "parity_failure", "recorder_stall", "disk_low", "daily_summary",
+                 "watch_high_low", "watch_results")      # CW 3: the watchlist's 52-week alerts and results reminders
 
 
 def _check_notify(doc: dict) -> None:
@@ -446,6 +449,32 @@ def _check_research(doc: dict) -> None:
                           f"coverage.max_days ({maximum})")
 
 
+def _check_watchlist(doc: dict) -> None:
+    """watchlist.json (stockify.watchlist/1): every key present and none unknown; counts and seconds are whole
+    numbers within sanity bounds; `min_history_days` at most `lookback_days`; `basis_tolerance` a decimal string in
+    (0, 0.1]."""
+    bounds = {"max_stocks": (1, 500), "lookback_days": (1, 3650), "min_history_days": (1, 3650),
+              "alert_batch_s": (1, 3600), "max_alert_emails_per_day": (1, 100),
+              "results_lead_trading_days": (1, 10), "tap_frames": (8, 100_000),
+              "desk_watch_new_grades_per_night": (0, 500)}
+    keys = (*bounds, "basis_tolerance")
+    extra = set(doc) - set(keys) - {"schema", "note"}
+    if extra:
+        raise ConfigError(f"watchlist.json: unknown keys {sorted(extra)}; known: {list(keys)}")
+    for key in keys:
+        if key not in doc:
+            raise ConfigError(f"watchlist.json: {key} is missing")
+    for key, (low, high) in bounds.items():
+        v = doc[key]
+        if isinstance(v, bool) or not isinstance(v, int) or not low <= v <= high:
+            raise ConfigError(f"watchlist.json: {key} must be a whole number from {low} to {high}, got {v!r}")
+    if doc["min_history_days"] > doc["lookback_days"]:
+        raise ConfigError("watchlist.json: min_history_days must not exceed lookback_days")
+    tol = doc["basis_tolerance"]
+    if not isinstance(tol, str) or _SIGNED_DECIMAL.fullmatch(tol) is None or not 0 < Decimal(tol) <= Decimal("0.1"):
+        raise ConfigError(f"watchlist.json: basis_tolerance must be a decimal string in (0, 0.1], got {tol!r}")
+
+
 def _check_fundamentals(doc: dict) -> None:
     """fundamentals.json (stockify.fundamentals/1): every key present and none unknown; the list URLs and the API
     base are https on NSE's own hosts; counts are whole numbers within sanity bounds; `balances` (the test record's
@@ -530,6 +559,132 @@ def _check_fundamentals(doc: dict) -> None:
         nse_url(entry["warmup"], f"api.{name}.warmup", ("https://www.nseindia.com/",))
 
 
+CANDLES_KEYS = ("history_years", "rps", "rate_limit_backoff_s")
+CANDLES_BOUNDS = {"history_years": (1, 20), "rps": (0, 10), "backoff_s": (1, 600)}
+
+
+_HHMM = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+_HHMMSS = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]")
+# schedule.json jobs: a job is a bare "HH:MM" (`plain`), or {"start", "retry_every_min", "until"} where "until" is
+# required for the jobs whose window the scheduler reads (`windowed`)
+_SCHED_PLAIN = ("refdata", "subscribe", "unsubscribe", "compaction")
+_SCHED_EITHER = ("day_bundles", "finalise", "parity", "daily_summary", "watch_results", "backup")
+_SCHED_WINDOWED = ("candles", "nse_fetch", "margin_files", "desk", "fundamentals")
+
+
+def _check_schedule(doc: dict) -> None:
+    """schedule.json (stockify.schedule/1): the daemon's day. Every job present, none unknown; a time is "HH:MM" (the
+    day's end "HH:MM:SS"); a windowed job has start, retry_every_min (whole minutes from 1) and until, no other key;
+    the other jobs are a bare time or a dict with start and optionally retry_every_min; the rest of the file (login
+    window, reminders, sleep, keep_awake, owner_tz) is checked key by key. A typo fails here, not in the daemon's loop."""
+    def fail(msg: str) -> None:
+        raise ConfigError(f"schedule.json: {msg}")
+
+    def hhmm(v, where: str, pattern=_HHMM) -> None:  # noqa: ANN001
+        if not isinstance(v, str) or pattern.fullmatch(v) is None:
+            fail(f"{where} must be a time like \"16:40\", got {v!r}")
+
+    def whole(v, where: str, low: int, high: int) -> None:  # noqa: ANN001
+        if isinstance(v, bool) or not isinstance(v, int) or not low <= v <= high:
+            fail(f"{where} must be a whole number from {low} to {high}, got {v!r}")
+
+    def keys(d, where: str, required: tuple, optional: tuple = ()) -> None:  # noqa: ANN001
+        if not isinstance(d, dict):
+            fail(f"{where} must be an object")
+        extra = set(d) - set(required) - set(optional)
+        if extra:
+            fail(f"{where}: unknown keys {sorted(extra)}; known: {[*required, *optional]}")
+        for k in required:
+            if k not in d:
+                fail(f"{where}.{k} is missing")
+
+    top = ("jobs", "keep_awake", "sleep_after_close", "owner_tz", "kite_login_window_ist", "login_reminders_ist")
+    keys(doc, "the file", top, ("schema", "note"))
+    jobs = doc["jobs"]
+    keys(jobs, "jobs", (*_SCHED_PLAIN, *_SCHED_EITHER, *_SCHED_WINDOWED, "token_dependent_retry", "day_end"))
+    for name in _SCHED_PLAIN:
+        hhmm(jobs[name], f"jobs.{name}")
+    for name in _SCHED_EITHER:
+        spec = jobs[name]
+        if isinstance(spec, str):
+            hhmm(spec, f"jobs.{name}")
+            continue
+        keys(spec, f"jobs.{name}", ("start",), ("retry_every_min",))
+        hhmm(spec["start"], f"jobs.{name}.start")
+        if "retry_every_min" in spec:
+            whole(spec["retry_every_min"], f"jobs.{name}.retry_every_min", 1, 1440)
+    for name in _SCHED_WINDOWED:
+        spec = jobs[name]
+        keys(spec, f"jobs.{name}", ("start", "retry_every_min", "until"))
+        hhmm(spec["start"], f"jobs.{name}.start")
+        whole(spec["retry_every_min"], f"jobs.{name}.retry_every_min", 1, 1440)
+        hhmm(spec["until"], f"jobs.{name}.until")
+    keys(jobs["token_dependent_retry"], "jobs.token_dependent_retry", ("every_min", "until"))
+    whole(jobs["token_dependent_retry"]["every_min"], "jobs.token_dependent_retry.every_min", 1, 1440)
+    hhmm(jobs["token_dependent_retry"]["until"], "jobs.token_dependent_retry.until")
+    hhmm(jobs["day_end"], "jobs.day_end", _HHMMSS)
+    keys(doc["keep_awake"], "keep_awake", ("from",))
+    hhmm(doc["keep_awake"]["from"], "keep_awake.from")
+    sleep = doc["sleep_after_close"]
+    keys(sleep, "sleep_after_close", ("enabled", "mode", "not_before", "idle_minutes", "wake_ist"))
+    if not isinstance(sleep["enabled"], bool):
+        fail("sleep_after_close.enabled must be true or false")
+    if not isinstance(sleep["mode"], str) or not sleep["mode"]:
+        fail("sleep_after_close.mode must be a word")
+    hhmm(sleep["not_before"], "sleep_after_close.not_before")
+    hhmm(sleep["wake_ist"], "sleep_after_close.wake_ist")
+    whole(sleep["idle_minutes"], "sleep_after_close.idle_minutes", 1, 1440)
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(doc["owner_tz"])
+    except Exception:  # noqa: BLE001 — any lookup failure is the same plain message
+        fail(f"owner_tz must be a time zone name like \"America/Los_Angeles\", got {doc['owner_tz']!r}")
+    window = doc["kite_login_window_ist"]
+    keys(window, "kite_login_window_ist", ("from", "until"))
+    hhmm(window["from"], "kite_login_window_ist.from")
+    hhmm(window["until"], "kite_login_window_ist.until")
+    reminders = doc["login_reminders_ist"]
+    if not isinstance(reminders, list):
+        fail("login_reminders_ist must be a list of times")
+    for i, r in enumerate(reminders):
+        hhmm(r, f"login_reminders_ist[{i}]")
+
+
+def _check_candles(doc: dict, config_dir: Path | None = None) -> None:
+    """candles.json (stockify.candles/1, CW 1): every key present and none unknown (`note` allowed, a string);
+    `history_years` a whole number from 1 to 20; `rps` a decimal string above 0, at most 10 and at most
+    kite_limits.json `historical_rps` (Kite's historical limit, K-8; the file beside it, else the shipped one);
+    `rate_limit_backoff_s` a non-empty list of whole seconds from 1 to 600 that never shrinks."""
+    extra = set(doc) - set(CANDLES_KEYS) - {"schema", "note"}
+    if extra:
+        raise ConfigError(f"candles.json: unknown keys {sorted(extra)}; known: {list(CANDLES_KEYS)}")
+    for key in CANDLES_KEYS:
+        if key not in doc:
+            raise ConfigError(f"candles.json: {key} is missing")
+    if "note" in doc and not isinstance(doc["note"], str):
+        raise ConfigError(f"candles.json: note must be a string, got {doc['note']!r}")
+    low, high = CANDLES_BOUNDS["history_years"]
+    years = doc["history_years"]
+    if isinstance(years, bool) or not isinstance(years, int) or not low <= years <= high:
+        raise ConfigError(f"candles.json: history_years must be a whole number from {low} to {high}, got {years!r}")
+    rps = doc["rps"]
+    low, high = CANDLES_BOUNDS["rps"]
+    if not isinstance(rps, str) or _PLAIN_DECIMAL.fullmatch(rps) is None or not low < Decimal(rps) <= high:
+        raise ConfigError(f'candles.json: rps must be a decimal string above {low} and at most {high} such as "2", '
+                          f"got {rps!r}")
+    limits_dir = config_dir if config_dir is not None and (config_dir / "kite_limits.json").exists() else None
+    kite_rps = Decimal(str(load_json("kite_limits.json", limits_dir)["historical_rps"]))
+    if Decimal(rps) > kite_rps:
+        raise ConfigError(f"candles.json: rps {rps} is above kite_limits.json historical_rps {kite_rps} (K-8)")
+    waits = doc["rate_limit_backoff_s"]
+    low, high = CANDLES_BOUNDS["backoff_s"]
+    if (not isinstance(waits, list) or not waits
+            or not all(not isinstance(w, bool) and isinstance(w, int) and low <= w <= high for w in waits)
+            or any(b < a for a, b in zip(waits, waits[1:]))):
+        raise ConfigError(f"candles.json: rate_limit_backoff_s must be a non-empty list of whole seconds from {low} "
+                          f"to {high} that never shrinks, got {waits!r}")
+
+
 def load_json(name: str,config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
@@ -555,8 +710,14 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
         _check_research(doc)
     if name == "storage.json":
         _check_storage(doc)
+    if name == "watchlist.json":
+        _check_watchlist(doc)
     if name == "fundamentals.json":
         _check_fundamentals(doc)
+    if name == "candles.json":
+        _check_candles(doc, config_dir)
+    if name == "schedule.json":
+        _check_schedule(doc)
     return doc
 
 

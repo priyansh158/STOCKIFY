@@ -876,7 +876,7 @@ export interface RunChartDTO {
   plots: ChartPlotDTO[];
   truncated: boolean;
   next_from_ns: number | null;
-  data_state: "ok" | "pruned" | "no_pack" | "pack unreadable";
+  data_state: "ok" | "pruned" | "no_pack" | "pack unreadable" | "no_data";
   omitted_markers: number;
   notice: string | null;
   pnl_complete: boolean;
@@ -1021,6 +1021,8 @@ export interface DeskViewDTO {
   as_of_ns: number;
   close_date?: string | null;
   plain: string;
+  /** False for a watched stock that is not held: the page words it for a watchlist, not a holding. */
+  held?: boolean;
 }
 
 // Fundamentals screener (FS 9): the ordered list, one stock's details, the test record. No score, rank or place
@@ -1081,6 +1083,18 @@ export interface FilingDTO {
   reason?: string | null;
 }
 
+/** The stock's last close and 52-week range from its daily candles: facts only (null while a part is missing). */
+export interface PriceContextDTO {
+  last_close_paise?: number | null;
+  /** ISO day of that close. */
+  last_close_date?: string | null;
+  /** 52-week high and low, with the days they were made. */
+  high_paise?: number | null;
+  high_date?: string | null;
+  low_paise?: number | null;
+  low_date?: string | null;
+}
+
 export interface CandidateDetailDTO {
   symbol: string;
   company: string;
@@ -1093,6 +1107,8 @@ export interface CandidateDetailDTO {
   series: SeriesDTO[];
   filings: FilingDTO[];
   as_of?: string | null;
+  /** Null when the stock has no daily candles yet. */
+  price?: PriceContextDTO | null;
 }
 
 export interface FundamentalsTestRecordDTO {
@@ -1103,5 +1119,53 @@ export interface FundamentalsTestRecordDTO {
   plain?: Record<string, string> | null;
   benchmark?: string | null;
   notes: string[];
+}
+
+// ── Watchlist (CW 2) ─────────────────────────────────────────────────────────
+
+/** POST /api/watchlist: the NSE symbol to watch. */
+export interface WatchAddIn {
+  symbol: string;
+}
+
+/** One watched stock: its last close and its 52-week range from the daily candles (null while they are missing). */
+export interface WatchRowDTO {
+  symbol: string;
+  instrument_id: number;
+  /** Today's Kite token, for live prices; null when unknown. */
+  token?: number | null;
+  added_ns: number;
+  last_close_paise?: number | null;
+  /** ISO day of that close. */
+  last_close_date?: string | null;
+  /** 52-week high and low, with the days they were made. */
+  high_paise?: number | null;
+  high_date?: string | null;
+  low_paise?: number | null;
+  low_date?: string | null;
+  /** Plain words for why there is no 52-week range yet. */
+  note?: string | null;
+  /** The desk's verdict label at the last close; null while the desk has not graded the stock yet. */
+  desk_verdict?: string | null;
+  /** ISO day of the close that verdict is from. */
+  desk_close_date?: string | null;
+}
+
+export interface WatchlistDTO {
+  items: WatchRowDTO[];
+  max_stocks: number;
+}
+
+/** An alert the recorder raised on a watched stock. */
+export interface WatchAlertDTO {
+  symbol: string;
+  kind: "high52" | "low52" | "results";
+  /** The IST day of a 52-week cross, or the results meeting date. */
+  ref: string;
+  level_paise?: number | null;
+  prior_paise?: number | null;
+  prior_date?: string | null;
+  at_ns: number;
+  delivery: string;
 }
 // </block>

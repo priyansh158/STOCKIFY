@@ -28,12 +28,16 @@ from server.schemas import (
     FilingDTO,
     FundamentalsListDTO,
     FundamentalsTestRecordDTO,
+    PriceContextDTO,
     RatioDTO,
     ResultsDateDTO,
     SeriesDTO,
     WebJobDTO,
 )
+from server.services import charts
 from stockify import timeutil
+from stockify.config import loader
+from stockify.data import instruments
 from stockify.fundamentals import calendar, filings, ratios, screen, series, store
 
 log = logging.getLogger("stockify.fundamentals")
@@ -112,7 +116,8 @@ def fundamentals_list() -> FundamentalsListDTO:
     items = [CandidateDTO(position=n, symbol=r["symbol"], company=_company(r["symbol"], used, latest),
                           sector=r["sector"], short_reason=r["short_reason"]) for n, r in enumerate(shown, start=1)]
     upcoming = [ResultsDateDTO(symbol=m["symbol"], company=_company(m["symbol"], latest, used), date=m["meeting_date"],
-                               period_hint=m["period_hint"]) for m in calendar.upcoming(_today())]
+                               period_hint=m["period_hint"]) for m in calendar.upcoming(_today())
+                if any(u.get(m["symbol"], {}).get("liquid") for u in (used, latest))]   # CW 3: not the watchlist's
     held = sum(1 for s, u in used.items() if u["liquid"] and s not in listed)
     return FundamentalsListDTO(as_of=day, upcoming=upcoming, items=items, held_count=held,
                                not_listed_count=len(rows) - len(shown),
@@ -244,6 +249,27 @@ def _filing(f: dict) -> FilingDTO:
                      xbrl_url=url, status=f["status"], reason=f["reason"])
 
 
+def _price(sym: str) -> PriceContextDTO | None:
+    """The stock's last close and 52-week range from its daily candles (the watchlist's rule); None without candles.
+    It never fails the page: a read that goes wrong is no price context."""
+    try:
+        iid = instruments.find("NSE", sym)
+        rows = charts.stock_rows(iid) if iid is not None else []
+        if not rows:
+            return None
+        last, rng = charts.stock_range(rows, _today(), loader.load_json("watchlist.json"))
+    except Exception as e:  # noqa: BLE001
+        log.info("fundamentals: no price context for %s (%s)", sym, type(e).__name__)
+        return None
+    d: dict = {}
+    if last:
+        d.update(last_close_paise=last[0], last_close_date=last[1])
+    if rng:
+        d.update(high_paise=rng["high_paise"], high_date=rng["high_date"], low_paise=rng["low_paise"],
+                 low_date=rng["low_date"])
+    return PriceContextDTO(**d)
+
+
 @router.get("/{symbol}", response_model=CandidateDetailDTO)
 def fundamentals_detail(symbol: str) -> CandidateDetailDTO:
     if not _SYMBOL.match(symbol):
@@ -275,4 +301,4 @@ def fundamentals_detail(symbol: str) -> CandidateDetailDTO:
                               left_out_reason=reason, listed=any(r["symbol"] == sym for r in _shown(rows)),
                               reasons=reasons, ratios=table,
                               series=[SeriesDTO(**s) for s in points], filings=[_filing(f) for f in shown],
-                              as_of=day_iso)
+                              as_of=day_iso, price=_price(sym))

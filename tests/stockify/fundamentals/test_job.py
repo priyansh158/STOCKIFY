@@ -133,6 +133,12 @@ class DailyRunTests(JobCase):
         job.run(TUE, client=self.client)                            # listed today: a retry does not ask again
         self.assertNotIn("list", self.names())
 
+    def test_a_watched_stock_outside_the_universe_is_never_a_meeting_to_list(self):
+        """CW 3: the results calendar also holds the watchlist's stocks; the screener reads only its universe's."""
+        self.meeting("ALPHA", TUE - timedelta(days=1))
+        self.meeting("WATCHED", TUE - timedelta(days=1))
+        self.assertEqual(job._met_without_filing(TUE, within={"ALPHA"}), {"ALPHA"})
+
     def test_every_symbol_is_listed_once_a_week_spread_over_the_weekdays(self):
         """R12: each company is re-listed on its own weekday (a stable split by symbol), so a week's listings are
         spread over Monday to Friday instead of all on one day."""
@@ -794,17 +800,17 @@ class CliTests(unittest.TestCase):
         import kite_client
         from stockify.fundamentals import test_record
 
-        def run(*, fetch, **kw):  # noqa: ANN001, ANN003, ANN202
-            fetch(7, "day", date(2022, 1, 1), date(2026, 7, 31), client=None)
+        def run(*, top_up, **kw):  # noqa: ANN001, ANN003, ANN202
+            top_up(7, date(2026, 7, 31), years=6, client=None)
             return {"job_id": "wf1", "family_id": "walkforward/wf1", "start": "2022-01-01", "end": "2026-07-31",
                     "symbols": ["ALPHA"], "missing": [], "benchmark": {"label": "price index"}}
-        stats = mock.MagicMock(outcome="ok", rows=10)
+        res = test_record.bars_history.TopUp(requests=2)
         with mock.patch.object(kite_client, "is_authenticated", return_value=True), \
                 mock.patch.object(test_record, "run", run), \
-                mock.patch.object(test_record.bars_history, "fetch", return_value=stats):
+                mock.patch.object(test_record.bars_history, "top_up_daily", return_value=res):
             code, out, _ = self.run_cli(["fundamentals", "test-record"])
         self.assertEqual(code, 0)
-        self.assertIn("bars 1", out)
+        self.assertIn("bars 1: instrument 7 ok, 2 Kite requests", out)
         self.assertIn("wf1", out)
 
 

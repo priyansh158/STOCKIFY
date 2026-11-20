@@ -3,8 +3,8 @@
 `run(day)` reads the holdings (`portfolio_sync.fetch_snapshot`, the app's existing Kite path), keeps the NSE
 equities and ETFs with at least a year of daily bars, and for each one:
 
-1. tops up the bar cache to six years of daily bars (`history.fetch`, rate-limited; a history already fetched that
-   far back is fetched only from its last cached bar, and a split or bonus refetch takes the six years again);
+1. tops up the bar cache to six years of daily bars (`history.top_up_daily`, rate-limited; a history already fetched
+   that far back is fetched only from its last cached bar, and a split or bonus refetch takes the six years again);
 2. grades the voting strategies on it (`evidence.run_for`, which stores its own evidence rows), unless nothing the
    grades rest on has changed since its latest rows: the same first bar, the same last bar up to the evidence
    end, the same evidence end (the holdout pins it, so this saves the backtests nearly every night), the same
@@ -16,8 +16,17 @@ equities and ETFs with at least a year of daily bars, and for each one:
 
 The others are listed with a reason: "BSE only", "not an NSE stock (e.g. SGB)", "less than a year of daily prices".
 No Kite login: one log line and `logged_in` False, so the daemon tries again later. One holding's trouble is
-logged and listed under `failed`; the others carry on. `deadline_ns` (checked before the holdings call and between
-holdings) stops the run before the next session's preparation; what is left is not `complete`, and runs on a later pass.
+logged and listed under `failed`; the others carry on. `deadline_ns` (checked before the holdings call, between
+holdings, and by the bar top-up between its chunks) stops the run before the next session's preparation; what is left
+is not `complete`, and runs on a later pass.
+
+Watched stocks (CW 6): after the holdings, the same deadline, a second pass over the watchlist's stocks that are not
+held (`stockify.watchlist.store.rows`; an unreadable list is logged and skipped). Each gets the same bars (the top-up
+is skipped when the nightly candles already ran: `daily_candles.up_to_date`), grades and closing view, so the
+watchlist page and `/api/desk/{symbol}` can show its verdict. At most watchlist.json
+`desk_watch_new_grades_per_night` stocks are graded for the first time in one night (the rest wait for the next
+night); a stock already graded is brought up to date without counting. The pass never changes the holdings' results,
+and its trouble is listed under `watch.failed` without failing the run. Holdings always come first.
 
 Money paise, time UTC epoch ns; Kite's float rupees never enter (the holding's prices are not used).
 """
@@ -31,7 +40,7 @@ from datetime import date, timedelta
 import portfolio_sync
 from stockify import strategy as S
 from stockify import timeutil
-from stockify.data import history, instruments
+from stockify.data import daily_candles, history, instruments
 from stockify.desk import evidence, replay, store, thesis
 
 log = logging.getLogger("stockify.desk")
@@ -45,16 +54,9 @@ NOT_NSE_STOCK = "not an NSE stock (e.g. SGB)"
 SHORT_HISTORY = "less than a year of daily prices"
 
 
-def _years_before(day: date, years: int) -> date:
-    try:
-        return day.replace(year=day.year - years)
-    except ValueError:                  # 29 February
-        return day.replace(year=day.year - years, day=28)
-
-
 def _is_government_security(h) -> bool:  # noqa: ANN001
     """Sovereign gold bonds and other government securities: NSE lists them, but they are not stocks."""
-    return h.tradingsymbol.upper().startswith("SGB") or (h.isin or "").upper().startswith("IN00")
+    return instruments.is_government_security(h.tradingsymbol, h.isin)
 
 
 def resolve(h, day: date) -> tuple[int | None, str | None]:  # noqa: ANN001
@@ -82,27 +84,24 @@ def has_a_year(bars: list[S.Bar], day: date) -> bool:
 
 # ── bars ─────────────────────────────────────────────────────────────────────
 
-def _fetched_back_to(instrument_id: int, from_day: date) -> bool:
-    """True when the bar cache's fetch log has a daily fetch starting at or before `from_day`."""
-    row = history._connect().execute(
-        "SELECT 1 FROM bar_fetch_log WHERE instrument_id=? AND interval='day' AND from_ns<=? LIMIT 1",
-        (int(instrument_id), timeutil.ist_ns(from_day, "00:00"))).fetchone()
-    return row is not None
+class _Stopped(Exception):
+    """The bar top-up reached the deadline between its chunks: the run stops, and the rest runs later. `refetched`
+    keeps whether a split or bonus refetch happened first (the next pass regrades from the adjustment row)."""
+
+    def __init__(self, refetched: bool = False):
+        super().__init__("stopped at the deadline")
+        self.refetched = refetched
 
 
-def ensure_bars(instrument_id: int, day: date, *, client=None) -> bool:  # noqa: ANN001
-    """Six years of daily bars up to `day` in the cache; only what is missing is asked for. True when the history
-    was refetched for a split or bonus (so the grades must be remade)."""
-    from_day = _years_before(day, HISTORY_YEARS)
-    cached = replay.daily_bars(instrument_id)
-    start = from_day
-    if cached and _fetched_back_to(instrument_id, from_day):
-        start = min(day, timeutil.ns_to_ist(cached[-1].start_ns).date())
-    stats = history.fetch(instrument_id, "day", start, day, client=client, today=day)
-    refetched = getattr(stats, "adjustment", None) == "refetched"
-    if refetched and start != from_day:                          # the cache was cleared: the six years again
-        history.fetch(instrument_id, "day", from_day, day, client=client, today=day, check_adjustments=False)
-    return refetched
+def ensure_bars(instrument_id: int, day: date, *, client=None, deadline_ns: int | None = None) -> bool:  # noqa: ANN001
+    """Six years of daily bars up to `day` in the cache (`history.top_up_daily`); only what is missing is asked for.
+    True when the history was refetched for a split or bonus (so the grades must be remade). A stop at
+    `deadline_ns` inside the top-up raises `_Stopped`, so nothing is graded on a part-fetched history."""
+    res = history.top_up_daily(instrument_id, day, years=HISTORY_YEARS, client=client, deadline_ns=deadline_ns,
+                               today=day)
+    if res.outcome == "stopped":
+        raise _Stopped(res.refetched)
+    return res.refetched
 
 
 # ── grades ───────────────────────────────────────────────────────────────────
@@ -158,25 +157,118 @@ def closing_view(instrument_id: int, symbol: str, bars: list[S.Bar], rows: list[
 
 # ── the job ──────────────────────────────────────────────────────────────────
 
-def _one(h, iid: int, day: date, client, now: Callable[[], int]) -> str | None:  # noqa: ANN001
-    """Bars, grades and the closing view of one resolved holding; a skip reason, or None when the view is stored."""
-    refetched = ensure_bars(iid, day, client=client)
+def _adjusted_since_grades(instrument_id: int) -> bool:
+    """True when a split or bonus refetch was recorded on or after the day of the stored grades: a pass whose refill
+    stopped at the deadline did not regrade, and the next pass's top-up finds no new adjustment. Known cost, for that
+    stock only: a refetch recorded on day D also remakes the grades on D's later passes and once more on D + 1 (the
+    grades made on D carry D's date, which is not after the adjustment's); from then on the grades are newer.)"""
+    stored = store.latest_evidence(instrument_id)
+    if not stored:
+        return False
+    graded = max(r["trade_date"] for r in stored)
+    return any(a["action"] == "refetched" and a["detected_on"] >= graded for a in history.adjustments(instrument_id))
+
+
+def _one(h, iid: int, day: date, client, now: Callable[[], int],  # noqa: ANN001
+         deadline_ns: int | None = None) -> tuple[str | None, bool]:
+    """Bars, grades and the closing view of one resolved holding: (a skip reason, or None when the view is stored;
+    whether its history was refetched)."""
+    refetched = ensure_bars(iid, day, client=client, deadline_ns=deadline_ns)
     bars = replay.daily_bars(iid, until_ns=timeutil.ist_ns(day, "00:00"))
     if not has_a_year(bars, day):
-        return SHORT_HISTORY
+        return SHORT_HISTORY, refetched
     symbol = (instruments.get(iid) or {}).get("tradingsymbol") or h.tradingsymbol
-    rows = grades_for(iid, symbol, day, force=refetched)
+    rows = grades_for(iid, symbol, day, force=refetched or _adjusted_since_grades(iid))
     label, view = closing_view(iid, symbol, bars, rows)
     store.put_view(day.isoformat(), iid, symbol, label, view, now())
-    return None
+    return None, refetched
+
+
+def _watch_settings() -> int:
+    from stockify.config import loader
+    return int(loader.load_json("watchlist.json")["desk_watch_new_grades_per_night"])
+
+
+def _watch_one(row: dict, day: date, client, now: Callable[[], int], deadline_ns: int | None,  # noqa: ANN001
+               first_allowed: bool) -> tuple[str, bool]:
+    """One watched stock's bars, grades and closing view: ("analysed" | "deferred" | a skip reason, whether it was a
+    first grading). A stock whose candles are up to date is not asked of Kite again. `first_allowed` False defers a
+    stock the desk has not graded before (the nightly cap)."""
+    iid = int(row["instrument_id"])
+    info = instruments.get(iid)
+    if info is None or info.get("exchange") != "NSE" or info.get("kind") not in instruments.STOCK_KINDS:
+        return NOT_NSE_STOCK, False
+    symbol = info.get("tradingsymbol") or row["symbol"]
+    first = store.latest_view(iid) is None
+    if first and not first_allowed:
+        return "deferred", False
+    refetched = False
+    if not daily_candles.up_to_date(iid, day):
+        refetched = ensure_bars(iid, day, client=client, deadline_ns=deadline_ns)
+    bars = replay.daily_bars(iid, until_ns=timeutil.ist_ns(day, "00:00"))
+    if not has_a_year(bars, day):
+        return SHORT_HISTORY, False
+    rows = grades_for(iid, symbol, day, force=refetched or _adjusted_since_grades(iid))
+    label, view = closing_view(iid, symbol, bars, rows)
+    view["source"] = "watch"            # not a holding's view: the logged-out holdings list leaves it out
+    store.put_view(day.isoformat(), iid, symbol, label, view, now())
+    return "analysed", first
+
+
+def _watch_pass(day: date, held: set[int], held_symbols: set[str], client, now: Callable[[], int],  # noqa: ANN001
+                deadline_ns: int | None) -> tuple[dict, bool]:
+    """The watchlist pass (see the module doc): (its result {watched, analysed, deferred, skipped, failed}, whether
+    the deadline stopped it). Never raises: a watchlist that cannot be read gives an empty result."""
+    out: dict = {"watched": 0, "analysed": 0, "deferred": [], "skipped": [], "failed": [], "stopped": None}
+    try:
+        from stockify.watchlist import store as watch_store
+        cap = _watch_settings()
+        if cap == 0:                                # 0 turns the watchlist pass off (watchlist.json's note)
+            return out, False
+        rows = [r for r in watch_store.rows()
+                if int(r["instrument_id"]) not in held and str(r["symbol"]).upper() not in held_symbols]
+    except Exception as e:  # noqa: BLE001 — a watchlist trouble never costs the desk its holdings
+        log.warning("desk for %s: the watchlist could not be read (%s: %s); its stocks are not graded tonight",
+                    day, type(e).__name__, e)
+        return out, False
+    out["watched"] = len(rows)
+    new = 0
+    for r in rows:
+        if deadline_ns is not None and now() >= deadline_ns:
+            log.info("desk for %s: stopping the watchlist before the next session; the rest runs later", day)
+            return out, True
+        try:
+            what, first = _watch_one(r, day, client, now, deadline_ns, new < cap)
+        except _Stopped:
+            log.info("desk for %s: stopping the watchlist before the next session; the rest runs later", day)
+            return out, True
+        except Exception as e:  # noqa: BLE001 — one watched stock's trouble never stops the others
+            if daily_candles.login_failed(e):       # the login ended: asking again fails every stock the same way
+                log.info("desk for %s: the Kite login stopped working during the watchlist; the rest runs later", day)
+                out["stopped"] = "login"
+                return out, True
+            log.exception("desk for %s: watched stock %s failed", day, r["symbol"])
+            out["failed"].append({"symbol": r["symbol"], "error": f"{type(e).__name__}: {e}"})
+            continue
+        if what == "analysed":
+            out["analysed"] += 1
+            new += first
+        elif what == "deferred":
+            out["deferred"].append(r["symbol"])
+        else:
+            out["skipped"].append({"symbol": r["symbol"], "reason": what})
+    return out, False
 
 
 def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN001
         now: Callable[[], int] | None = None) -> dict:
     """The nightly desk run for IST trade date `day`. Returns {holdings, analysed, skipped [{symbol, reason}],
-    failed [{symbol, error}], complete, logged_in}; `complete` when every holding was analysed or skipped."""
+    failed [{symbol, error}], refetched [symbols whose history a split or bonus refetch replaced], watch {watched,
+    analysed, deferred [symbols], skipped, failed, stopped None | "login"} (None when the holdings pass stopped first), complete, logged_in};
+    `complete` when every holding was analysed or skipped and the watchlist pass was not cut short by the deadline."""
     now = now or timeutil.now_ns
-    out: dict = {"holdings": 0, "analysed": 0, "skipped": [], "failed": [], "complete": False, "logged_in": True}
+    out: dict = {"holdings": 0, "analysed": 0, "skipped": [], "failed": [], "refetched": [], "complete": False,
+                 "logged_in": True, "watch": None}
     if deadline_ns is not None and now() >= deadline_ns:            # past it: not even the holdings call
         log.info("desk for %s: too close to the next session; runs later", day)
         return out
@@ -190,15 +282,28 @@ def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN0
         client = kite_readonly.client()
     out["holdings"] = len(snap.holdings)
     stopped = False
+    held: set[int] = set()
+    held_symbols: set[str] = set()
     for h in snap.holdings:
+        held_symbols.add(h.tradingsymbol.upper())
         if deadline_ns is not None and now() >= deadline_ns:
             log.info("desk for %s: stopping before the next session; the rest runs later", day)
             stopped = True
             break
         try:
             iid, reason = resolve(h, day)           # inside the try: a lookup that raises fails this holding only
+            if iid is not None:
+                held.add(iid)
             if reason is None:
-                reason = _one(h, iid, day, client, now)
+                reason, refetched = _one(h, iid, day, client, now, deadline_ns)
+                if refetched:
+                    out["refetched"].append(h.tradingsymbol)
+        except _Stopped as e:
+            if e.refetched:
+                out["refetched"].append(h.tradingsymbol)
+            log.info("desk for %s: stopping before the next session; the rest runs later", day)
+            stopped = True
+            break
         except Exception as e:  # noqa: BLE001 — one holding's trouble never stops the others
             log.exception("desk for %s: %s failed", day, h.tradingsymbol)
             out["failed"].append({"symbol": h.tradingsymbol, "error": f"{type(e).__name__}: {e}"})
@@ -207,5 +312,7 @@ def run(day: date, *, client=None, deadline_ns: int | None = None,  # noqa: ANN0
             out["analysed"] += 1
         else:
             out["skipped"].append({"symbol": h.tradingsymbol, "reason": reason})
+    if not stopped:                                 # the watchlist comes after every holding, on the same deadline
+        out["watch"], stopped = _watch_pass(day, held, held_symbols, client, now, deadline_ns)
     out["complete"] = not stopped and not out["failed"]
     return out

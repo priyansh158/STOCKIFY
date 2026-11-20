@@ -276,8 +276,12 @@ class FetchStats:
     chunks: int = 0
     requests: int = 0
     adjustment: str | None = None          # refetched | flagged_only
-    outcome: str = "ok"                    # ok | no_token | error
+    outcome: str = "ok"                    # ok | no_token | stopped (the deadline came between chunks) | error
     detail: str = ""
+
+
+class _DeadlineReached(Exception):
+    """The caller's deadline passed while waiting for the bucket: the request is not sent."""
 
 
 def _client():  # noqa: ANN202
@@ -287,8 +291,10 @@ def _client():  # noqa: ANN202
 
 
 def _call(client, token: int, from_ns: int, to_ns: int, interval: str, *, continuous: bool,  # noqa: ANN001
-          stats: FetchStats, bkt: TokenBucket) -> list[dict]:
+          stats: FetchStats, bkt: TokenBucket, deadline_ns: int | None = None) -> list[dict]:
     bkt.acquire()
+    if deadline_ns is not None and bkt.clock.now_ns() >= deadline_ns:
+        raise _DeadlineReached
     stats.requests += 1
     return client.historical_data(token, _ist_dt(from_ns), _ist_dt(to_ns), interval,
                                   continuous=continuous, oi=True) or []
@@ -313,14 +319,35 @@ def _chunks(from_ns: int, to_ns: int, days: int) -> list[tuple[int, int]]:
     return out
 
 
+def _past(clock, deadline_ns: int | None) -> bool:  # noqa: ANN001
+    return deadline_ns is not None and clock.now_ns() >= deadline_ns
+
+
+def _stop(stats: FetchStats) -> None:
+    stats.outcome = "stopped"
+    stats.detail = (f"stopped at the deadline after {stats.chunks} chunk(s); the fetch log covers only what was "
+                    f"stored, so a later top-up asks for the rest")
+
+
 def _fetch_range(client, iid: int, token: int, interval: str, from_ns: int, to_ns: int, *,  # noqa: ANN001
                  continuous: bool, stats: FetchStats, bkt: TokenBucket, fetched_on: str, cfg: dict,
-                 now_ns: int) -> None:
+                 clock, deadline_ns: int | None = None) -> None:
+    """Fetch [from_ns, to_ns] in chunks, oldest first; each chunk's bars and its fetch-log row are one transaction,
+    stamped with `clock`'s time when stored. `deadline_ns` (on the bucket's clock) is checked before each chunk and
+    again after the bucket's wait: past it nothing more is asked and `stats.outcome` is "stopped". The cache stays
+    consistent: the log names only the stored chunks, so a later top-up asks for the rest."""
     pending = _chunks(from_ns, to_ns, max_days(interval, cfg))
     while pending:
+        if _past(bkt.clock, deadline_ns):
+            _stop(stats)
+            return
         a, b = pending.pop(0)
         try:
-            rows = _call(client, token, a, b, interval, continuous=continuous, stats=stats, bkt=bkt)
+            rows = _call(client, token, a, b, interval, continuous=continuous, stats=stats, bkt=bkt,
+                         deadline_ns=deadline_ns)
+        except _DeadlineReached:
+            _stop(stats)
+            return
         except Exception as e:
             if _is_range_error(e):
                 span_days = max(1, -(-(b - a + 1) // DAY_NS))
@@ -335,7 +362,7 @@ def _fetch_range(client, iid: int, token: int, interval: str, from_ns: int, to_n
         with _Tx() as conn:
             n = _store(conn, iid, interval, rows, fetched_on)
             conn.execute("INSERT INTO bar_fetch_log VALUES (?, ?, ?, ?, ?, ?, 'ok')",
-                         (iid, interval, a, b, n, now_ns))
+                         (iid, interval, a, b, n, clock.now_ns()))
         stats.rows += n
 
 
@@ -384,21 +411,29 @@ def _check_adjustment(client, iid: int, token: int | None, *, interval: str, tod
 
 
 def fetch(instrument_id: int, interval: str, from_day: date, to_day: date, *, client=None, clock=None,  # noqa: ANN001
-          today: date | None = None, check_adjustments: bool = True) -> FetchStats:
-    """Cache bars for one instrument over [from_day, to_day] (IST dates, inclusive)."""
+          today: date | None = None, check_adjustments: bool = True, bkt: TokenBucket | None = None,
+          deadline_ns: int | None = None) -> FetchStats:
+    """Cache bars for one instrument over [from_day, to_day] (IST dates, inclusive). `bkt` is the caller's own
+    bucket (default: the process-wide one, or one at `historical_rps` on `clock`); `deadline_ns`, on the bucket's
+    clock, is checked before anything is asked and between chunks, and a stop is `outcome` "stopped"."""
     from stockify.data import instruments
     if interval not in INTERVALS:
         raise HistoryError(f"unknown interval {interval!r}; choose from {', '.join(INTERVALS)}")
     cfg = limits()
     today = today or timeutil.ist_today()
-    bkt = bucket(clock) if clock is None else TokenBucket(cfg["historical_rps"], clock)
-    client = client or _client()
+    if bkt is None:
+        bkt = bucket(clock) if clock is None else TokenBucket(cfg["historical_rps"], clock)
+    clk = clock or bkt.clock
     stats = FetchStats(instrument_id, interval)
     info = instruments.get(instrument_id)
     if info is None:
         raise HistoryError(f"unknown instrument {instrument_id}")
     if info["kind"] == "FUT_CONT":
         raise HistoryError("use fetch_continuous for continuous futures")
+    if _past(bkt.clock, deadline_ns):
+        _stop(stats)
+        return stats
+    client = client or _client()
     token = instruments.token_at(instrument_id, today)
     if check_adjustments:
         stats.adjustment = _check_adjustment(client, instrument_id, token, interval=interval, today=today,
@@ -407,11 +442,81 @@ def fetch(instrument_id: int, interval: str, from_day: date, to_day: date, *, cl
         # K-5: no Kite history for expired contracts; their minute data cannot come back.
         stats.outcome, stats.detail = "no_token", "no current Kite token (expired or delisted); use bhavcopy"
         return stats
-    clk = clock or bkt.clock
     _fetch_range(client, instrument_id, token, interval, timeutil.ist_ns(from_day, "00:00"),
                  timeutil.ist_ns(to_day, "23:59") + 59 * SEC, continuous=False, stats=stats, bkt=bkt,
-                 fetched_on=today.isoformat(), cfg=cfg, now_ns=clk.now_ns())
+                 fetched_on=today.isoformat(), cfg=cfg, clock=clk, deadline_ns=deadline_ns)
     return stats
+
+
+# ── Daily top-up (CW 1.2, moved from the desk's nightly job) ─────────────────
+
+@dataclass
+class TopUp:
+    """What `top_up_daily` did: `refetched` when a split or bonus wiped the cache and the years were fetched again,
+    `requests` sent to Kite, and `outcome` ok | no_token | stopped (the deadline came first)."""
+    refetched: bool = False
+    requests: int = 0
+    outcome: str = "ok"
+    detail: str = ""
+
+
+def years_before(day: date, years: int) -> date:
+    try:
+        return day.replace(year=day.year - years)
+    except ValueError:                  # 29 February
+        return day.replace(year=day.year - years, day=28)
+
+
+def fetched_back_to(instrument_id: int, from_day: date) -> bool:
+    """True when the bar cache's fetch log has a daily fetch starting at or before `from_day`."""
+    row = _connect().execute(
+        "SELECT 1 FROM bar_fetch_log WHERE instrument_id=? AND interval='day' AND from_ns<=? LIMIT 1",
+        (int(instrument_id), timeutil.ist_ns(from_day, "00:00"))).fetchone()
+    return row is not None
+
+
+def last_daily_bar_day(instrument_id: int) -> date | None:
+    """The IST date of the newest cached daily bar, or None."""
+    ts = _connect().execute("SELECT MAX(ts_ns) FROM bars WHERE instrument_id=? AND interval='day'",
+                            (int(instrument_id),)).fetchone()[0]
+    return None if ts is None else timeutil.ns_to_ist(int(ts)).date()
+
+
+def _clear_daily(instrument_id: int) -> None:
+    with _Tx() as conn:
+        conn.execute("DELETE FROM bars WHERE instrument_id=? AND interval='day'", (int(instrument_id),))
+        conn.execute("DELETE FROM bar_fetch_log WHERE instrument_id=? AND interval='day'", (int(instrument_id),))
+
+
+def top_up_daily(instrument_id: int, day: date, *, years: int, client, bkt: TokenBucket | None = None,  # noqa: ANN001
+                 deadline_ns: int | None = None, today: date | None = None) -> TopUp:
+    """`years` of daily candles up to `day` (the range's last IST date) in the cache; only what is missing is asked
+    for. A history already fetched back to the range's first day, or further, is fetched from its last cached bar on
+    (at most `day`; an earlier provisional close is replaced). A split or bonus refetch (C-5) takes the years again:
+    the cache is cleared once more before that refill, so it always starts at the first day with no hole, and a refill
+    cut short (the deadline, a 429, an error) is finished by the next top-up; a cache that reached past `day` is
+    refilled through `today`, not cut at `day`. `today` (default the IST today) picks
+    the Kite token and stamps the bars, apart from `day`. `bkt` and `deadline_ns` go to `fetch`."""
+    today = today or timeutil.ist_today()
+    from_day = years_before(day, years)
+    last = last_daily_bar_day(instrument_id)
+    start = from_day
+    if last is not None and fetched_back_to(instrument_id, from_day):
+        start = min(day, last)
+    stats = fetch(instrument_id, "day", start, day, client=client, today=today, bkt=bkt, deadline_ns=deadline_ns)
+    out = TopUp(refetched=getattr(stats, "adjustment", None) == "refetched",
+                requests=int(getattr(stats, "requests", 0) or 0), outcome=getattr(stats, "outcome", "ok"),
+                detail=getattr(stats, "detail", ""))
+    # A cache that reached past `day` (the nightly candles, for a top-up to an earlier end) is refilled through today,
+    # so the wipe does not cut it short at `day`.
+    refill_to = max(day, today) if last is not None and last > day else day
+    if out.refetched and out.outcome == "ok" and (start != from_day or refill_to != day):   # cleared: the years again
+        _clear_daily(instrument_id)              # drop the short range just stored, so a cut refill leaves no hole
+        again = fetch(instrument_id, "day", from_day, refill_to, client=client, today=today, check_adjustments=False,
+                      bkt=bkt, deadline_ns=deadline_ns)
+        out.requests += int(getattr(again, "requests", 0) or 0)
+        out.outcome, out.detail = getattr(again, "outcome", "ok"), getattr(again, "detail", "")
+    return out
 
 
 def continuous_instrument(underlying: str, today: date) -> int:
@@ -456,7 +561,7 @@ def fetch_continuous(underlying: str, from_day: date, to_day: date, *, client=No
     clk = clock or bkt.clock
     _fetch_range(client, iid, token, "day", timeutil.ist_ns(from_day, "00:00"),
                  timeutil.ist_ns(to_day, "23:59") + 59 * SEC, continuous=True, stats=stats, bkt=bkt,
-                 fetched_on=today.isoformat(), cfg=cfg, now_ns=clk.now_ns())
+                 fetched_on=today.isoformat(), cfg=cfg, clock=clk)
     return stats
 
 

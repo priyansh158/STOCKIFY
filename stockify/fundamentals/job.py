@@ -192,14 +192,17 @@ def relist_weekday(symbol: str) -> int:
     return int(hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:8], 16) % RELIST_WEEKDAYS
 
 
-def _met_without_filing(day: date) -> set[str]:
-    """Companies with a results meeting from `day` - LOOKBACK_DAYS to `day` and no filing broadcast on or after it."""
+def _met_without_filing(day: date, *, within: set[str] | None = None) -> set[str]:
+    """Companies with a results meeting from `day` - LOOKBACK_DAYS to `day` and no filing broadcast on or after it,
+    among `within` when given (the calendar also holds the watchlist's stocks, CW 3)."""
     conn = store._connect()
     meetings = conn.execute(
         "SELECT symbol, MAX(meeting_date) FROM results_calendar WHERE meeting_date >= ? AND meeting_date <= ? "
         "GROUP BY symbol", ((day - timedelta(days=LOOKBACK_DAYS)).isoformat(), day.isoformat())).fetchall()
     out = set()
     for symbol, met in meetings:
+        if within is not None and symbol not in within:
+            continue
         newest = conn.execute("SELECT MAX(broadcast_ns) FROM filings WHERE symbol = ?", (symbol,)).fetchone()[0]
         if newest is None or timeutil.ns_to_ist(newest).date().isoformat() < met:
             out.add(symbol)
@@ -212,7 +215,7 @@ def due_symbols(day: date, symbols: list[str]) -> list[str]:
     not among them (they are the backfill's)."""
     listed = _listed_all()
     known = [s for s in symbols if s in listed and listed[s] < day]          # listed today already: a retry
-    met = sorted(set(known) & _met_without_filing(day))
+    met = sorted(set(known) & _met_without_filing(day, within=set(symbols)))
 
     def weekly(s: str) -> bool:
         age = (day - listed[s]).days

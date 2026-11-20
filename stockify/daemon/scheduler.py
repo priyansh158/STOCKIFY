@@ -9,6 +9,7 @@ trade date and are skipped on non-trading days:
 | refdata     | 08:30, retry until 09:10  | needs a fresh Kite login                     |
 | session     | subscribe 08:58 → 15:45   | the recorder (`run_recorder`)                |
 | compaction  | 16:30                     | must finish before sleeping (M1.7)           |
+| candles     | 16:40 → 18:30, retry 15 min | catch-up; after compaction; held during the session; holds sleep until done or 18:30; nightly daily candles (CW 1) |
 | nse_fetch   | 19:30 → 23:00             | catch-up: runs on the next wake if slept through (M1.3) |
 | margin_files | 17:20 → 22:00            | SPAN + ELM files (CAM 4.2); holds sleep until done or 22:00 |
 | prune       | after the session         | recorder_status rows older than 7 days       |
@@ -18,6 +19,7 @@ trade date and are skipped on non-trading days:
 | daily_summary | 19:50, retry 15 min     | catch-up; after finalise; waits for every session of the day |
 | desk        | 20:10 → 23:30, retry 30 min | catch-up; after nse_fetch; held during the session; the holdings desk (HD 8) |
 | fundamentals | 20:40 → 23:30, retry 30 min | catch-up; after nse_fetch; held during the session; the screener (FS 8) |
+| watch_results | 21:00, retry 30 min    | catch-up; after fundamentals; NOT held during the session; the watchlist's results reminder (CW 3) |
 | backup      | 05:45                     | catch-up on every wake; the latest trading day owes one; a null target is a skip |
 
 Completed jobs are remembered in `$LAB/scheduler_state.json` so a restart or a
@@ -26,11 +28,13 @@ resume from hibernate runs what was missed, once.
 Sleep after close (`schedule.json` → `sleep_after_close`): allowed once the
 session and compaction are done, not before `not_before`, not while the owner
 used the laptop in the last `idle_minutes`, and not when `$LAB/stay_awake`
-exists. Catch-up jobs never block sleep, with one exception: the day's
-margin files (`HOLDS_SLEEP_UNTIL_WINDOW_ENDS`) hold it until they are archived
-or their window ends (22:00), so they are fetched the same evening and retried
-every `retry_every_min`, not once the next morning (CAM 4.4). The wake time is
-`wake_ist` on the next trading day.
+exists. Catch-up jobs never block sleep, with two exceptions
+(`HOLDS_SLEEP_UNTIL_WINDOW_ENDS`): the day's margin files hold it until they are
+archived or their window ends (22:00), so they are fetched the same evening and
+retried every `retry_every_min`, not once the next morning (CAM 4.4); the
+nightly candles hold it until done or 18:30, so they run on the day's Kite
+login, not the next morning's expired one (CW 1). The wake time is `wake_ist`
+on the next trading day.
 """
 from __future__ import annotations
 
@@ -46,17 +50,22 @@ from stockify.data import calendar
 SEGMENT = "FO"
 CATCH_UP_DAYS = 7
 BLOCKS_SLEEP = ("compaction",)          # a missed session must not keep the laptop up forever
-CATCH_UP = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk", "fundamentals",
-            "backup")
-DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary",
-             "desk", "fundamentals")                 # one day's jobs, in order
+CATCH_UP = ("nse_fetch", "margin_files", "finalise", "compaction", "candles", "parity", "daily_summary", "desk",
+            "fundamentals", "watch_results", "backup")
+DAY_ORDER = ("nse_fetch", "margin_files", "finalise", "compaction", "candles", "parity", "daily_summary",
+             "desk", "fundamentals", "watch_results")  # one day's jobs, in order
 DEFAULT_RETRY_MIN = {"backup": 15}                  # a job given as a plain time retries at this gap
-DEPENDS = {"compaction": "finalise", "parity": "finalise", "daily_summary": "finalise", "desk": "nse_fetch",
-           "fundamentals": "nse_fetch"}          # the screener's market caps need the day's raw closes
-HELD_DURING_SESSION = ("finalise", "parity", "backup", "desk", "fundamentals")   # an engine replay, a lab copy, the
-                                                            # desk's backtests or the screener's NSE reads and
-                                                            # rescoring: not beside the live recorder (M-2)
-HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files",)   # fetched the same evening (CAM 4.4), not the next morning
+DEPENDS = {"compaction": "finalise", "candles": "compaction", "parity": "finalise", "daily_summary": "finalise",
+           "desk": "nse_fetch",
+           "fundamentals": "nse_fetch",          # the screener's market caps need the day's raw closes
+           "watch_results": "fundamentals"}      # the reminder reads the results calendar the screener refreshed
+HELD_DURING_SESSION = ("finalise", "parity", "backup", "desk", "fundamentals", "candles")   # an engine replay, a lab
+                                                            # copy, the desk's backtests, the screener's NSE reads
+                                                            # and rescoring, or Kite history requests: not beside
+                                                            # the live recorder (M-2); watch_results is not held
+NEEDS_KITE_LOGIN = ("candles",)       # with no Kite login these cannot run: they do not hold sleep (left owed)
+HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files", "candles")   # fetched the same evening (CAM 4.4; the candles on the
+                                                              # day's Kite login, CW 1), not the next morning
 
 
 def schedule() -> dict:
@@ -71,6 +80,8 @@ class DayPlan:
     subscribe_ns: int
     unsubscribe_ns: int
     compaction_ns: int
+    candles_ns: int
+    candles_until_ns: int
     nse_fetch_ns: int
     nse_fetch_until_ns: int
     margin_files_ns: int
@@ -84,6 +95,7 @@ class DayPlan:
     desk_until_ns: int
     fundamentals_ns: int
     fundamentals_until_ns: int
+    watch_results_ns: int
     backup_ns: int
 
 
@@ -102,6 +114,8 @@ def plan(day: date, cfg: dict | None = None) -> DayPlan:
         subscribe_ns=timeutil.ist_ns(day, jobs["subscribe"]),
         unsubscribe_ns=timeutil.ist_ns(day, jobs["unsubscribe"]),
         compaction_ns=timeutil.ist_ns(day, jobs["compaction"]),
+        candles_ns=timeutil.ist_ns(day, jobs["candles"]["start"]),
+        candles_until_ns=timeutil.ist_ns(day, jobs["candles"]["until"]),
         nse_fetch_ns=timeutil.ist_ns(day, jobs["nse_fetch"]["start"]),
         nse_fetch_until_ns=timeutil.ist_ns(day, jobs["nse_fetch"]["until"]),
         margin_files_ns=timeutil.ist_ns(day, jobs["margin_files"]["start"]),
@@ -115,6 +129,7 @@ def plan(day: date, cfg: dict | None = None) -> DayPlan:
         desk_until_ns=timeutil.ist_ns(day, jobs["desk"]["until"]),
         fundamentals_ns=timeutil.ist_ns(day, jobs["fundamentals"]["start"]),
         fundamentals_until_ns=timeutil.ist_ns(day, jobs["fundamentals"]["until"]),
+        watch_results_ns=timeutil.ist_ns(day, _start(jobs["watch_results"])),
         backup_ns=timeutil.ist_ns(day, _start(jobs["backup"])),
     )
 
@@ -181,13 +196,24 @@ def token_retry_ns(cfg: dict | None = None) -> int:
 def window_end_ns(job: str, day: date, cfg: dict | None = None) -> int:
     p = plan(day, cfg)
     return {"nse_fetch": p.nse_fetch_until_ns, "margin_files": p.margin_files_until_ns, "desk": p.desk_until_ns,
-            "fundamentals": p.fundamentals_until_ns}[job]
+            "fundamentals": p.fundamentals_until_ns, "candles": p.candles_until_ns}[job]
 
 
 def _due_ns(job: str, p: DayPlan) -> int:
     return {"nse_fetch": p.nse_fetch_ns, "margin_files": p.margin_files_ns, "finalise": p.finalise_ns,
-            "compaction": p.compaction_ns, "parity": p.parity_ns, "daily_summary": p.daily_summary_ns, "desk": p.desk_ns,
-            "fundamentals": p.fundamentals_ns, "backup": p.backup_ns}[job]
+            "compaction": p.compaction_ns, "candles": p.candles_ns, "parity": p.parity_ns,
+            "daily_summary": p.daily_summary_ns, "desk": p.desk_ns, "fundamentals": p.fundamentals_ns,
+            "watch_results": p.watch_results_ns, "backup": p.backup_ns}[job]
+
+
+def latest_due_day(job: str, now_ns: int, cfg: dict | None = None) -> date | None:
+    """The newest trading day, at most CATCH_UP_DAYS back, whose `job` start has passed by `now_ns`; None when none."""
+    today = timeutil.ns_to_ist(now_ns).date()
+    for i in range(CATCH_UP_DAYS + 1):
+        d = today - timedelta(days=i)
+        if calendar.is_trading_day(SEGMENT, d) and _due_ns(job, plan(d, cfg)) <= now_ns:
+            return d
+    return None
 
 
 def runnable(job: str, day: date, state: State) -> bool:
@@ -208,7 +234,8 @@ def session_in_progress(now_ns: int, cfg: dict | None = None) -> bool:
 
 def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tuple[str, date]]:
     """Catch-up jobs whose start passed on a recent trading day and never completed: oldest day first, each day's in
-    `DAY_ORDER` (fetch, margin files, finalise, compaction, parity, summary, desk, fundamentals), then the backup. The backup is one job for the
+    `DAY_ORDER` (fetch, margin files, finalise, compaction, candles, parity, summary, desk, fundamentals, the
+    watchlist's results reminder), then the backup. The backup is one job for the
     latest trading day whose 05:45 has passed (it copies whatever changed, so earlier days add nothing)."""
     out = []
     today = timeutil.ns_to_ist(now_ns).date()
@@ -231,11 +258,14 @@ def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tupl
 # ── sleep decision ───────────────────────────────────────────────────────────
 
 def should_sleep(now_ns: int, day: date | None, state: State, *, idle_s: float,
-                 stay_awake: bool, cfg: dict | None = None) -> tuple[bool, str]:
+                 stay_awake: bool, cfg: dict | None = None, logged_in: bool | None = None) -> tuple[bool, str]:
     """(may hibernate now?, why).
 
     `day` is the trade date whose post-session work must be finished first, or
     None when nothing is owed (night before a session, weekend, holiday).
+    `logged_in` False (no Kite login) releases the hold of `NEEDS_KITE_LOGIN`
+    jobs: they stay unmarked, and the morning catch-up runs them after the
+    login; None (unknown) keeps the hold.
     """
     cfg = cfg or schedule()
     rule = cfg["sleep_after_close"]
@@ -250,6 +280,8 @@ def should_sleep(now_ns: int, day: date | None, state: State, *, idle_s: float,
             if not state.done(job, day):
                 return False, f"{job} for {day} not done"
         for job in HOLDS_SLEEP_UNTIL_WINDOW_ENDS:
+            if logged_in is False and job in NEEDS_KITE_LOGIN:
+                continue
             until = window_end_ns(job, day, cfg)
             if not state.done(job, day) and now_ns < until:
                 return False, (f"{job} for {day} not done (window until "

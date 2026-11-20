@@ -60,7 +60,7 @@ def _kite_rows_to_hits(rows: Iterable[dict]) -> list[SearchHit]:
                 name=r.get("name") or symbol,
                 exchange=exch,  # type: ignore[arg-type]
                 sector=None,
-                instrument_type=r.get("instrument_type") or "EQ",
+                instrument_type="INDEX" if r.get("segment") == "INDICES" else r.get("instrument_type") or "EQ",
                 source="kite",
                 instrument_token=tok,
             )

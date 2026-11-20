@@ -3,7 +3,8 @@
 * `GET /api/desk`: a chip per holding the desk looks at (its verdict and the close it is from), and the others with
   the reason (BSE only, not an NSE stock, not graded yet).
 * `GET /api/desk/{symbol}`: the verdict with its reasons, the agreeing and disagreeing rules, each rule's signal and
-  record on the stock.
+  record on the stock. A stock on the watchlist that is not held is served too, from the nightly watchlist pass (CW 6);
+  it has no holding, so nothing of the owner's is in it.
 * `GET /api/desk/{symbol}/chart`: the daily candles as the RunChartDTO the price chart reads; no markers; one line
   per voting rule that plots an exit level.
 
@@ -17,12 +18,12 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 from datetime import date
 
 from fastapi import APIRouter, HTTPException
 
 import portfolio_sync
+from server.services import charts
 from server.schemas import DeskChipDTO, DeskListDTO, DeskSignalDTO, DeskSkipDTO, DeskViewDTO, RunChartDTO
 from stockify import timeutil
 from stockify.data import instruments
@@ -36,13 +37,11 @@ NOT_GRADED = "not graded yet: the desk grades each holding after the close"
 CHART_DAYS = 500                                # about two years of daily candles
 _SYMBOL = re.compile(r"^[A-Za-z0-9&_.\-]{1,40}$")
 
-_lock = threading.Lock()
-_charts: dict[int, tuple[tuple, RunChartDTO]] = {}     # iid -> (key, chart)
+_CACHE = "desk"                                  # this router's namespace in server.services.charts
 
 
 def reset() -> None:
-    with _lock:
-        _charts.clear()
+    charts.reset(_CACHE)
 
 
 def now_ns() -> int:
@@ -68,6 +67,23 @@ def _symbol(h, iid: int) -> str:  # noqa: ANN001
     return (instruments.get(iid) or {}).get("tradingsymbol") or (h.tradingsymbol if h is not None else "")
 
 
+def _watched_id(sym: str) -> int | None:
+    """The instrument id of a stock on the watchlist, or None (not watched, or the list cannot be read)."""
+    try:
+        from stockify.watchlist import store as watch_store
+        for r in watch_store.rows():
+            if str(r["symbol"]).upper() == sym:
+                return int(r["instrument_id"])
+    except Exception as e:  # noqa: BLE001 — the watchlist is an extra here, never a 500
+        log.info("desk: the watchlist could not be read (%s)", type(e).__name__)
+    return None
+
+
+def _is_watch_view(row: dict) -> bool:
+    """A view the nightly watchlist pass made (CW 6): not a holding's, so the holdings list never shows it."""
+    return (row.get("view") or {}).get("source") == "watch"
+
+
 def _find(symbol: str, t_ns: int):  # noqa: ANN202
     """(holding or None, instrument_id, logged_in) for a symbol in the URL; 404 when the desk has nothing on it."""
     if not _SYMBOL.match(symbol):
@@ -82,6 +98,9 @@ def _find(symbol: str, t_ns: int):  # noqa: ANN202
                 if reason is None and store.latest_view(iid) is not None:
                     return h, iid, True
                 raise HTTPException(status_code=404, detail=reason or NOT_GRADED)
+        iid = _watched_id(sym)                          # CW 6: a watched stock that is not held has its view too
+        if iid is not None and store.latest_view(iid) is not None:
+            return None, iid, True
         raise HTTPException(status_code=404, detail="not one of your holdings")
     iid = instruments.find("NSE", sym)                 # logged out: the last stored view, if there is one
     if iid is None or store.latest_view(iid) is None:
@@ -98,7 +117,7 @@ def desk_list() -> DeskListDTO:
     if snap.error:
         items = [DeskChipDTO(symbol=r["symbol"], exchange="NSE", instrument_id=r["instrument_id"],
                              verdict=r["verdict"], as_of_ns=int(r["made_ns"]), close_date=r["view"].get("close_date"))
-                 for r in store.latest_views()]
+                 for r in store.latest_views() if not _is_watch_view(r)]
         plain = ("Your Kite login has expired, so these are the last closing views of the stocks the desk has graded; "
                  "log in again to see your current holdings." if getattr(snap, "expired", False) else
                  "Kite is not logged in, so these are the last closing views of the stocks the desk has graded; "
@@ -164,27 +183,11 @@ def desk_view(symbol: str) -> DeskViewDTO:
         disagree=list(view.get("disagree") or []), signals=_signals(view, rows),
         evidence_from=min((r["from_date"] for r in rows), default=None),
         evidence_to=view.get("evidence_to") or max((r["to_date"] for r in rows), default=None),
-        as_of_ns=made, close_date=view.get("close_date"), plain=_plain(view, made, logged_in))
+        as_of_ns=made, close_date=view.get("close_date"), plain=_plain(view, made, logged_in),
+        held=h is not None if logged_in else not _is_watch_view(row))
 
 
 # ── GET /api/desk/{symbol}/chart ─────────────────────────────────────────────
-
-def _model(iid: int, sym: str, interval_s: int, basis: str, bars: list, plots: list[dict]) -> dict:
-    return {"instruments": [{"id": iid, "symbol": sym, "kind": "equity"}], "instrument_id": iid, "basis": basis,
-            "interval_s": interval_s,
-            "bars": [{"start_ns": b.start_ns, "open": b.open, "high": b.high, "low": b.low, "close": b.close,
-                      "volume": b.volume} for b in bars],
-            "markers": [], "omitted_markers": 0, "plots": plots, "truncated": False, "next_from_ns": None,
-            "data_state": "ok", "notice": None, "pnl_complete": True, "skipped_settlements": 0,
-            "idle_settlements": 0}
-
-
-def _dto(model: dict, labels: dict[str, str]) -> RunChartDTO:
-    from server.routers.tests import _chart_dto
-    dto = _chart_dto(model)
-    plots = [p.model_copy(update={"label": labels.get(p.name, p.label)}) for p in dto.plots]
-    return dto.model_copy(update={"plots": plots})
-
 
 def _plot_name(ref: str) -> str:
     return ref.rpartition(".")[2].partition(":")[0]
@@ -195,12 +198,10 @@ def _day_chart(iid: int, sym: str) -> RunChartDTO:
     replayed with `replay.window` bars of warm-up before the first candle shown, so its line says what a replay over
     the whole history says. Cached until the bar cache's candles change."""
     bars = replay.daily_bars(iid)
-    # the first close too: a split or bonus refetch rewrites the older (adjusted) candles
-    key = (len(bars), bars[-1].start_ns, bars[-1].close, bars[0].close) if bars else (0,)
-    with _lock:
-        hit = _charts.get(iid)
-    if hit is not None and hit[0] == key:
-        return hit[1]
+    return charts.cached(_CACHE, iid, charts.bars_key(bars), lambda: _build(iid, sym, bars))
+
+
+def _build(iid: int, sym: str, bars: list) -> RunChartDTO:
     shown = bars[-CHART_DAYS:]
     first = shown[0].start_ns if shown else None
     plots, labels = [], {}
@@ -216,10 +217,7 @@ def _day_chart(iid: int, sym: str) -> RunChartDTO:
             name = _plot_name(ref)
             plots.append({"name": name, "kind": "price", "instrument_id": iid, "points": pts})
             labels[name] = f"{steps[-1].display_name} exit level"
-    dto = _dto(_model(iid, sym, replay.DAY_S, "adjusted", shown, plots), labels)
-    with _lock:
-        _charts[iid] = (key, dto)
-    return dto
+    return charts.dto(charts.model(iid, sym, replay.DAY_S, "adjusted", shown, plots), labels)
 
 
 @router.get("/{symbol}/chart", response_model=RunChartDTO)

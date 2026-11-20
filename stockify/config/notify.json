@@ -7,6 +7,8 @@
     "parity_failure": true,
     "recorder_stall": true,
     "disk_low": true,
-    "daily_summary": true
+    "daily_summary": true,
+    "watch_high_low": true,
+    "watch_results": true
   }
 }

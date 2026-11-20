@@ -6,12 +6,13 @@
  */
 import type { Metadata } from "next";
 import Link from "next/link";
-import { dayWords } from "@/lib/format";
+import { dayWords, rupees } from "@/lib/format";
 import {
   basisWords, broadcastWords, figureName, figureText, filingState, getFundamentalsDetail, medianLabel, MEANINGS,
   peerWords, periodKindWords, sentence,
 } from "@/lib/fundamentals";
 import type { CandidateDetailDTO } from "@/lib/types";
+import StockChart from "@/components/StockChart";
 import { Empty, Panel, Table } from "@/components/ui";
 import FigureCharts from "./FigureCharts";
 
@@ -98,6 +99,8 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
         </div>
       </div>
 
+      <PriceSection d={d} />
+
       <section className="stk-section" aria-labelledby="fund-why">
         <h2 id="fund-why">{left ? "Why it is not on the list" : d.listed ? "Why it is on the list" : "What the figures show"}</h2>
         {why.length === 0 ? (
@@ -156,6 +159,32 @@ function Detail({ d }: { d: CandidateDetailDTO }) {
 
       <Filings d={d} />
     </div>
+  );
+}
+
+/** The price in facts: the last close and the 52-week range, then the year's candles. No score, rank or method words. */
+function PriceSection({ d }: { d: CandidateDetailDTO }) {
+  const p = d.price;
+  const facts: { label: string; value: string; day?: string | null }[] = [];
+  if (p?.last_close_paise != null) facts.push({ label: "Last close", value: rupees(p.last_close_paise), day: p.last_close_date });
+  if (p?.high_paise != null) facts.push({ label: "52-week high", value: rupees(p.high_paise), day: p.high_date });
+  if (p?.low_paise != null) facts.push({ label: "52-week low", value: rupees(p.low_paise), day: p.low_date });
+  return (
+    <section className="stk-section stk-stack-s" aria-labelledby="fund-price">
+      <h2 id="fund-price">Price</h2>
+      {facts.length > 0 && (
+        <dl className="stk-facts">
+          {facts.map((f) => (
+            <div key={f.label}>
+              <dt className="stk-label">{f.label}</dt>
+              <dd className="stk-mono">{f.value}</dd>
+              {f.day && <dd className="stk-label">{dayWords(f.day)}</dd>}
+            </div>
+          ))}
+        </dl>
+      )}
+      <StockChart symbol={d.symbol} />
+    </section>
   );
 }
 

@@ -45,7 +45,8 @@ log = logging.getLogger(__name__)
 
 MANIFEST_SCHEMA = "stockify.backup/1"
 DATABASES = ("refdata.sqlite", "lab.sqlite", "desk.sqlite",      # desk.sqlite: the holdings desk (D-152)
-             "fundamentals.sqlite")                           # the fundamentals screener (FS 1)
+             "fundamentals.sqlite",                           # the fundamentals screener (FS 1)
+             "watchlist.sqlite")                              # the watched stocks and their alerts (CW 2)
 _CHUNK = 1 << 20
 _OPEN_JOURNAL_TRIES = 3
 DEFAULT_KEEP = 7

@@ -17,7 +17,7 @@ from tests.support import SandboxedDBTest
 from stockify import timeutil
 from stockify.fundamentals import filings, pit, screen, store
 from stockify.data import calendar as nse_calendar
-from stockify.data import refdata
+from stockify.data import history, refdata
 
 FORBIDDEN = ("score", "percentile", "composite", "rank", "place")
 NOTES = ["Covers today's listed companies only.", "Sectors are today's NSE industry groups."]
@@ -113,6 +113,17 @@ class ListTests(FundamentalsApiBase):
         self.assertEqual(body["not_listed_count"], 0)           # every placed stock is listed
         self.assertIsNone(body["test_record_id"])
         self.assertEqual(body["notes"], NOTES)
+
+    def test_watched_stocks_outside_the_universe_never_reach_the_screeners_upcoming_list(self):
+        """CW 3: the results calendar also keeps the watchlist's stocks (their reminders read it); the screener's
+        page lists only its own universe's meetings."""
+        store._connect().executemany(
+            "INSERT INTO results_calendar (symbol, meeting_date, purpose, period_hint, read_on) VALUES (?, ?, ?, ?, ?)",
+            [("WATCHED", "2025-12-04", "Financial Results", "Oct–Dec quarter", "2025-12-01"),
+             ("THIN", "2025-12-04", "Financial Results", "Oct–Dec quarter", "2025-12-01")])     # on the list, not liquid
+        body = self.get("/api/fundamentals")
+        self.assertEqual([(u["symbol"], u["date"]) for u in body["upcoming"]],
+                         [("AAA", "2025-12-03"), ("BBB", "2025-12-05")])
 
     def test_before_the_first_screen_the_list_is_empty_not_an_error(self):
         store._connect().execute("DELETE FROM screen_runs")
@@ -360,6 +371,43 @@ class PruneTests(FundamentalsApiBase):
                                 DAY.isoformat()})
 
 
+class PriceTests(FundamentalsApiBase):
+    """CW 4: the detail's price context, from the daily candles by the watchlist's range rule."""
+    db_modules = (store, refdata, history)
+
+    def put_days(self, sym: str, first: date, n: int, *, close=100_000, spike=None) -> None:
+        iid = next(r["instrument_id"] for r in refdata._connect().execute(
+            "SELECT instrument_id FROM instruments WHERE tradingsymbol=?", (sym,)))
+        with history._Tx() as conn:
+            for i in range(n):
+                hi, lo = (spike[1], spike[2]) if spike and spike[0] == i else (close + 1000, close - 1000)
+                conn.execute("INSERT INTO bars VALUES (?, 'day', ?, ?, ?, ?, ?, 1000, NULL, '2026-01-01')",
+                             (iid, timeutil.ist_ns(first + timedelta(days=i), "00:00"), close, hi, lo, close))
+
+    def test_no_candles_no_price(self):
+        self.assertIsNone(self.get("/api/fundamentals/BBB")["price"])
+
+    def test_last_close_and_the_52_week_range(self):
+        first = DAY - timedelta(days=420)
+        self.put_days("BBB", first, 420, spike=(300, 190_000, 60_000))
+        price = self.get("/api/fundamentals/BBB")["price"]
+        self.assertEqual((price["last_close_paise"], price["last_close_date"]),
+                         (100_000, (DAY - timedelta(days=1)).isoformat()))
+        self.assertEqual((price["high_paise"], price["low_paise"]), (190_000, 60_000))
+        self.assertEqual(price["high_date"], (first + timedelta(days=300)).isoformat())
+        self.assertEqual(price["low_date"], price["high_date"])
+
+    def test_short_history_has_the_close_only(self):
+        self.put_days("BBB", DAY - timedelta(days=50), 50)
+        price = self.get("/api/fundamentals/BBB")["price"]
+        self.assertEqual(price["last_close_paise"], 100_000)
+        self.assertIsNone(price["high_paise"])
+
+    def test_the_price_fields_carry_no_score_words(self):
+        from server import schemas
+        self.assertEqual([k for k in schemas.PriceContextDTO.model_fields for bad in FORBIDDEN if bad in k], [])
+
+
 class NoScoreTests(FundamentalsApiBase):
 
     def test_no_score_fields_anywhere(self):
@@ -368,7 +416,7 @@ class NoScoreTests(FundamentalsApiBase):
         keys = set().union(*(_keys(b) for b in bodies))
         schemas = self.client.app.openapi()["components"]["schemas"]
         for name in ("FundamentalsListDTO", "ResultsDateDTO", "CandidateDTO", "CandidateDetailDTO", "RatioDTO",
-                     "SeriesDTO", "SeriesPointDTO", "FilingDTO", "FundamentalsTestRecordDTO"):
+                     "SeriesDTO", "SeriesPointDTO", "FilingDTO", "FundamentalsTestRecordDTO", "PriceContextDTO"):
             keys |= set(schemas[name]["properties"])
         self.assertEqual([k for k in keys for bad in FORBIDDEN if bad in k.lower()], [])
         # The stored rows and series carry no score either: the list's order is the judgement.
