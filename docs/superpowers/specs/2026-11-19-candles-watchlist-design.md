@@ -147,6 +147,6 @@ Use the superpowers flow, one phase per branch in its own worktree: spec in `doc
 4. **Phase 3.**
    - A replay run gives unchanged subscriptions.
    - On a live day the subscription log has `watch:` rows and `tap_errors` is 0.
-   - A forced alert in a replay is recorded, not emailed (owner, 2026-11-19: a replay never emails); a restart of a live day doesn't resend it.
+   - A forced alert in a replay is recorded, not emailed (owner, 2026-11-19: a replay never emails); a restart of a live day doesn't resend it. The replay check needs the stock in the universe (a replay subscribes from universe.json alone) and 1x speed: at max speed the 64-frame tap, read once a second, can be overrun.
    - The reminder job works against a fixture calendar.
 5. **Phases 4 and 5.** The Details chart, the no-data state, and the desk view for a watched stock that isn't held. `GET /api/health` is OK.
