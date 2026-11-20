@@ -1,0 +1,7 @@
+{
+  "schema": "stockify.candles/1",
+  "history_years": 6,
+  "rps": "2",
+  "rate_limit_backoff_s": [1, 2, 4],
+  "note": "Nightly daily candles (CW 1, D-154): Kite's adjusted daily candles (K-6) for the screener universe and the watchlist, topped up after the close. rps is this job's own request rate, below Kite's historical limit (K-8: 3 req/s, kite_limits.json historical_rps); a 429 waits each listed number of seconds and retries, then the run stops and is tried again later."
+}

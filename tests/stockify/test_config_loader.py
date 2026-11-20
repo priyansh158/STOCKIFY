@@ -162,6 +162,31 @@ class LoaderRuleTests(unittest.TestCase):
         (self.dir / "fundamentals.json").write_text(json.dumps(extra_api), encoding="utf-8")
         self.assertIn("results", loader.load_json("fundamentals.json", self.dir)["api"])
 
+    def test_candles_json_is_checked(self):
+        """CW 1: candles.json: history_years a whole number of years, rps a decimal string above 0, the 429 backoff a
+        non-empty list of whole seconds that never shrinks; unknown or missing keys refused, naming them."""
+        good = json.loads((loader.CONFIG_DIR / "candles.json").read_text(encoding="utf-8"))
+        bad_cases = (
+            {"history_years": 0}, {"history_years": 21}, {"history_years": "6"}, {"history_years": True},
+            {"history_years": 6.5}, {"rps": 2}, {"rps": "0"}, {"rps": "-1"}, {"rps": "abc"}, {"rps": "11"},
+            {"rate_limit_backoff_s": []}, {"rate_limit_backoff_s": [0]}, {"rate_limit_backoff_s": [4, 2]},
+            {"rate_limit_backoff_s": ["1"]}, {"rate_limit_backoff_s": [1, 601]}, {"rate_limit_backoff_s": 1},
+            {"note": 5}, {"surprise": 1},
+        )
+        for change in bad_cases:
+            with self.subTest(change=change):
+                (self.dir / "candles.json").write_text(json.dumps({**good, **change}), encoding="utf-8")
+                with self.assertRaises(loader.ConfigError):
+                    loader.load_json("candles.json", self.dir)
+        for key in ("history_years", "rps", "rate_limit_backoff_s"):
+            missing = {k: v for k, v in good.items() if k != key}
+            (self.dir / "candles.json").write_text(json.dumps(missing), encoding="utf-8")
+            with self.subTest(missing=key), self.assertRaisesRegex(loader.ConfigError, f"{key} is missing"):
+                loader.load_json("candles.json", self.dir)
+        (self.dir / "candles.json").write_text(json.dumps({**good, "rps": "0.5", "rate_limit_backoff_s": [2, 2]}),
+                                               encoding="utf-8")
+        self.assertEqual(loader.load_json("candles.json", self.dir)["rps"], "0.5")
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")

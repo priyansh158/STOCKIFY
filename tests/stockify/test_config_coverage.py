@@ -82,5 +82,15 @@ class ConfigCoverageTests(unittest.TestCase):
         self.assertTrue(exch[0].get("effective_from_resolved"))
 
 
+class CandlesConfigTests(unittest.TestCase):
+    def test_the_shipped_candle_settings(self):
+        """CW 1 (spec "Shared config"): six years of daily candles at 2 requests a second, backing off 1, 2 and 4 s
+        on a 429; below Kite's historical limit (K-8, kite_limits.json historical_rps)."""
+        from decimal import Decimal
+        cfg = loader.load_json("candles.json")
+        self.assertEqual((cfg["history_years"], cfg["rps"], cfg["rate_limit_backoff_s"]), (6, "2", [1, 2, 4]))
+        self.assertTrue(cfg["note"])
+        self.assertLessEqual(Decimal(cfg["rps"]), Decimal(str(loader.load_json("kite_limits.json")["historical_rps"])))
+
 if __name__ == "__main__":
     unittest.main()

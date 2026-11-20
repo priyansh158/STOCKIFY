@@ -53,6 +53,7 @@ SCHEMAS = {
     "research.json": "stockify.research/1",
     "paper.json": "stockify.paper/1",
     "fundamentals.json": "stockify.fundamentals/1",
+    "candles.json": "stockify.candles/1",
 }
 
 CSV_HEADERS = {
@@ -530,6 +531,41 @@ def _check_fundamentals(doc: dict) -> None:
         nse_url(entry["warmup"], f"api.{name}.warmup", ("https://www.nseindia.com/",))
 
 
+CANDLES_KEYS = ("history_years", "rps", "rate_limit_backoff_s")
+CANDLES_BOUNDS = {"history_years": (1, 20), "rps": (0, 10), "backoff_s": (1, 600)}
+
+
+def _check_candles(doc: dict) -> None:
+    """candles.json (stockify.candles/1, CW 1): every key present and none unknown (`note` allowed, a string);
+    `history_years` a whole number from 1 to 20; `rps` a decimal string above 0 and at most 10 (the shipped value
+    stays below Kite's historical limit, K-8, checked against kite_limits.json in the config tests);
+    `rate_limit_backoff_s` a non-empty list of whole seconds from 1 to 600 that never shrinks."""
+    extra = set(doc) - set(CANDLES_KEYS) - {"schema", "note"}
+    if extra:
+        raise ConfigError(f"candles.json: unknown keys {sorted(extra)}; known: {list(CANDLES_KEYS)}")
+    for key in CANDLES_KEYS:
+        if key not in doc:
+            raise ConfigError(f"candles.json: {key} is missing")
+    if "note" in doc and not isinstance(doc["note"], str):
+        raise ConfigError(f"candles.json: note must be a string, got {doc['note']!r}")
+    low, high = CANDLES_BOUNDS["history_years"]
+    years = doc["history_years"]
+    if isinstance(years, bool) or not isinstance(years, int) or not low <= years <= high:
+        raise ConfigError(f"candles.json: history_years must be a whole number from {low} to {high}, got {years!r}")
+    rps = doc["rps"]
+    low, high = CANDLES_BOUNDS["rps"]
+    if not isinstance(rps, str) or _PLAIN_DECIMAL.fullmatch(rps) is None or not low < Decimal(rps) <= high:
+        raise ConfigError(f'candles.json: rps must be a decimal string above {low} and at most {high} such as "2", '
+                          f"got {rps!r}")
+    waits = doc["rate_limit_backoff_s"]
+    low, high = CANDLES_BOUNDS["backoff_s"]
+    if (not isinstance(waits, list) or not waits
+            or not all(not isinstance(w, bool) and isinstance(w, int) and low <= w <= high for w in waits)
+            or any(b < a for a, b in zip(waits, waits[1:]))):
+        raise ConfigError(f"candles.json: rate_limit_backoff_s must be a non-empty list of whole seconds from {low} "
+                          f"to {high} that never shrinks, got {waits!r}")
+
+
 def load_json(name: str,config_dir: Path | None = None) -> dict:
     if name not in SCHEMAS:
         raise ConfigError(f"unknown config file: {name}")
@@ -557,6 +593,8 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
         _check_storage(doc)
     if name == "fundamentals.json":
         _check_fundamentals(doc)
+    if name == "candles.json":
+        _check_candles(doc)
     return doc
 
 
