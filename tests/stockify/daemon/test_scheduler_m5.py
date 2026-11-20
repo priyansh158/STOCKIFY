@@ -58,15 +58,15 @@ class CatchUpOrderTest(JobsBase):
         for job in ("nse_fetch", "margin_files"):
             self.state.mark(job, MON)
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
-        self.assertEqual(due, [("finalise", MON), ("compaction", MON), ("parity", MON), ("daily_summary", MON),
-                               ("desk", MON), ("fundamentals", MON), ("backup", WED)])
+        self.assertEqual(due, [("finalise", MON), ("compaction", MON), ("candles", MON), ("parity", MON),
+                               ("daily_summary", MON), ("desk", MON), ("fundamentals", MON), ("backup", WED)])
         self.assertLess(ist(WED, "08:00"), scheduler.plan(WED).day_bundles_ns)
 
     def test_the_whole_evening_is_ordered_per_day(self):
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
         mon = [j for j, d in due if d == MON]
-        self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk",
-                               "fundamentals"])
+        self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "compaction", "candles", "parity",
+                               "daily_summary", "desk", "fundamentals"])
         days = [d for j, d in due if j != "backup"]
         self.assertEqual(days, sorted(days))                                    # oldest day first
         self.assertEqual(due[-1][0], "backup")
@@ -78,8 +78,8 @@ class CatchUpOrderTest(JobsBase):
         self.assertIn(("backup", MON), due)                                      # the latest trading day, not the 10th
 
     def test_backup_always_catch_up_after_wake(self):
-        for job in ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk",
-                    "fundamentals"):
+        for job in ("nse_fetch", "margin_files", "finalise", "compaction", "candles", "parity", "daily_summary",
+                    "desk", "fundamentals"):
             self.state.mark(job, MON)
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "05:44"), self.state), MON), [("backup", MON)])
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "06:00"), self.state), MON), [("backup", WED)])    # the wake time
@@ -258,7 +258,7 @@ class CatchUpWiringTest(JobsBase):
                               token_fresh=lambda: False, send_reminder=lambda s, b: None)
         self.assertEqual(since(ran, MON)[:7], [("finalise", MON), ("compaction", MON), ("parity", MON),
                                                ("daily_summary", MON), ("desk", MON), ("fundamentals", MON),
-                                               ("backup", WED)])
+                                               ("backup", WED)])          # the candles wait for compaction's mark
 
     def test_a_failing_job_does_not_stop_the_others(self):
         from stockify import daemon
@@ -874,6 +874,161 @@ class FundamentalsJobTest(JobsBase):
 
         self.assertNotIn(("fundamentals", MON), run_at("10:00"))
         self.assertIn(("fundamentals", MON), run_at("08:40"))
+
+
+
+class CandlesScheduleTest(JobsBase):
+    def test_candles_run_after_compaction_and_hold_sleep_until_their_window_ends(self):
+        """CW 1.4: the nightly candles start at 16:40, right after compaction, while the day's Kite login is still
+        valid; they are caught up, held during the session, retried every 15 min, and hold sleep until done or
+        18:30 (so they run the same evening, not the next morning on an expired login)."""
+        self.assertIn("candles", scheduler.CATCH_UP)
+        self.assertIn("candles", scheduler.HELD_DURING_SESSION)
+        self.assertIn("candles", scheduler.HOLDS_SLEEP_UNTIL_WINDOW_ENDS)
+        self.assertNotIn("candles", scheduler.BLOCKS_SLEEP)
+        self.assertEqual(scheduler.DEPENDS["candles"], "compaction")
+        self.assertEqual(scheduler.DAY_ORDER.index("candles"), scheduler.DAY_ORDER.index("compaction") + 1)
+        p = scheduler.plan(MON)
+        self.assertEqual((p.candles_ns, p.candles_until_ns), (ist(MON, "16:40"), ist(MON, "18:30")))
+        self.assertEqual(scheduler.window_end_ns("candles", MON), ist(MON, "18:30"))
+        self.assertEqual(scheduler.retry_every_ns("candles"), 15 * MIN)
+        self.assertNotIn(("candles", MON), scheduler.missed_jobs(ist(MON, "16:39"), self.state))
+        self.assertIn(("candles", MON), scheduler.missed_jobs(ist(MON, "16:40"), self.state))
+        self.assertFalse(scheduler.runnable("candles", MON, self.state))
+        self.state.mark("compaction", MON)
+        self.assertTrue(scheduler.runnable("candles", MON, self.state))
+
+    def test_sleep_waits_for_the_candles_until_1830(self):
+        self.state.mark("compaction", MON)
+        self.state.mark("margin_files", MON)
+        ok, why = scheduler.should_sleep(ist(MON, "17:00"), MON, self.state, idle_s=10 ** 6, stay_awake=False)
+        self.assertFalse(ok)
+        self.assertIn("candles", why)
+        self.assertTrue(scheduler.should_sleep(ist(MON, "18:30"), MON, self.state, idle_s=10 ** 6,
+                                               stay_awake=False)[0])
+        self.state.mark("candles", MON)
+        self.assertTrue(scheduler.should_sleep(ist(MON, "17:00"), MON, self.state, idle_s=10 ** 6,
+                                               stay_awake=False)[0])
+
+    def test_the_newest_due_day(self):
+        self.assertEqual(scheduler.latest_due_day("candles", ist(WED, "16:39")), MON)     # TUE is a holiday
+        self.assertEqual(scheduler.latest_due_day("candles", ist(WED, "16:40")), WED)
+        self.assertEqual(scheduler.latest_due_day("candles", ist(THU, "08:00")), WED)
+
+
+class CandlesJobTest(JobsBase):
+    """CW 1.4: the daemon's `_candles_job` (shaped like `_desk_job`)."""
+
+    def setUp(self):
+        super().setUp()
+        import logging
+        was = logging.root.manager.disable                                       # the runner switches logging off
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+
+    @staticmethod
+    def result(**kw):
+        base = {"targets": 3, "fetched": 3, "up_to_date": 0, "skipped": [], "failed": [], "refetched": [],
+                "requests": 6, "complete": True, "logged_in": True, "stopped": None}
+        return {**base, **kw}
+
+    def job(self, day, hhmm_day, hhmm, res=None, side_effect=None):  # noqa: ANN001, ANN201
+        from stockify import daemon
+        from stockify.data import daily_candles
+        seen = []
+
+        def run(d, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen.append((d, kw))
+            if side_effect:
+                raise side_effect
+            return res or self.result()
+        with mock.patch.object(daily_candles, "run", side_effect=run):
+            daemon._run_job("candles", day, self.state, ist(hhmm_day, hhmm))
+        return seen
+
+    def test_a_complete_run_is_marked_and_stops_before_the_next_session(self):
+        from stockify import daemon
+        seen = self.job(MON, MON, "16:40")
+        self.assertTrue(self.state.done("candles", MON))
+        (day, kw), = seen
+        self.assertEqual(day, MON)
+        nxt = scheduler.plan(WED)                                                # TUE is a holiday
+        self.assertEqual(kw["deadline_ns"], min(nxt.refdata_ns, nxt.day_bundles_ns) - daemon.DESK_MARGIN_NS)
+        self.assertEqual(kw["clock"].now_ns() // MIN, ist(MON, "16:40") // MIN)  # the daemon's time, not the wall's
+
+    def test_not_logged_in_is_left_unmarked(self):
+        self.job(MON, MON, "16:40", self.result(logged_in=False, complete=False, fetched=0, requests=0))
+        self.assertFalse(self.state.done("candles", MON))
+        self.job(MON, MON, "19:00", self.result(logged_in=False, complete=False, stopped="login"))
+        self.assertFalse(self.state.done("candles", MON))                        # even after the window: the
+                                                                                 # morning catch-up runs it
+
+    def test_a_stop_at_the_deadline_is_left_for_later(self):
+        self.job(MON, WED, "08:20", self.result(complete=False, stopped="deadline"))
+        self.assertFalse(self.state.done("candles", MON))
+
+    def test_a_raised_error_is_retried(self):
+        with self.assertLogs("stockify.daemon", "ERROR"):
+            self.job(MON, MON, "16:40", side_effect=RuntimeError("boom"))
+        self.assertFalse(self.state.done("candles", MON))
+
+    def test_failures_are_retried_until_the_window_ends_then_given_up_with_the_symbols(self):
+        part = self.result(complete=False, failed=[{"symbol": "TCS", "error": "RuntimeError: x"}])
+        self.job(MON, MON, "17:00", part)
+        self.assertFalse(self.state.done("candles", MON))
+        with self.assertLogs("stockify.daemon", "WARNING") as logs:
+            self.job(MON, MON, "18:30", part)
+        self.assertTrue(self.state.done("candles", MON))
+        self.assertIn("TCS", logs.output[-1])
+        self.assertIn("giving up", logs.output[-1])
+
+    def test_a_429_stop_after_the_window_is_given_up(self):
+        stopped = self.result(complete=False, stopped="rate_limited")
+        self.job(MON, MON, "17:00", stopped)
+        self.assertFalse(self.state.done("candles", MON))
+        with self.assertLogs("stockify.daemon", "WARNING"):
+            self.job(MON, MON, "18:45", stopped)
+        self.assertTrue(self.state.done("candles", MON))
+
+    def test_an_older_day_waits_for_the_newer_run_and_is_marked_once_it_covered_it(self):
+        self.state.mark("compaction", MON)
+        self.state.mark("compaction", WED)
+        seen = self.job(MON, WED, "16:45")                                       # WED's 16:40 has passed
+        self.assertEqual(seen, [])                                               # nothing asked for MON itself
+        self.assertFalse(self.state.done("candles", MON))
+        seen = self.job(WED, WED, "16:45")                                       # WED's top-up runs through MON
+        self.assertEqual([d for d, _ in seen], [WED])
+        self.assertTrue(self.state.done("candles", WED))
+        self.assertTrue(self.state.done("candles", MON))                         # superseded: done
+
+    def test_an_older_day_whose_newer_day_is_done_is_marked_without_a_run(self):
+        self.state.mark("candles", WED)
+        with self.assertLogs("stockify.daemon", "INFO") as logs:
+            seen = self.job(MON, THU, "07:00")
+        self.assertEqual(seen, [])
+        self.assertTrue(self.state.done("candles", MON))
+        self.assertIn("superseded", logs.output[-1])
+
+    def test_the_candles_job_waits_for_the_close_in_the_daemon(self):
+        from stockify import daemon
+        ran = []
+        self.state.mark("compaction", MON)
+
+        def fake_market_day(**kw):
+            kw["on_idle"]()
+            return exitcodes.TOKEN_EXPIRED
+
+        def run_at(hhmm):
+            ran.clear()
+            clock = ManualClock(ist(WED, hhmm))
+            with mock.patch.object(market_day, "run_market_day", fake_market_day), \
+                    mock.patch.object(daemon, "_run_job", lambda job, d, st, now=None: ran.append((job, d))):
+                daemon.run_daemon(power=mock.MagicMock(idle_seconds=lambda: 0), clock=clock,
+                                  token_fresh=lambda: False, send_reminder=lambda s, b: None)
+            return ran[:]
+
+        self.assertNotIn(("candles", MON), run_at("10:00"))
+        self.assertIn(("candles", MON), run_at("08:40"))
 
 
 if __name__ == "__main__":

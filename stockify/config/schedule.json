@@ -6,6 +6,11 @@
     "subscribe": "08:58",
     "unsubscribe": "15:45",
     "compaction": "16:30",
+    "candles": {
+      "start": "16:40",
+      "retry_every_min": 15,
+      "until": "18:30"
+    },
     "nse_fetch": {
       "start": "19:30",
       "retry_every_min": 15,
