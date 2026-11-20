@@ -232,3 +232,8 @@ def journal_day_dir(session_id: str, day: date) -> Path:
 
 def logs_dir() -> Path:
     return _dir(stockify_paths.logs_dir())
+
+
+def watchlist_db() -> Path:
+    """The watchlist's store (CW 2): the watched stocks and the alerts raised on them."""
+    return lab_dir() / "watchlist.sqlite"
