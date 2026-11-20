@@ -8,7 +8,7 @@ Friday. A meeting already past when the run happens (a catch-up the next morning
 
 Each meeting is told once: `store.record_alert(kind="results", ref=<meeting date>)` is the once-only record, so a moved
 meeting (a new date) is told again and a restart tells nothing twice. A reminder whose email failed is tried again on the
-job's next attempt.
+job's next attempt; one notify kept in its outbox (no network) counts as sent, since it goes out later.
 """
 from __future__ import annotations
 
@@ -64,7 +64,12 @@ def run(day: date, *, now_ns: int | None = None, send: Callable | None = None, c
     if not due:
         return out
     subject, body = digest(due)
-    error = send("watch_results", subject, body, key=f"results:{day.isoformat()}")
+    key = f"results:{day.isoformat()}"
+    error = send("watch_results", subject, body, key=key)
+    if error is not None and _queued("watch_results", key):
+        log.info("watchlist: the results reminder for %s waits in the notification outbox; it goes when the "
+                 "connection returns", day)
+        error = None
     for m in due:
         store.set_delivery(m["instrument_id"], "results", m["meeting_date"], "sent" if error is None else "failed")
     out["told"] = [(m["symbol"], m["meeting_date"]) for m in due]
@@ -73,6 +78,15 @@ def run(day: date, *, now_ns: int | None = None, send: Callable | None = None, c
         log.warning("watchlist: the results reminder for %s was not sent (%s); tried again on the next attempt",
                     day, error)
     return out
+
+
+def _queued(event: str, key: str) -> bool:
+    """True when notify kept the email in its outbox (a network failure): it is sent later, so it counts as sent."""
+    try:
+        from stockify.daemon import notify
+        return notify.queued(event, key)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _waiting(store, iid: int, ref: str) -> bool:  # noqa: ANN001

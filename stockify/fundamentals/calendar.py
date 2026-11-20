@@ -64,22 +64,25 @@ def parse(doc, symbols: set[str]) -> list[dict]:  # noqa: ANN001
     return [out[k] for k in sorted(out, key=lambda k: (k[1], k[0]))]
 
 
-def _watched() -> set[str]:
-    """The watchlist's symbols (CW 3: their results reminders read this table). A broken watchlist is logged and
-    leaves the universe's meetings as they were."""
+def _watched() -> set[str] | None:
+    """The watchlist's symbols (CW 3: their results reminders read this table); None when the watchlist cannot be
+    read (logged): then only the universe's meetings are refreshed and the rest are kept as they were."""
     try:
         from stockify.watchlist import store as watch_store
         return set(watch_store.symbols())
     except Exception as e:  # noqa: BLE001
-        log.warning("fundamentals: the watchlist could not be read (%s); its stocks' meetings are not refreshed",
+        log.warning("fundamentals: the watchlist could not be read (%s); its stocks' meetings are kept as last read",
                     type(e).__name__)
-        return set()
+        return None
 
 
 def refresh(day: date, *, client: nse_api.Client) -> int:
     """Read NSE's calendar for `day` .. `day` + 28 days and make the table's upcoming rows match it; returns how
-    many results meetings of universe and watched stocks are listed (the same one request either way)."""
-    symbols = {u["symbol"] for u in universe.current()} | _watched()
+    many results meetings of universe and watched stocks are listed (the same one request either way). When the
+    watchlist cannot be read, only the universe's upcoming rows are replaced: the others (the watched stocks') stay."""
+    in_universe = {u["symbol"] for u in universe.current()}
+    watched = _watched()
+    symbols = in_universe | (watched or set())
     params = {"index": "equities", "from_date": f"{day:%d-%m-%Y}",
               "to_date": f"{day + timedelta(days=WINDOW_DAYS):%d-%m-%Y}"}
     doc = client.json(PATH, params, warmup=WARMUP, name=f"{day:%Y%m%d}_equities_{params['from_date']}_{params['to_date']}.json")
@@ -88,13 +91,17 @@ def refresh(day: date, *, client: nse_api.Client) -> int:
     conn = store._connect()
     with dbconn.locked_write(store._lock, conn):
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM results_calendar WHERE meeting_date >= ?", (start,))
+        if watched is None:
+            conn.executemany("DELETE FROM results_calendar WHERE meeting_date >= ? AND symbol = ?",
+                             [(start, sym) for sym in sorted(in_universe)])
+        else:
+            conn.execute("DELETE FROM results_calendar WHERE meeting_date >= ?", (start,))
         conn.executemany(
             "INSERT OR REPLACE INTO results_calendar (symbol, meeting_date, purpose, period_hint, read_on) "
             "VALUES (?, ?, ?, ?, ?)",
             [(r["symbol"], r["meeting_date"], r["purpose"], r["period_hint"], start) for r in rows])
         conn.execute("COMMIT")
-    log.info("fundamentals: results calendar %s: %d meetings of universe stocks", day, len(rows))
+    log.info("fundamentals: results calendar %s: %d meetings of universe and watched stocks", day, len(rows))
     return len(rows)
 
 

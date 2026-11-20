@@ -112,7 +112,8 @@ def fundamentals_list() -> FundamentalsListDTO:
     items = [CandidateDTO(position=n, symbol=r["symbol"], company=_company(r["symbol"], used, latest),
                           sector=r["sector"], short_reason=r["short_reason"]) for n, r in enumerate(shown, start=1)]
     upcoming = [ResultsDateDTO(symbol=m["symbol"], company=_company(m["symbol"], latest, used), date=m["meeting_date"],
-                               period_hint=m["period_hint"]) for m in calendar.upcoming(_today())]
+                               period_hint=m["period_hint"]) for m in calendar.upcoming(_today())
+                if any(u.get(m["symbol"], {}).get("liquid") for u in (used, latest))]   # CW 3: not the watchlist's
     held = sum(1 for s, u in used.items() if u["liquid"] and s not in listed)
     return FundamentalsListDTO(as_of=day, upcoming=upcoming, items=items, held_count=held,
                                not_listed_count=len(rows) - len(shown),

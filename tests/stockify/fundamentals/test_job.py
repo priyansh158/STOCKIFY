@@ -133,6 +133,12 @@ class DailyRunTests(JobCase):
         job.run(TUE, client=self.client)                            # listed today: a retry does not ask again
         self.assertNotIn("list", self.names())
 
+    def test_a_watched_stock_outside_the_universe_is_never_a_meeting_to_list(self):
+        """CW 3: the results calendar also holds the watchlist's stocks; the screener reads only its universe's."""
+        self.meeting("ALPHA", TUE - timedelta(days=1))
+        self.meeting("WATCHED", TUE - timedelta(days=1))
+        self.assertEqual(job._met_without_filing(TUE, within={"ALPHA"}), {"ALPHA"})
+
     def test_every_symbol_is_listed_once_a_week_spread_over_the_weekdays(self):
         """R12: each company is re-listed on its own weekday (a stable split by symbol), so a week's listings are
         spread over Monday to Friday instead of all on one day."""

@@ -94,6 +94,20 @@ class OnceTests(ReminderCase):
         self.assertEqual((res["told"], res["error"]), ([("RELIANCE", "2026-11-23")], None))
         self.assertEqual(store.alerts()[0]["delivery"], "sent")
 
+    def test_an_email_kept_in_notifys_outbox_counts_as_sent(self):
+        """It goes out when the connection returns: the next run must not send it a second time."""
+        from unittest import mock
+        self.meetings(("RELIANCE", "2026-11-23"))
+        self.send.error = "gaierror"
+        with mock.patch("stockify.daemon.notify.queued", return_value=True) as queued:
+            res = self.remind()
+        queued.assert_called_once_with("watch_results", "results:2026-11-20")
+        self.assertIsNone(res["error"])
+        self.assertEqual(store.alerts()[0]["delivery"], "sent")
+        self.send.error = None
+        self.remind(at="21:30")
+        self.assertEqual(len(self.send.calls), 1)
+
     def test_an_empty_watchlist_reads_nothing(self):
         store.remove("RELIANCE")
         store.remove("INFY")
@@ -114,6 +128,19 @@ class CalendarSymbolsTests(ReminderCase):
             self.assertEqual(fcal.refresh(FRI, client=client), 2)
         self.assertEqual({r["symbol"] for r in fcal.upcoming(FRI)}, {"ABB", "INFY"})
         self.assertEqual(client.json.call_count, 1)
+
+    def test_a_broken_watchlist_keeps_the_watched_stocks_meetings(self):
+        """The refresh replaces only what it read: when the watchlist cannot be read, the watched stocks' upcoming
+        meetings stay (their reminders still come), and the universe's are refreshed as ever."""
+        from unittest import mock
+        self.meetings(("INFY", "2026-11-23"), ("ABB", "2026-11-24"))
+        client = mock.MagicMock()
+        client.json.return_value = [{"symbol": "ABB", "purpose": "Financial Results", "date": "25-Nov-2026"}]
+        with mock.patch.object(fcal.universe, "current", return_value=[{"symbol": "ABB"}]), \
+                mock.patch.object(store, "symbols", side_effect=RuntimeError("corrupt")):
+            fcal.refresh(FRI, client=client)
+        self.assertEqual([(r["symbol"], r["meeting_date"]) for r in fcal.upcoming(FRI)],
+                         [("INFY", "2026-11-23"), ("ABB", "2026-11-25")])
 
     def test_a_broken_watchlist_leaves_the_universe_meetings(self):
         from unittest import mock
