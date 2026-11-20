@@ -17,7 +17,7 @@ interface Props {
 }
 
 /** The add box: type a symbol or a company name, pick an NSE share from GET /api/search. Only NSE shares are offered
- *  (the watchlist holds nothing else). */
+ *  (the watchlist holds nothing else): indices come typed INDEX and bonds are named SGB..., and both are left out. */
 export default function AddStock({ watched, full, onAdd }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
@@ -38,7 +38,7 @@ export default function AddStock({ watched, full, onAdd }: Props) {
       setLoading(true);
       try {
         const data = await api<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}&limit=15`, { signal: ctrl.signal });
-        setHits(data.filter((h) => h.exchange === "NSE" && h.instrument_type === "EQ").slice(0, 8));
+        setHits(data.filter((h) => h.exchange === "NSE" && h.instrument_type === "EQ" && !/^SGB/i.test(h.ticker)).slice(0, 8));
         setActiveIdx(0);
         setProblem(null);
       } catch (e) {

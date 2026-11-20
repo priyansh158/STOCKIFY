@@ -30,6 +30,7 @@ router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
 
 NO_CANDLES = "Daily prices arrive after tonight's fetch"
 SHORT_HISTORY = "Less than a year of daily prices, so no 52-week range yet"
+NO_RECENT = "No daily prices in the last year"
 _SYMBOL = re.compile(r"^[A-Za-z0-9&_. \-]{1,40}$")
 _DAY_NS = 86_400 * 10**9
 
@@ -41,10 +42,11 @@ def now_ns() -> int:
 def _row(r: dict, today, cfg: dict) -> WatchRowDTO:
     iid = r["instrument_id"]
     bars = history.bars(iid, "day")
-    # The range is judged as of tomorrow, so every candle up to and including today's is in it: the page compares the
-    # live price with the highs and lows made so far.
-    rng = ranges.prior_range(bars, today + timedelta(days=1), cfg["lookback_days"], cfg["min_history_days"])
+    # The range is judged as of today, like the live evaluator's (365 days before today), so intraday the page agrees
+    # with the alerts. Once the evening fetch has put today's candle in, it is folded in too (as of tomorrow).
     last = ranges.last_close(bars, today)
+    day = today + timedelta(days=1) if last and last[1] == today.isoformat() else today
+    rng = ranges.prior_range(bars, day, cfg["lookback_days"], cfg["min_history_days"])
     dto = {"symbol": r["symbol"], "instrument_id": iid, "added_ns": r["added_ns"],
            "token": instruments.token_at(iid, today)}
     if last:
@@ -53,7 +55,8 @@ def _row(r: dict, today, cfg: dict) -> WatchRowDTO:
         dto.update(high_paise=rng["high_paise"], high_date=rng["high_date"], low_paise=rng["low_paise"],
                    low_date=rng["low_date"])
     else:
-        dto["note"] = SHORT_HISTORY if bars else NO_CANDLES
+        stale = last is not None and last[1] < (today - timedelta(days=cfg["lookback_days"])).isoformat()
+        dto["note"] = NO_CANDLES if not bars else NO_RECENT if stale else SHORT_HISTORY
     return WatchRowDTO(**dto)
 
 
