@@ -87,8 +87,27 @@ class TargetTests(CandlesTest):
         self.assertEqual([t[1] for t in got], ["INFY", "RELIANCE", "TCS", "GONECO"])
         self.assertIsNone(got[-1][2])                                            # the watchlist has no ISIN
 
-    def test_the_watchlist_hook_is_empty_until_phase_2(self):
+    def test_the_watchlist_hook_reads_the_watchlist_store_in_list_order(self):
+        """CW 5.1: the watched stocks get their candles too (the 52-week alerts and ranges read them)."""
+        from stockify.watchlist import store as wstore
+        support.reset_sqlite_singleton(wstore)
+        self.addCleanup(support.reset_sqlite_singleton, wstore)
         self.assertEqual(daily_candles._watchlist_ids(), [])
+        wstore.add("TCS")
+        wstore.add("RELIANCE")
+        self.assertEqual(daily_candles._watchlist_ids(), [self.ids["TCS"], self.ids["RELIANCE"]])
+
+    def test_an_unreadable_watchlist_is_logged_and_never_stops_the_candle_job(self):
+        import logging
+        from stockify.watchlist import store as wstore
+        was = logging.root.manager.disable                                       # the runner switches logging off
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+        with mock.patch.object(wstore, "ids", side_effect=RuntimeError("file is not a database")), \
+                self.assertLogs("stockify.data.daily_candles", "WARNING") as cm:
+            self.assertEqual(daily_candles._watchlist_ids(), [])
+            self.assertEqual([t[1] for t in daily_candles.targets(DAY)], ["INFY", "RELIANCE", "TCS"])
+        self.assertIn("watchlist", "\n".join(cm.output))
 
     def test_a_universe_row_without_an_id_is_resolved_by_its_nse_symbol(self):
         self.universe(["INFY", "MISSING"], ids={"INFY": None})

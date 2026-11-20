@@ -2,8 +2,8 @@
 watchlist, topped up right after the close while the day's Kite login is still valid (spec 2026-11-19, Phase 1).
 
 `targets(day)`: the newest fundamentals universe (`universe.current()`), each stock by its refdata id (a row without
-one is looked up by its NSE symbol), then the watchlist's stocks (`_watchlist_ids()`, empty until the watchlist store
-exists), each stock once.
+one is looked up by its NSE symbol), then the watchlist's stocks (`_watchlist_ids()`, `watchlist.store.ids()`; an
+unreadable watchlist is logged and skipped), each stock once.
 
 `up_to_date(iid, day)`: the bar cache's fetch log already has a daily fetch reaching `day`, made after `day`'s
 close (sessions.json, via `calendar.session_close_ns`), so a candle fetched during the session is fetched again.
@@ -57,8 +57,15 @@ def settings() -> dict:
 # ── targets ──────────────────────────────────────────────────────────────────
 
 def _watchlist_ids() -> list[int]:
-    """The watchlist's instrument ids. Empty until Phase 2 adds the watchlist store (`watchlist.store.ids()`)."""
-    return []
+    """The watchlist's instrument ids in list order (`watchlist.store.ids()`, CW 5.1). An unreadable watchlist is
+    logged and gives []: the universe's candles are fetched all the same."""
+    try:
+        from stockify.watchlist import store as watch_store
+        return [int(i) for i in watch_store.ids()]
+    except Exception as e:  # noqa: BLE001 — the candle job never stops for the watchlist
+        log.warning("daily candles: the watchlist could not be read (%s); only the universe's candles are fetched",
+                    type(e).__name__)
+        return []
 
 
 def targets(day: date) -> list[tuple[int | None, str, str | None]]:
