@@ -10,7 +10,9 @@ close (sessions.json, via `calendar.session_close_ns`), so a candle fetched duri
 
 `run(day, ...)` for each target, in order:
 
-* skipped, with a plain reason: "not in instruments", "not an NSE stock", "no Kite token (delisted or suspended)";
+* skipped, with a plain reason: "not in instruments", "not an NSE equity or ETF" (an index, another exchange),
+  "a government security, not a stock" (a sovereign gold bond or G-sec, the desk's rule), "no Kite token (delisted
+  or suspended)"; an ETF is kept (Kite lists it as an equity), so the watchlist's 52-week alerts have its candles;
 * up to date: nothing asked;
 * otherwise `history.top_up_daily` (candles.json `history_years`), through this job's own bucket at candles.json
   `rps`, so it never shares the process-wide one.
@@ -40,7 +42,9 @@ SEC = 1_000_000_000
 CLOSE_GROUP = "CM"                       # the cash market's session close ends a stock's day (sessions.json)
 
 NOT_IN_INSTRUMENTS = "not in instruments"
-NOT_NSE_STOCK = "not an NSE stock"
+NOT_NSE_STOCK = "not an NSE equity or ETF"
+GOVERNMENT_SECURITY = "a government security, not a stock"
+STOCK_KINDS = ("EQ", "ETF")              # refdata kinds a stock can have (an ETF is an EQ row in Kite's dump)
 NO_TOKEN = "no Kite token (delisted or suspended)"
 
 
@@ -56,11 +60,12 @@ def _watchlist_ids() -> list[int]:
     return []
 
 
-def targets(day: date) -> list[tuple[int | None, str]]:
-    """[(instrument_id or None, symbol)]: the newest liquid universe by symbol, then the watchlist, each id once.
-    `day` is the trade date being fetched (the universe is the newest one read, whatever its date)."""
+def targets(day: date) -> list[tuple[int | None, str, str | None]]:
+    """[(instrument_id or None, symbol, ISIN or None)]: the newest liquid universe by symbol, then the watchlist (no
+    ISIN), each id once. `day` is the trade date being fetched (the universe is the newest one read, whatever its
+    date)."""
     from stockify.fundamentals import universe
-    out: list[tuple[int | None, str]] = []
+    out: list[tuple[int | None, str, str | None]] = []
     seen: set[int] = set()
     for row in universe.current():
         iid = row.get("instrument_id") or instruments.find("NSE", row["symbol"])
@@ -68,12 +73,12 @@ def targets(day: date) -> list[tuple[int | None, str]]:
             if iid in seen:
                 continue
             seen.add(iid)
-        out.append((iid, row["symbol"]))
+        out.append((iid, row["symbol"], row.get("isin")))
     for iid in _watchlist_ids():
         if iid in seen:
             continue
         seen.add(iid)
-        out.append((iid, (instruments.get(iid) or {}).get("tradingsymbol") or str(iid)))
+        out.append((iid, (instruments.get(iid) or {}).get("tradingsymbol") or str(iid), None))
     return out
 
 
@@ -93,14 +98,16 @@ def up_to_date(instrument_id: int, day: date) -> bool:
     return row is not None
 
 
-def _skip_reason(iid: int | None, day: date) -> str | None:
+def _skip_reason(iid: int | None, day: date, symbol: str = "", isin: str | None = None) -> str | None:
     if iid is None:
         return NOT_IN_INSTRUMENTS
     info = instruments.get(iid)
     if info is None:
         return NOT_IN_INSTRUMENTS
-    if info.get("exchange") != "NSE" or info.get("kind") != "EQ":
+    if info.get("exchange") != "NSE" or info.get("kind") not in STOCK_KINDS:
         return NOT_NSE_STOCK
+    if instruments.is_government_security(info.get("tradingsymbol") or symbol, isin):
+        return GOVERNMENT_SECURITY
     if instruments.token_at(iid, day) is None:
         return NO_TOKEN
     return None
@@ -161,6 +168,10 @@ def run(day: date, *, client=None, deadline_ns: int | None = None, now: Callable
         log.info("candles for %s: no Kite login; tried again after the next login", day)
         out["logged_in"] = False
         return out
+    if deadline_ns is not None and now() >= deadline_ns:            # past it: no client, no targets, no request
+        log.info("candles for %s: too close to the next session; runs later", day)
+        out["stopped"] = "deadline"
+        return out
     cfg = settings()
     if client is None:
         from stockify import kite_readonly
@@ -171,12 +182,12 @@ def run(day: date, *, client=None, deadline_ns: int | None = None, now: Callable
     todo = targets(day)
     out["targets"] = len(todo)
     try:
-        for iid, symbol in todo:
+        for iid, symbol, isin in todo:
             if deadline_ns is not None and now() >= deadline_ns:
                 out["stopped"] = "deadline"
                 break
             try:
-                reason = _skip_reason(iid, day)
+                reason = _skip_reason(iid, day, symbol, isin)
             except Exception as e:  # noqa: BLE001 — a lookup that raises fails this stock only
                 log.exception("candles for %s: %s could not be looked up", day, symbol)
                 out["failed"].append({"symbol": symbol, "error": f"{type(e).__name__}: {e}"})
@@ -208,7 +219,7 @@ def _one(iid: int, symbol: str, day: date, cfg: dict, client, bkt, clock, now, d
     for attempt in range(len(waits) + 1):
         try:
             res = history.top_up_daily(iid, day, years=int(cfg["history_years"]), client=client, bkt=bkt,
-                                       deadline_ns=deadline_ns)
+                                       deadline_ns=deadline_ns, today=day)
         except Exception as e:  # noqa: BLE001 — sorted below: the login, a 429, or this stock's own trouble
             if _login_failed(e):
                 log.warning("candles for %s: Kite refused the login at %s; stopping until the next login", day,

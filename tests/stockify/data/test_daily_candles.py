@@ -79,18 +79,20 @@ class CandlesTest(unittest.TestCase):
 
 class TargetTests(CandlesTest):
     def test_targets_are_the_universe_then_the_watchlist_once_each(self):
-        self.assertEqual(daily_candles.targets(DAY), [(self.ids["INFY"], "INFY"), (self.ids["RELIANCE"], "RELIANCE"),
-                                                      (self.ids["TCS"], "TCS")])
+        self.assertEqual([t[:2] for t in daily_candles.targets(DAY)],
+                         [(self.ids["INFY"], "INFY"), (self.ids["RELIANCE"], "RELIANCE"), (self.ids["TCS"], "TCS")])
+        self.assertEqual(daily_candles.targets(DAY)[0][2], "INE000000000")
         with mock.patch.object(daily_candles, "_watchlist_ids", return_value=[self.ids["TCS"], self.ids["GONECO"]]):
             got = daily_candles.targets(DAY)
-        self.assertEqual([s for _, s in got], ["INFY", "RELIANCE", "TCS", "GONECO"])
+        self.assertEqual([t[1] for t in got], ["INFY", "RELIANCE", "TCS", "GONECO"])
+        self.assertIsNone(got[-1][2])                                            # the watchlist has no ISIN
 
     def test_the_watchlist_hook_is_empty_until_phase_2(self):
         self.assertEqual(daily_candles._watchlist_ids(), [])
 
     def test_a_universe_row_without_an_id_is_resolved_by_its_nse_symbol(self):
         self.universe(["INFY", "MISSING"], ids={"INFY": None})
-        self.assertEqual(daily_candles.targets(DAY), [(self.ids["INFY"], "INFY"), (None, "MISSING")])
+        self.assertEqual([t[:2] for t in daily_candles.targets(DAY)], [(self.ids["INFY"], "INFY"), (None, "MISSING")])
 
     def test_no_universe_yet_means_no_targets(self):
         with mock.patch.object(fstore, "latest_as_of", return_value=None):
@@ -137,7 +139,7 @@ class RunTests(CandlesTest):
         self.assertEqual(sorted(res["skipped"], key=lambda s: s["symbol"]), [
             {"symbol": "GONECO", "reason": "no Kite token (delisted or suspended)"},
             {"symbol": "MISSING", "reason": "not in instruments"},
-            {"symbol": "NIFTY 50", "reason": "not an NSE stock"},
+            {"symbol": "NIFTY 50", "reason": "not an NSE equity or ETF"},
         ])
         self.assertEqual(res["fetched"], 1)
         self.assertTrue(res["complete"])                                         # a skip is not a failure
@@ -230,3 +232,48 @@ class RunTests(CandlesTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FixRoundOneTests(CandlesTest):
+    def test_an_etf_keeps_its_candles_and_government_securities_are_skipped(self):
+        """Fix round 1 (7): an ETF (an EQ row in Kite's dump) is fetched; a sovereign gold bond or a government
+        security (by its SGB symbol or IN00 ISIN, the desk's rule) is skipped."""
+        extra = ("5001,60,NIFTYBEES,NIPPON NIFTY ETF,0,,0,0.01,1,EQ,NSE,NSE\n"
+                 "5002,61,SGBMAR29,SGB 2029,0,,0,0.01,1,EQ,NSE,NSE\n"
+                 "5003,62,727GS2032,GOI 2032,0,,0,0.01,1,EQ,NSE,NSE\n")
+        instruments.sync(DAY, dump(extra), underlyings={})
+        ids = {s: instruments.find("NSE", s) for s in ("NIFTYBEES", "SGBMAR29", "727GS2032")}
+        fstore.put_universe(DAY.isoformat(), [
+            {"symbol": s, "instrument_id": ids[s], "isin": isin, "company": s, "median_value_paise": 10 ** 12,
+             "liquid": True, "list_industry": "X"}
+            for s, isin in (("NIFTYBEES", "INF204KB14I2"), ("SGBMAR29", "IN0020210012"),
+                            ("727GS2032", "IN0020220011"))])
+        kite = Kite(self.clock)
+        res = self.run_job(kite)
+        self.assertEqual(res["fetched"], 1)
+        self.assertEqual({c["token"] for c in kite.calls}, {5001})
+        self.assertEqual(sorted(res["skipped"], key=lambda s: s["symbol"]), [
+            {"symbol": "727GS2032", "reason": "a government security, not a stock"},
+            {"symbol": "SGBMAR29", "reason": "a government security, not a stock"},
+        ])
+
+    def test_a_watchlisted_sgb_is_skipped_by_its_symbol(self):
+        extra = "5002,61,SGBMAR29,SGB 2029,0,,0,0.01,1,EQ,NSE,NSE\n"
+        instruments.sync(DAY, dump(extra), underlyings={})
+        self.universe([])
+        with mock.patch.object(daily_candles, "_watchlist_ids", return_value=[instruments.find("NSE", "SGBMAR29")]):
+            res = self.run_job(Kite(self.clock))
+        self.assertEqual(res["skipped"], [{"symbol": "SGBMAR29", "reason": "a government security, not a stock"}])
+
+    def test_a_passed_deadline_builds_no_client_and_reads_no_targets(self):
+        """Fix round 1 (4)."""
+        with mock.patch.object(daily_candles, "targets", side_effect=AssertionError("targets read")):
+            res = daily_candles.run(DAY, client=None, clock=self.clock, logged_in=lambda: True,
+                                    deadline_ns=self.clock.now_ns())
+        self.assertEqual((res["stopped"], res["complete"], res["requests"]), ("deadline", False, 0))
+
+    def test_the_range_end_is_the_day_and_today_is_the_day(self):
+        kite = Kite(self.clock)
+        self.run_job(kite)
+        bars = history.bars(self.ids["INFY"], "day")
+        self.assertTrue(all(b["fetched_on"] == DAY.isoformat() for b in bars))
