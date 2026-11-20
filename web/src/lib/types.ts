@@ -1021,6 +1021,8 @@ export interface DeskViewDTO {
   as_of_ns: number;
   close_date?: string | null;
   plain: string;
+  /** False for a watched stock that is not held: the page words it for a watchlist, not a holding. */
+  held?: boolean;
 }
 
 // Fundamentals screener (FS 9): the ordered list, one stock's details, the test record. No score, rank or place

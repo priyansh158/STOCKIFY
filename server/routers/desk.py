@@ -79,6 +79,11 @@ def _watched_id(sym: str) -> int | None:
     return None
 
 
+def _is_watch_view(row: dict) -> bool:
+    """A view the nightly watchlist pass made (CW 6): not a holding's, so the holdings list never shows it."""
+    return (row.get("view") or {}).get("source") == "watch"
+
+
 def _find(symbol: str, t_ns: int):  # noqa: ANN202
     """(holding or None, instrument_id, logged_in) for a symbol in the URL; 404 when the desk has nothing on it."""
     if not _SYMBOL.match(symbol):
@@ -112,7 +117,7 @@ def desk_list() -> DeskListDTO:
     if snap.error:
         items = [DeskChipDTO(symbol=r["symbol"], exchange="NSE", instrument_id=r["instrument_id"],
                              verdict=r["verdict"], as_of_ns=int(r["made_ns"]), close_date=r["view"].get("close_date"))
-                 for r in store.latest_views()]
+                 for r in store.latest_views() if not _is_watch_view(r)]
         plain = ("Your Kite login has expired, so these are the last closing views of the stocks the desk has graded; "
                  "log in again to see your current holdings." if getattr(snap, "expired", False) else
                  "Kite is not logged in, so these are the last closing views of the stocks the desk has graded; "
@@ -178,7 +183,8 @@ def desk_view(symbol: str) -> DeskViewDTO:
         disagree=list(view.get("disagree") or []), signals=_signals(view, rows),
         evidence_from=min((r["from_date"] for r in rows), default=None),
         evidence_to=view.get("evidence_to") or max((r["to_date"] for r in rows), default=None),
-        as_of_ns=made, close_date=view.get("close_date"), plain=_plain(view, made, logged_in))
+        as_of_ns=made, close_date=view.get("close_date"), plain=_plain(view, made, logged_in),
+        held=h is not None if logged_in else not _is_watch_view(row))
 
 
 # ── GET /api/desk/{symbol}/chart ─────────────────────────────────────────────

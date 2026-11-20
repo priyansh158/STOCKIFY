@@ -230,6 +230,12 @@ class WatchedStockTests(DeskApiBase):
         super().setUp()
         self.snap = snapshot([holding("INFY", TOKENS["INFY"])])             # TCS is not held any more
         watch_store.add("TCS", now_ns=1)
+        self.tag_watch("TCS")
+
+    def tag_watch(self, sym):
+        """Store TCS's view as the nightly watchlist pass does: tagged source "watch"."""
+        v = {**self.views[sym], "source": "watch"}
+        desk_store.put_view("2026-11-16", self.ids[sym], sym, v["verdict"], v, AFTER_CLOSE - 86_400 * 10**9)
 
     def test_a_watched_stock_that_is_not_held_has_its_view_and_chart(self):
         body = self.get("/api/desk/TCS")
@@ -257,7 +263,19 @@ class WatchedStockTests(DeskApiBase):
 
     def test_logged_out_it_is_served_as_before(self):
         self.snap = snapshot(error="Kite not authenticated")
-        self.assertEqual(self.get("/api/desk/TCS")["symbol"], "TCS")
+        body = self.get("/api/desk/TCS")
+        self.assertEqual(body["symbol"], "TCS")
+        self.assertFalse(body["held"])                                   # a watch view, even with no holdings known
+
+    def test_logged_out_the_holdings_list_leaves_out_watch_views(self):
+        self.snap = snapshot(error="Kite not authenticated")
+        self.assertEqual([c["symbol"] for c in self.get("/api/desk")["items"]], ["INFY"])
+
+    def test_the_view_says_whether_the_stock_is_held(self):
+        self.assertFalse(self.get("/api/desk/TCS")["held"])
+        self.assertTrue(self.get("/api/desk/INFY")["held"])
+        self.snap = snapshot(error="Kite not authenticated")
+        self.assertTrue(self.get("/api/desk/INFY")["held"])              # an untagged view was a holding's
 
 
 class ChartTests(DeskApiBase):

@@ -48,10 +48,12 @@ export default function DeskHoldingPage({ params }: { params: Promise<{ symbol: 
     return () => ctl.abort();
   }, [symbol, attempt]);
 
+  // a watched stock that is not held is a watchlist stock: its crumb goes back to the watchlist (CW 6)
+  const watchedOnly = result?.kind === "view" && result.view.held === false;
   return (
     <div className="stk-page">
-      <Link href="/portfolio" className="stk-crumb">
-        Portfolio
+      <Link href={watchedOnly ? "/watchlist" : "/portfolio"} className="stk-crumb">
+        {watchedOnly ? "Watchlist" : "Portfolio"}
       </Link>
 
       {result === null && (
@@ -110,6 +112,7 @@ function View({ result, kite }: { result: Extract<DeskViewResult, { kind: "view"
   const v = result.view;
   const loggedOut = kite !== null && !kite.authenticated;
   const plain = v.plain;
+  const held = v.held !== false;
   return (
     <div className="stk-stack" data-ruled>
       <div className="stk-head">
@@ -119,11 +122,13 @@ function View({ result, kite }: { result: Extract<DeskViewResult, { kind: "view"
             <span className="stk-label">{asOfClose(v.close_date, v.as_of_ns)}</span>
           </div>
           <h1 className="stk-gap-s">{v.symbol}</h1>
-          <p className="stk-lede">Exit suggestions, not orders.</p>
+          <p className="stk-lede">
+            {held ? "Exit suggestions, not orders." : "What the tested rules say about this watched stock."}
+          </p>
         </div>
       </div>
 
-      {loggedOut ? (
+      {loggedOut && held ? (
         <Panel tone="amber">
           <p>
             {plain}{" "}
@@ -133,7 +138,16 @@ function View({ result, kite }: { result: Extract<DeskViewResult, { kind: "view"
           </p>
         </Panel>
       ) : (
-        plain && <p className="stk-fine" role="status">{plain}</p>
+        plain && (
+          <p className="stk-fine" role="status">
+            {plain}{" "}
+            {!held && (
+              <Link href="/watchlist" className="stk-link">
+                Back to the watchlist
+              </Link>
+            )}
+          </p>
+        )
       )}
 
       <div className="stk-section stk-desk-top">

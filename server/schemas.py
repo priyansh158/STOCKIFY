@@ -1063,6 +1063,7 @@ class DeskViewDTO(BaseModel):
     as_of_ns: int
     close_date: str | None = None
     plain: str
+    held: bool = True                       # False for a watched stock that is not held (the page words it for a watchlist)
 
 # ── Fundamentals screener (FS 9): the ordered list, one stock's details, the test record. No score, rank or place
 #    field anywhere: the list's order is the judgement (owner, 2026-11-17). ──
