@@ -395,14 +395,15 @@ def _cmd_fundamentals_test_record(args) -> int:
         return 1
     done = [0]
 
-    def fetch(iid, interval, start, end, **kw):  # noqa: ANN001, ANN003, ANN202
-        stats = test_record.bars_history.fetch(iid, interval, start, end, **kw)
+    def top_up(iid, day, **kw):  # noqa: ANN001, ANN003, ANN202
+        res = test_record.bars_history.top_up_daily(iid, day, **kw)
         done[0] += 1
-        print(f"bars {done[0]}: instrument {iid} {stats.outcome}", flush=True)
-        return stats
-    print("Fetching each ranked stock's daily prices from Kite, then running the walk-forward ...", flush=True)
+        print(f"bars {done[0]}: instrument {iid} {res.outcome}, {res.requests} Kite requests", flush=True)
+        return res
+    print("Fetching each ranked stock's daily prices from Kite (only what the nightly candles do not hold yet), "
+          "then running the walk-forward ...", flush=True)
     try:
-        res = test_record.run(fetch=fetch)
+        res = test_record.run(top_up=top_up)
     except ValueError as e:
         print(e, file=sys.stderr)
         return 1
