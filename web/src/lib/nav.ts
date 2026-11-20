@@ -4,6 +4,7 @@
  */
 export const DESTINATIONS = [
   { href: "/portfolio", label: "Portfolio", note: "Your Zerodha holdings, read-only." },
+  { href: "/watchlist", label: "Watchlist", note: "Stocks you follow, with live prices and how far each is from its 52-week high and low." },
   { href: "/alerts", label: "Geo alerts", note: "World events that could disrupt Indian stocks, found by the background news monitor." },
   { href: "/tests", label: "Strategy tests", note: "Backtests on recorded and downloaded NSE data, with real costs." },
   { href: "/trade", label: "Paper trading", note: "Strategies trade live prices with pretend money." },

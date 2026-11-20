@@ -20,7 +20,7 @@ class NavSingleSourceTest(unittest.TestCase):
     def test_each_destination_has_a_label_a_note_and_a_page(self):
         text = (APP / "lib" / "nav.ts").read_text(encoding="utf-8")
         rows = re.findall(r'\{ href: "(/[a-z]+)", label: "([^"]+)", note: "([^"]+)" \}', text)
-        self.assertEqual([r[0] for r in rows], ["/portfolio", "/alerts", "/tests", "/trade", "/research", "/data"])
+        self.assertEqual([r[0] for r in rows], ["/portfolio", "/watchlist", "/alerts", "/tests", "/trade", "/research", "/data"])
         for href, label, note in rows:
             self.assertTrue(label and note)
             self.assertTrue((APP / "app" / href.lstrip("/") / "page.tsx").is_file(), href)
