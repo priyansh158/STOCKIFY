@@ -19,6 +19,24 @@ def flat(first: date, n: int, *, high=110, low=90, close=100) -> list[dict]:
     return [bar(first + timedelta(days=i), high, low, close) for i in range(n)]
 
 
+class StockRangeTests(unittest.TestCase):
+    DAY = date(2026, 11, 17)
+
+    def test_judged_as_of_today_until_todays_candle_is_in(self):
+        bars = flat(self.DAY - timedelta(days=420), 420)                      # the last candle is the day before
+        last, rng = ranges.stock_range(bars, self.DAY, 365, 365)
+        self.assertEqual(last, (100, (self.DAY - timedelta(days=1)).isoformat()))
+        self.assertEqual(rng, ranges.prior_range(bars, self.DAY, 365, 365))
+        bars.append(bar(self.DAY, 300, 5, 100))                               # today's candle joins the range
+        last, rng = ranges.stock_range(bars, self.DAY, 365, 365)
+        self.assertEqual((last[1], rng["high_paise"], rng["low_paise"]), (self.DAY.isoformat(), 300, 5))
+
+    def test_no_bars_and_short_history(self):
+        self.assertEqual(ranges.stock_range([], self.DAY, 365, 365), (None, None))
+        last, rng = ranges.stock_range(flat(self.DAY - timedelta(days=50), 50), self.DAY, 365, 365)
+        self.assertEqual((last is not None, rng), (True, None))
+
+
 class PriorRangeTests(unittest.TestCase):
     DAY = date(2026, 11, 17)
 

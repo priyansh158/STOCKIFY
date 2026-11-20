@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date
 from typing import NamedTuple
 
 from server.schemas import RunChartDTO
@@ -82,11 +82,8 @@ def daily(rows: list[dict]) -> list[Candle]:
 
 
 def stock_range(rows: list[dict], today: date, cfg: dict) -> tuple[tuple[int, str] | None, dict | None]:
-    """(last close, 52-week range) of a stock from `history.bars` rows, by the watchlist's rule: the range is judged as of
-    today (like the live evaluator's), and once today's own candle is in it is folded in too (as of tomorrow)."""
-    last = ranges.last_close(rows, today)
-    day = today + timedelta(days=1) if last and last[1] == today.isoformat() else today
-    return last, ranges.prior_range(rows, day, cfg["lookback_days"], cfg["min_history_days"])
+    """(last close, 52-week range) of a stock from `history.bars` rows, by the watchlist's rule (ranges.stock_range)."""
+    return ranges.stock_range(rows, today, cfg["lookback_days"], cfg["min_history_days"])
 
 
 def stock_rows(iid: int) -> list[dict]:
