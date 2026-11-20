@@ -104,6 +104,27 @@ class BuildTests(SubscriptionTest):
         self.assertTrue(any("NOSUCH" in w for w in m.warnings))
         self.assertTrue(any("far future" in w for w in m.warnings))
 
+    def test_watched_stocks_are_a_quote_tier_with_the_watch_reason(self):
+        """CW 3: `watchlist_quote` (added by `stockify.watchlist.feed.merged`) subscribes in QUOTE mode, reason
+        `watch:SYMBOL`."""
+        m = self.manager(equities_quote=[], watchlist_quote=["NSE:RELIANCE"])
+        m.build({self.index: 2_501_000})
+        rel = instruments.find("NSE", "RELIANCE")
+        self.assertEqual((m.current[rel].mode, m.current[rel].reason), (QUOTE, "watch:RELIANCE"))
+        self.assertTrue(any(r[5] == "start:watch:RELIANCE" for r in self.logged))
+
+    def test_a_stock_already_in_a_tier_keeps_its_mode_and_reason(self):
+        rel = instruments.find("NSE", "RELIANCE")
+        quoted = self.manager(watchlist_quote=["NSE:RELIANCE"])             # equities_quote has RELIANCE
+        self.assertEqual((quoted.static[rel].mode, quoted.static[rel].reason), (QUOTE, "equity:NSE:RELIANCE"))
+        full = self.manager(equities_quote=[], equities_full=["NSE:RELIANCE"], watchlist_quote=["NSE:RELIANCE"])
+        self.assertEqual((full.static[rel].mode, full.static[rel].reason), (FULL, "equity:NSE:RELIANCE"))
+
+    def test_an_unknown_watched_symbol_warns_and_the_rest_is_built(self):
+        m = self.manager(watchlist_quote=["NSE:NOSUCH"])
+        self.assertTrue(any("watch:NOSUCH" in w for w in m.warnings))
+        self.assertIn(self.index, m.static)
+
     def test_every_subscription_is_logged(self):
         m = self.manager()
         m.build({self.index: 2_501_000})

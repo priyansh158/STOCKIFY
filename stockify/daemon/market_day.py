@@ -580,6 +580,8 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         try:
             tokens = daemon._token_map(day)
             universe = loader.load_json("universe.json")
+            from stockify.watchlist import feed
+            universe = feed.merged(universe, day)      # CW 3, live only (a replay subscribes what it recorded); never raises
             manager = SubscriptionManager(day, universe, clock)
         except BaseException:
             daemon._release_ticket(ticker)
