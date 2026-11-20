@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { dayWords, pct, rupees } from "@/lib/format";
 import { useTicks } from "@/lib/useTicks";
 import type { WatchRowDTO, WatchlistDTO } from "@/lib/types";
 import { addWatched, aboveLow, belowHigh, getWatchlist, ltpPaise, problemWords, removeWatched } from "@/lib/watchlist";
+import StockChart from "@/components/StockChart";
 import { Chip, Empty, Table } from "@/components/ui";
 import AddStock from "./AddStock";
 
@@ -46,6 +47,7 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
   const [data, setData] = useState<WatchlistDTO>(initial);
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null); // the stock whose chart is showing under its row
 
   const tokens = useMemo(() => data.items.map((r) => r.token ?? 0).filter((t) => t > 0), [data.items]);
   const ticks = useTicks(tokens);
@@ -119,6 +121,7 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                 { label: "Below the high", num: true },
                 { label: "52-week low", num: true },
                 { label: "Above the low", num: true },
+                { label: "Chart" },
                 { label: "Remove" },
               ]}
             >
@@ -126,8 +129,10 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                 const live = r.token ? ticks?.[String(r.token)] : undefined;
                 const livePaise = live && Number.isFinite(live.ltp) && live.ltp > 0 ? ltpPaise(live.ltp) : null;
                 const price = livePaise ?? r.last_close_paise ?? null;
+                const showing = open === r.symbol;
                 return (
-                  <tr key={r.symbol}>
+                  <Fragment key={r.symbol}>
+                  <tr>
                     <td className="stk-mono">{r.symbol}</td>
                     <td className="num">
                       <Price row={r} livePaise={livePaise} />
@@ -151,6 +156,19 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                         type="button"
                         className="stk-btn"
                         data-tone="quiet"
+                        aria-expanded={showing}
+                        aria-controls={`chart-${r.symbol}`}
+                        aria-label={`${showing ? "Hide" : "Show"} the chart of ${r.symbol}`}
+                        onClick={() => setOpen(showing ? null : r.symbol)}
+                      >
+                        {showing ? "Hide chart" : "Chart"}
+                      </button>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="stk-btn"
+                        data-tone="quiet"
                         disabled={busy === r.symbol}
                         aria-label={`Remove ${r.symbol} from the watchlist`}
                         onClick={() => void onRemove(r.symbol)}
@@ -159,6 +177,14 @@ export default function WatchlistView({ initial }: { initial: WatchlistDTO }) {
                       </button>
                     </td>
                   </tr>
+                  {showing && (
+                    <tr>
+                      <td colSpan={8} id={`chart-${r.symbol}`} data-wrap>
+                        <StockChart symbol={r.symbol} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </Table>
