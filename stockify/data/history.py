@@ -482,22 +482,33 @@ def last_daily_bar_day(instrument_id: int) -> date | None:
     return None if ts is None else timeutil.ns_to_ist(int(ts)).date()
 
 
+def _clear_daily(instrument_id: int) -> None:
+    with _Tx() as conn:
+        conn.execute("DELETE FROM bars WHERE instrument_id=? AND interval='day'", (int(instrument_id),))
+        conn.execute("DELETE FROM bar_fetch_log WHERE instrument_id=? AND interval='day'", (int(instrument_id),))
+
+
 def top_up_daily(instrument_id: int, day: date, *, years: int, client, bkt: TokenBucket | None = None,  # noqa: ANN001
-                 deadline_ns: int | None = None) -> TopUp:
-    """`years` of daily candles up to `day` in the cache; only what is missing is asked for. A history already
-    fetched back that far is fetched from its last cached bar on (so an earlier provisional close is replaced); a
-    split or bonus refetch (C-5) takes the years again. `bkt` and `deadline_ns` go to `fetch`."""
+                 deadline_ns: int | None = None, today: date | None = None) -> TopUp:
+    """`years` of daily candles up to `day` (the range's last IST date) in the cache; only what is missing is asked
+    for. A history already fetched back to the range's first day, or further, is fetched from its last cached bar on
+    (at most `day`; an earlier provisional close is replaced). A split or bonus refetch (C-5) takes the years again:
+    the cache is cleared once more before that refill, so it always starts at the first day with no hole, and a refill
+    cut short (the deadline, a 429, an error) is finished by the next top-up. `today` (default the IST today) picks
+    the Kite token and stamps the bars, apart from `day`. `bkt` and `deadline_ns` go to `fetch`."""
+    today = today or timeutil.ist_today()
     from_day = years_before(day, years)
     last = last_daily_bar_day(instrument_id)
     start = from_day
     if last is not None and fetched_back_to(instrument_id, from_day):
         start = min(day, last)
-    stats = fetch(instrument_id, "day", start, day, client=client, today=day, bkt=bkt, deadline_ns=deadline_ns)
+    stats = fetch(instrument_id, "day", start, day, client=client, today=today, bkt=bkt, deadline_ns=deadline_ns)
     out = TopUp(refetched=getattr(stats, "adjustment", None) == "refetched",
                 requests=int(getattr(stats, "requests", 0) or 0), outcome=getattr(stats, "outcome", "ok"),
                 detail=getattr(stats, "detail", ""))
     if out.refetched and start != from_day and out.outcome == "ok":      # the cache was cleared: the years again
-        again = fetch(instrument_id, "day", from_day, day, client=client, today=day, check_adjustments=False,
+        _clear_daily(instrument_id)              # drop the short range just stored, so a cut refill leaves no hole
+        again = fetch(instrument_id, "day", from_day, day, client=client, today=today, check_adjustments=False,
                       bkt=bkt, deadline_ns=deadline_ns)
         out.requests += int(getattr(again, "requests", 0) or 0)
         out.outcome, out.detail = getattr(again, "outcome", "ok"), getattr(again, "detail", "")
