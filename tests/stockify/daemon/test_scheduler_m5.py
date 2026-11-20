@@ -59,14 +59,14 @@ class CatchUpOrderTest(JobsBase):
             self.state.mark(job, MON)
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
         self.assertEqual(due, [("finalise", MON), ("compaction", MON), ("parity", MON), ("daily_summary", MON),
-                               ("desk", MON), ("fundamentals", MON), ("backup", WED)])
+                               ("desk", MON), ("fundamentals", MON), ("watch_results", MON), ("backup", WED)])
         self.assertLess(ist(WED, "08:00"), scheduler.plan(WED).day_bundles_ns)
 
     def test_the_whole_evening_is_ordered_per_day(self):
         due = since(scheduler.missed_jobs(ist(WED, "08:00"), self.state), MON)
         mon = [j for j, d in due if d == MON]
         self.assertEqual(mon, ["nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk",
-                               "fundamentals"])
+                               "fundamentals", "watch_results"])
         days = [d for j, d in due if j != "backup"]
         self.assertEqual(days, sorted(days))                                    # oldest day first
         self.assertEqual(due[-1][0], "backup")
@@ -79,7 +79,7 @@ class CatchUpOrderTest(JobsBase):
 
     def test_backup_always_catch_up_after_wake(self):
         for job in ("nse_fetch", "margin_files", "finalise", "compaction", "parity", "daily_summary", "desk",
-                    "fundamentals"):
+                    "fundamentals", "watch_results"):
             self.state.mark(job, MON)
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "05:44"), self.state), MON), [("backup", MON)])
         self.assertEqual(since(scheduler.missed_jobs(ist(WED, "06:00"), self.state), MON), [("backup", WED)])    # the wake time
@@ -874,6 +874,39 @@ class FundamentalsJobTest(JobsBase):
 
         self.assertNotIn(("fundamentals", MON), run_at("10:00"))
         self.assertIn(("fundamentals", MON), run_at("08:40"))
+
+
+class WatchResultsJobTest(JobsBase):
+    def test_the_results_reminder_runs_at_2100_after_fundamentals_and_is_not_held(self):
+        """CW 3: the watchlist's results reminder reads the calendar the fundamentals job refreshed."""
+        self.assertIn("watch_results", scheduler.CATCH_UP)
+        self.assertNotIn("watch_results", scheduler.HELD_DURING_SESSION)
+        self.assertNotIn("watch_results", scheduler.BLOCKS_SLEEP)
+        self.assertNotIn("watch_results", scheduler.HOLDS_SLEEP_UNTIL_WINDOW_ENDS)
+        self.assertEqual(scheduler.DEPENDS["watch_results"], "fundamentals")
+        self.assertEqual(scheduler.DAY_ORDER.index("watch_results"), scheduler.DAY_ORDER.index("fundamentals") + 1)
+        self.assertEqual(scheduler.plan(MON).watch_results_ns, ist(MON, "21:00"))
+        self.assertEqual(scheduler.retry_every_ns("watch_results"), 30 * MIN)
+        self.assertNotIn(("watch_results", MON), scheduler.missed_jobs(ist(MON, "20:59"), self.state))
+        self.assertIn(("watch_results", MON), scheduler.missed_jobs(ist(MON, "21:00"), self.state))
+        self.assertFalse(scheduler.runnable("watch_results", MON, self.state))
+        self.state.mark("fundamentals", MON)
+        self.assertTrue(scheduler.runnable("watch_results", MON, self.state))
+
+    def test_the_job_marks_the_day_when_sent_and_gives_up_after_three_failed_sends(self):
+        from stockify import daemon
+        from stockify.watchlist import reminders
+        with mock.patch.object(reminders, "run", return_value={"meetings": 1, "told": [], "error": None}):
+            daemon._run_job("watch_results", MON, self.state, ist(MON, "21:00"))
+        self.assertTrue(self.state.done("watch_results", MON))
+        with mock.patch.object(reminders, "run", return_value={"meetings": 1, "told": [("X", "d")], "error": "E"}):
+            for n in range(daemon.WATCH_RESULTS_TRIES):
+                self.assertFalse(self.state.done("watch_results", WED), n)
+                daemon._run_job("watch_results", WED, self.state, ist(WED, "21:00"))
+        self.assertTrue(self.state.done("watch_results", WED))
+        with mock.patch.object(reminders, "run", side_effect=RuntimeError("broken")):
+            daemon._run_job("watch_results", THU, self.state, ist(THU, "21:00"))      # raised: tried again later
+        self.assertFalse(self.state.done("watch_results", THU))
 
 
 if __name__ == "__main__":

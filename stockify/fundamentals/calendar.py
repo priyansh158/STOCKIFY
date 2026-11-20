@@ -1,5 +1,5 @@
 """FS 7: the upcoming results calendar: board meetings in the next weeks that consider financial results, for the
-stocks in the current universe, from NSE's event calendar (`/api/event-calendar`).
+stocks in the current universe and on the watchlist (CW 3), from NSE's event calendar (`/api/event-calendar`).
 
 The answer is a JSON list of {symbol, company, purpose, bm_desc, date "19-Nov-2026"} (fixture
 tests/fixtures/fundamentals/event_calendar_2026-11-17.json). Without a range NSE lists only the next few days, so
@@ -64,10 +64,22 @@ def parse(doc, symbols: set[str]) -> list[dict]:  # noqa: ANN001
     return [out[k] for k in sorted(out, key=lambda k: (k[1], k[0]))]
 
 
+def _watched() -> set[str]:
+    """The watchlist's symbols (CW 3: their results reminders read this table). A broken watchlist is logged and
+    leaves the universe's meetings as they were."""
+    try:
+        from stockify.watchlist import store as watch_store
+        return set(watch_store.symbols())
+    except Exception as e:  # noqa: BLE001
+        log.warning("fundamentals: the watchlist could not be read (%s); its stocks' meetings are not refreshed",
+                    type(e).__name__)
+        return set()
+
+
 def refresh(day: date, *, client: nse_api.Client) -> int:
     """Read NSE's calendar for `day` .. `day` + 28 days and make the table's upcoming rows match it; returns how
-    many results meetings of universe stocks are listed."""
-    symbols = {u["symbol"] for u in universe.current()}
+    many results meetings of universe and watched stocks are listed (the same one request either way)."""
+    symbols = {u["symbol"] for u in universe.current()} | _watched()
     params = {"index": "equities", "from_date": f"{day:%d-%m-%Y}",
               "to_date": f"{day + timedelta(days=WINDOW_DAYS):%d-%m-%Y}"}
     doc = client.json(PATH, params, warmup=WARMUP, name=f"{day:%Y%m%d}_equities_{params['from_date']}_{params['to_date']}.json")
