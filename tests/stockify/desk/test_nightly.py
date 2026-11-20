@@ -376,6 +376,23 @@ class LoginAndDeadlineTests(NightlyBase):
         self.assertFalse(res["complete"])
         self.assertTrue(res["logged_in"])
 
+    def test_the_deadline_reaches_the_bar_top_up_and_a_stop_there_is_not_a_failure(self):
+        """CW 1.2: the top-up gets the desk's deadline (checked between chunks); a stop inside it ends the run for
+        later, with nothing graded on a part-fetched history and nothing listed as failed."""
+        seen = []
+
+        def fetch(iid, interval, from_day, to_day, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen.append(kw.get("deadline_ns"))
+            st = history.FetchStats(iid, interval)
+            st.outcome = "stopped"
+            return st
+        with mock.patch.object(history, "fetch", side_effect=fetch):
+            res = self.run_job(deadline_ns=10 ** 30)
+        self.assertEqual(seen, [10 ** 30])                         # the first holding's top-up, then the stop
+        self.assertFalse(res["complete"])
+        self.assertEqual((res["analysed"], res["failed"]), (0, []))
+        self.assertEqual(desk_store.latest_views(), [])
+
 
 if __name__ == "__main__":
     unittest.main()
