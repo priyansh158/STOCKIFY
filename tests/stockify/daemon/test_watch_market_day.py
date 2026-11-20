@@ -123,6 +123,31 @@ class LiveMergeTests(WatchMarketDayCase):
         self.assertEqual(self.reasons()[self.rel], ("quote", "start:watch:RELIANCE"))
         self.assertEqual(self.landing().packet_count(), 1)
 
+    def test_a_new_high_in_a_live_run_is_one_email_and_the_recorder_sees_no_tap_error(self):
+        from stockify.data import history
+        from tests.stockify.watchlist.test_ranges import flat
+        from datetime import timedelta
+        wstore.add("RELIANCE")
+        rows = flat(DAY - timedelta(days=400), 400, high=250_000, low=240_000, close=249_500)
+        with history._connect() as conn:
+            conn.executemany("INSERT INTO bars VALUES (?, 'day', ?, ?, ?, ?, ?, 1, NULL, ?)",
+                             [(self.rel, b["ts_ns"], b["open_paise"], b["high_paise"], b["low_paise"],
+                               b["close_paise"], "2026-11-16") for b in rows])
+        from stockify.daemon import notify
+        from stockify.daemon.recorder import Recorder
+        stats = []
+        real_start = Recorder.start
+        self.patch(Recorder, "start", lambda rec: (stats.append(rec.stats), real_start(rec))[1])
+        with mock.patch.object(notify, "post", return_value=True) as post:
+            code, _ = self.run_live([self.frame()])
+        self.assertEqual(code, exitcodes.OK)
+        [call] = post.call_args_list
+        self.assertEqual(call.args[0], "watch_high_low")
+        self.assertEqual(call.kwargs["key"], f"52w:{DAY.isoformat()}:1")
+        self.assertIn("RELIANCE: a new 52-week high of ₹2,510", call.args[2])
+        self.assertEqual(stats[0].tap_errors, 0)
+        self.assertEqual([a["kind"] for a in wstore.alerts()], ["high52"])
+
     def test_a_corrupt_watchlist_db_still_records(self):
         support.reset_sqlite_singleton(wstore)
         paths.watchlist_db().parent.mkdir(parents=True, exist_ok=True)

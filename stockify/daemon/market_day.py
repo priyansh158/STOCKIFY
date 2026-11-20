@@ -721,7 +721,13 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         ticker.on_kill = kill_flush
         ticker.terminate = replay_ticker.terminate_process
 
+    watch = _watch_alerts(day, tokens, clock, recorder)      # CW 3: before the connect; None when off
     recorder.start()
+    if watch is not None:                       # after the recorder: never anything the recording waits for
+        try:
+            watch.start()
+        except Exception:  # noqa: BLE001
+            log.exception("the watchlist alerts did not start; the recording goes on")
     session.start()
     ticker.connect(threaded=True)
     if engine_thread is not None:               # after the ticker: a live run's sessions open (and recover) from here
@@ -783,6 +789,11 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         idle_stop.set()
         if idle_thread is not None:
             idle_thread.join(2.0)               # a daemon thread: a job still running is left to the crash-safe steps
+        if watch is not None:                   # a short join; its waiting digest is posted (only enqueued)
+            try:
+                watch.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("stopping the watchlist alerts failed; the shutdown goes on")
         try:                                    # the handlers stay until shutdown is over: a second Ctrl+C is ignored
             stuck = _shutdown(ticker=ticker, replay=replay, session=session, recorder=recorder, landing=landing,
                               clock=clock, day=day, sessions=sessions, dispatcher=dispatcher,
@@ -792,6 +803,21 @@ def run_market_day(*, ticker_spec: str = "live", faults: list[str] | None = None
         finally:
             restore_signals()
     return exitcodes.ENGINE_STUCK if stuck else session.exit_code
+
+
+def _watch_alerts(day: date, tokens: dict[int, int], clock, recorder):  # noqa: ANN001, ANN202
+    """The watchlist's 52-week alerts (CW 3, `stockify.watchlist.live`), built on this thread and registered as a
+    recorder tap before the ticker connects. None when nothing is watched, or when building failed (logged): the
+    recording never depends on it."""
+    try:
+        from stockify.watchlist.live import HighLowWatch
+        watch = HighLowWatch.build(day, tokens, clock=clock)
+        if watch is not None:
+            recorder.add_tap(watch)
+        return watch
+    except Exception:  # noqa: BLE001 — the recording goes on without alerts
+        log.exception("the watchlist alerts are off today; the recording goes on")
+        return None
 
 
 def _engine_died(dispatcher, engine_thread, engine_failed: list[str], clock) -> None:  # noqa: ANN001
