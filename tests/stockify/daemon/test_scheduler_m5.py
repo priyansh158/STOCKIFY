@@ -915,6 +915,47 @@ class CandlesScheduleTest(JobsBase):
         self.assertEqual(scheduler.latest_due_day("candles", ist(WED, "16:40")), WED)
         self.assertEqual(scheduler.latest_due_day("candles", ist(THU, "08:00")), WED)
 
+    def test_the_newest_due_day_across_a_weekend_and_at_the_seven_day_edge(self):
+        fri, sat, sun, mon2 = date(2026, 11, 13), date(2026, 11, 14), date(2026, 11, 15), date(2026, 11, 16)
+        self.assertEqual(scheduler.latest_due_day("candles", ist(sat, "12:00")), fri)
+        self.assertEqual(scheduler.latest_due_day("candles", ist(sun, "23:00")), fri)
+        self.assertEqual(scheduler.latest_due_day("candles", ist(mon2, "08:00")), fri)
+        self.assertEqual(scheduler.latest_due_day("candles", ist(mon2, "16:40")), mon2)
+        # seven days back is the edge: on 2026-11-23 (a Monday) at 08:00, 11-16 is 7 days back and still found
+        with mock.patch.object(cal, "is_trading_day", side_effect=lambda seg, d: d == mon2):
+            self.assertEqual(scheduler.latest_due_day("candles", ist(date(2026, 11, 23), "08:00")), mon2)
+            self.assertIsNone(scheduler.latest_due_day("candles", ist(date(2026, 11, 24), "08:00")))
+
+    def test_no_kite_login_releases_the_candles_hold_but_leaves_the_day_owed(self):
+        """Fix round 1 (2): with no Kite login the candles cannot run, so they do not keep the laptop up; the day stays
+        unmarked and the morning catch-up runs it after the login. The margin files still hold."""
+        self.state.mark("compaction", MON)
+        self.state.mark("margin_files", MON)
+        args = dict(idle_s=10 ** 6, stay_awake=False)
+        self.assertFalse(scheduler.should_sleep(ist(MON, "17:00"), MON, self.state, logged_in=True, **args)[0])
+        self.assertFalse(scheduler.should_sleep(ist(MON, "17:00"), MON, self.state, **args)[0])   # unknown: hold
+        self.assertEqual(scheduler.should_sleep(ist(MON, "17:00"), MON, self.state, logged_in=False, **args),
+                         (True, "ok"))
+        self.assertFalse(self.state.done("candles", MON))
+        self.assertIn(("candles", MON), scheduler.missed_jobs(ist(WED, "07:00"), self.state))
+        other = scheduler.State(self.state.path.with_name("other_state.json"))
+        other.mark("compaction", MON)                                   # margin files not done: they still hold
+        self.assertFalse(scheduler.should_sleep(ist(MON, "17:00"), MON, other, logged_in=False, **args)[0])
+
+    def test_the_daemon_asks_whether_kite_is_logged_in_before_sleeping(self):
+        from stockify import daemon
+        seen = {}
+
+        def should_sleep(now, day, state, **kw):  # noqa: ANN001, ANN003, ANN202
+            seen.update(kw)
+            return True, "ok"
+        with mock.patch.object(scheduler, "should_sleep", side_effect=should_sleep), \
+                mock.patch.object(scheduler, "write_next_wake"):
+            code = daemon._sleep_or_wait(ManualClock(ist(MON, "17:00")), mock.MagicMock(idle_seconds=lambda: 0),
+                                         self.state, MON, threading.Event(), token_fresh=lambda: False)
+        self.assertEqual(code, exitcodes.SLEEP)
+        self.assertIs(seen["logged_in"], False)
+
 
 class CandlesJobTest(JobsBase):
     """CW 1.4: the daemon's `_candles_job` (shaped like `_desk_job`)."""
@@ -962,6 +1003,12 @@ class CandlesJobTest(JobsBase):
         self.job(MON, MON, "19:00", self.result(logged_in=False, complete=False, stopped="login"))
         self.assertFalse(self.state.done("candles", MON))                        # even after the window: the
                                                                                  # morning catch-up runs it
+
+    def test_a_passed_deadline_runs_nothing(self):
+        """Fix round 1 (4): at or past the deadline the job returns before the run builds a client or reads targets."""
+        seen = self.job(MON, WED, "08:25")
+        self.assertEqual(seen, [])
+        self.assertFalse(self.state.done("candles", MON))
 
     def test_a_stop_at_the_deadline_is_left_for_later(self):
         self.job(MON, WED, "08:20", self.result(complete=False, stopped="deadline"))

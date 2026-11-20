@@ -61,6 +61,7 @@ HELD_DURING_SESSION = ("finalise", "parity", "backup", "desk", "fundamentals", "
                                                             # copy, the desk's backtests, the screener's NSE reads
                                                             # and rescoring, or Kite history requests: not beside
                                                             # the live recorder (M-2)
+NEEDS_KITE_LOGIN = ("candles",)       # with no Kite login these cannot run: they do not hold sleep (left owed)
 HOLDS_SLEEP_UNTIL_WINDOW_ENDS = ("margin_files", "candles")   # fetched the same evening (CAM 4.4; the candles on the
                                                               # day's Kite login, CW 1), not the next morning
 
@@ -252,11 +253,14 @@ def missed_jobs(now_ns: int, state: State, cfg: dict | None = None) -> list[tupl
 # ── sleep decision ───────────────────────────────────────────────────────────
 
 def should_sleep(now_ns: int, day: date | None, state: State, *, idle_s: float,
-                 stay_awake: bool, cfg: dict | None = None) -> tuple[bool, str]:
+                 stay_awake: bool, cfg: dict | None = None, logged_in: bool | None = None) -> tuple[bool, str]:
     """(may hibernate now?, why).
 
     `day` is the trade date whose post-session work must be finished first, or
     None when nothing is owed (night before a session, weekend, holiday).
+    `logged_in` False (no Kite login) releases the hold of `NEEDS_KITE_LOGIN`
+    jobs: they stay unmarked, and the morning catch-up runs them after the
+    login; None (unknown) keeps the hold.
     """
     cfg = cfg or schedule()
     rule = cfg["sleep_after_close"]
@@ -271,6 +275,8 @@ def should_sleep(now_ns: int, day: date | None, state: State, *, idle_s: float,
             if not state.done(job, day):
                 return False, f"{job} for {day} not done"
         for job in HOLDS_SLEEP_UNTIL_WINDOW_ENDS:
+            if logged_in is False and job in NEEDS_KITE_LOGIN:
+                continue
             until = window_end_ns(job, day, cfg)
             if not state.done(job, day) and now_ns < until:
                 return False, (f"{job} for {day} not done (window until "

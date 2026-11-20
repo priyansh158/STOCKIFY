@@ -413,6 +413,9 @@ def _candles_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         return                                        # the newer day's run covers this one
     nxt = scheduler.plan(scheduler.session_day(now_ns))
     deadline = min(nxt.refdata_ns, nxt.day_bundles_ns) - DESK_MARGIN_NS
+    if now_ns >= deadline:
+        log.info("candles for %s: too close to the next session; runs after it", day)
+        return
     try:
         res = daily_candles.run(day, deadline_ns=deadline, clock=OffsetClock(WallClock(), now_ns))
     except Exception:  # noqa: BLE001 — the candles never cost the daemon anything
@@ -621,20 +624,25 @@ def run_daemon(*, power=None, clock=None, stop: threading.Event | None = None,  
                     return code
                 continue                                          # now situation 1
 
-        result = _sleep_or_wait(clock, power, state, obligations, stop)
+        result = _sleep_or_wait(clock, power, state, obligations, stop, token_fresh)
         if result is not None:
             return result
     return exitcodes.OK
 
 
-def _sleep_or_wait(clock, power, state, day, stop):  # noqa: ANN001
-    """Hibernate when allowed (return SLEEP), or wait and return None to re-plan."""
+def _sleep_or_wait(clock, power, state, day, stop, token_fresh=None):  # noqa: ANN001
+    """Hibernate when allowed (return SLEEP), or wait and return None to re-plan. `token_fresh` (default the Kite
+    token store) says whether Kite is logged in: without a login the candles do not hold sleep (CW 1)."""
     from stockify.daemon import scheduler
 
     now = clock.now_ns()
     flag = scheduler.stay_awake_flag()
+    try:
+        logged_in = bool((token_fresh or _kite_token_fresh)())
+    except Exception:  # noqa: BLE001 — unknown: the candles keep their hold
+        logged_in = None
     ok, why = scheduler.should_sleep(now, day, state, idle_s=power.idle_seconds(),
-                                     stay_awake=flag.exists())
+                                     stay_awake=flag.exists(), logged_in=logged_in)
     wake = scheduler.next_wake_ns(now)
     if ok:
         scheduler.write_next_wake(wake)
