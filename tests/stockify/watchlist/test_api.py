@@ -90,6 +90,45 @@ class WatchlistApiTests(SandboxedDBTest):
         self.assertEqual(row["high_date"], (DAY - timedelta(days=420) + timedelta(days=300)).isoformat())
         self.assertIsNone(row["note"])
 
+    def test_a_bar_dated_today_is_in_the_range(self):
+        first = DAY - timedelta(days=420)
+        put_bars(self.ids["INFY"], first, 421, spike=(420, 250_000, 40_000))        # the last bar is on DAY
+        self.add("INFY")
+        (row,) = self.client.get("/api/watchlist").json()["items"]
+        self.assertEqual((row["high_paise"], row["low_paise"]), (250_000, 40_000))
+        self.assertEqual((row["high_date"], row["last_close_date"]), (DAY.isoformat(), DAY.isoformat()))
+
+    def test_without_a_bar_today_it_is_the_evaluators_prior_range(self):
+        from stockify.watchlist import ranges
+        put_bars(self.ids["INFY"], DAY - timedelta(days=420), 420, spike=(30, 300_000, 10_000))   # 390 days back: out
+        put_bars(self.ids["TCS"], DAY - timedelta(days=420), 420, spike=(100, 300_000, 10_000))
+        self.add("INFY")
+        self.add("TCS")
+        rows = {r["symbol"]: r for r in self.client.get("/api/watchlist").json()["items"]}
+        for sym in ("INFY", "TCS"):
+            want = ranges.prior_range(history.bars(self.ids[sym], "day"), DAY, 365, 365)
+            self.assertEqual((rows[sym]["high_paise"], rows[sym]["low_paise"]), (want["high_paise"], want["low_paise"]))
+        self.assertEqual(rows["INFY"]["high_paise"], 101_000)             # the spike is older than 365 days
+        self.assertEqual(rows["TCS"]["high_paise"], 300_000)
+
+    def test_the_365_day_minimum_history_edge(self):
+        put_bars(self.ids["INFY"], DAY - timedelta(days=365), 365)         # first bar exactly 365 days back, none today
+        put_bars(self.ids["TCS"], DAY - timedelta(days=364), 364)          # one day short
+        self.add("INFY")
+        self.add("TCS")
+        rows = {r["symbol"]: r for r in self.client.get("/api/watchlist").json()["items"]}
+        self.assertIsNotNone(rows["INFY"]["high_paise"])
+        self.assertIsNone(rows["TCS"]["high_paise"])
+        self.assertIn("no 52-week range", rows["TCS"]["note"])
+
+    def test_only_old_candles_get_their_own_note(self):
+        put_bars(self.ids["INFY"], DAY - timedelta(days=900), 300)
+        self.add("INFY")
+        (row,) = self.client.get("/api/watchlist").json()["items"]
+        self.assertEqual(row["note"], "No daily prices in the last year")
+        self.assertIsNone(row["high_paise"])
+        self.assertIsNotNone(row["last_close_paise"])
+
     def test_stock_without_candles_says_so_in_plain_words(self):
         self.assertEqual(self.add("TCS").status_code, 201)
         (row,) = self.client.get("/api/watchlist").json()["items"]
@@ -138,6 +177,23 @@ class WatchlistApiTests(SandboxedDBTest):
         self.assertEqual(r.status_code, 409)
         self.assertIn("at most 1", r.json()["detail"])
 
+    def test_two_adds_at_the_cap_give_one_409(self):
+        import threading
+        codes = []
+
+        def go(sym):
+            codes.append(self.add(sym).status_code)
+
+        with mock.patch.object(store, "max_stocks", lambda: 2):
+            self.add("INFY")
+            threads = [threading.Thread(target=go, args=(s,)) for s in ("TCS", "NEWCO")]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(sorted(codes), [201, 409])
+        self.assertEqual(len(store.rows()), 2)
+
     def test_remove(self):
         self.add("INFY")
         self.assertEqual(self.client.delete("/api/watchlist/infy").status_code, 204)
@@ -181,7 +237,7 @@ class WatchlistApiTests(SandboxedDBTest):
         from fastapi.testclient import TestClient
         from server.main import app
         r = TestClient(app, base_url="http://evil.example").get("/api/watchlist")
-        self.assertGreaterEqual(r.status_code, 400)
+        self.assertEqual(r.status_code, 400)
 
 
 if __name__ == "__main__":
