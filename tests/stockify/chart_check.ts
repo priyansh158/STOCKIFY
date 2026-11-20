@@ -284,6 +284,8 @@ out.viewOkEmpty = chart.chartViewState(mdl("ok"));
 out.wordsNoPackPaper = chart.prunedWords("no_pack", true);
 out.wordsNoPackRun = chart.prunedWords("no_pack", false);
 out.wordsUnreadable = chart.prunedWords("pack unreadable", true);
+out.wordsNoData = chart.prunedWords("no_data", false);
+out.noDataState = chart.chartViewState(model({ data_state: "no_data", bars: [], markers: [] }));
 out.wordsPruned = chart.prunedWords("pruned", false);
 
 process.stdout.write(JSON.stringify(out));

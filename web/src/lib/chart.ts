@@ -503,6 +503,7 @@ export function nextDelay(base: number, failures: number, cap = 30_000): number 
 export function prunedWords(dataState: ChartModel["data_state"], paper: boolean, live = false): string {
   // a session still open (the server's `live` flag) has no recording yet because prices have not arrived, not because none was made
   if (live && dataState === "no_pack") return "No prices have arrived yet. The chart appears here when they do; the trades are listed below.";
+  if (dataState === "no_data") return "No daily prices yet: they are fetched each evening for the screener's stocks and your watchlist.";
   if (dataState === "no_pack") {
     return paper
       ? "No price data was recorded for this day. The trades are listed below."

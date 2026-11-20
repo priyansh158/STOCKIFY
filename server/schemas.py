@@ -907,7 +907,7 @@ class RunChartDTO(BaseModel):
     plots: list[ChartPlotDTO]
     truncated: bool
     next_from_ns: int | None = None
-    data_state: Literal["ok", "pruned", "no_pack", "pack unreadable"]
+    data_state: Literal["ok", "pruned", "no_pack", "pack unreadable", "no_data"]
     omitted_markers: int
     notice: str | None = None
     pnl_complete: bool
@@ -1123,6 +1123,16 @@ class FilingDTO(BaseModel):
     reason: str | None = None
 
 
+class PriceContextDTO(BaseModel):
+    """The stock's last close and 52-week range from its daily candles: facts only (None while a part is missing)."""
+    last_close_paise: int | None = None
+    last_close_date: str | None = None      # ISO day of that close
+    high_paise: int | None = None           # 52-week high and low, with the days they were made
+    high_date: str | None = None
+    low_paise: int | None = None
+    low_date: str | None = None
+
+
 class CandidateDetailDTO(BaseModel):
     symbol: str
     company: str
@@ -1135,6 +1145,7 @@ class CandidateDetailDTO(BaseModel):
     series: list[SeriesDTO]
     filings: list[FilingDTO]                # newest period first
     as_of: str | None = None
+    price: PriceContextDTO | None = None    # None when the stock has no daily candles yet
 
 
 class FundamentalsTestRecordDTO(BaseModel):
