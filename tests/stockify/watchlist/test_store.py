@@ -78,6 +78,43 @@ class AddRemoveTests(StoreCase):
         self.assertEqual(store.version(), v)
         self.assertEqual(len(store.rows()), 1)
 
+    def test_government_securities_are_refused(self):
+        rows = ["2001,1,SGBMAR29,SGB MAR 29,0,,0,0.05,1,EQ,NSE,NSE"]
+        instruments.sync(DAY, {"NSE": "\n".join([HEADER, *rows])}, underlyings={})
+        with self.assertRaises(store.NotAStock):
+            store.add("SGBMAR29")
+        self.assertEqual(store.rows(), [])
+
+    def test_a_relisted_symbol_with_a_new_id_is_a_409_not_an_integrity_error(self):
+        store.add("INFY")
+        conn = store._connect()
+        conn.execute("UPDATE watchlist SET instrument_id = 987654 WHERE symbol = 'INFY'")   # as if the id was reissued
+        with self.assertRaises(store.AlreadyWatched):
+            store.add("INFY")
+        self.assertEqual(len(store.rows()), 1)
+
+    def test_two_threads_at_the_cap_admit_one(self):
+        import threading
+        from unittest import mock
+        results = []
+
+        def go(sym):
+            try:
+                store.add(sym)
+                results.append("ok")
+            except store.ListFull:
+                results.append("full")
+
+        with mock.patch.object(store, "max_stocks", lambda: 2):
+            store.add("INFY")
+            threads = [threading.Thread(target=go, args=(s,)) for s in ("TCS", "RELIANCE")]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(sorted(results), ["full", "ok"])
+        self.assertEqual(len(store.rows()), 2)
+
     def test_cap_comes_from_the_config(self):
         from unittest import mock
         with mock.patch.object(store, "max_stocks", lambda: 2):

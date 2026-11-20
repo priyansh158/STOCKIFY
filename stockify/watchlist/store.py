@@ -74,6 +74,15 @@ def max_stocks() -> int:
     return int(loader.load_json("watchlist.json")["max_stocks"])
 
 
+def _is_government_security(symbol: str) -> bool:
+    """Sovereign gold bonds and the like: the desk's own test (desk/nightly), by symbol (the instrument table keeps no
+    ISIN)."""
+    from types import SimpleNamespace
+
+    from stockify.desk import nightly
+    return nightly._is_government_security(SimpleNamespace(tradingsymbol=symbol, isin=None))
+
+
 def _clean(symbol: str) -> str:
     return str(symbol).strip().upper()
 
@@ -89,8 +98,8 @@ def add(symbol: str, *, now_ns: int | None = None) -> dict:
     if iid is None:
         raise NotFound(f"{sym or 'That'} is not an NSE symbol the lab knows")
     info = instruments.get(iid) or {}
-    if info.get("exchange") != "NSE" or info.get("kind") != "EQ":     # the check desk/nightly.resolve makes
-        raise NotAStock(f"{sym} is not an NSE share")
+    if info.get("exchange") != "NSE" or info.get("kind") != "EQ" or _is_government_security(sym):
+        raise NotAStock(f"{sym} is not an NSE share")          # the check desk/nightly.resolve makes
     if now_ns is None:
         from stockify import timeutil
         now_ns = timeutil.now_ns()
@@ -98,7 +107,7 @@ def add(symbol: str, *, now_ns: int | None = None) -> dict:
     conn = _connect()
     with dbconn.locked_write(_lock, conn):
         conn.execute("BEGIN IMMEDIATE")
-        if conn.execute("SELECT 1 FROM watchlist WHERE instrument_id = ?", (iid,)).fetchone():
+        if conn.execute("SELECT 1 FROM watchlist WHERE instrument_id = ? OR symbol = ?", (iid, sym)).fetchone():
             conn.execute("ROLLBACK")
             raise AlreadyWatched(f"{sym} is already on the watchlist")
         count, last = conn.execute("SELECT COUNT(*), COALESCE(MAX(position), 0) FROM watchlist").fetchone()
@@ -160,8 +169,9 @@ def record_alert(instrument_id: int, symbol: str, kind: str, ref: str, *, level_
     with dbconn.locked_write(_lock, conn):
         conn.execute("BEGIN IMMEDIATE")
         n = conn.execute(
-            "INSERT OR IGNORE INTO watch_alerts (instrument_id, symbol, kind, ref, level_paise, prior_paise, "
-            "prior_date, at_ns, delivery) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO watch_alerts (instrument_id, symbol, kind, ref, level_paise, prior_paise, "
+            "prior_date, at_ns, delivery) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (instrument_id, kind, ref) DO NOTHING",
             (int(instrument_id), _clean(symbol), kind, str(ref), level_paise, prior_paise, prior_date, int(at_ns),
              delivery)).rowcount
         conn.execute("COMMIT")
