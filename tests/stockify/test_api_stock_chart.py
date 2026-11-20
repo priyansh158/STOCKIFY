@@ -49,15 +49,31 @@ class StockChartTests(SandboxedDBTest):
         self.assertEqual((body["data_state"], body["interval_s"], body["markers"]), ("ok", 86_400, []))
         self.assertEqual(body["instruments"][0]["symbol"], "INFY")
         self.assertEqual(body["bars"][-1]["d"], "2026-11-16")
-        self.assertLessEqual(len(body["bars"]), 366)
-        self.assertGreater(len(body["bars"]), 300)
-        self.assertGreaterEqual(body["bars"][0]["d"], (DAY - timedelta(days=365)).isoformat())
+        self.assertEqual(len(body["bars"]), 420)             # under 3 years of history: the chart shows all of it
         plots = {p["label"]: p for p in body["plots"]}
         self.assertEqual(set(plots), {"52-week high", "52-week low"})
         self.assertEqual({pt["value"] for pt in plots["52-week high"]["points"]}, {"1900.00"})
         self.assertEqual({pt["value"] for pt in plots["52-week low"]["points"]}, {"600.00"})
         self.assertEqual(len(plots["52-week high"]["points"]), len(body["bars"]))
         self.assertEqual(self.kite.calls, [])
+
+    def test_three_years_of_candles_with_the_lines_still_the_last_52_weeks(self):
+        put_bars(self.ids["INFY"], DAY - timedelta(days=1400), 1400, spike=(1280, 190_000, 60_000))   # ~4 months back
+        # and a bigger spike ~2.5 years back: on the chart, but outside the 52-week range
+        from stockify import timeutil
+        from stockify.data import history as _h
+        with _h._Tx() as conn:
+            conn.execute("UPDATE bars SET high_paise = 500000 WHERE instrument_id = ? AND ts_ns = ?",
+                         (self.ids["INFY"], timeutil.ist_ns(DAY - timedelta(days=900), "00:00")))
+        body = self.get("INFY")
+        first = body["bars"][0]["d"]
+        self.assertGreaterEqual(first, (DAY - timedelta(days=1095)).isoformat())     # chart_days: about 3 years shown
+        self.assertLessEqual(first, (DAY - timedelta(days=1080)).isoformat())
+        self.assertGreater(len(body["bars"]), 1000)
+        plots = {p["label"]: p for p in body["plots"]}
+        self.assertEqual({pt["value"] for pt in plots["52-week high"]["points"]}, {"1900.00"})   # the range is still 365 days
+        self.assertEqual(max(float(b["high"]) for b in body["bars"]), 5000.0)       # the older, higher spike is on the chart
+        self.assertEqual(len(plots["52-week high"]["points"]), len(body["bars"]))
 
     def test_the_lines_are_the_watchlists_range(self):
         from stockify.watchlist import ranges

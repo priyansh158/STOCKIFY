@@ -211,7 +211,7 @@ class LoaderRuleTests(unittest.TestCase):
         bad_cases = (
             {"max_stocks": 0}, {"max_stocks": 501}, {"max_stocks": "50"}, {"max_stocks": True},
             {"lookback_days": 0}, {"lookback_days": 3651}, {"min_history_days": 0},
-            {"min_history_days": 400, "lookback_days": 365},
+            {"min_history_days": 400, "lookback_days": 365}, {"chart_days": 0}, {"chart_days": 3651}, {"chart_days": "1095"},
             {"basis_tolerance": 0.02}, {"basis_tolerance": "0"}, {"basis_tolerance": "0.5"}, {"basis_tolerance": "-0.01"},
             {"alert_batch_s": 0}, {"alert_batch_s": 3601}, {"max_alert_emails_per_day": 0},
             {"max_alert_emails_per_day": 101}, {"results_lead_trading_days": 0}, {"results_lead_trading_days": 11},

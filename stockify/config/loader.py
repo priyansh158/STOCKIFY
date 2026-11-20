@@ -453,7 +453,7 @@ def _check_watchlist(doc: dict) -> None:
     """watchlist.json (stockify.watchlist/1): every key present and none unknown; counts and seconds are whole
     numbers within sanity bounds; `min_history_days` at most `lookback_days`; `basis_tolerance` a decimal string in
     (0, 0.1]."""
-    bounds = {"max_stocks": (1, 500), "lookback_days": (1, 3650), "min_history_days": (1, 3650),
+    bounds = {"max_stocks": (1, 500), "lookback_days": (1, 3650), "min_history_days": (1, 3650), "chart_days": (1, 3650),
               "alert_batch_s": (1, 3600), "max_alert_emails_per_day": (1, 100),
               "results_lead_trading_days": (1, 10), "tap_frames": (8, 100_000),
               "desk_watch_new_grades_per_night": (0, 500)}
