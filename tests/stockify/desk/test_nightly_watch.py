@@ -9,7 +9,7 @@ from unittest import mock
 
 import tests.support as support  # noqa: F401  — must precede project imports
 
-from stockify.data import daily_candles, history, refdata
+from stockify.data import daily_candles, history, instruments, refdata
 from stockify.desk import nightly
 from stockify.desk import store as desk_store
 from stockify.watchlist import store as watch_store
@@ -42,6 +42,8 @@ class WatchPassTests(WatchBase):
         row = desk_store.latest_view(self.ids["MOVEDCO"])
         self.assertEqual(row["trade_date"], DAY.isoformat())
         self.assertFalse({"average_price", "pnl", "quantity", "cost"} & set(row["view"]))
+        self.assertEqual(row["view"]["source"], "watch")                  # the logged-out holdings list leaves it out
+        self.assertNotIn("source", desk_store.latest_view(self.ids["LONGCO"])["view"])
 
     def test_a_held_stock_on_the_watchlist_is_done_once_as_a_holding(self):
         self.watch("LONGCO", "MOVEDCO")
@@ -72,16 +74,42 @@ class WatchPassTests(WatchBase):
 
     def test_the_cap_does_not_hold_back_a_stock_already_graded(self):
         self.watch("MOVEDCO", "ALSOCO")
-        self.run_job()                                            # both graded
-        with mock.patch.object(nightly, "_watch_settings", return_value=0):
+        with mock.patch.object(nightly, "_watch_settings", return_value=1):
+            self.run_job(); self.run_job()                        # one graded a night: both graded by the second
             res = self.run_job()
         self.assertEqual((res["watch"]["analysed"], res["watch"]["deferred"]), (2, []))
 
-    def test_a_deferred_stock_asks_nothing_of_kite(self):
+    def test_a_cap_of_zero_turns_the_pass_off(self):
         self.watch("MOVEDCO")
         with mock.patch.object(nightly, "_watch_settings", return_value=0):
-            self.run_job()
+            res = self.run_job()
+        self.assertEqual((res["watch"]["watched"], res["watch"]["analysed"]), (0, 0))
+        self.assertEqual(self.viewed(), {"LONGCO"})
         self.assertNotIn(self.ids["MOVEDCO"], [f[0] for f in self.fetches])
+        self.assertTrue(res["complete"])
+
+    def test_a_deferred_stock_asks_nothing_of_kite(self):
+        self.watch("MOVEDCO", "ALSOCO")
+        with mock.patch.object(nightly, "_watch_settings", return_value=1):
+            self.run_job()
+        self.assertNotIn(self.ids["ALSOCO"], [f[0] for f in self.fetches])
+
+    def test_a_login_failure_stops_the_watch_pass_instead_of_failing_each_stock(self):
+        import kite_client
+        self.watch("MOVEDCO", "ALSOCO")
+
+        def fetch(iid, interval, from_day, to_day, **kw):  # noqa: ANN001, ANN003, ANN202
+            if iid in (self.ids["MOVEDCO"], self.ids["ALSOCO"]):
+                raise kite_client.KiteAuthError("token expired")
+            return history.FetchStats(iid, interval)
+        with mock.patch.object(history, "fetch", side_effect=fetch):
+            res = self.run_job()
+        self.assertEqual((res["watch"]["failed"], res["watch"]["stopped"]), ([], "login"))
+        self.assertFalse(res["complete"])                         # runs again after the next login
+        self.assertEqual(res["analysed"], 1)
+
+    def test_the_candles_and_the_watch_pass_take_the_same_kinds(self):
+        self.assertIs(daily_candles.STOCK_KINDS, instruments.STOCK_KINDS)
 
     def test_the_default_cap_is_ten(self):
         self.assertEqual(nightly._watch_settings(), 10)
@@ -146,6 +174,24 @@ class WatchPassTests(WatchBase):
         self.assertEqual(res["watch"]["analysed"], 1)
         self.assertTrue(res["complete"])                          # fail-soft: the holdings' run is not failed by it
         self.assertEqual(res["failed"], [])
+
+
+class WatchLogTests(WatchBase):
+    def test_the_desk_job_logs_one_summary_line_for_the_watch_pass(self):
+        import logging
+        from stockify import daemon, timeutil
+        from stockify.daemon import scheduler
+        was = logging.root.manager.disable                       # the runner switches logging off
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, was)
+        done = {"holdings": 1, "analysed": 1, "skipped": [], "failed": [], "complete": True, "logged_in": True,
+                "watch": {"watched": 4, "analysed": 2, "deferred": ["A", "B"], "skipped": [], "failed": [],
+                          "stopped": None}}
+        with mock.patch.object(nightly, "run", return_value=done), self.assertLogs("stockify", "INFO") as logs:
+            daemon._run_job("desk", DAY, scheduler.State(), timeutil.ist_ns(DAY, "20:10"))
+        lines = [m for m in logs.output if "watchlist:" in m]
+        self.assertEqual(len(lines), 1, logs.output)
+        self.assertIn("4 watched, 2 analysed, 2 deferred, 0 skipped, 0 failed", lines[0])
 
 
 class WatchFailSoftTests(WatchBase):

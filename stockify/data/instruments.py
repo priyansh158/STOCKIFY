@@ -343,6 +343,10 @@ def get(instrument_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+STOCK_KINDS = ("EQ", "ETF")              # refdata stores an ETF as EQ (Kite's dump); "ETF" is defensive, for a refdata
+                                         # that one day tells them apart: the kinds the candles and the desk's watchlist pass take
+
+
 def is_government_security(tradingsymbol: str | None, isin: str | None = None) -> bool:
     """Sovereign gold bonds and other government securities: NSE lists them, but they are not stocks. By the SGB
     symbol, or an IN00 ISIN (the Government of India's) when one is known."""

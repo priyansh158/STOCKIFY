@@ -386,6 +386,11 @@ def _desk_job(day: date, state, now_ns: int) -> None:  # noqa: ANN001
         return                                        # `nightly.run` logged it: tried again on a later pass
     log.info("desk for %s: %d holdings, %d analysed, %d skipped, %d failed", day, res["holdings"], res["analysed"],
              len(res["skipped"]), len(res["failed"]))
+    w = res.get("watch")
+    if w:                                             # CW 6: the watchlist pass, in one line
+        log.info("desk for %s: watchlist: %d watched, %d analysed, %d deferred, %d skipped, %d failed%s", day,
+                 w["watched"], w["analysed"], len(w["deferred"]), len(w["skipped"]), len(w["failed"]),
+                 f", stopped ({w['stopped']})" if w.get("stopped") else "")
     if res["complete"]:
         state.mark("desk", day)
     elif res["failed"] and now_ns >= scheduler.window_end_ns("desk", day):

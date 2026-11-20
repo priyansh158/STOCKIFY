@@ -44,8 +44,7 @@ CLOSE_GROUP = "CM"                       # the cash market's session close ends 
 NOT_IN_INSTRUMENTS = "not in instruments"
 NOT_NSE_STOCK = "not an NSE equity or ETF"
 GOVERNMENT_SECURITY = "a government security, not a stock"
-STOCK_KINDS = ("EQ", "ETF")              # refdata stores an ETF as EQ (Kite's dump); "ETF" is defensive, for a
-                                         # refdata that one day tells them apart
+STOCK_KINDS = instruments.STOCK_KINDS    # one list with the desk's watchlist pass
 NO_TOKEN = "no Kite token (delisted or suspended)"
 
 
@@ -133,6 +132,9 @@ def _login_failed(e: BaseException) -> bool:
         pass
     from stockify.daemon.ticker import is_auth_failure
     return is_auth_failure(getattr(e, "code", None), e)
+
+
+login_failed = _login_failed             # the desk's watchlist pass stops on the same signal
 
 
 def _rate_limited(e: BaseException) -> bool:
