@@ -535,10 +535,10 @@ CANDLES_KEYS = ("history_years", "rps", "rate_limit_backoff_s")
 CANDLES_BOUNDS = {"history_years": (1, 20), "rps": (0, 10), "backoff_s": (1, 600)}
 
 
-def _check_candles(doc: dict) -> None:
+def _check_candles(doc: dict, config_dir: Path | None = None) -> None:
     """candles.json (stockify.candles/1, CW 1): every key present and none unknown (`note` allowed, a string);
-    `history_years` a whole number from 1 to 20; `rps` a decimal string above 0 and at most 10 (the shipped value
-    stays below Kite's historical limit, K-8, checked against kite_limits.json in the config tests);
+    `history_years` a whole number from 1 to 20; `rps` a decimal string above 0, at most 10 and at most
+    kite_limits.json `historical_rps` (Kite's historical limit, K-8; the file beside it, else the shipped one);
     `rate_limit_backoff_s` a non-empty list of whole seconds from 1 to 600 that never shrinks."""
     extra = set(doc) - set(CANDLES_KEYS) - {"schema", "note"}
     if extra:
@@ -557,6 +557,10 @@ def _check_candles(doc: dict) -> None:
     if not isinstance(rps, str) or _PLAIN_DECIMAL.fullmatch(rps) is None or not low < Decimal(rps) <= high:
         raise ConfigError(f'candles.json: rps must be a decimal string above {low} and at most {high} such as "2", '
                           f"got {rps!r}")
+    limits_dir = config_dir if config_dir is not None and (config_dir / "kite_limits.json").exists() else None
+    kite_rps = Decimal(str(load_json("kite_limits.json", limits_dir)["historical_rps"]))
+    if Decimal(rps) > kite_rps:
+        raise ConfigError(f"candles.json: rps {rps} is above kite_limits.json historical_rps {kite_rps} (K-8)")
     waits = doc["rate_limit_backoff_s"]
     low, high = CANDLES_BOUNDS["backoff_s"]
     if (not isinstance(waits, list) or not waits
@@ -594,7 +598,7 @@ def load_json(name: str,config_dir: Path | None = None) -> dict:
     if name == "fundamentals.json":
         _check_fundamentals(doc)
     if name == "candles.json":
-        _check_candles(doc)
+        _check_candles(doc, config_dir)
     return doc
 
 

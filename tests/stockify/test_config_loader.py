@@ -187,6 +187,24 @@ class LoaderRuleTests(unittest.TestCase):
                                                encoding="utf-8")
         self.assertEqual(loader.load_json("candles.json", self.dir)["rps"], "0.5")
 
+    def test_candles_rps_never_exceeds_kites_historical_limit(self):
+        """Fix round 1 (5): candles.json rps at most kite_limits.json historical_rps (K-8), read from the same folder
+        when it has one, else the shipped one."""
+        good = json.loads((loader.CONFIG_DIR / "candles.json").read_text(encoding="utf-8"))
+        for rps, ok in (("3", True), ("3.5", False), ("2.99", True)):
+            with self.subTest(rps=rps):
+                (self.dir / "candles.json").write_text(json.dumps({**good, "rps": rps}), encoding="utf-8")
+                if ok:
+                    loader.load_json("candles.json", self.dir)
+                else:
+                    with self.assertRaisesRegex(loader.ConfigError, "historical_rps"):
+                        loader.load_json("candles.json", self.dir)
+        limits = json.loads((loader.CONFIG_DIR / "kite_limits.json").read_text(encoding="utf-8"))
+        (self.dir / "kite_limits.json").write_text(json.dumps({**limits, "historical_rps": 1}), encoding="utf-8")
+        (self.dir / "candles.json").write_text(json.dumps({**good, "rps": "2"}), encoding="utf-8")
+        with self.assertRaisesRegex(loader.ConfigError, "historical_rps"):
+            loader.load_json("candles.json", self.dir)
+
     def test_csv_header_is_checked(self):
         (self.dir / "calendar").mkdir()
         (self.dir / "calendar" / "nse_holidays.csv").write_text("date,desc\n", encoding="utf-8")
