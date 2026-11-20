@@ -1,6 +1,7 @@
 """CW 4: /api/stocks, a listed stock's price chart.
 
-* `GET /api/stocks/{symbol}/chart`: about a year of the bar cache's daily candles as the RunChartDTO the price chart reads,
+* `GET /api/stocks/{symbol}/chart`: the last `chart_days` (watchlist.json, about 3 years) of the bar cache's daily
+  candles as the RunChartDTO the price chart reads,
   with constant "52-week high" and "52-week low" lines (the watchlist's range, by the same rule). A stock with no
   daily candles yet is a 200 with `data_state` "no_data" and a plain notice. A symbol NSE does not list is a 404.
 
@@ -40,7 +41,7 @@ def reset() -> None:
 def _build(iid: int, sym: str, candles: list, rows: list[dict], today, cfg: dict) -> RunChartDTO:
     if not candles:
         return charts.dto(charts.model(iid, sym, DAY_S, "adjusted", [], [], data_state="no_data", notice=NO_DATA), {})
-    first = timeutil.ist_ns(today - timedelta(days=cfg["lookback_days"]), "00:00")
+    first = timeutil.ist_ns(today - timedelta(days=cfg["chart_days"]), "00:00")     # the history shown, not the range
     shown = [c for c in candles if c.start_ns >= first] or candles[-1:]
     last, rng = charts.stock_range(rows, today, cfg)
     plots, labels = [], {}

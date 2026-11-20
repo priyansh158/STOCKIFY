@@ -1,9 +1,10 @@
 {
   "schema": "stockify.watchlist/1",
-  "note": "The watchlist (CW 2). max_stocks caps the list; lookback_days is the 52-week window and min_history_days the history a stock needs before its 52-week range is judged; basis_tolerance (a fraction) is how far yesterday's close in a live packet may differ from the cached close before alerts for the stock stop for the day (a split or bonus); alert_batch_s is the seconds one digest email waits to collect alerts; max_alert_emails_per_day caps the digests; results_lead_trading_days is how many trading days ahead a results meeting is announced; tap_frames is the length of the recorder tap's frame queue; desk_watch_new_grades_per_night (CW 6) caps how many watched stocks the nightly desk grades for the first time in one night (0 turns the watchlist pass off), so the first gradings spread over several nights.",
+  "note": "The watchlist (CW 2). max_stocks caps the list; lookback_days is the 52-week window and min_history_days the history a stock needs before its 52-week range is judged; chart_days is how much daily history a stock's price chart shows (owner, 2026-11-20: at least the last 3 years; the candle job keeps 6), the 52-week lines are still the last lookback_days; basis_tolerance (a fraction) is how far yesterday's close in a live packet may differ from the cached close before alerts for the stock stop for the day (a split or bonus); alert_batch_s is the seconds one digest email waits to collect alerts; max_alert_emails_per_day caps the digests; results_lead_trading_days is how many trading days ahead a results meeting is announced; tap_frames is the length of the recorder tap's frame queue; desk_watch_new_grades_per_night (CW 6) caps how many watched stocks the nightly desk grades for the first time in one night (0 turns the watchlist pass off), so the first gradings spread over several nights.",
   "max_stocks": 50,
   "lookback_days": 365,
   "min_history_days": 365,
+  "chart_days": 1095,
   "basis_tolerance": "0.02",
   "alert_batch_s": 60,
   "max_alert_emails_per_day": 6,
