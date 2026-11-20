@@ -48,7 +48,7 @@ class TestRecordTests(SandboxedDBTest):
         self.walked: list[tuple] = []
 
     def top_up(self, iid, day, *, years, client, **kw):  # noqa: ANN001, ANN201
-        self.fetched.append((iid, day, years))
+        self.fetched.append((iid, day, years, kw.get("today")))
         return bars_history.TopUp(requests=1)
 
     def walk(self, spec, **kw):  # noqa: ANN001, ANN201
@@ -95,7 +95,9 @@ class TestRecordTests(SandboxedDBTest):
         self.assertEqual(sorted(f[0] for f in self.fetched), [1, 2, 3, 4])
         self.assertTrue(all(f[1] == end for f in self.fetched))
         self.assertTrue(all(bars_history.years_before(end, f[2]) <= date(2022, 1, 1) for f in self.fetched))
-        self.assertEqual({f[2] for f in self.fetched}, {6})
+        self.assertEqual({f[2] for f in self.fetched}, {5})          # the fewest years that reach START
+        from stockify import timeutil
+        self.assertEqual({f[3] for f in self.fetched}, {timeutil.ist_today()})   # today, apart from the end
         self.assertEqual(out["missing"], ["GONE"])
         self.assertEqual(out["benchmark"], {"symbol": "NSE:NIFTY 500", "label": "price index, without dividends",
                                             "source": "kite"})
@@ -126,8 +128,10 @@ class TestRecordTests(SandboxedDBTest):
         self.assertEqual(self.walked, [])
 
     def test_the_top_up_reaches_back_to_the_start_for_a_far_end(self):
-        self.assertEqual(test_record.years_needed(date(2026, 7, 31), 6), 6)
-        self.assertEqual(test_record.years_needed(date(2029, 7, 31), 6), 8)       # 2021-07-31 <= 2022-01-01
+        self.assertEqual(test_record.years_needed(date(2026, 7, 31)), 5)          # 2021-07-31 <= 2022-01-01
+        self.assertEqual(test_record.years_needed(date(2029, 7, 31)), 8)
+        self.assertEqual(test_record.years_needed(date(2023, 1, 1)), 1)           # 2022-01-01 reaches START
+        self.assertEqual(test_record.years_needed(date(2023, 1, 2)), 2)           # 2022-01-02 does not
         self.assertLessEqual(bars_history.years_before(date(2029, 7, 31), 8), test_record.START)
 
     def test_a_stock_kite_cannot_give_is_missing(self):

@@ -5,9 +5,9 @@ existing walk-forward (spec "The test record", "Calls made" 1 and 9).
 1. the ranking history (history.rankings) from START (2022-01-01) to `end`, at most the day before the holdout
    (research.json holdout_from; a later end is refused before anything is fetched);
 2. Kite's adjusted daily candles for every ranked symbol and the benchmark, through the nightly candles' top-up
-   (`stockify.data.history.top_up_daily`, CW 1b: candles.json `history_years`, more when START is further back), so
-   a stock the nightly job already holds asks for nothing but the adjustment check and the days since; a Kite token
-   is needed; a symbol refdata does not know or Kite cannot give is left out (`missing`; the strategy skips it);
+   (`stockify.data.history.top_up_daily`, CW 1b) over the fewest whole years from `end` that reach START, with
+   today's Kite token, so a stock the nightly job already holds (further back) asks for nothing but the adjustment
+   check and the end's day; a Kite token is needed; a symbol refdata does not know or Kite cannot give is left out (`missing`; the strategy skips it);
 3. the base run config: the Fundamentals basket on a bars pack of those symbols, the daily-bar fill model and costs
    of examples/runs/sma_reliance_daily.json (bar fills, 10 % participation, 5 bp slippage; Zerodha costs);
 4. the walk-forward over balance x basket size (fundamentals.json balances, basket_sizes): train 365 days, test 90,
@@ -68,8 +68,9 @@ def base_config(ranking: dict, symbols: list[str], end: date) -> dict:
         "mark": "ltp", "seed": 42, "unlock_holdout": None}
 
 
-def years_needed(end: date, years: int) -> int:
-    """`years`, or more when that many years before `end` is still after START."""
+def years_needed(end: date) -> int:
+    """The fewest whole years before `end` that reach START."""
+    years = 1
     while bars_history.years_before(end, years) > START:
         years += 1
     return years
@@ -77,8 +78,8 @@ def years_needed(end: date, years: int) -> int:
 
 def _fetch_all(symbols: list[str], end: date, top_up, client) -> tuple[list[str], list[str]]:  # noqa: ANN001
     """(symbols with bars, symbols without), each sorted."""
-    from stockify.data import daily_candles
-    years = years_needed(end, int(daily_candles.settings()["history_years"]))
+    from stockify import timeutil
+    years, today = years_needed(end), timeutil.ist_today()
     have, missing = [], []
     for s in symbols:
         iid = instruments.find("NSE", s)
@@ -86,7 +87,7 @@ def _fetch_all(symbols: list[str], end: date, top_up, client) -> tuple[list[str]
             missing.append(s)
             continue
         try:
-            res = top_up(iid, end, years=years, client=client)
+            res = top_up(iid, end, years=years, client=client, today=today)
         except Exception as e:  # noqa: BLE001 — one stock Kite cannot give is left out, the rest go on
             log.warning("no bars for %s: %s", s, type(e).__name__)
             missing.append(s)
@@ -118,8 +119,8 @@ def run(*, end: date | None = None, client=None, rank=history.rankings, top_up=b
     if bench is None:
         log.warning("the benchmark %s is not in refdata", BENCHMARK["symbol"])
     else:
-        from stockify.data import daily_candles
-        top_up(bench, end, years=years_needed(end, int(daily_candles.settings()["history_years"])), client=client)
+        from stockify import timeutil
+        top_up(bench, end, years=years_needed(end), client=client, today=timeutil.ist_today())
     for s in missing:
         log.warning("%s is ranked but has no daily bars: the basket skips it", s)
     spec = sweep.build_spec(NAME, base_config(ranking, symbols, end),
