@@ -11,12 +11,13 @@ It never places a real order.
 ## At a glance
 
 - **What it is:** a research and practice platform for the NSE: fundamentals screening, a watchlist with alerts, backtesting and paper trading, all on one machine.
+- **Charts for everything it holds data on:** 3 years of daily candles with the 52-week high and low for every screener and watched stock, quarter-by-quarter charts of each company's filed figures, and a candlestick chart of every backtest and paper session with each trade marked on it.
 - **Stack:** a C++20 engine (with Python bindings), Python for data and strategies, FastAPI, a Next.js 16 web app, SQLite and Parquet for storage, and Kite Connect and NSE's public files for data.
 - **The engine is deterministic and checked:** a separate Python backtester written to the same contract has to agree with it to the paisa, and a fuzzer runs both on random worlds.
 - **Margin matches the broker:** checked against 405 margin answers from Kite, the exact SPAN step agreed with every one, the worst by ₹0.85.
 - **About 4,300 automated tests**, offline and credential-free.
 
-![A tour of STOCKIFY: the home page, the fundamentals list, a stock's details with its 3-year price chart, the watchlist and a watched stock's chart, a backtest's candlestick chart with its trades, the trust panel, two tests compared, research, data coverage and the geo alerts page](docs/assets/stockify-tour.gif)
+![A tour of STOCKIFY: a watched stock's 3-year daily chart with its 52-week high and low, a stock's fundamentals details and price chart, a backtest's candlestick chart with its trades, the watchlist, the fundamentals list, the trust panel, two tests compared, the home page, research, data coverage and the geo alerts page](docs/assets/stockify-tour-v2.gif)
 
 ## A sample result
 
