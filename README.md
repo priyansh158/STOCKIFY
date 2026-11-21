@@ -20,7 +20,7 @@ It runs on Windows, on one machine, for one person. Money is in rupees, stored a
 
 **Paper-trade live.** Sessions trade the live Kite feed with pretend money, unattended through the day. They journal every event, recover from crashes and disconnects, and replay each night to prove the day can be reproduced exactly.
 
-**Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when an index goes silent mid-session, when disk runs low, when a session hits an error or a nightly check fails, and with a summary after each day.
+**Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when an index goes silent mid-session, when disk runs low, when a session hits an error or a nightly check fails, and with a summary after each day. For the stocks on your watchlist it also emails you when one makes a new 52-week high or low during the session, and a day or two before one announces its results.
 
 **Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
 
@@ -32,6 +32,20 @@ How a suggestion is made: the desk updates once a day, after the session, when t
 
 Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion.
 
+## Watchlist
+
+The Watchlist page holds up to 50 NSE stocks or ETFs you are thinking about. Add one from the search box and remove it with its button. Indices and government bonds are refused.
+
+- **Each row** shows the price, live while the app is open and the last close otherwise; the 52-week high and low with how far the price is from each; and the holdings desk's suggestion for that stock, linking to its page. A stock the desk has not graded yet says "Not graded yet" (the desk grades at most 10 new stocks a night, so a long list fills in over a few nights).
+- **The chart** under each row shows the last 3 years of daily candles, with the 52-week high and low drawn across it. The same chart is on each Fundamentals Details page. How much history it shows is `chart_days` in `stockify/config/watchlist.json`.
+- **Email alerts, with the app closed.** Watched stocks join the recorder's feed, so their sessions are recorded too. During the session the recorder emails you when one trades above its 52-week high or below its 52-week low (once per stock per side per day, gathered into one email a minute and at most six emails a day). After the evening's results calendar update it emails a reminder for any watched company whose results meeting is in the next two trading days. Both go through the same email settings as the recorder's other alerts.
+- **When a change takes effect.** A stock you add is recorded and alerted from the next session; a stock you remove stops alerting within a minute. Daily prices for a new stock arrive with that evening's candle fetch, and until then its row says so.
+- **What the alerts skip.** A stock with less than a year of daily prices has no 52-week range yet. On the morning of a split or bonus, when the live price and the stored prices disagree, that stock's alerts pause for the day rather than send a false alarm. A rehearsal on a recorded day (`--ticker replay:…`) logs its alerts and never emails them.
+
+## Daily prices
+
+Every evening after the close, from 16:40 IST, the recorder fetches Kite's daily candles (adjusted for splits and bonuses) for the stocks on the fundamentals list and on your watchlist, and keeps six years of them. The first fill is about 950 Kite requests and takes about 8 minutes; a usual evening tops each stock up with a couple of requests. It stops before the next session's preparation, and with no Kite login it waits for the morning's login. The charts, the 52-week ranges, the holdings desk and the fundamentals test record all read these candles.
+
 ## Fundamentals
 
 The Fundamentals page (Research, then Fundamentals) lists stocks that look cheap and healthy against their own industry, judged on the results the companies file with NSE. It is a list of ideas to research. It never says "buy", it shows no score or rank number, and nothing on it can place an order.
@@ -40,13 +54,13 @@ The page has three parts.
 
 - **Results coming up.** The covered companies that have a board meeting for their results in the next four weeks.
 - **Worth a closer look.** The day's list, best first, at most 50 stocks, each with a few words on why, such as "cheaper than its industry on earnings, with wider margins and no debt". A warning comes first when there is one, such as falling profits or rising debt. A loss-making stock, or one with negative equity, is never listed, though its details page still shows its figures and the warning. The order is the judgement; how it is worked out stays off the page.
-- **Details.** One stock's figures beside its industry's median: P/E, P/B, return on equity, debt to equity, operating margin and profit growth (a bank or other financial is judged on P/E, price to book, return on equity and net interest income growth; its profit growth is shown, but not used for the order). A chart of each figure by quarter, and every filing the figures came from, with a link to NSE's own file. A stock that is covered but not on the list says why: its results are out of date or could not be read, or it has no price to judge it by.
+- **Details.** The stock's price: the last close, the 52-week high and low with their dates, and a chart of the last 3 years of daily candles. Then its figures beside its industry's median: P/E, P/B, return on equity, debt to equity, operating margin and profit growth (a bank or other financial is judged on P/E, price to book, return on equity and net interest income growth; its profit growth is shown, but not used for the order). A chart of each figure by quarter, and every filing the figures came from, with a link to NSE's own file. A stock that is covered but not on the list says why: its results are out of date or could not be read, or it has no price to judge it by.
 
 Where the figures come from:
 
 - **The companies.** Today's Nifty 500 list from NSE, kept to the stocks whose median daily traded value over the last three months is at least ₹8 crore. Each stock's industry is the Industry column of that same list. (NSE's quote pages give a finer grouping, but they refuse automated reads.) An industry with fewer than five stocks on the list is compared with all of them instead.
 - **The results.** NSE's results filings in XBRL from April 2021, and the integrated filings that companies have made since the quarter ended March 2025. Consolidated figures are used from the day a company first files them, standalone ones before that, never a mix. A figure counts from the first trading day after NSE broadcast it, so a past day's list uses only what was known on that day. A restated result is kept as a new version, never written over the old one. A filing whose figures do not add up is held back with the reason, never guessed.
-- **The prices.** NSE's end-of-day files give each day's market value. Kite's daily prices are used for the test record.
+- **The prices.** NSE's end-of-day files give each day's market value. Kite's daily candles (see Daily prices) give the price chart, the 52-week range and the test record.
 
 The daemon brings it up to date each evening after the close, from 20:40 IST once the day's NSE files are in. It makes about 900 NSE requests per trading day at most, about one a second (a catch-up after several missed evenings can spend each missed day's budget in one sitting), and stops 10 minutes before the next session's preparation; what is left waits for the next evening.
 
@@ -119,7 +133,7 @@ The full walk-through, using the Opening Range Breakout as the example (the run 
 
 ## How it is built
 
-- **Data** comes from Kite Connect (instruments, historical candles and the KiteTicker WebSocket) and from NSE's public files: the end-of-day bhavcopies and the exchange's own margin files (the SPAN risk files and the extreme-loss-margin file). The archive holds NSE's end-of-day SPAN file for every trading day from January 2009.
+- **Data** comes from Kite Connect (instruments, historical candles, kept for six years for every stock the lab follows, and the KiteTicker WebSocket) and from NSE's public files: the end-of-day bhavcopies and the exchange's own margin files (the SPAN risk files and the extreme-loss-margin file). The archive holds NSE's end-of-day SPAN file for every trading day from January 2009.
 - **The engine** is a deterministic C++20 core in `engine/` that handles orders, fills, costs, the ledger, settlement and margin. Python sees it as `stockify._engine`, and strategies can be written in Python or C++.
 - **The oracle** in `stockify/oracle/` is a small, readable Python backtester written to the same contract. The engine has to agree with it to the paisa, and a fuzzer runs both on random worlds; any difference fails the build.
 - **Costs** follow Zerodha's charges: brokerage, STT, exchange fees, GST, stamp duty, DP charges and expiry-day brokerage. Every rate is a dated config row with its source. A date with no sourced row is refused rather than guessed.
@@ -142,6 +156,8 @@ All seven milestones are built, reviewed and merged into `main`.
 | M4 | Futures and options: contract rules, Black-76, chains, expiry, delivery, SPAN margin |
 | M5 | The paper-trading daemon: sessions, journals, crash recovery, live margin, nightly checks, the paper trading page |
 | M6 | Comparing runs, data coverage, the trust panel, sweeps, walk-forward, cost and fill sensitivity, candlestick charts |
+
+Built since M6: the holdings desk, the fundamentals screener, logging in from your phone, nightly daily prices, and the watchlist with its email alerts.
 
 What is still open is live time: a run of unattended recording days, and paper sessions that pass their nightly checks for five live trading days in a row.
 
@@ -255,7 +271,9 @@ If the C++ workload is missing, add it to the installed Build Tools. It needs ad
 
 ### Recording every trading day
 
-The recorder runs as a scheduled task that starts when you log in to Windows. On each trading day it records the session, compacts it, backs it up, then hibernates the laptop once you have been away from it for 15 minutes, and wakes it for the next session.
+The recorder runs as a scheduled task that starts when you log in to Windows. On each trading day it records the session, compacts it, backs it up, fetches the day's daily candles, then hibernates the laptop once you have been away from it for 15 minutes, and wakes it for the next session. Its evening jobs also update the holdings desk, the fundamentals list and the watchlist's results reminders.
+
+After changing code or anything in `stockify/config/`, restart the recorder outside a session (`.\scripts\manage_stockify_daemon.ps1 Stop`, then `Start`). A running recorder keeps the code it started with but reads config files afresh, so a new setting it doesn't know yet can make one of its jobs fail until it restarts.
 
 ```powershell
 .\scripts\check_power.ps1                       # the lid, sleep, wake-timer and CPU settings it needs
@@ -352,12 +370,14 @@ A quick check that the API is up: `GET http://127.0.0.1:8001/api/health` returns
 ## Where things are
 
 ```
-server/          FastAPI: auth, search, portfolio, live ticks, alerts, tests, research, paper trading, data
+server/          FastAPI: auth, search, portfolio, live ticks, alerts, tests, research, paper trading, data, desk, fundamentals, watchlist, stock charts
 web/             Next.js 16 desktop UI (types mirrored in web/src/lib/types.ts; design rules in web/design.md)
 stockify/        the Python package and CLI (python -m stockify)
   config/        dated market rules (charges, sessions, contract rules, freeze limits, margin, calendar)
   data/          instruments, NSE files, the margin-file archive, bar cache, ticks, compaction, packs, quality
   desk/          the holdings desk: nightly grading, replay of each rule, the verdict, the stored daily views
+  watchlist/     the watchlist store, 52-week ranges, the recorder's alert checker, results reminders
+  fundamentals/  the fundamentals screener: NSE filings, XBRL reading, point-in-time figures, the daily list
   daemon/        recorder, scheduler, paper sessions, journals, keep-awake, replay ticker, notifications
   oracle/        the reference Python backtester
   fno/           Black-76, rolls, the SPAN file reader, exact SPAN, the margin steps, calibration
