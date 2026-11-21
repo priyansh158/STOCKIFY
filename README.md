@@ -1,54 +1,57 @@
 <h1 align="center"><img src="docs/assets/stockify-banner.png" alt="STOCKIFY" width="560"></h1>
 
-![A tour of STOCKIFY: a backtest's candlestick chart and trades, two runs compared, the trust panel, the tests list, the new-test form, research, the geo alerts page with its news check, data coverage and the home page](docs/assets/stockify-tour.gif)
+Information about stocks on India's National Stock Exchange is scattered: prices and option chains in a broker's app, results filings and board-meeting dates on NSE's site, margin rules in the exchange's own files, news everywhere else. STOCKIFY puts all of it in one place on your own computer, and leaves the decision to you. It doesn't push one way of investing. It gives each kind of investor the evidence they need:
 
-STOCKIFY is a practice lab for trading on India's National Stock Exchange. You write a rule, test it on past prices with the costs, fills and margin a real account would face, then let it paper-trade live prices with pretend money. It never places a real order.
+- **A long-term investor** can see whether a stock costs more than it is worth next to its own industry, judged on the results the company filed with NSE, before paying for it.
+- **A swing trader** gets daily charts, seven well-known swing rules tested on each stock they hold or watch, a plain suggestion for each holding, and an email when a watched stock breaks its 52-week range.
+- **A day trader who relies on technical strategies** can test a rule on recorded tick data with the costs, fills and margin a real Zerodha account would face, check whether a good result was luck, then paper-trade it on live prices with pretend money.
 
-The question it exists to answer: would this rule have made money after realistic costs, and does it keep making money once it meets live prices?
+It never places a real order.
+
+## At a glance
+
+- **What it is:** a research and practice platform for the NSE: fundamentals screening, a watchlist with alerts, backtesting and paper trading, all on one machine.
+- **Stack:** a C++20 engine (with Python bindings), Python for data and strategies, FastAPI, a Next.js 16 web app, SQLite and Parquet for storage, and Kite Connect and NSE's public files for data.
+- **The engine is deterministic and checked:** a separate Python backtester written to the same contract has to agree with it to the paisa, and a fuzzer runs both on random worlds.
+- **Margin matches the broker:** checked against 405 margin answers from Kite, the exact SPAN step agreed with every one, the worst by ₹0.85.
+- **About 4,300 automated tests**, offline and credential-free.
+
+![A tour of STOCKIFY: the home page, the fundamentals list, a stock's details with its 3-year price chart, the watchlist and a watched stock's chart, a backtest's candlestick chart with its trades, the trust panel, two tests compared, research, data coverage and the geo alerts page](docs/assets/stockify-tour.gif)
+
+## A sample result
+
+Nobody can run STOCKIFY without Windows and a Kite Connect subscription, so here is what a finished test looks like. This is an Opening Range Breakout test on RELIANCE's one-minute bars for 4 November 2026, starting with ₹1,00,000. It made one trade and ended with ₹99,982: a small loss once ₹13.59 of charges were paid. The tags under the title ("Unverified charges", "Fills from price bars", "Flat margin, approximate" and so on) name every assumption the result rests on, so a good-looking number can't hide one.
+
+![A finished backtest: the result tiles, the caveat tags and a one-minute candlestick chart with the buy and the sell marked](docs/assets/sample-backtest.png)
+
+Every test also gets a trust panel. This one, from an end-of-day short straddle test, says how many variations of the idea were tried, how confident it is that the real Sharpe is above zero, and how far the Sharpe, the average day and the worst drop could swing on re-drawn days.
+
+![The trust panel of an end-of-day short straddle test](docs/assets/sample-trust.png)
+
+## How the pieces fit
+
+```mermaid
+flowchart LR
+    kite["Kite Connect<br/>live ticks, daily candles,<br/>holdings, margins"] --> rec
+    kite --> api
+    nse["NSE public files<br/>bhavcopies, SPAN margin files,<br/>results filings (XBRL), board meetings"] --> data
+    news["Google News"] --> geo["Geo monitor<br/>Gemini judges each story"]
+    rec["Recorder (daemon)<br/>records each session,<br/>runs the evening jobs"] --> data
+    data["Python data layer<br/>SQLite stores, verified Parquet"] --> engine["C++20 engine<br/>orders, fills, costs, margin"]
+    data --> oracle["Python oracle<br/>must agree to the paisa"]
+    engine --> api["FastAPI"]
+    data --> api
+    geo --> api
+    api --> web["Next.js web app<br/>127.0.0.1 only"]
+    rec -. email .-> you(("You"))
+    geo -. email .-> you
+```
 
 It runs on Windows, on one machine, for one person. Money is in rupees, stored as whole paise. Times are stored in UTC and shown in IST.
 
-## What you can do with it
+## Fundamentals: is a stock worth its price?
 
-**Test a strategy.** Pick a strategy, a stock or index, a date range and how orders should fill, then press Start. The run page shows the result as tiles, a candlestick chart with every buy and sell marked on it, a trust panel, the money-over-time curve and every fill, with each charge broken out the way Zerodha bills it. Run the same test twice and you get the same bytes twice.
-
-**Find out whether a good result was luck.** The trust panel re-draws the run's own days to show how far Sharpe, the average day and the worst drop could swing. It counts every variation you have tried on an idea and discounts the best one for it (the deflated Sharpe), and splits the profit by month, weekday, expiry days, India VIX and the opening gap. A run too short for a yearly figure says "too short to say" instead of extrapolating one day into a year.
-
-**Research without a terminal.** A parameter sweep starts from any finished test: choose which settings to vary, see how many tries that makes, press Run sweep. A finished sweep can be walked forward (train on some days, pick the best settings, test them on the days after). A run's sensitivity check re-runs it with higher costs and worse fills. Long jobs show their progress and have a Stop button.
-
-**Compare runs.** Tick two to six finished tests and see their numbers, growth curves, drawdowns, caveats and settings side by side, with the differences marked.
-
-**Paper-trade live.** Sessions trade the live Kite feed with pretend money, unattended through the day. They journal every event, recover from crashes and disconnects, and replay each night to prove the day can be reproduced exactly.
-
-**Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when an index goes silent mid-session, when disk runs low, when a session hits an error or a nightly check fails, and with a summary after each day. For the stocks on your watchlist it also emails you when one makes a new 52-week high or low during the session, and a day or two before one announces its results.
-
-**Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
-
-Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for stocks you hold: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit. The Fundamentals basket holds the stocks on the fundamentals list in equal shares and rebalances each month.
-
-**Holdings desk.** Open a stock on the Portfolio page and you get a page for that holding: its daily chart with each rule's exit level, one suggestion (Hold, Tighten stop, Trim, Exit, or No reliable signal when no rule has a record worth weighing on that stock), and the rules behind it. The desk works on stocks only: it has no option chain and no option ideas. It suggests and never orders. Nothing on it can place a trade, and it reads only your holdings and daily prices through Kite's read-only calls.
-
-How a suggestion is made: the desk updates once a day, after the session, when the recorder has finished. That night it tests the swing rules on each held stock's daily prices, with the lab's realistic costs, year by year against simply holding. Each rule gets a record on that stock (strong, some, weak or none), and the rules vote at that day's close, weighted by their record. The page shows the suggestion as of that close and its date, the votes, the price levels that would change the suggestion, and the table that turns votes into a word. Every rule decides on daily closes, so for swing trading this is the same answer a live view would give; a move through a level during the day shows after that day's close. The tests stop on 31 July 2026, the day before the months the research page keeps in reserve, so the desk never looks at them to grade a rule; the day's vote does use every close up to that day, because it is not a test.
-
-Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion.
-
-## Watchlist
-
-The Watchlist page holds up to 50 NSE stocks or ETFs you are thinking about. Add one from the search box and remove it with its button. Indices and government bonds are refused.
-
-- **Each row** shows the price, live while the app is open and the last close otherwise; the 52-week high and low with how far the price is from each; and the holdings desk's suggestion for that stock, linking to its page. A stock the desk has not graded yet says "Not graded yet" (the desk grades at most 10 new stocks a night, so a long list fills in over a few nights).
-- **The chart** under each row shows the last 3 years of daily candles, with the 52-week high and low drawn across it. The same chart is on each Fundamentals Details page. How much history it shows is `chart_days` in `stockify/config/watchlist.json`.
-- **Email alerts, with the app closed.** Watched stocks join the recorder's feed, so their sessions are recorded too. During the session the recorder emails you when one trades above its 52-week high or below its 52-week low (once per stock per side per day, gathered into one email a minute and at most six emails a day). After the evening's results calendar update it emails a reminder for any watched company whose results meeting is in the next two trading days. Both go through the same email settings as the recorder's other alerts.
-- **When a change takes effect.** A stock you add is recorded and alerted from the next session; a stock you remove stops alerting within a minute. Daily prices for a new stock arrive with that evening's candle fetch, and until then its row says so.
-- **What the alerts skip.** A stock with less than a year of daily prices has no 52-week range yet. On the morning of a split or bonus, when the live price and the stored prices disagree, that stock's alerts pause for the day rather than send a false alarm. A rehearsal on a recorded day (`--ticker replay:…`) logs its alerts and never emails them.
-
-## Daily prices
-
-Every evening after the close, from 16:40 IST, the recorder fetches Kite's daily candles (adjusted for splits and bonuses) for the stocks on the fundamentals list and on your watchlist, and keeps six years of them. The first fill is about 950 Kite requests and takes about 8 minutes; a usual evening tops each stock up with a couple of requests. It stops before the next session's preparation, and with no Kite login it waits for the morning's login. The charts, the 52-week ranges, the holdings desk and the fundamentals test record all read these candles.
-
-## Fundamentals
-
-The Fundamentals page (Research, then Fundamentals) lists stocks that look cheap and healthy against their own industry, judged on the results the companies file with NSE. It is a list of ideas to research. It never says "buy", it shows no score or rank number, and nothing on it can place an order.
+This is the long-term investor's page: before you buy, it tells you whether you'd be paying more for a stock than its industry's own numbers would suggest. The Fundamentals page (Research, then Fundamentals) lists stocks that look cheap and healthy against their own industry, judged on the results the companies file with NSE, and each stock's Details page puts its price next to its figures. It is a list of ideas to research. It never says "buy", it shows no score or rank number, and nothing on it can place an order.
 
 The page has three parts.
 
@@ -81,6 +84,48 @@ stockify fundamentals reparse --all-held   # held filings read again by the next
 ```
 
 The backfill, refresh and test-record commands refuse to start while the recorder's session is running, so run them after the close; a backfill still going when the session begins stops at the next batch and resumes next time. Only one fundamentals run (the daemon's or a command's) goes at a time: a command started while another runs says so and stops.
+
+## Watchlist
+
+The Watchlist is where swing trading starts: the stocks you are thinking about, each with its 52-week range, its chart and what the tested rules say, plus an email when one breaks out. It holds up to 50 NSE stocks or ETFs. Add one from the search box and remove it with its button. Indices and government bonds are refused.
+
+- **Each row** shows the price, live while the app is open and the last close otherwise; the 52-week high and low with how far the price is from each; and the holdings desk's suggestion for that stock, linking to its page. A stock the desk has not graded yet says "Not graded yet" (the desk grades at most 10 new stocks a night, so a long list fills in over a few nights).
+- **The chart** under each row shows the last 3 years of daily candles, with the 52-week high and low drawn across it. The same chart is on each Fundamentals Details page. How much history it shows is `chart_days` in `stockify/config/watchlist.json`.
+- **Email alerts, with the app closed.** Watched stocks join the recorder's feed, so their sessions are recorded too. During the session the recorder emails you when one trades above its 52-week high or below its 52-week low (once per stock per side per day, gathered into one email a minute and at most six emails a day). After the evening's results calendar update it emails a reminder for any watched company whose results meeting is in the next two trading days. Both go through the same email settings as the recorder's other alerts.
+- **When a change takes effect.** A stock you add is recorded and alerted from the next session; a stock you remove stops alerting within a minute. Daily prices for a new stock arrive with that evening's candle fetch, and until then its row says so.
+- **What the alerts skip.** A stock with less than a year of daily prices has no 52-week range yet. On the morning of a split or bonus, when the live price and the stored prices disagree, that stock's alerts pause for the day rather than send a false alarm. A rehearsal on a recorded day (`--ticker replay:…`) logs its alerts and never emails them.
+
+## Holdings desk
+
+Open a stock on the Portfolio page and you get a page for that holding: its daily chart with each rule's exit level, one suggestion (Hold, Tighten stop, Trim, Exit, or No reliable signal when no rule has a record worth weighing on that stock), and the rules behind it. The desk works on stocks only: it has no option chain and no option ideas. It suggests and never orders. Nothing on it can place a trade, and it reads only your holdings and daily prices through Kite's read-only calls.
+
+How a suggestion is made: the desk updates once a day, after the session, when the recorder has finished. That night it tests the swing rules on each held stock's daily prices, with the lab's realistic costs, year by year against simply holding. Each rule gets a record on that stock (strong, some, weak or none), and the rules vote at that day's close, weighted by their record. The page shows the suggestion as of that close and its date, the votes, the price levels that would change the suggestion, and the table that turns votes into a word. Every rule decides on daily closes, so for swing trading this is the same answer a live view would give; a move through a level during the day shows after that day's close. The tests stop on 31 July 2026, the day before the months the research page keeps in reserve, so the desk never looks at them to grade a rule; the day's vote does use every close up to that day, because it is not a test.
+
+Stocks on your watchlist that you don't hold get the same daily view, so you can see what the tested rules say about a stock before you buy it. Their page says it is a watched stock, not a holding.
+
+Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion.
+
+## Testing strategies and paper trading
+
+**Test a strategy.** Pick a strategy, a stock or index, a date range and how orders should fill, then press Start. The run page shows the result as tiles, a candlestick chart with every buy and sell marked on it, a trust panel, the money-over-time curve and every fill, with each charge broken out the way Zerodha bills it. Run the same test twice and you get the same bytes twice.
+
+**Find out whether a good result was luck.** The trust panel re-draws the run's own days to show how far Sharpe, the average day and the worst drop could swing. It counts every variation you have tried on an idea and discounts the best one for it (the deflated Sharpe), and splits the profit by month, weekday, expiry days, India VIX and the opening gap. A run too short for a yearly figure says "too short to say" instead of extrapolating one day into a year.
+
+**Research without a terminal.** A parameter sweep starts from any finished test: choose which settings to vary, see how many tries that makes, press Run sweep. A finished sweep can be walked forward (train on some days, pick the best settings, test them on the days after). A run's sensitivity check re-runs it with higher costs and worse fills. Long jobs show their progress and have a Stop button.
+
+**Compare runs.** Tick two to six finished tests and see their numbers, growth curves, drawdowns, caveats and settings side by side, with the differences marked.
+
+**Paper-trade live.** Sessions trade the live Kite feed with pretend money, unattended through the day. They journal every event, recover from crashes and disconnects, and replay each night to prove the day can be reproduced exactly.
+
+**Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when an index goes silent mid-session, when disk runs low, when a session hits an error or a nightly check fails, and with a summary after each day. For the stocks on your watchlist it also emails you when one makes a new 52-week high or low during the session, and a day or two before one announces its results.
+
+**Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
+
+Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for the stocks you hold or watch: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit. The Fundamentals basket holds the stocks on the fundamentals list in equal shares and rebalances each month.
+
+## Daily prices
+
+Every evening after the close, from 16:40 IST, the recorder fetches Kite's daily candles (adjusted for splits and bonuses) for the stocks on the fundamentals list and on your watchlist, and keeps six years of them. The first fill is about 950 Kite requests and takes about 8 minutes; a usual evening tops each stock up with a couple of requests. It stops before the next session's preparation, and with no Kite login it waits for the morning's login. The charts, the 52-week ranges, the holdings desk and the fundamentals test record all read these candles.
 
 ## Writing your own strategy
 
@@ -141,7 +186,7 @@ The full walk-through, using the Opening Range Breakout as the example (the run 
 - **Margin** is priced from the exchange's own files where it can be. Each day a run takes the best of five steps: exact SPAN with NSE's extreme-loss file, exact SPAN with the dated rule, a calibrated estimate, a placeholder estimate, then a flat rate. Checked against 405 margin answers from Kite, the exact step agreed with every one, the worst by ₹0.85.
 - **The app** is a FastAPI backend in `server/` and a desktop Next.js UI in `web/`. Both bind to `127.0.0.1` only.
 - **The news monitor** in `geo_monitor/` runs as its own background process (a scheduled task), so it keeps watching when the app is closed. The app starts one-off checks of the same code from the Geo alerts page, with a lock so the two never run a check at the same moment.
-- **The logo** lives in `web/public/brand/` and `web/src/app/` (the browser tab icon, app icons and the web manifest); the README banner and tour are in `docs/assets/`.
+- **The logo** lives in `web/public/brand/` and `web/src/app/` (the browser tab icon, app icons and the web manifest); the README banner, tour and sample screenshots are in `docs/assets/`.
 
 ## Status
 
