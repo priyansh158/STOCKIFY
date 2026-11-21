@@ -186,7 +186,7 @@ class Client:
             raise Blocked(f"{url}: NSE sent an HTML page (HTTP {status}) instead of {what}: {body.lstrip()[:80]!r}")
         return body
 
-    def _request(self, url: str, what: str, warmup: str | None) -> bytes:
+    def _fetch_body(self, url: str, what: str, warmup: str | None) -> bytes:
         """`fetch` after a due rotation and the page warm-up (`warmup` is warmed again if the session rotates)."""
         self.rotate_if_due()
         if warmup:
@@ -200,7 +200,7 @@ class Client:
 
     def get(self, url: str, *, kind: str, name: str, warmup: str | None = None) -> bytes:
         """A static file (e.g. the Nifty 500 list on nsearchives), kept as `<kind>/<name>`."""
-        body = self._request(url, "the file", warmup)
+        body = self._fetch_body(url, "the file", warmup)
         self.last_sha256 = save_raw(kind, name, body)
         return body
 
@@ -211,7 +211,7 @@ class Client:
         if not path.startswith("/api/"):
             raise ValueError(f"not an NSE API path: {path!r}")
         url = self.base + path + ("?" + urlencode(params) if params else "")
-        body = self._request(url, "JSON", warmup)
+        body = self._fetch_body(url, "JSON", warmup)
         try:
             doc = json.loads(body)
         except ValueError as e:
