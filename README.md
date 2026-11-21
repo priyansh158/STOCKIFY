@@ -5,12 +5,13 @@ Information about stocks on India's National Stock Exchange is scattered: prices
 - **A long-term investor** can see whether a stock costs more than it is worth next to its own industry, judged on the results the company filed with NSE, before paying for it.
 - **A swing trader** gets daily charts, seven well-known swing rules tested on each stock they hold or watch, a plain suggestion for each holding, and an email when a watched stock breaks its 52-week range.
 - **A day trader who relies on technical strategies** can test a rule on recorded tick data with the costs, fills and margin a real Zerodha account would face, check whether a good result was luck, then paper-trade it on live prices with pretend money.
+- **Anyone holding or watching stocks** gets a news monitor that reads world events in the background, has Gemini judge which could move Indian stocks, and emails the high and critical ones.
 
 It never places a real order.
 
 ## At a glance
 
-- **What it is:** a research and practice platform for the NSE: fundamentals screening, a watchlist with alerts, backtesting and paper trading, all on one machine.
+- **What it is:** a research and practice platform for the NSE: fundamentals screening, a watchlist with alerts, a news monitor, backtesting and paper trading, all on one machine.
 - **Charts for everything it holds data on:** 3 years of daily candles with the 52-week high and low for every screener and watched stock, quarter-by-quarter charts of each company's filed figures, and a candlestick chart of every backtest and paper session with each trade marked on it.
 - **Stack:** a C++20 engine (with Python bindings), Python for data and strategies, FastAPI, a Next.js 16 web app, SQLite and Parquet for storage, and Kite Connect and NSE's public files for data.
 - **The engine is deterministic and checked:** a separate Python backtester written to the same contract has to agree with it to the paisa, and a fuzzer runs both on random worlds.
@@ -106,6 +107,10 @@ Stocks on your watchlist that you don't hold get the same daily view, so you can
 
 Your cost and your profit are deliberately not shown anywhere on the desk, and they play no part in a suggestion.
 
+## News monitor
+
+A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. It runs as its own background process, so it keeps watching when the app is closed. The Geo alerts page lists the alerts, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check). Setting it up is under "The geo monitor" below.
+
 ## Testing strategies and paper trading
 
 **Test a strategy.** Pick a strategy, a stock or index, a date range and how orders should fill, then press Start. The run page shows the result as tiles, a candlestick chart with every buy and sell marked on it, a trust panel, the money-over-time curve and every fill, with each charge broken out the way Zerodha bills it. Run the same test twice and you get the same bytes twice.
@@ -119,8 +124,6 @@ Your cost and your profit are deliberately not shown anywhere on the desk, and t
 **Paper-trade live.** Sessions trade the live Kite feed with pretend money, unattended through the day. They journal every event, recover from crashes and disconnects, and replay each night to prove the day can be reproduced exactly.
 
 **Keep the data honest.** The data coverage page shows, day by day, what was recorded, archived and downloaded, and what is missing. Missing NSE days download with one button. The recorder records every trading day by itself, compacts the day to verified Parquet, backs it up, hibernates the laptop and wakes it for the next session. It emails you when the daily Kite login is due, when an index goes silent mid-session, when disk runs low, when a session hits an error or a nightly check fails, and with a summary after each day. For the stocks on your watchlist it also emails you when one makes a new 52-week high or low during the session, and a day or two before one announces its results.
-
-**Watch the news.** A news monitor reads Google News in the background for world events that could move Indian stocks, has Gemini judge each one, and emails you the high and critical ones. The Geo alerts page lists them, shows when the last check ran, and has a "Check the news now" button that runs a check on the spot (it never overlaps the background monitor's own check).
 
 Strategies that ship with it: Buy and Hold, SMA Crossover, Opening Range Breakout (in Python and in C++), End-of-Day Short Straddle, Short Straddle with Stop, Iron Fly and Margin Watch, plus seven swing rules for the stocks you hold or watch: EMA Trend, MACD Crossover, RSI Pullback, Bollinger Reversion, Donchian Breakout, Supertrend and Chandelier Exit. The Fundamentals basket holds the stocks on the fundamentals list in equal shares and rebalances each month.
 
